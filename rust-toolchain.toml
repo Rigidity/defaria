@@ -1,0 +1,6 @@
+# Pinned so every agent/worktree/CI run uses the same compiler. Changing it
+# invalidates all compiled artifacts (a full ~10 min Bevy rebuild).
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
