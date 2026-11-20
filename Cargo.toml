@@ -1,0 +1,59 @@
+[package]
+name = "defaria-2026"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[dependencies]
+bevy = "0.20.1"
+# Compile out verbose log calls (including Bevy's own) at build time.
+# Debug builds keep up to `debug`; release builds keep only `warn` and `error`.
+tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_warn"] }
+
+[features]
+# `dev` is on by default so that `cargo run`, `test`, `clippy` and `check` all
+# share ONE compiled copy of Bevy. Different feature sets mean a second full
+# Bevy build. Only `cargo dist` (see .cargo/config.toml) turns it off.
+# Never ship with it: dynamic linking needs libbevy_dylib next to the binary.
+default = ["dev"]
+dev = [
+    "bevy/dynamic_linking", # biggest win for incremental compiles
+    "bevy/dev",             # asset hot reloading + debug tooling
+    "bevy/bevy_remote",     # Bevy Remote Protocol: inspect the running game over HTTP
+]
+
+[lib]
+# Doctests don't work with `bevy/dynamic_linking` (the dylib isn't on the
+# loader path), so keep examples in #[test] functions instead.
+doctest = false
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+# Bevy systems routinely trip these; they're noise, not bugs.
+type_complexity = "allow"
+too_many_arguments = "allow"
+
+# Small optimization for our own code keeps debug builds playable
+# without slowing incremental rebuilds much.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+# Dependencies (Bevy) are compiled once, so optimize them fully.
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# Shipping build: `cargo build --profile dist`
+[profile.dist]
+inherits = "release"
+lto = "fat"
+strip = true
+panic = "abort"

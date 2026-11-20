@@ -1,0 +1,10 @@
+[alias]
+# Optimized build without dev features, for profiling / playtesting.
+play = "run --release --no-default-features"
+# Shipping build: no dynamic linking, fat LTO, stripped.
+dist = "build --profile dist --no-default-features"
+# Render N frames, save a PNG, exit. Usage: cargo shot [path] (defaults below).
+shot = "run -- --screenshot target/screenshot.png"
+
+# macOS: the default Apple linker (ld-prime) is already as fast as lld/sold,
+# so no linker override is needed here.
