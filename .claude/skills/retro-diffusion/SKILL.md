@@ -22,7 +22,7 @@ Block textures are stacks of **grayscale layer images**, colored at runtime
 
 - Each layer is a 16×16 PNG in `assets/textures/layers/`.
 - It may use only the 8 gray levels `0, 36, 73, 109, 146, 182, 219, 255`
-  (`gray()` in `layer.rs`), plus fully transparent pixels.
+  (`gray()` in `layer.rs`), plus fully or partly transparent pixels.
 - Each gray level is an index into a palette, darkest first. The game gives
   every level its own color, then stacks the colored layers into a tile.
 - So a layer is about **shape and shading only**. Color, and which layers

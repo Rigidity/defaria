@@ -70,8 +70,7 @@ impl FromWorld for BlockMaterial {
             .into_iter()
             .map(|path| {
                 // The GPU only needs the built texture, so keep the layers
-                // on the CPU. (A hot reload doesn't reapply load settings,
-                // so a reloaded layer is uploaded too; that's harmless.)
+                // on the CPU. Hot reloads reapply these settings.
                 let handle = server
                     .load_builder()
                     .with_settings(|settings: &mut ImageLoaderSettings| {
@@ -155,7 +154,10 @@ fn build_block_texture(
 mod tests {
     use super::*;
     use crate::block_texture::Tile;
-    use bevy::color::ColorToPacked;
+    use bevy::{
+        color::ColorToPacked,
+        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    };
 
     /// The shader declares the bindings the material provides, at the same
     /// indices, and the fragment entry point Bevy looks for.
@@ -233,13 +235,20 @@ mod tests {
         }
 
         fn modified(&mut self, app: &App) -> bool {
+            self.count(app) > 0
+        }
+
+        /// How many times the material was marked modified since the last
+        /// call, which is once per build.
+        fn count(&mut self, app: &App) -> usize {
             let material = app.world().resource::<BlockMaterial>().material.id();
             let messages = app
                 .world()
                 .resource::<Messages<AssetEvent<VoxelMaterial>>>();
             self.0
                 .read(messages)
-                .any(|event| event.is_modified(material))
+                .filter(|event| event.is_modified(material))
+                .count()
         }
     }
 
@@ -321,33 +330,89 @@ mod tests {
         assert_ne!(material_texture(&app), good);
     }
 
-    /// Nothing is built while any layer is missing; the texture appears
-    /// once the last one arrives.
+    /// Changes to two layers in the same frame build once, not once each.
     #[test]
-    fn the_texture_waits_for_every_layer() {
+    fn two_layers_changing_together_build_once() {
         let mut app = app();
-        // Swap stone's handle for one with no image behind it.
-        let stone = block_texture::layer_path("stone");
-        let missing = app.world().resource::<Assets<Image>>().reserve_handle();
-        app.world_mut()
-            .resource_mut::<BlockMaterial>()
-            .layers
-            .insert(stone.clone(), missing.clone());
-        let reserved = material_texture(&app);
-        // Give the other layers time to load.
-        for _ in 0..100 {
-            app.update();
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        built_texture(&mut app);
+        let mut material_events = MaterialEvents::new(&app);
+        for name in ["stone", "dirt"] {
+            let layer = layer(&app, name);
+            paint(&mut app, &layer, [0, 0, 0, 255]);
         }
-        assert_eq!(material_texture(&app), reserved);
+        let mut builds = 0;
+        for _ in 0..6 {
+            app.update();
+            builds += material_events.count(&app);
+        }
+        assert_eq!(builds, 1);
+    }
 
-        // Any valid 16×16 layer will do: borrow the loaded dirt image.
-        let dirt = layer(&app, "dirt");
-        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let image = images.get(&dirt).unwrap().clone();
-        images.insert(&missing, image).unwrap();
-        app.update();
-        app.update();
+    /// Nothing is built while any layer is missing, and layers arriving on
+    /// different frames build once, when the last arrives. Inserted by hand
+    /// rather than loaded from disk, so the timing is exact: an image lands
+    /// in `Assets` a frame before its `Added` event can be read.
+    #[test]
+    fn layers_arriving_one_per_frame_build_once_after_the_last() {
+        let mut app = app();
+        // Swap every layer's handle for one with no image behind it.
+        let paths: Vec<String> = app
+            .world()
+            .resource::<BlockMaterial>()
+            .layers
+            .keys()
+            .cloned()
+            .collect();
+        let missing: Vec<Handle<Image>> = paths
+            .into_iter()
+            .map(|path| {
+                let handle = app.world().resource::<Assets<Image>>().reserve_handle();
+                app.world_mut()
+                    .resource_mut::<BlockMaterial>()
+                    .layers
+                    .insert(path, handle.clone());
+                handle
+            })
+            .collect();
+        let reserved = material_texture(&app);
+        let mut material_events = MaterialEvents::new(&app);
+        let black = Image::new_fill(
+            Extent3d {
+                width: block_texture::TILE_SIZE,
+                height: block_texture::TILE_SIZE,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0, 0, 0, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::all(),
+        );
+
+        let (last, first) = missing.split_last().unwrap();
+        for handle in first {
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .insert(handle, black.clone())
+                .unwrap();
+            // One frame per layer: each frame reads the previous layer's
+            // event while the current layer is already present.
+            app.update();
+            assert_eq!(
+                material_texture(&app),
+                reserved,
+                "built with a layer missing"
+            );
+        }
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .insert(last, black)
+            .unwrap();
+        let mut builds = 0;
+        for _ in 0..6 {
+            app.update();
+            builds += material_events.count(&app);
+        }
+        assert_eq!(builds, 1);
         assert_ne!(material_texture(&app), reserved);
     }
 }

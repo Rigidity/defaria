@@ -188,6 +188,21 @@ mod tests {
         }
     }
 
+    /// Levels are blended in Oklab, not sRGB: a black-to-white ramp steps
+    /// evenly in Oklab lightness.
+    #[test]
+    fn ramp_blends_in_oklab() {
+        let palette = Palette::ramp(&[Srgba::BLACK, Srgba::WHITE]);
+        for level in 0..GRAY_LEVELS {
+            let lightness = Oklaba::from(palette.color(level)).lightness;
+            let expected = level as f32 / (GRAY_LEVELS - 1) as f32;
+            assert!(
+                (lightness - expected).abs() < 1e-3,
+                "level {level}: {lightness} != {expected}"
+            );
+        }
+    }
+
     #[test]
     fn colorize_maps_each_gray_level_to_its_palette_color() {
         let palette = test_palette();
