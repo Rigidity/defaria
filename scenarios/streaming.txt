@@ -1,0 +1,36 @@
+# The world loading around the camera: frame times while flying across
+# it, after jumping somewhere that isn't loaded, and a tower built near
+# the start that's still there after its chunks unloaded and came back,
+# and a room dug a thousand blocks down.
+# Compare the `timing` lines between runs on the same machine.
+# Run: cargo headless scenarios/streaming.txt
+timing                             # startup: loading the first view
+fill 60 30 70 62 58 72 planks      # a tower in front of the camera
+fill 60 59 70 62 59 72 lamp
+wait 2
+screenshot target/scenarios/streaming/0-tower.png
+wait 1
+hold MouseLeft 1                   # lock the cursor
+timing
+hold KeyW 600                      # ten seconds' flight north
+timing                             # flying: a row of chunks now and then
+camera 6000 70 -4000 0 -15         # far away: everything loads at once
+settle
+timing                             # the jump, until it's all loaded
+screenshot target/scenarios/streaming/1-far-away.png
+wait 1
+camera -3000 70 9000 90 -15        # somewhere else, so the tower unloads
+settle
+camera 64 56 92 0 -25              # back at the start
+settle
+screenshot target/scenarios/streaming/2-tower-again.png
+wait 1
+camera 8.5 -1000 14.5 0 5          # deep underground: there's no world bottom
+settle
+fill 0 -1004 0 16 -996 16 air      # a room carved out of the rock,
+fill 8 -999 3 8 -999 3 lamp        # lit only by a lamp: the rock above is
+press KeyL                         # loaded, so no sky gets in (and the
+wait 1                             # player's light is off)
+release KeyL
+wait 2
+screenshot target/scenarios/streaming/3-underground.png

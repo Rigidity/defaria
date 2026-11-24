@@ -25,11 +25,20 @@
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the fly camera at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
+//! | `settle` | Wait until the world around the camera has loaded and been meshed. |
 //!
 //! Buttons are Bevy [`KeyCode`] names (`KeyW`, `Space`, `ShiftLeft`,
 //! `Escape`, …) or `MouseLeft`, `MouseRight`, `MouseMiddle`. Components are
 //! reflected type names, short (`FlyCamera`, `Transform`) or full
 //! (`defaria::fly_camera::FlyCamera`).
+//!
+//! The world loads around the camera in the background, so the script
+//! starts only once the world around the starting position has loaded and
+//! been meshed (as if it began with `settle`). After a `camera` jump to
+//! somewhere that isn't loaded yet, `settle` waits for it the same way. A
+//! run fails if the world doesn't settle within [`SETTLE_TIMEOUT_FRAMES`].
+//! Headless runs play a world kept in memory, so every run starts from the
+//! same world; `--world <folder>` plays (and saves) one on disk instead.
 //!
 //! `fill` and `camera` set up exact situations (a sealed room, a lamp, a
 //! view) without steering there with input. Edits go through the same path
@@ -90,6 +99,7 @@ use bevy::{
 use crate::{
     content::{BlockState, Content},
     fly_camera::{FlyCamera, MAX_PITCH},
+    streaming::StreamingStatus,
     terrain::Voxels,
 };
 
@@ -101,6 +111,9 @@ const RESOLUTION: UVec2 = UVec2::new(1280, 720);
 /// many frames after the script ended, so a broken capture or a shader that
 /// never loads can't hang an agent forever.
 const END_TIMEOUT_FRAMES: u32 = 600;
+/// Give up if the world hasn't finished loading this many frames into a
+/// `settle` (or the start).
+pub const SETTLE_TIMEOUT_FRAMES: u32 = 3000;
 
 /// [`DefaultPlugins`] set up to run without a window. With `rendering` off
 /// there's no GPU at all (for CI); screenshots are then skipped.
@@ -142,6 +155,7 @@ impl Plugin for HeadlessPlugin {
         app.insert_resource(TimeUpdateStrategy::ManualDuration(FRAME_TIME))
             .insert_resource(ScriptRunner {
                 commands: self.script.commands.clone().into(),
+                settling: Some(0),
                 rendering: self.rendering,
                 ..default()
             })
@@ -188,6 +202,7 @@ pub enum Command {
         pitch: f32,
     },
     Timing,
+    Settle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -300,6 +315,10 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             expect(0)?;
             commands.push(Command::Timing);
         }
+        "settle" => {
+            expect(0)?;
+            commands.push(Command::Settle);
+        }
         other => return Err(format!("unknown command `{other}`")),
     }
     Ok(())
@@ -328,6 +347,9 @@ fn parse_button(name: &str) -> Result<Button, String> {
 #[derive(Resource, Default)]
 struct ScriptRunner {
     commands: VecDeque<Command>,
+    /// Waiting for the world to load before the next command, and for how
+    /// many frames so far.
+    settling: Option<u32>,
     /// Frames left before the next command runs.
     waiting: u32,
     /// `screenshot` and `grain` commands to handle at the end of this frame.
@@ -350,6 +372,7 @@ struct ScriptRunner {
 impl ScriptRunner {
     fn finished(&self) -> bool {
         self.commands.is_empty()
+            && self.settling.is_none()
             && self.waiting == 0
             && self.captures.is_empty()
             && self.inspections.is_empty()
@@ -388,11 +411,31 @@ fn render_to_image(add: On<Add<Camera>>, target: Res<HeadlessTarget>, mut comman
 /// systems so injected input is seen this frame.
 fn run_script(
     mut runner: ResMut<ScriptRunner>,
+    status: Option<Res<StreamingStatus>>,
     window: Option<Single<Entity, With<PrimaryWindow>>>,
     mut keys: MessageWriter<KeyboardInput>,
     mut mouse_buttons: MessageWriter<MouseButtonInput>,
     mut mouse_motion: MessageWriter<MouseMotion>,
+    mut exit: MessageWriter<AppExit>,
 ) {
+    if let Some(frames) = runner.settling {
+        // Without streaming there's nothing to wait for. The status is last
+        // frame's, and a camera moved on the frame of the `settle` only
+        // reaches the loading that frame's end (with its global
+        // transform), so the first two frames' statuses don't count.
+        if frames >= 2 && status.is_none_or(|status| status.settled) {
+            runner.settling = None;
+        } else if frames >= SETTLE_TIMEOUT_FRAMES {
+            error!("the world didn't finish loading in {frames} frames; giving up");
+            exit.write(AppExit::error());
+            runner.settling = None;
+            runner.commands.clear();
+            return;
+        } else {
+            runner.settling = Some(frames + 1);
+            return;
+        }
+    }
     if runner.waiting > 0 {
         runner.waiting -= 1;
         if runner.waiting > 0 {
@@ -442,6 +485,10 @@ fn run_script(
             Command::Inspect(name) => runner.inspections.push(name),
             Command::Fill { .. } | Command::Camera { .. } => runner.world_commands.push(command),
             Command::Timing => runner.timing = true,
+            Command::Settle => {
+                runner.settling = Some(0);
+                break;
+            }
         }
     }
 }
@@ -810,16 +857,49 @@ fn exit_when_done(
     }
 }
 
+/// The whole game with no GPU, running `script`, loading a smaller world
+/// than the game does so tests are quick.
+#[cfg(test)]
+pub fn test_game(script: Script) -> App {
+    let mut app = App::new();
+    app.add_plugins((
+        default_plugins(false).disable::<bevy::log::LogPlugin>(),
+        crate::GamePlugin,
+        HeadlessPlugin {
+            script,
+            rendering: false,
+        },
+    ))
+    .insert_resource(crate::streaming::StreamingSettings {
+        radius: 4,
+        ..default()
+    });
+    app.finish();
+    app.cleanup();
+    app
+}
+
+/// Updates `app` until the world around its camera has loaded.
+#[cfg(test)]
+pub fn settle(app: &mut App) {
+    for _ in 0..SETTLE_TIMEOUT_FRAMES {
+        app.update();
+        if app.world().resource::<StreamingStatus>().settled {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("the world never settled");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        GamePlugin,
         fly_camera::FlyCamera,
         light::{ChunkLight, Light},
         terrain::{ChunkCoord, ChunkMap},
     };
-    use bevy::log::LogPlugin;
 
     #[test]
     fn parses_every_command() {
@@ -836,7 +916,8 @@ mod tests {
              inspect Transform\n\
              fill 3 9 -2 1 4 5 red_lamp\n\
              camera 1 2.5 3 90 -45\n\
-             timing\n",
+             timing\n\
+             settle\n",
         )
         .unwrap();
         assert_eq!(
@@ -863,6 +944,7 @@ mod tests {
                     pitch: -45.0,
                 },
                 Command::Timing,
+                Command::Settle,
             ]
         );
     }
@@ -879,23 +961,14 @@ mod tests {
         assert!(Script::parse("fill 1 2 3 4 5 x stone").is_err());
         assert!(Script::parse("camera 1 2 3 4").is_err());
         assert!(Script::parse("timing now").is_err());
+        assert!(Script::parse("settle 5").is_err());
     }
 
     /// Runs the whole game with no GPU until the script ends, and returns
     /// how it exited.
     fn run_game(script: &str) -> (App, AppExit) {
-        let mut app = App::new();
-        app.add_plugins((
-            default_plugins(false).disable::<LogPlugin>(),
-            GamePlugin,
-            HeadlessPlugin {
-                script: Script::parse(script).unwrap(),
-                rendering: false,
-            },
-        ));
-        app.finish();
-        app.cleanup();
-        for _ in 0..200 {
+        let mut app = test_game(Script::parse(script).unwrap());
+        for _ in 0..SETTLE_TIMEOUT_FRAMES + 200 {
             app.update();
             if let Some(exit) = app.should_exit() {
                 return (app, exit);
@@ -985,19 +1058,10 @@ mod tests {
              screenshot target/never-written.png\n",
         )
         .unwrap();
-        let mut app = App::new();
-        app.add_plugins((
-            default_plugins(false).disable::<LogPlugin>(),
-            GamePlugin,
-            HeadlessPlugin {
-                script,
-                rendering: false,
-            },
-        ));
-        app.finish();
-        app.cleanup();
+        let mut app = test_game(script);
 
-        // First frame: Startup spawns the camera; the script is still waiting.
+        // First frame: Startup spawns the camera; the script is still waiting
+        // for the world to load.
         app.update();
         let start = camera(&mut app);
 
@@ -1008,7 +1072,7 @@ mod tests {
             if let Some(exit) = app.should_exit() {
                 break exit;
             }
-            assert!(frames < 100, "script never finished");
+            assert!(frames < SETTLE_TIMEOUT_FRAMES, "script never finished");
         };
         assert_eq!(exit, AppExit::Success);
 
@@ -1078,7 +1142,7 @@ mod tests {
     fn app_with_pipelines(script: &str, status: PipelineStatus) -> App {
         let mut app = App::new();
         app.add_plugins((
-            default_plugins(false).disable::<LogPlugin>(),
+            default_plugins(false).disable::<bevy::log::LogPlugin>(),
             HeadlessPlugin {
                 script: Script::parse(script).unwrap(),
                 rendering: false,

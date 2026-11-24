@@ -1,12 +1,27 @@
+use std::sync::Arc;
+
 use super::*;
-use crate::content::{base, block};
+use crate::{
+    content::{base, block},
+    light::sky::AssumeOpenSky,
+};
 
 /// Chunks in memory, for driving the fill without an ECS world.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct TestWorld {
     chunks: HashMap<IVec3, (Chunk, ChunkLight)>,
-    /// Chunks with this `y` are under the sky.
-    top: i32,
+    sky: Arc<dyn OutsideSky>,
+}
+
+/// Sky shines in from outside only at `y` and above: a world with nothing
+/// below `y` lit from above but what's loaded. The tests written before the
+/// world had no top use it to keep a fixed top.
+struct SkyFrom(i32);
+
+impl OutsideSky for SkyFrom {
+    fn shines_into(&self, chunk: IVec3, _: i32, _: i32) -> bool {
+        chunk.y >= self.0
+    }
 }
 
 impl ChunkStore for TestWorld {
@@ -19,11 +34,29 @@ impl ChunkStore for TestWorld {
             None => false,
         }
     }
+
+    fn is_loaded(&self, coord: IVec3) -> bool {
+        self.chunks.contains_key(&coord)
+    }
 }
 
 impl TestWorld {
+    /// A world whose top chunks are at `y = top`: sky light comes from
+    /// outside only into those.
     fn new(top: i32) -> Self {
-        Self { top, ..default() }
+        Self::with_sky(SkyFrom(top))
+    }
+
+    /// A world with open sky above whatever's loaded, as the game has.
+    fn open() -> Self {
+        Self::with_sky(AssumeOpenSky)
+    }
+
+    fn with_sky(sky: impl OutsideSky) -> Self {
+        Self {
+            chunks: default(),
+            sky: Arc::new(sky),
+        }
     }
 
     fn table() -> LightTable {
@@ -38,11 +71,38 @@ impl TestWorld {
             let local = Chunk::position_of(index);
             chunk.set_at(local, fill(coord * CHUNK_SIZE as i32 + local));
         }
-        let loaded: HashSet<IVec3> = self.chunks.keys().copied().collect();
-        queue.chunk_loaded(coord, &chunk, &Self::table(), coord.y == self.top, |c| {
-            loaded.contains(&c)
+        queue.chunk_loaded(coord, &chunk, &Self::table(), &*self.sky, |c| {
+            self.chunks.get(&c).map(|(_, light)| light)
         });
         self.chunks.insert(coord, (chunk, ChunkLight::default()));
+    }
+
+    /// Adds a chunk lit by itself, as loading tasks do, and queues joining
+    /// it to the world.
+    fn load_lit(
+        &mut self,
+        queue: &mut LightQueue,
+        coord: IVec3,
+        fill: impl Fn(IVec3) -> BlockState,
+    ) {
+        let mut chunk = Chunk::default();
+        for index in 0..CHUNK_VOLUME {
+            let local = Chunk::position_of(index);
+            chunk.set_at(local, fill(coord * CHUNK_SIZE as i32 + local));
+        }
+        let light = light_alone(&[(coord, &chunk)], &Self::table(), &*self.sky)
+            .pop()
+            .unwrap();
+        queue.lit_chunk_loaded(coord, &light, &*self.sky, |c| {
+            self.chunks.get(&c).map(|(_, light)| light)
+        });
+        self.chunks.insert(coord, (chunk, light));
+    }
+
+    /// Takes a chunk away and queues what that does to the light.
+    fn unload(&mut self, queue: &mut LightQueue, coord: IVec3) {
+        let (_, light) = self.chunks.remove(&coord).unwrap();
+        queue.chunk_unloaded(coord, &light, &*self.sky, |c| self.chunks.contains_key(&c));
     }
 
     fn run(&mut self, queue: &mut LightQueue) -> HashSet<IVec3> {
@@ -59,7 +119,10 @@ impl TestWorld {
     fn set(&mut self, queue: &mut LightQueue, pos: IVec3, state: BlockState) {
         let (coord, local) = split(pos);
         self.chunks.get_mut(&coord).unwrap().0.set_at(local, state);
-        queue.voxel_changed(pos, coord.y == self.top);
+        let outside_sky = local.y == CHUNK_SIZE as i32 - 1
+            && !self.chunks.contains_key(&(coord + IVec3::Y))
+            && self.sky.shines_into(coord, local.x, local.z);
+        queue.voxel_changed(pos, outside_sky);
     }
 
     fn light(&self, pos: IVec3) -> Light {
@@ -93,9 +156,11 @@ impl TestWorld {
             for &pos in &positions {
                 let state = self.block(pos).unwrap();
                 let emitted = table.emits(state, channel);
+                let (coord, local) = split(pos);
                 let sky = channel == SKY
-                    && split(pos).0.y == self.top
-                    && pos.y.rem_euclid(size) == size - 1
+                    && local.y == size - 1
+                    && !self.chunks.contains_key(&(coord + IVec3::Y))
+                    && self.sky.shines_into(coord, local.x, local.z)
                     && !table.opaque(state);
                 let source = if sky { MAX_LIGHT } else { emitted };
                 if source > 0 && level(&mut light, pos, source) {
@@ -567,4 +632,151 @@ fn light_waits_for_chunks_to_load() {
     world.run(&mut queue);
     assert_eq!(world.light(IVec3::new(4, 8, 4)).sky(), MAX_LIGHT);
     world.assert_matches_reference();
+}
+
+/// A column lit by itself on the side (as loading does on a task) and then
+/// joined to the world comes out the same as one lit in place: light
+/// spreads both ways across its borders.
+#[test]
+fn chunks_lit_alone_join_the_world_right() {
+    let fill = random_block(11);
+    let table = TestWorld::table();
+    let (mut world, mut queue) = (TestWorld::new(1), LightQueue::default());
+    // Columns two chunks tall: one loaded the usual way, then two more lit
+    // alone and joined beside it, the second also touching the first.
+    for coord in [IVec3::ZERO, IVec3::Y] {
+        world.load(&mut queue, coord, &fill);
+    }
+    world.run(&mut queue);
+    for column in [IVec3::X, IVec3::new(0, 0, 1)] {
+        let coords = [column, column + IVec3::Y];
+        let chunks: Vec<Chunk> = coords
+            .iter()
+            .map(|&coord| {
+                let mut chunk = Chunk::default();
+                for index in 0..CHUNK_VOLUME {
+                    let local = Chunk::position_of(index);
+                    chunk.set_at(local, fill(coord * CHUNK_SIZE as i32 + local));
+                }
+                chunk
+            })
+            .collect();
+        let pairs: Vec<(IVec3, &Chunk)> = coords.iter().copied().zip(&chunks).collect();
+        let lights = light_alone(&pairs, &table, &SkyFrom(1));
+        for ((coord, chunk), light) in coords.into_iter().zip(chunks.clone()).zip(lights) {
+            world.chunks.insert(coord, (chunk, light));
+        }
+        let all = world.chunks.clone();
+        for coord in coords {
+            queue.lit_chunk_loaded(coord, &all[&coord].1, &SkyFrom(1), |c| {
+                all.get(&c).map(|(_, light)| light)
+            });
+        }
+        world.run(&mut queue);
+        world.assert_matches_reference();
+    }
+}
+
+/// With open sky above whatever's loaded, as in the game: a chunk loading
+/// on top shades the one below where it doesn't pass full sky down, and
+/// unloading it lets the sky back in.
+#[test]
+fn the_sky_comes_in_above_whatever_is_loaded() {
+    let roofed = |pos: IVec3| {
+        if pos.y <= 3 || (pos.y == 20 && pos.x < 12) {
+            block("stone")
+        } else {
+            BlockState::AIR
+        }
+    };
+    let (mut world, mut queue) = (TestWorld::open(), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, roofed);
+    world.run(&mut queue);
+    let under = IVec3::new(4, 8, 4);
+    assert_eq!(world.light(under).sky(), MAX_LIGHT, "nothing above yet");
+    world.assert_matches_reference();
+
+    world.load(&mut queue, IVec3::Y, roofed);
+    world.run(&mut queue);
+    assert_eq!(world.light(under).sky(), MAX_LIGHT - 8, "under the roof");
+    assert_eq!(
+        world.light(IVec3::new(14, 8, 4)).sky(),
+        MAX_LIGHT,
+        "beside it"
+    );
+    world.assert_matches_reference();
+
+    world.unload(&mut queue, IVec3::Y);
+    world.run(&mut queue);
+    assert_eq!(world.light(under).sky(), MAX_LIGHT, "the roof's gone");
+    world.assert_matches_reference();
+
+    // The same with the chunk above lit by itself, as loading does.
+    world.load_lit(&mut queue, IVec3::Y, roofed);
+    world.run(&mut queue);
+    assert_eq!(world.light(under).sky(), MAX_LIGHT - 8);
+    world.assert_matches_reference();
+}
+
+/// Random worlds under open sky, with chunks loading (lit in place or by
+/// themselves), unloading and being edited in random order, several at a
+/// time between runs: the light always matches a fresh fill of whatever's
+/// loaded.
+#[test]
+fn random_loads_unloads_and_edits_under_open_sky_keep_the_light_right() {
+    let blocks = [
+        BlockState::AIR,
+        BlockState::AIR,
+        block("stone"),
+        block("stone"),
+        block("lamp"),
+        block("blue_lamp"),
+    ];
+    let size = IVec3::new(2, 3, 2);
+    let all = coords(size);
+    for seed in 1..12u64 {
+        let mut rng = Rng((seed * 0x9E37_79B9) | 1);
+        let fill = random_block(seed);
+        let (mut world, mut queue) = (TestWorld::open(), LightQueue::default());
+        for step in 0..30 {
+            let coord = all[rng.below(all.len() as u64) as usize];
+            match rng.below(4) {
+                _ if !world.chunks.contains_key(&coord) => {
+                    if rng.below(2) == 0 {
+                        world.load(&mut queue, coord, &fill);
+                    } else {
+                        world.load_lit(&mut queue, coord, &fill);
+                    }
+                }
+                0 => world.unload(&mut queue, coord),
+                _ => {
+                    let local = IVec3::new(
+                        rng.below(16) as i32,
+                        [0, 1, 14, 15][rng.below(4) as usize],
+                        rng.below(16) as i32,
+                    );
+                    let state = blocks[rng.below(blocks.len() as u64) as usize];
+                    world.set(&mut queue, coord * CHUNK_SIZE as i32 + local, state);
+                }
+            }
+            if rng.below(2) == 0 {
+                continue;
+            }
+            world.run(&mut queue);
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                world.assert_matches_reference()
+            }));
+            assert!(checked.is_ok(), "seed {seed}, step {step}");
+        }
+        for &coord in &all {
+            if !world.chunks.contains_key(&coord) {
+                world.load_lit(&mut queue, coord, &fill);
+            }
+        }
+        world.run(&mut queue);
+        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            world.assert_matches_reference()
+        }));
+        assert!(checked.is_ok(), "seed {seed}, all loaded again");
+    }
 }

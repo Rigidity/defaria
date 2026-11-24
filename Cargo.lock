@@ -2493,6 +2493,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "json5",
+ "miniz_oxide 0.8.9",
  "serde",
  "tracing",
 ]

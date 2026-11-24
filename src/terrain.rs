@@ -1,20 +1,30 @@
-//! Heightmap terrain from Perlin noise, split into a fixed grid of chunks.
+//! Heightmap terrain from Perlin noise, in chunks, and the meshing of
+//! chunks.
 //!
 //! Each column's height comes from fractal Perlin noise. Below the surface is
 //! stone, then a few layers of dirt, then one layer of grass on top. The world
-//! is [`WORLD_CHUNKS`] chunks; everything outside it is air.
+//! goes on forever in every direction, up and down too, in 16×16×16 chunks:
+//! stone all the way down, air all the way up. Chunks are loaded and
+//! unloaded around the player (see `streaming`), so [`ChunkMap`] only holds
+//! the loaded ones.
 //!
 //! Chunks are meshed by [`remesh_changed_chunks`] whenever they or their
 //! light change, including when they're spawned, so editing a chunk through
-//! [`Voxels`] is all it takes to update what's drawn. Chunks are meshed in
-//! parallel, from copies of their blocks and light and the voxels around
-//! them.
+//! [`Voxels`] is all it takes to update what's drawn. Meshes are built from
+//! copies of a chunk's blocks and light and the voxels around it: a chunk's
+//! first mesh on the async task pool, over as many frames as it takes, and
+//! later ones (after edits, which should show at once) in parallel on the
+//! same frame. A chunk marked [`AwaitingNeighbours`] isn't meshed until the
+//! mark comes off, since its faces against the missing chunks would be
+//! wrong.
+
+use std::sync::Arc;
 
 use bevy::{
     ecs::system::SystemParam,
     platform::collections::{HashMap, HashSet},
     prelude::*,
-    tasks::ComputeTaskPool,
+    tasks::{AsyncComputeTaskPool, ComputeTaskPool, Task, futures::check_ready},
 };
 
 use crate::{
@@ -25,14 +35,6 @@ use crate::{
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
-/// Chunks along each axis of the world.
-pub const WORLD_CHUNKS: IVec3 = IVec3::new(8, 4, 8);
-/// The world's size in voxels.
-pub const WORLD_SIZE: IVec3 = IVec3::new(
-    WORLD_CHUNKS.x * CHUNK_SIZE as i32,
-    WORLD_CHUNKS.y * CHUNK_SIZE as i32,
-    WORLD_CHUNKS.z * CHUNK_SIZE as i32,
-);
 /// Layers of dirt under the grass.
 const DIRT_DEPTH: i32 = 3;
 
@@ -43,8 +45,12 @@ impl Plugin for TerrainPlugin {
         app.init_resource::<TerrainSettings>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
-            .add_systems(Startup, spawn_chunks)
-            .add_systems(Update, remesh_changed_chunks.in_set(RemeshChunks));
+            .add_systems(
+                Update,
+                (remesh_changed_chunks, apply_finished_meshes)
+                    .chain()
+                    .in_set(RemeshChunks),
+            );
     }
 }
 
@@ -53,7 +59,8 @@ impl Plugin for TerrainPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RemeshChunks;
 
-/// How the terrain is shaped. Read once at startup.
+/// How the terrain is shaped. Read once at startup. A saved world keeps
+/// its own seed (see `save`).
 #[derive(Resource, Reflect, Debug, Clone)]
 #[reflect(Resource)]
 pub struct TerrainSettings {
@@ -121,7 +128,7 @@ pub struct VoxelChanged {
     pub pos: IVec3,
 }
 
-/// Every chunk entity, by its coordinate. Filled as the chunks spawn.
+/// Every loaded chunk's entity, by its coordinate.
 #[derive(Resource, Debug, Default)]
 pub struct ChunkMap(HashMap<ChunkCoord, Entity>);
 
@@ -133,7 +140,29 @@ impl ChunkMap {
     pub fn insert(&mut self, coord: ChunkCoord, chunk: Entity) {
         self.0.insert(coord, chunk);
     }
+
+    pub fn remove(&mut self, coord: ChunkCoord) -> Option<Entity> {
+        self.0.remove(&coord)
+    }
 }
+
+/// A chunk that isn't meshed yet because a chunk around it isn't loaded.
+/// Whatever loads the chunks takes it off once they are, and the chunk is
+/// meshed then. Chunks without it are meshed as soon as they spawn.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct AwaitingNeighbours;
+
+/// A chunk that's been meshed at least once (it may have no mesh, if
+/// nothing in it shows).
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct Meshed;
+
+/// A mesh being built on the async task pool. Replacing or removing it
+/// cancels the build.
+#[derive(Component)]
+pub struct MeshTask(Task<Mesh>);
 
 /// Reads and writes voxels by world position, across every chunk.
 #[derive(SystemParam)]
@@ -144,7 +173,8 @@ pub struct Voxels<'w, 's> {
 }
 
 impl Voxels<'_, '_> {
-    /// The voxel at a world position; `None` outside the world.
+    /// The voxel at a world position; `None` outside the world or in a
+    /// chunk that isn't loaded.
     pub fn get(&self, pos: IVec3) -> Option<BlockState> {
         let (coord, local) = ChunkCoord::split(pos);
         let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
@@ -152,7 +182,7 @@ impl Voxels<'_, '_> {
     }
 
     /// Sets the voxel at a world position, and returns whether it's there to
-    /// set: there's nothing outside the world. A voxel on a chunk's edge also
+    /// set: there's nothing outside the world or the loaded chunks. A voxel on a chunk's edge also
     /// shows, hides or shades faces of the chunks across that edge, so they
     /// are marked changed too and remeshed with it. A change to a different
     /// block sends [`VoxelChanged`].
@@ -211,6 +241,7 @@ impl TerrainBlocks {
 }
 
 /// Answers "what voxel is at this world position?" for the whole world.
+/// Shared with the tasks that generate chunks.
 pub struct Terrain {
     settings: TerrainSettings,
     blocks: TerrainBlocks,
@@ -226,9 +257,8 @@ impl Terrain {
         }
     }
 
-    /// Number of solid voxels in the column at `(x, z)`, so the top solid
-    /// voxel is at `y = height - 1`. Clamped to `1..=` the world height, so
-    /// there are no holes; peaks taller than the world get flattened.
+    /// The height of the ground in the column at `(x, z)`: its top solid
+    /// voxel is at `y = height - 1`.
     pub fn height(&self, x: i32, z: i32) -> i32 {
         let s = &self.settings;
         // Sample at voxel centers so lattice points (where noise is 0) don't
@@ -238,29 +268,39 @@ impl Terrain {
             (z as f32 + 0.5) / s.scale,
             s.octaves,
         );
-        ((s.base_height + n * s.amplitude).round() as i32).clamp(1, WORLD_SIZE.y)
+        (s.base_height + n * s.amplitude).round() as i32
     }
 
-    /// The voxel at a world position. Air outside the world.
+    /// The voxel at a world position.
     #[cfg(test)]
     pub fn voxel(&self, pos: IVec3) -> BlockState {
-        if pos.cmplt(IVec3::ZERO).any() || pos.cmpge(WORLD_SIZE).any() {
-            return BlockState::AIR;
-        }
         self.column_voxel(pos.y, self.height(pos.x, pos.z))
     }
 
     /// Fills one chunk of the world.
     pub fn chunk(&self, coord: ChunkCoord) -> Chunk {
         let origin = coord.origin();
+        let size = CHUNK_SIZE as i32;
+        // One noise lookup per column, not per voxel.
+        let heights: Vec<i32> = (0..size * size)
+            .map(|i| self.height(origin.x + i % size, origin.z + i / size))
+            .collect();
+        let (lowest, highest) = (
+            *heights.iter().min().unwrap(),
+            *heights.iter().max().unwrap(),
+        );
+        // Most chunks are all sky or all stone; skip the voxel loop.
+        if origin.y >= highest {
+            return Chunk::default();
+        }
+        if origin.y + size <= lowest - 1 - DIRT_DEPTH {
+            return Chunk::filled(self.blocks.stone);
+        }
         let mut chunk = Chunk::default();
-        for x in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                // One noise lookup per column, not per voxel.
-                let height = self.height(origin.x + x as i32, origin.z + z as i32);
-                for y in 0..CHUNK_SIZE {
-                    chunk.set(x, y, z, self.column_voxel(origin.y + y as i32, height));
-                }
+        for (i, &height) in heights.iter().enumerate() {
+            let (x, z) = (i % CHUNK_SIZE, i / CHUNK_SIZE);
+            for y in 0..CHUNK_SIZE {
+                chunk.set(x, y, z, self.column_voxel(origin.y + y as i32, height));
             }
         }
         chunk
@@ -278,56 +318,43 @@ impl Terrain {
     }
 }
 
-/// Every chunk coordinate in the world grid.
-pub fn chunk_coords() -> impl Iterator<Item = ChunkCoord> {
-    (0..WORLD_CHUNKS.x).flat_map(|x| {
-        (0..WORLD_CHUNKS.y)
-            .flat_map(move |y| (0..WORLD_CHUNKS.z).map(move |z| ChunkCoord(IVec3::new(x, y, z))))
-    })
-}
-
-/// Spawns every chunk of the world. [`remesh_changed_chunks`] meshes them
-/// on the same frame.
-fn spawn_chunks(
-    mut commands: Commands,
-    settings: Res<TerrainSettings>,
-    content: Res<Content>,
-    mut map: ResMut<ChunkMap>,
-) {
-    let terrain = Terrain::new(settings.clone(), TerrainBlocks::from_content(&content));
-    for coord in chunk_coords() {
-        let IVec3 { x, y, z } = coord.0;
-        let entity = commands
-            .spawn((
-                Name::new(format!("Chunk ({x}, {y}, {z})")),
-                Transform::from_translation(coord.origin().as_vec3()),
-                coord,
-                terrain.chunk(coord),
-            ))
-            .id();
-        map.insert(coord, entity);
-    }
-}
-
 /// Rebuilds the mesh of every chunk that was spawned or changed, or whose
 /// light changed, since the last run, and of the chunks around each one that
 /// was spawned (their faces against it are culled and shaded differently
-/// now). Meshes are built in parallel.
+/// now). Chunks [`AwaitingNeighbours`] are left for when they aren't.
 ///
-/// For streaming, two things to change when chunks start loading one at a
-/// time: mesh a chunk only once all its neighbours are loaded (otherwise
-/// each arrival remeshes the chunks around it again), and build meshes on
-/// the async task pool over several frames instead of blocking this one.
+/// A chunk that's been meshed before is remeshed right away, all of them in
+/// parallel, so edits show on the frame they're made. A chunk's first mesh
+/// (or its first since its neighbours came back) is built on the async task
+/// pool instead, so loading a lot of chunks doesn't hold up the frame;
+/// [`apply_finished_meshes`] picks the results up.
 pub fn remesh_changed_chunks(
     mut commands: Commands,
-    chunks: Query<(Entity, &ChunkCoord, Ref<Chunk>, Ref<ChunkLight>)>,
+    chunks: Query<(
+        Entity,
+        &ChunkCoord,
+        Ref<Chunk>,
+        Ref<ChunkLight>,
+        Has<Meshed>,
+        Has<AwaitingNeighbours>,
+    )>,
+    mut completed: RemovedComponents<AwaitingNeighbours>,
     map: Res<ChunkMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<BlockMaterial>,
     content: Res<Content>,
+    mut shared: Local<Option<Arc<Content>>>,
 ) {
     let mut dirty = HashSet::new();
-    for (_, coord, chunk, light) in &chunks {
+    // Chunks to mesh in the background even though they've been meshed.
+    let mut background = HashSet::new();
+    for entity in completed.read() {
+        if let Ok((_, coord, ..)) = chunks.get(entity) {
+            dirty.insert(*coord);
+            background.insert(*coord);
+        }
+    }
+    for (_, coord, chunk, light, ..) in &chunks {
         if chunk.is_changed() || light.is_changed() {
             dirty.insert(*coord);
         }
@@ -338,37 +365,158 @@ pub fn remesh_changed_chunks(
     if dirty.is_empty() {
         return;
     }
-    let jobs: Vec<(Entity, Neighborhood)> = dirty
-        .into_iter()
-        .filter_map(|coord| {
-            let entity = map.get(coord)?;
-            let neighborhood = Neighborhood::gather(|offset| {
-                let (_, _, chunk, light) =
-                    chunks.get(map.get(ChunkCoord(coord.0 + offset))?).ok()?;
-                Some((chunk.into_inner(), light.into_inner()))
-            });
-            Some((entity, neighborhood))
-        })
-        .collect();
+    let mut now = Vec::new();
+    let mut later = Vec::new();
+    for coord in dirty {
+        let Some(entity) = map.get(coord) else {
+            continue;
+        };
+        let Ok((_, _, _, _, meshed, awaiting)) = chunks.get(entity) else {
+            continue;
+        };
+        if awaiting {
+            continue;
+        }
+        let neighborhood = Neighborhood::gather(|offset| {
+            let (_, _, chunk, light, ..) =
+                chunks.get(map.get(ChunkCoord(coord.0 + offset))?).ok()?;
+            Some((chunk.into_inner(), light.into_inner()))
+        });
+        if meshed && !background.contains(&coord) {
+            now.push((entity, neighborhood));
+        } else {
+            later.push((entity, neighborhood));
+        }
+    }
+
+    if !later.is_empty() {
+        let shared = shared.get_or_insert_with(|| Arc::new(content.clone()));
+        let pool = AsyncComputeTaskPool::get();
+        for (entity, neighborhood) in later {
+            let content = shared.clone();
+            let task = pool.spawn(async move { neighborhood.mesh(&content) });
+            commands.entity(entity).insert(MeshTask(task));
+        }
+    }
+
     let built = ComputeTaskPool::get().scope(|scope| {
-        for (entity, neighborhood) in &jobs {
+        for (entity, neighborhood) in &now {
             let content = &content;
             scope.spawn(async move { (*entity, neighborhood.mesh(content)) });
         }
     });
     for (entity, mesh) in built {
-        // Chunks with nothing visible (all air, or buried) get no mesh; the
-        // renderer warns about meshes with no vertices.
-        if mesh.count_vertices() > 0 {
-            commands.entity(entity).insert((
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material.material.clone()),
-            ));
-        } else {
-            commands
-                .entity(entity)
-                .remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
+        commands.entity(entity).remove::<MeshTask>();
+        show_mesh(&mut commands, entity, mesh, &mut meshes, &material);
+    }
+}
+
+/// Shows the meshes finished on the async task pool.
+pub fn apply_finished_meshes(
+    mut commands: Commands,
+    mut tasks: Query<(Entity, &mut MeshTask)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    material: Res<BlockMaterial>,
+) {
+    for (entity, mut task) in &mut tasks {
+        if let Some(mesh) = check_ready(&mut task.0) {
+            commands.entity(entity).remove::<MeshTask>();
+            show_mesh(&mut commands, entity, mesh, &mut meshes, &material);
         }
+    }
+}
+
+fn show_mesh(
+    commands: &mut Commands,
+    entity: Entity,
+    mesh: Mesh,
+    meshes: &mut Assets<Mesh>,
+    material: &BlockMaterial,
+) {
+    let mut chunk = commands.entity(entity);
+    chunk.insert(Meshed);
+    // Chunks with nothing visible (all air, or buried) get no mesh; the
+    // renderer warns about meshes with no vertices.
+    if mesh.count_vertices() > 0 {
+        chunk.insert((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material.material.clone()),
+        ));
+    } else {
+        chunk.remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
+    }
+}
+
+/// Spawns a chunk entity at its place in the world and adds it to `map`.
+pub fn spawn_chunk(
+    commands: &mut Commands,
+    map: &mut ChunkMap,
+    coord: ChunkCoord,
+    chunk: Chunk,
+    extra: impl Bundle,
+) -> Entity {
+    let IVec3 { x, y, z } = coord.0;
+    let entity = commands
+        .spawn((
+            Name::new(format!("Chunk ({x}, {y}, {z})")),
+            Transform::from_translation(coord.origin().as_vec3()),
+            coord,
+            chunk,
+            extra,
+        ))
+        .id();
+    map.insert(coord, entity);
+    entity
+}
+
+/// Test helpers: a fixed patch of terrain without the streaming, and
+/// running an app until its meshes are built.
+#[cfg(test)]
+pub mod testing {
+    use super::*;
+
+    /// The patch of world the tests use: 8×4×8 chunks from chunk
+    /// `(0, 0, 0)`, 128×64×128 voxels, holding the default terrain's
+    /// surface around the camera's start.
+    pub const PATCH: IVec3 = IVec3::new(8, 4, 8);
+    pub const PATCH_SIZE: IVec3 = IVec3::new(128, 64, 128);
+
+    pub fn patch_chunks() -> impl Iterator<Item = ChunkCoord> {
+        (0..PATCH.x).flat_map(|x| {
+            (0..PATCH.y)
+                .flat_map(move |y| (0..PATCH.z).map(move |z| ChunkCoord(IVec3::new(x, y, z))))
+        })
+    }
+
+    /// Spawns the patch's chunks from the default terrain.
+    pub fn spawn_patch(world: &mut World) {
+        world
+            .run_system_cached(
+                |mut commands: Commands,
+                 mut map: ResMut<ChunkMap>,
+                 settings: Res<TerrainSettings>,
+                 content: Res<Content>| {
+                    let terrain =
+                        Terrain::new(settings.clone(), TerrainBlocks::from_content(&content));
+                    for coord in patch_chunks() {
+                        spawn_chunk(&mut commands, &mut map, coord, terrain.chunk(coord), ());
+                    }
+                },
+            )
+            .unwrap();
+    }
+
+    /// Updates the app until no mesh is being built in the background.
+    pub fn finish_meshing(app: &mut App) {
+        for _ in 0..1000 {
+            app.update();
+            let mut tasks = app.world_mut().query::<&MeshTask>();
+            if tasks.iter(app.world()).next().is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("meshes never finished");
     }
 }
 
@@ -376,7 +524,10 @@ pub fn remesh_changed_chunks(
 mod tests {
     use bevy::ecs::system::RunSystemOnce;
 
-    use super::*;
+    use super::{
+        testing::{PATCH_SIZE, finish_meshing, patch_chunks, spawn_patch},
+        *,
+    };
     use crate::content::{base, block};
 
     fn terrain() -> Terrain {
@@ -387,17 +538,29 @@ mod tests {
         Terrain::new(settings, TerrainBlocks::from_content(base()))
     }
 
+    /// The voxel columns of the test patch.
     fn columns() -> impl Iterator<Item = (i32, i32)> {
-        (0..WORLD_SIZE.x).flat_map(|x| (0..WORLD_SIZE.z).map(move |z| (x, z)))
+        (0..PATCH_SIZE.x).flat_map(|x| (0..PATCH_SIZE.z).map(move |z| (x, z)))
     }
 
+    /// The terrain carries on in every direction, at negative coordinates
+    /// and far away, without seams.
     #[test]
-    fn world_is_eight_by_four_by_eight_chunks() {
-        let coords: Vec<_> = chunk_coords().collect();
-        assert_eq!(coords.len(), 8 * 4 * 8);
-        assert_eq!(WORLD_SIZE, IVec3::new(128, 64, 128));
-        assert!(coords.contains(&ChunkCoord(IVec3::ZERO)));
-        assert!(coords.contains(&ChunkCoord(IVec3::new(7, 3, 7))));
+    fn terrain_goes_on_in_every_direction() {
+        let terrain = terrain();
+        for (x0, z0) in [(-200, -200), (100_000, -3_000), (-64, 50)] {
+            let mut heights = Vec::new();
+            for x in x0..x0 + 64 {
+                let h = terrain.height(x, z0);
+                assert_eq!(terrain.voxel(IVec3::new(x, h - 1, z0)), block("grass"));
+                if let Some(&last) = heights.last() {
+                    let step: i32 = h - last;
+                    assert!(step.abs() <= 3, "cliff at ({x}, {z0})");
+                }
+                heights.push(h);
+            }
+            assert!(heights.iter().any(|&h| h != heights[0]), "flat near {x0}");
+        }
     }
 
     #[test]
@@ -405,13 +568,16 @@ mod tests {
         let terrain = terrain();
         for (x, z) in columns() {
             let height = terrain.height(x, z);
-            assert!((1..=WORLD_SIZE.y).contains(&height));
+            assert!(
+                (1..=PATCH_SIZE.y).contains(&height),
+                "patch holds the surface"
+            );
             let at = |y| terrain.voxel(IVec3::new(x, y, z));
             assert_eq!(at(height - 1), block("grass"));
-            for y in height..WORLD_SIZE.y {
+            for y in height..height + 100 {
                 assert_eq!(at(y), BlockState::AIR);
             }
-            for y in 0..height - 1 {
+            for y in height - 100..height - 1 {
                 let expected = if y >= height - 1 - DIRT_DEPTH {
                     block("dirt")
                 } else {
@@ -432,31 +598,30 @@ mod tests {
         assert!(max - min >= 8, "heights only span {min}..={max}");
         // Both chunk layers have ground in them somewhere, and the peaks
         // aren't clipped flat against the top of the world.
-        assert!(*max > CHUNK_SIZE as i32 && *max < WORLD_SIZE.y);
+        assert!(*max > CHUNK_SIZE as i32 && *max < PATCH_SIZE.y);
         for (x, z) in columns() {
             let h = terrain.height(x, z);
             for (nx, nz) in [(x + 1, z), (x, z + 1)] {
-                if nx < WORLD_SIZE.x && nz < WORLD_SIZE.z {
-                    let step = (terrain.height(nx, nz) - h).abs();
-                    assert!(step <= 3, "cliff of {step} at ({x}, {z})");
-                }
+                let step = (terrain.height(nx, nz) - h).abs();
+                assert!(step <= 3, "cliff of {step} at ({x}, {z})");
             }
         }
     }
 
     #[test]
-    fn outside_the_world_is_air() {
+    fn sky_all_the_way_up_and_stone_all_the_way_down() {
         let terrain = terrain();
-        for pos in [
-            IVec3::new(-1, 0, 0),
-            IVec3::new(0, -1, 0),
-            IVec3::new(0, 0, -1),
-            IVec3::new(WORLD_SIZE.x, 0, 0),
-            IVec3::new(0, 0, WORLD_SIZE.z),
-        ] {
-            assert_eq!(terrain.voxel(pos), BlockState::AIR);
+        for y in [200, 10_000, 1_000_000] {
+            assert_eq!(terrain.voxel(IVec3::new(-5, y, 3)), BlockState::AIR);
+            assert_eq!(terrain.voxel(IVec3::new(-5, -y, 3)), block("stone"));
         }
-        assert_eq!(terrain.voxel(IVec3::ZERO), block("stone"));
+        for pos in [IVec3::ZERO, IVec3::new(-1, 0, -1), IVec3::new(500, 0, 0)] {
+            assert_eq!(terrain.voxel(pos), block("stone"));
+        }
+        let sky = ChunkCoord(IVec3::new(3, 40, -2));
+        let deep = ChunkCoord(IVec3::new(3, -40, -2));
+        assert_eq!(terrain.chunk(sky), Chunk::default());
+        assert_eq!(terrain.chunk(deep), Chunk::filled(block("stone")));
     }
 
     /// The camera spawns in open air with clearance above the hills around
@@ -466,7 +631,7 @@ mod tests {
         use crate::fly_camera::START_POSITION;
         let terrain = terrain();
         let start = START_POSITION.as_ivec3();
-        assert!(start.cmpge(IVec3::ZERO).all() && start.cmplt(WORLD_SIZE).all());
+        assert!((0..PATCH_SIZE.y).contains(&start.y));
         let clearance = 4;
         for dx in -8..=8 {
             for dz in -8..=8 {
@@ -500,8 +665,8 @@ mod tests {
         }
     }
 
-    /// The terrain plugin with the systems it needs, run for one frame, and
-    /// a record of which chunks changed in each frame.
+    /// The terrain plugin with the systems it needs and the test patch of
+    /// terrain, meshed, and a record of which chunks changed in each frame.
     fn app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -514,7 +679,8 @@ mod tests {
             })
             .init_resource::<ChangedChunks>()
             .add_systems(Update, record_changed.in_set(RemeshChunks));
-        app.update();
+        spawn_patch(app.world_mut());
+        finish_meshing(&mut app);
         app
     }
 
@@ -561,7 +727,7 @@ mod tests {
             let h = terrain.height(x, z);
             expected += 2; // top and bottom of the column
             for (nx, nz) in [(x + 1, z), (x - 1, z), (x, z + 1), (x, z - 1)] {
-                let outside = nx < 0 || nz < 0 || nx >= WORLD_SIZE.x || nz >= WORLD_SIZE.z;
+                let outside = nx < 0 || nz < 0 || nx >= PATCH_SIZE.x || nz >= PATCH_SIZE.z;
                 let neighbour = if outside { 0 } else { terrain.height(nx, nz) };
                 expected += (h - neighbour).max(0) as usize;
             }
@@ -633,6 +799,37 @@ mod tests {
         assert!(set(&mut app, corner, planks).is_empty(), "already planks");
     }
 
+    /// A chunk awaiting its neighbours keeps whatever mesh it has through
+    /// edits, and is meshed once the mark comes off.
+    #[test]
+    fn chunks_awaiting_neighbours_wait_to_be_meshed() {
+        let mut app = app();
+        let coord = ChunkCoord(IVec3::new(3, 0, 3));
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        let before = meshes(&mut app)[&coord];
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(AwaitingNeighbours);
+        let pos = coord.origin() + IVec3::new(8, 15, 8);
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| {
+                assert!(voxels.set(pos, block("planks")));
+            })
+            .unwrap();
+        finish_meshing(&mut app);
+        assert_eq!(meshes(&mut app)[&coord], before, "meshed while awaiting");
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<AwaitingNeighbours>();
+        app.update();
+        assert!(
+            app.world().get::<MeshTask>(entity).is_some(),
+            "in the background"
+        );
+        finish_meshing(&mut app);
+        assert_ne!(meshes(&mut app)[&coord], before);
+    }
+
     #[test]
     fn voxels_are_read_and_written_by_world_position() {
         let mut app = app();
@@ -642,8 +839,8 @@ mod tests {
                 for pos in [IVec3::new(5, 3, 70), IVec3::new(127, 0, 0)] {
                     assert_eq!(voxels.get(pos), Some(terrain.voxel(pos)));
                 }
-                // Outside the world there's nothing to read or write.
-                for pos in [IVec3::new(-1, 0, 0), IVec3::new(0, WORLD_SIZE.y, 0)] {
+                // Outside the loaded chunks there's nothing to read or write.
+                for pos in [IVec3::new(-1, 0, 0), IVec3::new(0, PATCH_SIZE.y, 0)] {
                     assert_eq!(voxels.get(pos), None);
                     assert!(!voxels.set(pos, block("stone")));
                 }
@@ -667,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_spawns_every_chunk_at_its_origin() {
+    fn chunks_are_spawned_at_their_origin() {
         let mut app = app();
 
         let mut chunks = app
@@ -683,7 +880,7 @@ mod tests {
             })
             .collect();
         seen.sort();
-        let mut expected: Vec<_> = chunk_coords().map(|c| c.0.to_array()).collect();
+        let mut expected: Vec<_> = patch_chunks().map(|c| c.0.to_array()).collect();
         expected.sort();
         assert_eq!(seen, expected);
         // Every bottom chunk has ground in it; empty upper ones get no mesh.

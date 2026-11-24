@@ -68,6 +68,10 @@ pub struct Cli {
     /// `--no-render` (with `--headless`): no GPU at all; screenshots are
     /// skipped. For CI, which has no GPU.
     pub no_render: bool,
+    /// `--world <folder>`: the world to load and save. Without it, the game
+    /// plays the default world in the data folder, and headless runs play
+    /// a world kept in memory.
+    pub world: Option<PathBuf>,
 }
 
 impl Cli {
@@ -77,6 +81,7 @@ impl Cli {
         let mut frames = 60;
         let mut headless = None;
         let mut no_render = false;
+        let mut world = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -97,6 +102,9 @@ impl Cli {
                     ));
                 }
                 "--no-render" => no_render = true,
+                "--world" => {
+                    world = Some(PathBuf::from(args.next().expect("--world needs a folder")));
+                }
                 other => panic!("unknown argument: {other}"),
             }
         }
@@ -112,6 +120,7 @@ impl Cli {
             screenshot: path.map(|path| ScreenshotMode { path, frames }),
             headless,
             no_render,
+            world,
         }
     }
 }
@@ -181,6 +190,13 @@ mod tests {
 
         let cli = Cli::from_args(args(&["--headless", "scenarios/fly.txt", "--no-render"]));
         assert!(cli.no_render);
+    }
+
+    #[test]
+    fn parses_world_folder() {
+        let cli = Cli::from_args(args(&["--headless", "a.txt", "--world", "saves/test"]));
+        assert_eq!(cli.world, Some(PathBuf::from("saves/test")));
+        assert_eq!(Cli::from_args(args(&[])).world, None);
     }
 
     #[test]

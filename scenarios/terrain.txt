@@ -3,7 +3,7 @@
 # Run: cargo headless scenarios/terrain.txt
 wait 5
 screenshot target/scenarios/terrain/0-start.png
-inspect ChunkCoord
+inspect FlyCamera
 
 hold MouseLeft 1   # lock the cursor so the mouse turns the camera
 hold KeyW 180      # fly forward over the middle

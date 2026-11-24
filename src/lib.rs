@@ -12,6 +12,8 @@ mod fly_camera;
 pub mod headless;
 mod light;
 mod perlin;
+pub mod save;
+mod streaming;
 mod terrain;
 mod voxel;
 mod voxel_material;
@@ -35,6 +37,7 @@ impl Plugin for GamePlugin {
             block_edit::BlockEditPlugin,
             light::LightPlugin,
             dynamic_light::DynamicLightPlugin,
+            streaming::StreamingPlugin,
         ));
     }
 }
