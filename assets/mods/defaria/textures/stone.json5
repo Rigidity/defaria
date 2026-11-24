@@ -1,0 +1,5 @@
+{
+  layers: [
+    { image: "stone", material: "stone" },
+  ],
+}

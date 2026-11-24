@@ -1,0 +1,7 @@
+// The base game, loaded like any other mod. See docs/modding.md.
+{
+  id: "defaria",
+  name: "Defaria",
+  version: "0.1.0",
+  description: "The base game's blocks, items and art.",
+}

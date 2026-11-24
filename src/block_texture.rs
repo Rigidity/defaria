@@ -1,10 +1,9 @@
-//! The block tiles, and the texture the chunk shader samples them from.
+//! The block texture the chunk shader samples its tiles from.
 //!
-//! Each tile is a stack of layers, bottom first. A layer is a grayscale
-//! 16×16 PNG in [`LAYER_DIR`] plus a [`Palette`] that gives each of its
-//! gray levels a color (see [`layer`]). One image can appear in several
-//! tiles with different palettes. The stacks are hard-coded in
-//! [`Tile::layers`] for now; they'll move to data files later.
+//! Each tile is a [`Texture`] from the mods: a stack of layers, bottom
+//! first, each a grayscale 16×16 PNG plus a [`Palette`] that gives each of
+//! its gray levels a color (see [`layer`]). One image can appear in several
+//! tiles with different palettes.
 //!
 //! [`build`] colorizes and stacks every tile's layers, then turns the tiles
 //! into a 2D array texture with one layer per tile and a full mip chain per
@@ -27,227 +26,71 @@ use bevy::{
     },
 };
 
+use crate::content::Texture;
 pub use layer::Palette;
 
-/// The layer images' folder, relative to `assets/`.
-pub const LAYER_DIR: &str = "textures/layers";
 /// Width and height of one tile, and of every layer image, in pixels.
 pub const TILE_SIZE: u32 = 16;
 /// Anisotropic filtering samples at most. Keeps textures sharp on surfaces
 /// seen at a grazing angle, where plain mipmapping would blur them.
 const MAX_ANISOTROPY: u16 = 16;
 
-/// One tile of the block texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tile {
-    Stone,
-    Dirt,
-    GrassTop,
-    GrassSide,
-    Sand,
-    Gravel,
-    LogSide,
-    LogTop,
-    Planks,
-}
-
-impl Tile {
-    /// Every tile, in layer order.
-    pub const ALL: [Tile; 9] = [
-        Tile::Stone,
-        Tile::Dirt,
-        Tile::GrassTop,
-        Tile::GrassSide,
-        Tile::Sand,
-        Tile::Gravel,
-        Tile::LogSide,
-        Tile::LogTop,
-        Tile::Planks,
-    ];
-
-    /// The tile's layer in the block texture. Exhaustive, so a new tile
-    /// can't compile without one.
-    pub fn layer(self) -> u32 {
-        match self {
-            Tile::Stone => 0,
-            Tile::Dirt => 1,
-            Tile::GrassTop => 2,
-            Tile::GrassSide => 3,
-            Tile::Sand => 4,
-            Tile::Gravel => 5,
-            Tile::LogSide => 6,
-            Tile::LogTop => 7,
-            Tile::Planks => 8,
-        }
-    }
-
-    /// The layers stacked to make the tile, bottom first.
-    pub fn layers(self) -> Vec<Layer> {
-        match self {
-            Tile::Stone => vec![Layer::new("stone", palettes::stone())],
-            Tile::Dirt => vec![Layer::new("dirt", palettes::dirt())],
-            Tile::GrassTop => vec![Layer::new("grass", palettes::grass())],
-            Tile::GrassSide => vec![
-                Layer::new("dirt", palettes::dirt()),
-                Layer::new("grass_side", palettes::grass()),
-            ],
-            Tile::Sand => vec![Layer::new("sand", palettes::sand())],
-            Tile::Gravel => vec![Layer::new("gravel", palettes::gravel())],
-            Tile::LogSide => vec![Layer::new("log_side", palettes::bark())],
-            // The cut end: growth rings, framed by bark cut from the side.
-            Tile::LogTop => vec![
-                Layer::new("log_top", palettes::log_end()),
-                Layer::new("log_top_bark", palettes::bark()),
-            ],
-            Tile::Planks => vec![Layer::new("planks", palettes::planks())],
-        }
-    }
-}
-
-/// A grayscale image and the palette that colors it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Layer {
-    /// The image's file name in [`LAYER_DIR`], without `.png`.
-    pub image: &'static str,
-    pub palette: Palette,
-}
-
-impl Layer {
-    pub fn new(image: &'static str, palette: Palette) -> Self {
-        Self { image, palette }
-    }
-
-    /// The image's asset path, relative to `assets/`.
-    pub fn path(&self) -> String {
-        layer_path(self.image)
-    }
-}
-
-/// The asset path of layer image `name`.
-pub fn layer_path(name: &str) -> String {
-    format!("{LAYER_DIR}/{name}.png")
-}
-
-/// Every layer image some tile uses, as asset paths, each once.
-pub fn layer_paths() -> Vec<String> {
-    let mut paths: Vec<String> = Tile::ALL
+/// Builds the block texture: layer `i` is `textures[i]`. `image` looks up a
+/// loaded layer image by its asset path.
+///
+/// A texture that can't be built (an image missing, or breaking the layer
+/// rules) gets [`placeholder`] in its layer instead, so one bad image only
+/// marks its own tiles, and the other layers keep their places. Returns the
+/// texture and one message per texture that failed.
+pub fn build<'a>(
+    textures: &[Texture],
+    image: impl Fn(&str) -> Option<&'a Image>,
+) -> (Image, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut tiles: Vec<Vec<u8>> = textures
         .iter()
-        .flat_map(|tile| tile.layers())
-        .map(|layer| layer.path())
+        .map(|texture| {
+            compose(texture, &image).unwrap_or_else(|error| {
+                errors.push(format!("{}: {error}", texture.id));
+                placeholder()
+            })
+        })
         .collect();
-    paths.sort();
-    paths.dedup();
-    paths
+    // An array texture needs at least one layer.
+    if tiles.is_empty() {
+        tiles.push(placeholder());
+    }
+    (array_texture(&tiles), errors)
 }
 
-/// The tiles' colors. Each ramp runs dark to light; [`Palette::ramp`]
-/// spreads its stops over the gray levels.
-mod palettes {
-    use super::Palette;
-    use bevy::color::Srgba;
-
-    /// Low contrast: the stone layer carries a lot of fine detail, which
-    /// looks grainy at full contrast.
-    pub fn stone() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0x33, 0x35, 0x3d),
-            Srgba::rgb_u8(0x52, 0x53, 0x5a),
-            Srgba::rgb_u8(0x6f, 0x6f, 0x74),
-            Srgba::rgb_u8(0x95, 0x93, 0x8f),
-        ])
-    }
-
-    /// Low contrast, like stone: the dirt layer is fine noise.
-    pub fn dirt() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0x3d, 0x28, 0x18),
-            Srgba::rgb_u8(0x57, 0x3a, 0x24),
-            Srgba::rgb_u8(0x6f, 0x4c, 0x31),
-            Srgba::rgb_u8(0x8a, 0x61, 0x41),
-        ])
-    }
-
-    /// Bright and saturated, shifting from blue-green shadows to
-    /// yellow-green highlights, over a low-contrast range.
-    pub fn grass() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0x3a, 0x7a, 0x28),
-            Srgba::rgb_u8(0x51, 0x9a, 0x2d),
-            Srgba::rgb_u8(0x6b, 0xb5, 0x35),
-            Srgba::rgb_u8(0x8f, 0xce, 0x45),
-        ])
-    }
-
-    /// Pale and warm, low contrast like dirt: the sand layer is fine noise.
-    pub fn sand() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0xb8, 0xa0, 0x6a),
-            Srgba::rgb_u8(0xd2, 0xbc, 0x84),
-            Srgba::rgb_u8(0xe6, 0xd4, 0x9e),
-            Srgba::rgb_u8(0xf2, 0xe4, 0xb6),
-        ])
-    }
-
-    /// Warm grays with more contrast than stone, so the pebbles read.
-    pub fn gravel() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0x4a, 0x46, 0x44),
-            Srgba::rgb_u8(0x6e, 0x6a, 0x66),
-            Srgba::rgb_u8(0x92, 0x8c, 0x86),
-            Srgba::rgb_u8(0xb4, 0xae, 0xa6),
-        ])
-    }
-
-    /// Dark brown bark, for log sides and the rim of the cut end.
-    pub fn bark() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0x2e, 0x20, 0x14),
-            Srgba::rgb_u8(0x48, 0x34, 0x22),
-            Srgba::rgb_u8(0x5e, 0x46, 0x2e),
-            Srgba::rgb_u8(0x74, 0x58, 0x3a),
-        ])
-    }
-
-    /// Light heartwood, for the growth rings on a log's cut end.
-    pub fn log_end() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0x7a, 0x58, 0x34),
-            Srgba::rgb_u8(0x9e, 0x78, 0x4a),
-            Srgba::rgb_u8(0xbc, 0x96, 0x62),
-            Srgba::rgb_u8(0xd2, 0xae, 0x78),
-        ])
-    }
-
-    /// Sawn boards, between the bark and the heartwood; the darkest level
-    /// is the seams between boards.
-    pub fn planks() -> Palette {
-        Palette::ramp(&[
-            Srgba::rgb_u8(0x5a, 0x3e, 0x22),
-            Srgba::rgb_u8(0x8a, 0x64, 0x3a),
-            Srgba::rgb_u8(0xa8, 0x7e, 0x4c),
-            Srgba::rgb_u8(0xbe, 0x94, 0x5e),
-        ])
-    }
+/// The tile shown for a texture that couldn't be built: a magenta and black
+/// checkerboard, which no real texture looks like.
+pub fn placeholder() -> Vec<u8> {
+    const MAGENTA: [u8; 4] = [255, 0, 255, 255];
+    const BLACK: [u8; 4] = [0, 0, 0, 255];
+    (0..TILE_SIZE)
+        .flat_map(|y| (0..TILE_SIZE).map(move |x| (x, y)))
+        .flat_map(|(x, y)| {
+            if (x / 4 + y / 4).is_multiple_of(2) {
+                MAGENTA
+            } else {
+                BLACK
+            }
+        })
+        .collect()
 }
 
-/// Builds the block texture. `image` looks up a loaded layer image by its
-/// asset path; every path in [`layer_paths`] must resolve.
-pub fn build<'a>(image: impl Fn(&str) -> Option<&'a Image>) -> Result<Image, String> {
-    let tiles = Tile::ALL
-        .iter()
-        .map(|&tile| compose(tile, &image).map_err(|error| format!("{tile:?}: {error}")))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(array_texture(&tiles))
-}
-
-/// Colorizes and stacks one tile's layers into sRGB RGBA8 pixels.
-fn compose<'a>(tile: Tile, image: impl Fn(&str) -> Option<&'a Image>) -> Result<Vec<u8>, String> {
-    let layers = tile
-        .layers()
+/// Colorizes and stacks one texture's layers into sRGB RGBA8 pixels.
+fn compose<'a>(
+    texture: &Texture,
+    image: impl Fn(&str) -> Option<&'a Image>,
+) -> Result<Vec<u8>, String> {
+    let layers = texture
+        .layers
         .iter()
         .map(|layer| {
-            let path = layer.path();
-            let image = image(&path).ok_or_else(|| format!("{path} isn't loaded"))?;
+            let path = &layer.image;
+            let image = image(path).ok_or_else(|| format!("{path} isn't loaded"))?;
             layer::colorize(image, &layer.palette).map_err(|error| format!("{path} {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -342,6 +185,7 @@ fn downsample(pixels: &[u8], size: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::{BlockState, base};
     use bevy::{
         color::ColorToPacked,
         image::{CompressedImageFormats, ImageFilterMode, ImageType},
@@ -349,9 +193,12 @@ mod tests {
     use layer::test_images::flat_gray;
     use std::collections::HashMap;
 
+    /// Array layers in the test textures made by [`tiles`].
+    const TILES: u32 = 4;
+
     /// Tiles filled by `paint(tile, x, y)`, for [`array_texture`].
     fn tiles(paint: impl Fn(u32, u32, u32) -> [u8; 4]) -> Vec<Vec<u8>> {
-        (0..Tile::ALL.len() as u32)
+        (0..TILES)
             .map(|i| {
                 (0..TILE_SIZE)
                     .flat_map(|y| (0..TILE_SIZE).map(move |x| (x, y)))
@@ -376,6 +223,20 @@ mod tests {
         image.data.as_ref().unwrap()[at..at + 4].try_into().unwrap()
     }
 
+    /// The array layer of base game texture `defaria:<name>`.
+    fn tile(name: &str) -> u32 {
+        base().texture(&format!("defaria:{name}")).unwrap()
+    }
+
+    /// The asset path of base game image `<name>`.
+    fn image_path(name: &str) -> String {
+        format!("mods/defaria/images/{name}.png")
+    }
+
+    fn material(name: &str) -> Palette {
+        base().materials[&format!("defaria:{name}")]
+    }
+
     /// A layer image as the game loads it: decoded by Bevy's PNG loader.
     fn decode(bytes: &[u8]) -> Image {
         Image::from_buffer(
@@ -389,9 +250,10 @@ mod tests {
         .unwrap()
     }
 
-    /// Every layer image on disk, decoded, by asset path.
+    /// Every layer image the base game uses, decoded, by asset path.
     fn layers_on_disk() -> HashMap<String, Image> {
-        layer_paths()
+        base()
+            .image_paths()
             .into_iter()
             .map(|path| {
                 let bytes = std::fs::read(format!("assets/{path}"))
@@ -402,9 +264,14 @@ mod tests {
             .collect()
     }
 
-    /// Every PNG under the layer folder, including layers no tile uses yet
-    /// (item parts, leaves), decodes to a valid layer: 16×16, gray levels
-    /// only.
+    fn build_base(layers: &HashMap<String, Image>) -> Image {
+        let (image, errors) = build(&base().textures, |path| layers.get(path));
+        assert!(errors.is_empty(), "{errors:?}");
+        image
+    }
+
+    /// Every PNG in every mod's images, including ones no texture uses yet
+    /// (leaves), decodes to a valid layer: 16×16, gray levels only.
     #[test]
     fn every_layer_file_is_valid() {
         fn pngs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -418,12 +285,9 @@ mod tests {
             }
         }
         let mut files = Vec::new();
-        pngs(
-            std::path::Path::new(&format!("assets/{LAYER_DIR}")),
-            &mut files,
-        );
-        assert!(files.len() >= layer_paths().len());
-        let palette = palettes::stone();
+        pngs(std::path::Path::new("assets/mods"), &mut files);
+        assert!(files.len() >= base().image_paths().len());
+        let palette = material("stone");
         for file in files {
             let image = decode(&std::fs::read(&file).unwrap());
             if let Err(error) = layer::colorize(&image, &palette) {
@@ -433,38 +297,20 @@ mod tests {
     }
 
     #[test]
-    fn tile_layers_follow_tile_order() {
-        for (index, tile) in Tile::ALL.iter().enumerate() {
-            assert_eq!(tile.layer(), index as u32);
-        }
-    }
-
-    #[test]
-    fn every_tile_has_layers_and_paths_are_listed_once() {
-        for tile in Tile::ALL {
-            assert!(!tile.layers().is_empty(), "{tile:?}");
-        }
-        let paths = layer_paths();
-        assert!(paths.contains(&"textures/layers/dirt.png".to_string()));
-        // Dirt is under both Dirt and GrassSide but loads once.
-        assert_eq!(paths.iter().filter(|p| p.ends_with("/dirt.png")).count(), 1);
-    }
-
-    #[test]
     fn sixteen_pixels_make_five_mips() {
         assert_eq!(mip_levels(16), 5);
         assert_eq!(mip_levels(1), 1);
     }
 
     /// The real layer images decode the way the game loads them, are
-    /// 16×16, use only the gray levels, and build.
+    /// 16×16, use only the gray levels, and build, one array layer per
+    /// texture.
     #[test]
     fn layers_on_disk_build() {
-        let layers = layers_on_disk();
-        let image = build(|path| layers.get(path)).unwrap();
+        let image = build_base(&layers_on_disk());
         assert_eq!(
             image.texture_descriptor.size.depth_or_array_layers,
-            Tile::ALL.len() as u32
+            base().textures.len() as u32
         );
     }
 
@@ -474,7 +320,7 @@ mod tests {
     #[test]
     fn grass_side_overhang_hangs_from_the_top() {
         let layers = layers_on_disk();
-        let side = &layers[&layer_path("grass_side")];
+        let side = &layers[&image_path("grass_side")];
         let pixels = side.data.as_ref().unwrap();
         let alpha = |x: u32, y: u32| pixels[((y * TILE_SIZE + x) * 4 + 3) as usize];
         for x in 0..TILE_SIZE {
@@ -489,12 +335,12 @@ mod tests {
                 );
             }
         }
-        let image = build(|path| layers.get(path)).unwrap();
+        let image = build_base(&layers);
         let bottom = TILE_SIZE - 1;
         for x in 0..TILE_SIZE {
             assert_eq!(
-                pixel(&image, Tile::GrassSide.layer(), 0, x, bottom),
-                pixel(&image, Tile::Dirt.layer(), 0, x, bottom),
+                pixel(&image, tile("grass_side"), 0, x, bottom),
+                pixel(&image, tile("dirt"), 0, x, bottom),
             );
         }
     }
@@ -505,39 +351,52 @@ mod tests {
     #[test]
     fn log_top_has_bark_around_the_rings() {
         let layers = layers_on_disk();
-        let pixels = |name: &str| layers[&layer_path(name)].data.clone().unwrap();
+        let pixels = |name: &str| layers[&image_path(name)].data.clone().unwrap();
         let (rings, bark) = (pixels("log_top"), pixels("log_top_bark"));
         let at = |x: u32, y: u32| ((y * TILE_SIZE + x) * 4) as usize;
         let (corner, middle) = (at(0, 0), at(8, 8));
         assert_eq!(bark[corner + 3], 255, "the bark covers the corner");
         assert_eq!(bark[middle + 3], 0, "the bark leaves the middle open");
 
-        let image = build(|path| layers.get(path)).unwrap();
-        let tile = Tile::LogTop.layer();
+        let image = build_base(&layers);
         let color = |palette: Palette, gray: u8| {
             palette.color(layer::level_of(gray).unwrap()).to_u8_array()
         };
         assert_eq!(
-            pixel(&image, tile, 0, 0, 0),
-            color(palettes::bark(), bark[corner])
+            pixel(&image, tile("log_top"), 0, 0, 0),
+            color(material("bark"), bark[corner])
         );
         assert_eq!(
-            pixel(&image, tile, 0, 8, 8),
-            color(palettes::log_end(), rings[middle])
+            pixel(&image, tile("log_top"), 0, 8, 8),
+            color(material("log_end"), rings[middle])
         );
     }
 
-    /// Every pixel of every built tile is opaque: the shader ignores alpha,
-    /// so a hole would show the color hiding behind it.
+    /// Every pixel of every tile a block shows is opaque: the shader
+    /// ignores alpha, so a hole would show the color hiding behind it.
+    /// (Item icons may be transparent.)
     #[test]
-    fn built_tiles_are_opaque() {
-        let layers = layers_on_disk();
-        let image = build(|path| layers.get(path)).unwrap();
-        for tile in Tile::ALL {
+    fn block_tiles_are_opaque() {
+        let image = build_base(&layers_on_disk());
+        let content = base();
+        let mut layers: Vec<u32> = (0..content.states.len())
+            .flat_map(|i| {
+                content
+                    .state(BlockState(i as u16))
+                    .faces
+                    .iter()
+                    .map(|f| f.layer)
+            })
+            .collect();
+        layers.sort();
+        layers.dedup();
+        assert!(layers.len() >= 9, "{layers:?}");
+        for layer in layers {
             for y in 0..TILE_SIZE {
                 for x in 0..TILE_SIZE {
-                    let alpha = pixel(&image, tile.layer(), 0, x, y)[3];
-                    assert_eq!(alpha, 255, "{tile:?} ({x}, {y})");
+                    let alpha = pixel(&image, layer, 0, x, y)[3];
+                    let id = &content.textures[layer as usize].id;
+                    assert_eq!(alpha, 255, "{id} ({x}, {y})");
                 }
             }
         }
@@ -547,36 +406,75 @@ mod tests {
     /// gray, a one-layer tile is exactly that level's palette color.
     #[test]
     fn tiles_are_colored_by_their_palettes() {
-        let images: HashMap<String, Image> = layer_paths()
+        let images: HashMap<String, Image> = base()
+            .image_paths()
             .into_iter()
             .map(|path| (path, flat_gray(3)))
             .collect();
-        let image = build(|path| images.get(path)).unwrap();
-        let expected = palettes::stone().color(3).to_u8_array();
-        assert_eq!(pixel(&image, Tile::Stone.layer(), 0, 7, 7), expected);
+        let image = build_base(&images);
+        let expected = material("stone").color(3).to_u8_array();
+        assert_eq!(pixel(&image, tile("stone"), 0, 7, 7), expected);
         // Opaque grass over dirt hides the dirt.
-        let grass = palettes::grass().color(3).to_u8_array();
-        assert_eq!(pixel(&image, Tile::GrassSide.layer(), 0, 0, 0), grass);
+        let grass = material("grass").color(3).to_u8_array();
+        assert_eq!(pixel(&image, tile("grass_side"), 0, 0, 0), grass);
     }
 
-    #[test]
-    fn a_missing_or_bad_layer_names_the_tile_and_file() {
-        let error = build(|_| None).unwrap_err();
-        assert!(
-            error.contains("Stone") && error.contains("stone.png"),
-            "{error}"
-        );
+    /// The pixels of array layer `layer`'s full-size mip.
+    fn tile_pixels(image: &Image, layer: u32) -> Vec<u8> {
+        let at = offset(layer, 0);
+        image.data.as_ref().unwrap()[at..at + (TILE_SIZE * TILE_SIZE * 4) as usize].to_vec()
+    }
 
-        let mut red = flat_gray(0);
-        red.data.as_mut().unwrap()[0] = 200;
-        let error = build(|_| Some(&red)).unwrap_err();
-        assert!(error.contains("not gray"), "{error}");
+    /// A missing or bad image shows the placeholder in the tiles that use
+    /// it, names the texture and file, and leaves every other tile as it
+    /// should be.
+    #[test]
+    fn a_missing_or_bad_layer_marks_only_its_own_tiles() {
+        let good = layers_on_disk();
+        let expected = build_base(&good);
+        let stone = image_path("stone");
+
+        let mut bad = good.clone();
+        bad.get_mut(&stone).unwrap().data.as_mut().unwrap()[0] = 200;
+        let missing = {
+            let mut layers = good.clone();
+            layers.remove(&stone);
+            layers
+        };
+        for (layers, message) in [(&bad, "not gray"), (&missing, "isn't loaded")] {
+            let (image, errors) = build(&base().textures, |path| layers.get(path));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].contains("defaria:stone")
+                    && errors[0].contains(&stone)
+                    && errors[0].contains(message),
+                "{errors:?}"
+            );
+            for (layer, texture) in base().textures.iter().enumerate() {
+                let layer = layer as u32;
+                let wanted = if texture.id == "defaria:stone" {
+                    placeholder()
+                } else {
+                    tile_pixels(&expected, layer)
+                };
+                assert_eq!(tile_pixels(&image, layer), wanted, "{}", texture.id);
+            }
+        }
+    }
+
+    /// With no textures at all there's still a valid one-layer texture.
+    #[test]
+    fn no_textures_build_a_placeholder_layer() {
+        let (image, errors) = build(&[], |_| None);
+        assert!(errors.is_empty());
+        assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 1);
+        assert_eq!(tile_pixels(&image, 0), placeholder());
     }
 
     #[test]
     fn layers_hold_their_own_tile_and_full_mip_chains() {
         let image = array_texture(&tiles(|i, _, _| [i as u8 * 20, 7, 9, 255]));
-        let count = Tile::ALL.len() as u32;
+        let count = TILES;
         let size = image.texture_descriptor.size;
         assert_eq!(
             (size.width, size.height, size.depth_or_array_layers),

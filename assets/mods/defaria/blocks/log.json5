@@ -1,0 +1,12 @@
+// A tree trunk: bark on the sides, rings on the ends. `axis` is the
+// direction the trunk runs; the cube is turned so its ends face that way.
+{
+  name: "Log",
+  properties: { axis: ["y", "x", "z"] },
+  model: "cube",
+  textures: { side: "log_side", end: "log_top" },
+  variants: [
+    { when: { axis: "x" }, rotate: [0, 0, 90] },
+    { when: { axis: "z" }, rotate: [90, 0, 0] },
+  ],
+}

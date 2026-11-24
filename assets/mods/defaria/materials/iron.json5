@@ -1,0 +1,4 @@
+// Cool, bright grays for iron tool heads and blades.
+{
+  palette: ["#2c3038", "#565d68", "#8e96a2", "#d4dae2"],
+}

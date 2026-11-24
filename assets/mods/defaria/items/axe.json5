@@ -1,0 +1,5 @@
+{
+  name: "Axe",
+  texture: "axe",
+  max_stack: 1,
+}

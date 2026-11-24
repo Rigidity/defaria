@@ -1,0 +1,5 @@
+{
+  name: "Sand",
+  model: "cube",
+  textures: { all: "sand" },
+}

@@ -5,6 +5,7 @@
 
 mod block_edit;
 mod block_texture;
+pub mod content;
 mod devtools;
 mod fly_camera;
 pub mod headless;
@@ -23,6 +24,8 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
+            // First: the others read the content as they start.
+            content::ContentPlugin,
             fly_camera::FlyCameraPlugin,
             voxel::VoxelPlugin,
             voxel_material::VoxelMaterialPlugin,

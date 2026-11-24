@@ -13,8 +13,9 @@ use std::collections::HashMap;
 use bevy::{ecs::system::SystemParam, prelude::*};
 
 use crate::{
+    content::{BlockState, Content},
     perlin::Perlin,
-    voxel::{CHUNK_SIZE, Chunk, Voxel},
+    voxel::{CHUNK_SIZE, Chunk},
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
@@ -114,7 +115,7 @@ pub struct Voxels<'w, 's> {
 
 impl Voxels<'_, '_> {
     /// The voxel at a world position; `None` outside the world.
-    pub fn get(&self, pos: IVec3) -> Option<Voxel> {
+    pub fn get(&self, pos: IVec3) -> Option<BlockState> {
         let (coord, local) = ChunkCoord::split(pos);
         let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
         Some(chunk.at(local))
@@ -124,7 +125,7 @@ impl Voxels<'_, '_> {
     /// nothing to set outside the world. A voxel on a chunk's edge also shows
     /// or hides a face of the neighbouring chunk, so that chunk is marked
     /// changed too, and both are remeshed.
-    pub fn set(&mut self, pos: IVec3, voxel: Voxel) -> bool {
+    pub fn set(&mut self, pos: IVec3, state: BlockState) -> bool {
         let (coord, local) = ChunkCoord::split(pos);
         let Some(mut chunk) = self
             .map
@@ -133,7 +134,7 @@ impl Voxels<'_, '_> {
         else {
             return false;
         };
-        chunk.set_at(local, voxel);
+        chunk.set_at(local, state);
         let last = CHUNK_SIZE as i32 - 1;
         for axis in 0..3 {
             let mut offset = IVec3::ZERO;
@@ -155,17 +156,46 @@ impl Voxels<'_, '_> {
     }
 }
 
+/// The blocks the terrain is made of.
+#[derive(Debug, Clone, Copy)]
+pub struct TerrainBlocks {
+    pub grass: BlockState,
+    pub dirt: BlockState,
+    pub stone: BlockState,
+}
+
+impl TerrainBlocks {
+    /// The base game's grass, dirt and stone. One that didn't load is
+    /// reported and left as air.
+    pub fn from_content(content: &Content) -> Self {
+        let block = |name: &str| {
+            let id = format!("defaria:{name}");
+            content.default_state(&id).unwrap_or_else(|| {
+                error!("the terrain needs block `{id}`, which didn't load");
+                BlockState::AIR
+            })
+        };
+        Self {
+            grass: block("grass"),
+            dirt: block("dirt"),
+            stone: block("stone"),
+        }
+    }
+}
+
 /// Answers "what voxel is at this world position?" for the whole world.
 pub struct Terrain {
     settings: TerrainSettings,
+    blocks: TerrainBlocks,
     noise: Perlin,
 }
 
 impl Terrain {
-    pub fn new(settings: TerrainSettings) -> Self {
+    pub fn new(settings: TerrainSettings, blocks: TerrainBlocks) -> Self {
         Self {
             noise: Perlin::new(settings.seed),
             settings,
+            blocks,
         }
     }
 
@@ -186,11 +216,11 @@ impl Terrain {
 
     /// The voxel at a world position. Air outside the world.
     #[cfg(test)]
-    pub fn voxel(&self, pos: IVec3) -> Voxel {
+    pub fn voxel(&self, pos: IVec3) -> BlockState {
         if pos.cmplt(IVec3::ZERO).any() || pos.cmpge(WORLD_SIZE).any() {
-            return Voxel::Air;
+            return BlockState::AIR;
         }
-        column_voxel(pos.y, self.height(pos.x, pos.z))
+        self.column_voxel(pos.y, self.height(pos.x, pos.z))
     }
 
     /// Fills one chunk of the world.
@@ -202,21 +232,22 @@ impl Terrain {
                 // One noise lookup per column, not per voxel.
                 let height = self.height(origin.x + x as i32, origin.z + z as i32);
                 for y in 0..CHUNK_SIZE {
-                    chunk.set(x, y, z, column_voxel(origin.y + y as i32, height));
+                    chunk.set(x, y, z, self.column_voxel(origin.y + y as i32, height));
                 }
             }
         }
         chunk
     }
-}
 
-/// The voxel at height `y` in a column whose surface is `height` voxels tall.
-fn column_voxel(y: i32, height: i32) -> Voxel {
-    match y {
-        y if y >= height => Voxel::Air,
-        y if y == height - 1 => Voxel::Grass,
-        y if y >= height - 1 - DIRT_DEPTH => Voxel::Dirt,
-        _ => Voxel::Stone,
+    /// The voxel at height `y` in a column whose surface is `height`
+    /// voxels tall.
+    fn column_voxel(&self, y: i32, height: i32) -> BlockState {
+        match y {
+            y if y >= height => BlockState::AIR,
+            y if y == height - 1 => self.blocks.grass,
+            y if y >= height - 1 - DIRT_DEPTH => self.blocks.dirt,
+            _ => self.blocks.stone,
+        }
     }
 }
 
@@ -230,8 +261,13 @@ pub fn chunk_coords() -> impl Iterator<Item = ChunkCoord> {
 
 /// Spawns every chunk of the world. [`remesh_changed_chunks`] meshes them
 /// on the same frame.
-fn spawn_chunks(mut commands: Commands, settings: Res<TerrainSettings>, mut map: ResMut<ChunkMap>) {
-    let terrain = Terrain::new(settings.clone());
+fn spawn_chunks(
+    mut commands: Commands,
+    settings: Res<TerrainSettings>,
+    content: Res<Content>,
+    mut map: ResMut<ChunkMap>,
+) {
+    let terrain = Terrain::new(settings.clone(), TerrainBlocks::from_content(&content));
     for coord in chunk_coords() {
         let IVec3 { x, y, z } = coord.0;
         let entity = commands
@@ -254,17 +290,18 @@ pub fn remesh_changed_chunks(
     map: Res<ChunkMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<BlockMaterial>,
+    content: Res<Content>,
 ) {
     for (entity, coord, chunk) in &chunks {
         if !chunk.is_changed() {
             continue;
         }
         let origin = coord.origin();
-        let mesh = chunk.mesh(|local| {
+        let mesh = chunk.mesh(&content, |local| {
             let (coord, local) = ChunkCoord::split(origin + local);
             map.get(coord)
                 .and_then(|entity| chunks.get(entity).ok())
-                .map_or(Voxel::Air, |(_, _, chunk)| chunk.at(local))
+                .map_or(BlockState::AIR, |(_, _, chunk)| chunk.at(local))
         });
         // Chunks with nothing visible (all air, or buried) get no mesh; the
         // renderer warns about meshes with no vertices.
@@ -286,9 +323,14 @@ mod tests {
     use bevy::ecs::system::RunSystemOnce;
 
     use super::*;
+    use crate::content::{base, block};
 
     fn terrain() -> Terrain {
-        Terrain::new(TerrainSettings::default())
+        terrain_with(TerrainSettings::default())
+    }
+
+    fn terrain_with(settings: TerrainSettings) -> Terrain {
+        Terrain::new(settings, TerrainBlocks::from_content(base()))
     }
 
     fn columns() -> impl Iterator<Item = (i32, i32)> {
@@ -311,15 +353,15 @@ mod tests {
             let height = terrain.height(x, z);
             assert!((1..=WORLD_SIZE.y).contains(&height));
             let at = |y| terrain.voxel(IVec3::new(x, y, z));
-            assert_eq!(at(height - 1), Voxel::Grass);
+            assert_eq!(at(height - 1), block("grass"));
             for y in height..WORLD_SIZE.y {
-                assert_eq!(at(y), Voxel::Air);
+                assert_eq!(at(y), BlockState::AIR);
             }
             for y in 0..height - 1 {
                 let expected = if y >= height - 1 - DIRT_DEPTH {
-                    Voxel::Dirt
+                    block("dirt")
                 } else {
-                    Voxel::Stone
+                    block("stone")
                 };
                 assert_eq!(at(y), expected, "({x}, {y}, {z}), height {height}");
             }
@@ -358,9 +400,9 @@ mod tests {
             IVec3::new(WORLD_SIZE.x, 0, 0),
             IVec3::new(0, 0, WORLD_SIZE.z),
         ] {
-            assert_eq!(terrain.voxel(pos), Voxel::Air);
+            assert_eq!(terrain.voxel(pos), BlockState::AIR);
         }
-        assert_eq!(terrain.voxel(IVec3::ZERO), Voxel::Stone);
+        assert_eq!(terrain.voxel(IVec3::ZERO), block("stone"));
     }
 
     /// The camera spawns in open air with clearance above the hills around
@@ -386,7 +428,7 @@ mod tests {
     #[test]
     fn different_seeds_make_different_terrain() {
         let a = terrain();
-        let b = Terrain::new(TerrainSettings {
+        let b = terrain_with(TerrainSettings {
             seed: 1,
             ..default()
         });
@@ -408,7 +450,9 @@ mod tests {
     /// a record of which chunks changed in each frame.
     fn app() -> App {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), TerrainPlugin))
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(base().clone())
+            .add_plugins((AssetPlugin::default(), TerrainPlugin))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial {
                 material: Handle::default(),
@@ -488,7 +532,7 @@ mod tests {
         let set = |app: &mut App, pos: IVec3| {
             app.world_mut()
                 .run_system_once(move |mut voxels: Voxels| {
-                    assert!(voxels.set(pos, Voxel::Air));
+                    assert!(voxels.set(pos, BlockState::AIR));
                 })
                 .unwrap();
             app.update();
@@ -527,11 +571,11 @@ mod tests {
                 // Outside the world there's nothing to read or write.
                 for pos in [IVec3::new(-1, 0, 0), IVec3::new(0, WORLD_SIZE.y, 0)] {
                     assert_eq!(voxels.get(pos), None);
-                    assert!(!voxels.set(pos, Voxel::Stone));
+                    assert!(!voxels.set(pos, block("stone")));
                 }
                 let pos = IVec3::new(20, 40, 33);
-                assert!(voxels.set(pos, Voxel::Planks));
-                assert_eq!(voxels.get(pos), Some(Voxel::Planks));
+                assert!(voxels.set(pos, block("planks")));
+                assert_eq!(voxels.get(pos), Some(block("planks")));
             })
             .unwrap();
     }

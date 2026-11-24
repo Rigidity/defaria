@@ -1,0 +1,5 @@
+{
+  layers: [
+    { image: "log_side", material: "bark" },
+  ],
+}

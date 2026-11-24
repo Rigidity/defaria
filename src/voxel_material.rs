@@ -5,13 +5,14 @@
 //! by a fixed amount per face direction so block edges stay readable. The
 //! shader is `assets/shaders/voxel.wesl` and hot reloads in dev builds.
 //!
-//! The material doesn't sample the layer PNGs directly. Once they've all
-//! loaded, and again whenever one hot reloads, [`block_texture::build`]
-//! colorizes and stacks them into a mipmapped array texture, one layer per
-//! tile, and the material samples that.
+//! The material doesn't sample the layer PNGs directly. Once every image
+//! the mods' textures use has loaded, and again whenever one hot reloads,
+//! [`block_texture::build`] colorizes and stacks them into a mipmapped array
+//! texture, one layer per [`Content`] texture, and the material samples
+//! that.
 
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{AssetLoadFailedEvent, RenderAssetUsages},
     image::ImageLoaderSettings,
     platform::collections::{HashMap, HashSet},
     prelude::*,
@@ -19,7 +20,7 @@ use bevy::{
     shader::ShaderRef,
 };
 
-use crate::block_texture;
+use crate::{block_texture, content::Content};
 
 /// The chunk shader, relative to `assets/`.
 pub const SHADER_PATH: &str = "shaders/voxel.wesl";
@@ -35,7 +36,7 @@ impl Plugin for VoxelMaterialPlugin {
 }
 
 /// An unlit material that samples the block texture: an array with one
-/// layer per [`block_texture::Tile`]. Bindings must match `assets/shaders/voxel.wesl`.
+/// layer per [`Content`] texture. Bindings must match `assets/shaders/voxel.wesl`.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct VoxelMaterial {
     #[texture(0, dimension = "2d_array")]
@@ -65,8 +66,9 @@ pub struct BlockMaterial {
 
 impl FromWorld for BlockMaterial {
     fn from_world(world: &mut World) -> Self {
+        let paths = world.resource::<Content>().image_paths();
         let server = world.resource::<AssetServer>();
-        let layers = block_texture::layer_paths()
+        let layers = paths
             .into_iter()
             .map(|path| {
                 // The GPU only needs the built texture, so keep the layers
@@ -98,6 +100,11 @@ impl FromWorld for BlockMaterial {
 /// as well as `Modified`, often a frame apart, which would build twice.
 /// Images have no dependencies, so `Added` already means loaded.
 ///
+/// An image that fails to load counts as arrived, and its textures show the
+/// placeholder tile, so the rest of the world still draws. That includes a
+/// hot reload that fails: Bevy keeps the old image in `Assets`, but it's
+/// treated as missing until a reload succeeds.
+///
 /// The first build waits until an event has arrived for every layer, not
 /// just until every image is present: an image lands in `Assets` a frame
 /// before its event can be read, so building on presence alone would build
@@ -109,9 +116,13 @@ impl FromWorld for BlockMaterial {
 /// our layer-major data in the wrong order. A new asset is uploaded whole.
 fn build_block_texture(
     mut events: MessageReader<AssetEvent<Image>>,
+    mut failures: MessageReader<AssetLoadFailedEvent<Image>>,
     block: Res<BlockMaterial>,
-    // Layers an `Added` or `Modified` event has arrived for.
+    content: Res<Content>,
+    // Layers an `Added`, `Modified` or failure event has arrived for.
     mut seen: Local<HashSet<AssetId<Image>>>,
+    // Layers whose latest load failed.
+    mut failed: Local<HashSet<AssetId<Image>>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
 ) {
@@ -123,6 +134,14 @@ fn build_block_texture(
             && block.layers.values().any(|layer| layer.id() == *id)
         {
             seen.insert(*id);
+            failed.remove(id);
+            changed = true;
+        }
+    }
+    for failure in failures.read() {
+        if block.layers.values().any(|layer| layer.id() == failure.id) {
+            seen.insert(failure.id);
+            failed.insert(failure.id);
             changed = true;
         }
     }
@@ -130,18 +149,20 @@ fn build_block_texture(
     let ready = block
         .layers
         .values()
-        .all(|layer| seen.contains(&layer.id()) && images.contains(layer));
+        .all(|layer| seen.contains(&layer.id()));
     if !changed || !ready {
         return;
     }
-    let built = block_texture::build(|path| images.get(block.layers.get(path)?));
-    let texture = match built {
-        Ok(texture) => texture,
-        Err(error) => {
-            error!("can't build the block texture: {error}");
-            return;
+    let (texture, errors) = block_texture::build(&content.textures, |path| {
+        let layer = block.layers.get(path)?;
+        if failed.contains(&layer.id()) {
+            return None;
         }
-    };
+        images.get(layer)
+    });
+    for error in errors {
+        error!("can't build texture {error}; showing a placeholder");
+    }
     let texture = images.add(texture);
     // Assigning through `get_mut` marks the material modified, so its bind
     // group is rebuilt with the new texture. The old texture is dropped.
@@ -153,8 +174,8 @@ fn build_block_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_texture::Tile;
-    use crate::block_texture::layer::test_images::flat_gray;
+    use crate::block_texture::{TILE_SIZE, layer::test_images::flat_gray, mip_levels};
+    use crate::content::base;
     use bevy::color::ColorToPacked;
 
     /// The shader declares the bindings the material provides, at the same
@@ -172,6 +193,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Image>()
             .init_asset::<VoxelMaterial>()
+            .insert_resource(base().clone())
             .register_asset_loader(bevy::image::ImageLoader::new(
                 bevy::image::CompressedImageFormats::NONE,
             ))
@@ -203,7 +225,7 @@ mod tests {
 
     fn layer(app: &App, name: &str) -> Handle<Image> {
         let block = app.world().resource::<BlockMaterial>();
-        block.layers[&block_texture::layer_path(name)].clone()
+        block.layers[&format!("mods/defaria/images/{name}.png")].clone()
     }
 
     /// Fills a loaded layer with one RGBA color, through `get_mut` like a
@@ -260,7 +282,7 @@ mod tests {
             .get(&blocks)
             .unwrap();
         let size = texture.texture_descriptor.size;
-        assert_eq!(size.depth_or_array_layers, Tile::ALL.len() as u32);
+        assert_eq!(size.depth_or_array_layers, base().textures.len() as u32);
         assert_eq!(texture.texture_descriptor.mip_level_count, 5);
     }
 
@@ -282,11 +304,15 @@ mod tests {
         let new = material_texture(&app);
         assert_ne!(new.id(), old.id(), "rebuilt texture must be a new asset");
         let texture = app.world().resource::<Assets<Image>>().get(&new).unwrap();
-        // Stone is the first array layer; its first pixel is the darkest
-        // stone color now.
-        let darkest = Tile::Stone.layers()[0].palette.color(0);
+        // The stone tile's first pixel is the darkest stone color now.
+        let darkest = base().materials["defaria:stone"].color(0);
+        let tile = base().texture("defaria:stone").unwrap() as usize;
+        let per_layer: u32 = (0..mip_levels(TILE_SIZE))
+            .map(|mip| (TILE_SIZE >> mip).pow(2) * 4)
+            .sum();
+        let at = tile * per_layer as usize;
         let data = texture.data.as_ref().unwrap();
-        assert_eq!(data[..4], darkest.to_u8_array());
+        assert_eq!(data[at..at + 4], darkest.to_u8_array());
 
         assert!(
             material_events.modified(&app),
@@ -307,25 +333,98 @@ mod tests {
         assert!(!material_events.modified(&app), "material was rebuilt");
     }
 
+    /// The full-size pixels of base game texture `defaria:<name>` in the
+    /// built block texture.
+    fn tile(app: &App, texture: &Handle<Image>, name: &str) -> Vec<u8> {
+        let image = app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(texture)
+            .unwrap();
+        let layer = base().texture(&format!("defaria:{name}")).unwrap() as usize;
+        let size = |mip: u32| ((TILE_SIZE >> mip).pow(2) * 4) as usize;
+        let per_layer: usize = (0..mip_levels(TILE_SIZE)).map(size).sum();
+        let at = layer * per_layer;
+        image.data.as_ref().unwrap()[at..at + size(0)].to_vec()
+    }
+
     /// A layer that breaks the rules (here, a gray that isn't one of the
-    /// levels) keeps the previous texture on screen, and fixing it builds
-    /// a new one.
+    /// levels) shows the placeholder in its own tiles and leaves the rest
+    /// alone, and fixing it builds the real tile again.
     #[test]
-    fn a_bad_layer_keeps_the_previous_texture_until_fixed() {
+    fn a_bad_layer_shows_the_placeholder_until_fixed() {
         let mut app = app();
         let good = built_texture(&mut app);
+        let dirt = tile(&app, &good, "dirt");
         let stone = layer(&app, "stone");
 
         paint(&mut app, &stone, [100, 100, 100, 255]);
         app.update();
         app.update();
-        assert_eq!(material_texture(&app), good);
-        assert!(app.world().resource::<Assets<Image>>().contains(&good));
+        let broken = material_texture(&app);
+        assert_ne!(broken, good);
+        assert_eq!(tile(&app, &broken, "stone"), block_texture::placeholder());
+        assert_eq!(tile(&app, &broken, "dirt"), dirt);
 
         paint(&mut app, &stone, [0, 0, 0, 255]);
         app.update();
         app.update();
-        assert_ne!(material_texture(&app), good);
+        let fixed = material_texture(&app);
+        assert_ne!(tile(&app, &fixed, "stone"), block_texture::placeholder());
+    }
+
+    /// An image that fails to load doesn't hold the texture back: it's built
+    /// with the placeholder in the tiles that use the image.
+    #[test]
+    fn an_image_that_fails_to_load_still_builds() {
+        let mut app = app();
+        let missing = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<Image>("mods/defaria/images/there-is-no-such-image.png");
+        app.world_mut()
+            .resource_mut::<BlockMaterial>()
+            .layers
+            .insert("mods/defaria/images/stone.png".into(), missing);
+        let texture = built_texture(&mut app);
+        assert_eq!(tile(&app, &texture, "stone"), block_texture::placeholder());
+        assert_ne!(tile(&app, &texture, "dirt"), block_texture::placeholder());
+    }
+
+    /// Sends the failure event Bevy sends when `layer` fails to load. The
+    /// system only reads the event's id.
+    fn fail(app: &mut App, layer: &Handle<Image>) {
+        let path = bevy::asset::AssetPath::from("failed.png");
+        app.world_mut()
+            .write_message(AssetLoadFailedEvent::<Image> {
+                id: layer.id(),
+                path: path.clone(),
+                error: bevy::asset::AssetLoadError::EmptyPath(path),
+            });
+    }
+
+    /// A hot reload that fails leaves the old image in `Assets`, but its
+    /// tiles show the placeholder until a reload succeeds.
+    #[test]
+    fn a_failed_reload_shows_the_placeholder_until_it_loads() {
+        let mut app = app();
+        let good = built_texture(&mut app);
+        let stone = layer(&app, "stone");
+        let before = tile(&app, &good, "stone");
+
+        fail(&mut app, &stone);
+        app.update();
+        let broken = material_texture(&app);
+        assert_eq!(tile(&app, &broken, "stone"), block_texture::placeholder());
+        assert_ne!(tile(&app, &broken, "dirt"), block_texture::placeholder());
+
+        // Reloaded successfully: the same image, marked modified.
+        paint(&mut app, &stone, [0, 0, 0, 255]);
+        app.update();
+        app.update();
+        let fixed = material_texture(&app);
+        assert_ne!(tile(&app, &fixed, "stone"), block_texture::placeholder());
+        assert_ne!(tile(&app, &fixed, "stone"), before);
     }
 
     /// Changes to two layers in the same frame build once, not once each.
@@ -346,14 +445,9 @@ mod tests {
         assert_eq!(builds, 1);
     }
 
-    /// Nothing is built while any layer is missing, and layers arriving on
-    /// different frames build once, when the last arrives. Inserted by hand
-    /// rather than loaded from disk, so the timing is exact: an image lands
-    /// in `Assets` a frame before its `Added` event can be read.
-    #[test]
-    fn layers_arriving_one_per_frame_build_once_after_the_last() {
-        let mut app = app();
-        // Swap every layer's handle for one with no image behind it.
+    /// Swaps every layer's handle for one with no image behind it, so a test
+    /// can insert the images itself, in its own order.
+    fn reserve_layers(app: &mut App) -> Vec<Handle<Image>> {
         let paths: Vec<String> = app
             .world()
             .resource::<BlockMaterial>()
@@ -361,7 +455,7 @@ mod tests {
             .keys()
             .cloned()
             .collect();
-        let missing: Vec<Handle<Image>> = paths
+        paths
             .into_iter()
             .map(|path| {
                 let handle = app.world().resource::<Assets<Image>>().reserve_handle();
@@ -371,7 +465,17 @@ mod tests {
                     .insert(path, handle.clone());
                 handle
             })
-            .collect();
+            .collect()
+    }
+
+    /// Nothing is built while any layer is missing, and layers arriving on
+    /// different frames build once, when the last arrives. Inserted by hand
+    /// rather than loaded from disk, so the timing is exact: an image lands
+    /// in `Assets` a frame before its `Added` event can be read.
+    #[test]
+    fn layers_arriving_one_per_frame_build_once_after_the_last() {
+        let mut app = app();
+        let missing = reserve_layers(&mut app);
         let reserved = material_texture(&app);
         let mut material_events = MaterialEvents::new(&app);
         let black = flat_gray(0);
@@ -395,6 +499,38 @@ mod tests {
             .resource_mut::<Assets<Image>>()
             .insert(last, black)
             .unwrap();
+        let mut builds = 0;
+        for _ in 0..6 {
+            app.update();
+            builds += material_events.count(&app);
+        }
+        assert_eq!(builds, 1);
+        assert_ne!(material_texture(&app), reserved);
+    }
+
+    /// A load failure that arrives after every other layer still triggers
+    /// the one build.
+    #[test]
+    fn a_failure_arriving_last_still_builds_once() {
+        let mut app = app();
+        let missing = reserve_layers(&mut app);
+        let reserved = material_texture(&app);
+        let mut material_events = MaterialEvents::new(&app);
+        let (last, first) = missing.split_last().unwrap();
+        for handle in first {
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .insert(handle, flat_gray(0))
+                .unwrap();
+        }
+        app.update();
+        app.update();
+        assert_eq!(
+            material_texture(&app),
+            reserved,
+            "built with a layer missing"
+        );
+        fail(&mut app, last);
         let mut builds = 0;
         for _ in 0..6 {
             app.update();

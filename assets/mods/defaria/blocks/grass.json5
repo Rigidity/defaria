@@ -1,0 +1,5 @@
+{
+  name: "Grass",
+  model: "cube",
+  textures: { up: "grass_top", down: "dirt", side: "grass_side" },
+}
