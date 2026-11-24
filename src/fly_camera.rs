@@ -18,7 +18,7 @@ use bevy::{
 
 /// Keep pitch just inside ±90° so the camera never looks exactly straight up
 /// or down, where yaw becomes ambiguous.
-const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
+pub const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
 
 /// Where the camera spawns: just above the hills near the middle of the
 /// 128×64×128 terrain, so there's ground right below.

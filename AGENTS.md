@@ -82,7 +82,10 @@ changes.
    ```
    Commands: `wait`, `press`, `release`, `hold`, `mouse`, `screenshot`,
    `grain` (a texture-noise number for the frame; lower is smoother, and only
-   comparable between runs with the same view and art), `inspect`. The full
+   comparable between runs with the same view and art), `inspect`, `fill`
+   (set a box of voxels to a block, to build a test scene), `camera` (put the
+   camera at a position and angle) and `timing` (mean and worst wall-clock
+   frame time since the last `timing`, for performance comparisons). The full
    format is documented at the top of `src/headless.rs`. Commands between two
    `wait`s run on the same frame, so put a `wait 1` after a `screenshot`
    before input meant to come after it. A rendered run fails if a shader

@@ -116,6 +116,9 @@ pub struct BlockDef {
     /// Degrees about X, then Y, then Z; multiples of 90.
     #[serde(default)]
     pub rotate: Option<[i32; 3]>,
+    /// The light the block gives off: red, green and blue levels, 0 to 15.
+    #[serde(default)]
+    pub light: Option<[u8; 3]>,
     /// Applied in order on top of the block's own look, each where its
     /// `when` matches the state.
     #[serde(default)]
@@ -143,6 +146,9 @@ pub struct VariantDef {
     /// Degrees about X, then Y, then Z; multiples of 90.
     #[serde(default)]
     pub rotate: Option<[i32; 3]>,
+    /// The light the block gives off: red, green and blue levels, 0 to 15.
+    #[serde(default)]
+    pub light: Option<[u8; 3]>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

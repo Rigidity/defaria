@@ -7,8 +7,10 @@ mod block_edit;
 mod block_texture;
 pub mod content;
 mod devtools;
+mod dynamic_light;
 mod fly_camera;
 pub mod headless;
+mod light;
 mod perlin;
 mod terrain;
 mod voxel;
@@ -31,6 +33,8 @@ impl Plugin for GamePlugin {
             voxel_material::VoxelMaterialPlugin,
             terrain::TerrainPlugin,
             block_edit::BlockEditPlugin,
+            light::LightPlugin,
+            dynamic_light::DynamicLightPlugin,
         ));
     }
 }

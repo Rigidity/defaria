@@ -1,0 +1,6 @@
+// A glowing green crystal: the gravel speckle in bright colors.
+{
+  layers: [
+    { image: "gravel", palette: ["#16602a", "#2ea446", "#74e07a", "#d4ffcc"] },
+  ],
+}

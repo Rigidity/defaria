@@ -4,7 +4,8 @@
 //!   crosshair and right click places the active block against the face
 //!   you're looking at. The click that locks the cursor doesn't break
 //!   anything.
-//! - The number keys 1–7 pick the active block from the [`HOTBAR`] items.
+//! - The number keys 1–9 and 0 pick the active block from the [`HOTBAR`]
+//!   items.
 //! - A crosshair marks the middle of the screen, an outline shows the
 //!   targeted block, and a hotbar along the bottom lists the blocks with the
 //!   active one highlighted.
@@ -27,7 +28,7 @@ use crate::{
 pub const REACH: f32 = 8.0;
 
 /// The items on the number keys, in order: key 1 is the first.
-pub const HOTBAR: [&str; 7] = [
+pub const HOTBAR: [&str; 10] = [
     "defaria:stone",
     "defaria:dirt",
     "defaria:grass",
@@ -35,6 +36,9 @@ pub const HOTBAR: [&str; 7] = [
     "defaria:gravel",
     "defaria:log",
     "defaria:planks",
+    "defaria:lamp",
+    "defaria:red_lamp",
+    "defaria:blue_lamp",
 ];
 
 const HOTBAR_KEYS: [KeyCode; HOTBAR.len()] = [
@@ -45,6 +49,9 @@ const HOTBAR_KEYS: [KeyCode; HOTBAR.len()] = [
     KeyCode::Digit5,
     KeyCode::Digit6,
     KeyCode::Digit7,
+    KeyCode::Digit8,
+    KeyCode::Digit9,
+    KeyCode::Digit0,
 ];
 
 pub struct BlockEditPlugin;
@@ -312,7 +319,8 @@ fn spawn_hud(mut commands: Commands, items: Res<Hotbar>) {
                     },
                     BackgroundColor(SLOT_COLOR),
                     children![(
-                        Text::new(format!("{} {}", index + 1, item.name)),
+                        // Key 0 is the tenth slot.
+                        Text::new(format!("{} {}", (index + 1) % 10, item.name)),
                         TextFont::from_font_size(16.0),
                         TextColor(SLOT_TEXT),
                     )],
@@ -356,7 +364,9 @@ mod tests {
     use crate::{
         content::{base, block, test_mod},
         headless::{HeadlessPlugin, Script, default_plugins},
-        terrain::{ChunkCoord, ChunkMap, Terrain, TerrainBlocks, remesh_changed_chunks},
+        terrain::{
+            ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, remesh_changed_chunks,
+        },
         voxel::Chunk,
         voxel_material::BlockMaterial,
     };
@@ -464,6 +474,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ActiveBlock>()
             .init_resource::<ChunkMap>()
+            .add_message::<VoxelChanged>()
             .add_systems(
                 Update,
                 (
@@ -617,7 +628,18 @@ mod tests {
         let names: Vec<&str> = hotbar.0.iter().map(|item| item.name.as_str()).collect();
         assert_eq!(
             names,
-            ["Stone", "Dirt", "Grass", "Sand", "Gravel", "Log", "Planks"]
+            [
+                "Stone",
+                "Dirt",
+                "Grass",
+                "Sand",
+                "Gravel",
+                "Log",
+                "Planks",
+                "Lamp",
+                "Red Lamp",
+                "Blue Lamp"
+            ]
         );
         assert_eq!(hotbar.0[5].block, Some(block("log")));
 

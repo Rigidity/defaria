@@ -1,0 +1,7 @@
+// Gives off red light: red, green and blue levels, out of 15.
+{
+  name: "Red Lamp",
+  model: "cube",
+  textures: { all: "red_lamp" },
+  light: [15, 3, 2],
+}
