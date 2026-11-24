@@ -51,7 +51,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -82,9 +82,10 @@ use bevy::{
 const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);
 /// Size of the offscreen image the camera renders into.
 const RESOLUTION: UVec2 = UVec2::new(1280, 720);
-/// Give up if screenshots are still pending this many frames after the script
-/// ended, so a broken capture can't hang an agent forever.
-const SCREENSHOT_TIMEOUT_FRAMES: u32 = 600;
+/// Give up if captures are still pending or pipelines still compiling this
+/// many frames after the script ended, so a broken capture or a shader that
+/// never loads can't hang an agent forever.
+const END_TIMEOUT_FRAMES: u32 = 600;
 
 /// [`DefaultPlugins`] set up to run without a window. With `rendering` off
 /// there's no GPU at all (for CI); screenshots are then skipped.
@@ -264,9 +265,12 @@ struct ScriptRunner {
     commands: VecDeque<Command>,
     /// Frames left before the next command runs.
     waiting: u32,
-    /// `screenshot` and `inspect` commands to handle at the end of this frame.
-    observations: Vec<Observation>,
-    pending_screenshots: usize,
+    /// `screenshot` and `grain` commands to handle at the end of this frame.
+    captures: Vec<Capture>,
+    /// `inspect` commands to handle at the end of this frame.
+    inspections: Vec<String>,
+    /// Captures requested but not yet delivered by the renderer.
+    pending_captures: usize,
     /// Frames since the last command ran, once there are none left.
     frames_after_end: u32,
     rendering: bool,
@@ -274,7 +278,10 @@ struct ScriptRunner {
 
 impl ScriptRunner {
     fn finished(&self) -> bool {
-        self.commands.is_empty() && self.waiting == 0 && self.observations.is_empty()
+        self.commands.is_empty()
+            && self.waiting == 0
+            && self.captures.is_empty()
+            && self.inspections.is_empty()
     }
 }
 
@@ -354,20 +361,11 @@ fn run_script(
             Command::MoveMouse(delta) => {
                 mouse_motion.write(MouseMotion { delta });
             }
-            Command::Screenshot(path) => runner.observations.push(Observation::Screenshot(path)),
-            Command::Grain => runner.observations.push(Observation::Grain),
-            Command::Inspect(name) => runner.observations.push(Observation::Inspect(name)),
+            Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
+            Command::Grain => runner.captures.push(Capture::Grain),
+            Command::Inspect(name) => runner.inspections.push(name),
         }
     }
-}
-
-/// A command that looks at the end of the frame instead of acting at its
-/// start.
-#[derive(Debug)]
-enum Observation {
-    Screenshot(PathBuf),
-    Grain,
-    Inspect(String),
 }
 
 /// A capture of the frame and what to do with it.
@@ -380,25 +378,22 @@ enum Capture {
 /// Handles this frame's `screenshot`, `grain` and `inspect` commands, after
 /// the game's systems have run.
 fn observe(world: &mut World) {
-    let observations = std::mem::take(&mut world.resource_mut::<ScriptRunner>().observations);
+    let mut runner = world.resource_mut::<ScriptRunner>();
+    let inspections = std::mem::take(&mut runner.inspections);
+    let captures = std::mem::take(&mut runner.captures);
     let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
-    let mut captures = Vec::new();
-    for observation in observations {
-        match observation {
-            Observation::Inspect(name) => match inspect(world, &name) {
-                Ok(lines) if lines.is_empty() => println!("[frame {frame}] no entity has {name}"),
-                Ok(lines) => {
-                    for line in lines {
-                        println!("[frame {frame}] {line}");
-                    }
+    for name in inspections {
+        match inspect(world, &name) {
+            Ok(lines) if lines.is_empty() => println!("[frame {frame}] no entity has {name}"),
+            Ok(lines) => {
+                for line in lines {
+                    println!("[frame {frame}] {line}");
                 }
-                Err(error) => {
-                    error!("inspect: {error}");
-                    world.write_message(AppExit::error());
-                }
-            },
-            Observation::Screenshot(path) => captures.push(Capture::Save(path)),
-            Observation::Grain => captures.push(Capture::Grain),
+            }
+            Err(error) => {
+                error!("inspect: {error}");
+                world.write_message(AppExit::error());
+            }
         }
     }
     capture(world, captures, frame);
@@ -423,11 +418,11 @@ fn capture(world: &mut World, captures: Vec<Capture>, frame: u32) {
         return;
     };
     let image = target.0.clone();
-    world.resource_mut::<ScriptRunner>().pending_screenshots += 1;
+    world.resource_mut::<ScriptRunner>().pending_captures += 1;
     let mut entity = world.spawn(Screenshot::image(image));
     entity.observe(
         |_: On<ScreenshotCaptured>, mut runner: ResMut<ScriptRunner>| {
-            runner.pending_screenshots -= 1;
+            runner.pending_captures -= 1;
         },
     );
     for capture in captures {
@@ -497,15 +492,25 @@ fn grain(image: &Image, sky: Color) -> Option<(f32, usize)> {
     (pairs > 0).then(|| (total as f32 / pairs as f32 / 3.0, pairs))
 }
 
-/// The render pipelines' state, written in the render world and read in the
-/// main world when the script ends.
+/// How many render pipelines have failed and how many are still pending,
+/// written in the render world and read in the main world when the script
+/// ends. Both counts live in one atomic so a reader never mixes two frames.
 #[derive(Resource, Clone, Default)]
-struct PipelineStatus {
-    /// Pipelines that failed in a way Bevy won't retry, such as a shader
-    /// that doesn't compile.
-    failed: Arc<AtomicUsize>,
-    /// Pipelines still queued or compiling, including ones waiting to retry.
-    pending: Arc<AtomicUsize>,
+struct PipelineStatus(Arc<AtomicU64>);
+
+impl PipelineStatus {
+    fn store(&self, failed: u32, pending: u32) {
+        self.0.store(
+            (u64::from(failed) << 32) | u64::from(pending),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// `(failed, pending)`.
+    fn load(&self) -> (u32, u32) {
+        let packed = self.0.load(Ordering::Relaxed);
+        ((packed >> 32) as u32, packed as u32)
+    }
 }
 
 /// Shares one [`PipelineStatus`] between the main world and the render
@@ -526,17 +531,38 @@ fn share_pipeline_status(app: &mut App) {
 fn record_pipeline_status(cache: Res<PipelineCache>, status: Res<PipelineStatus>) {
     let (mut failed, mut pending) = (0, 0);
     for pipeline in cache.pipelines() {
-        match &pipeline.state {
-            CachedPipelineState::Ok(_) => {}
-            CachedPipelineState::Err(
-                ShaderCacheError::ProcessShaderError(_) | ShaderCacheError::CreateShaderModule(_),
-            ) => failed += 1,
-            // Queued, compiling, or a missing shader or import Bevy retries.
-            _ => pending += 1,
+        match pipeline_outcome(&pipeline.state) {
+            PipelineOutcome::Ready => {}
+            PipelineOutcome::Failed => failed += 1,
+            PipelineOutcome::Pending => pending += 1,
         }
     }
-    status.failed.store(failed, Ordering::Relaxed);
-    status.pending.store(pending, Ordering::Relaxed);
+    status.store(failed, pending);
+}
+
+#[derive(Debug, PartialEq)]
+enum PipelineOutcome {
+    Ready,
+    /// Failed in a way Bevy won't retry, such as a shader that doesn't
+    /// compile.
+    Failed,
+    /// Queued, compiling, or waiting to retry a shader or import that hasn't
+    /// loaded yet.
+    Pending,
+}
+
+fn pipeline_outcome(state: &CachedPipelineState) -> PipelineOutcome {
+    match state {
+        CachedPipelineState::Ok(_) => PipelineOutcome::Ready,
+        CachedPipelineState::Queued | CachedPipelineState::Creating(_) => PipelineOutcome::Pending,
+        CachedPipelineState::Err(error) => match error {
+            ShaderCacheError::ShaderNotLoaded(_)
+            | ShaderCacheError::ShaderImportNotYetAvailable => PipelineOutcome::Pending,
+            ShaderCacheError::ProcessShaderError(_) | ShaderCacheError::CreateShaderModule(_) => {
+                PipelineOutcome::Failed
+            }
+        },
+    }
 }
 
 /// Formats `name` (a reflected component type) on every entity that has it.
@@ -578,18 +604,13 @@ fn exit_when_done(
     if !runner.finished() {
         return;
     }
-    let (failed, pending) = pipelines.map_or((0, 0), |status| {
-        (
-            status.failed.load(Ordering::Relaxed),
-            status.pending.load(Ordering::Relaxed),
-        )
-    });
-    let screenshots_pending = runner.rendering && runner.pending_screenshots > 0;
+    let (failed, pending) = pipelines.map_or((0, 0), |status| status.load());
+    let screenshots_pending = runner.rendering && runner.pending_captures > 0;
     // Wait for screenshots to be saved, so they're there to look at, and for
     // pipelines to finish compiling, so a broken shader can't slip through.
     if screenshots_pending || pending > 0 {
         runner.frames_after_end += 1;
-        if runner.frames_after_end > SCREENSHOT_TIMEOUT_FRAMES {
+        if runner.frames_after_end > END_TIMEOUT_FRAMES {
             if screenshots_pending {
                 error!("screenshots were never captured; giving up");
             } else {
@@ -773,11 +794,10 @@ mod tests {
         app
     }
 
-    fn status(failed: usize, pending: usize) -> PipelineStatus {
-        PipelineStatus {
-            failed: Arc::new(AtomicUsize::new(failed)),
-            pending: Arc::new(AtomicUsize::new(pending)),
-        }
+    fn status(failed: u32, pending: u32) -> PipelineStatus {
+        let status = PipelineStatus::default();
+        status.store(failed, pending);
+        status
     }
 
     fn run_until_exit(app: &mut App, frames: usize) -> Option<AppExit> {
@@ -802,9 +822,52 @@ mod tests {
         let status = status(0, 1);
         let mut app = app_with_pipelines("wait 1", status.clone());
         assert_eq!(run_until_exit(&mut app, 20), None);
-        status.pending.store(0, Ordering::Relaxed);
-        status.failed.store(1, Ordering::Relaxed);
+        status.store(1, 0);
         assert_eq!(run_until_exit(&mut app, 5), Some(AppExit::error()));
+    }
+
+    /// A pipeline that never finishes compiling (a shader that never loads)
+    /// ends the run with an error instead of hanging it.
+    #[test]
+    fn gives_up_on_pipelines_that_never_finish() {
+        let mut app = app_with_pipelines("wait 1", status(0, 1));
+        let frames = END_TIMEOUT_FRAMES as usize + 10;
+        assert_eq!(run_until_exit(&mut app, frames), Some(AppExit::error()));
+    }
+
+    #[test]
+    fn pipeline_status_round_trips_both_counts() {
+        let status = status(3, 70_000);
+        assert_eq!(status.load(), (3, 70_000));
+    }
+
+    /// Shader errors Bevy retries are pending, not failed, and ones it won't
+    /// retry are failures.
+    #[test]
+    fn sorts_pipeline_states_into_outcomes() {
+        use CachedPipelineState::{Err, Queued};
+        let cases = [
+            (Queued, PipelineOutcome::Pending),
+            (
+                Err(ShaderCacheError::ShaderNotLoaded(default())),
+                PipelineOutcome::Pending,
+            ),
+            (
+                Err(ShaderCacheError::ShaderImportNotYetAvailable),
+                PipelineOutcome::Pending,
+            ),
+            (
+                Err(ShaderCacheError::ProcessShaderError(String::new())),
+                PipelineOutcome::Failed,
+            ),
+            (
+                Err(ShaderCacheError::CreateShaderModule(String::new())),
+                PipelineOutcome::Failed,
+            ),
+        ];
+        for (state, outcome) in cases {
+            assert_eq!(pipeline_outcome(&state), outcome, "{state:?}");
+        }
     }
 
     /// The main world reads the very counters the render world writes, and
@@ -817,8 +880,7 @@ mod tests {
         let main = app.world().resource::<PipelineStatus>().clone();
         let render_app = app.sub_app(RenderApp);
         let render = render_app.world().resource::<PipelineStatus>();
-        assert!(Arc::ptr_eq(&main.failed, &render.failed));
-        assert!(Arc::ptr_eq(&main.pending, &render.pending));
+        assert!(Arc::ptr_eq(&main.0, &render.0));
         let schedule = render_app
             .world()
             .resource::<Schedules>()
