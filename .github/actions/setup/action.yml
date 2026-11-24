@@ -1,0 +1,41 @@
+name: Set up the build
+description: Restore the pinned Rust toolchain, and optionally Bevy's Linux packages and the mold linker.
+
+inputs:
+  linux-deps:
+    description: Install the system libraries Bevy builds against.
+    default: "true"
+  mold:
+    description: Make mold the default linker. Doesn't change RUSTFLAGS, so cached builds stay valid.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # rust-toolchain.toml pins a version the runner doesn't ship, so rustup would
+    # download it (plus clippy and rustfmt) in every job. Cache just that
+    # toolchain's directory, not the runner's preinstalled ones.
+    - name: Read the pinned toolchain
+      id: toolchain
+      shell: bash
+      run: |
+        channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+        echo "dir=$HOME/.rustup/toolchains/$channel-$(uname -m)-unknown-linux-gnu" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      with:
+        path: ${{ steps.toolchain.outputs.dir }}
+        key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+    # With no arguments this installs what rust-toolchain.toml names, and is a
+    # quick no-op when the cache already restored it.
+    - name: Install the toolchain
+      shell: bash
+      run: rustup toolchain install
+
+    - uses: awalsh128/cache-apt-pkgs-action@v1
+      if: inputs.linux-deps == 'true'
+      with:
+        packages: libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+        version: "1"
+
+    - uses: rui314/setup-mold@v1
+      if: inputs.mold == 'true'

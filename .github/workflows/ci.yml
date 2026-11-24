@@ -14,23 +14,100 @@ env:
   # CI builds once from scratch; incremental artifacts only cost time and cache space.
   CARGO_INCREMENTAL: 0
 
+# Every check is its own job so they run in parallel and each one reports on
+# its own. Shared setup (pinned toolchain, Linux packages, mold) lives in
+# .github/actions/setup.
+#
+# Each job caches its own build: clippy only type-checks Bevy while the tests
+# compile it fully (with the unoptimized `ci` profile from Cargo.toml), so they
+# can't share one cache. Cache keys change only with the toolchain or the
+# lockfile; on a miss, the restore keys fall back to the newest cache for the
+# same job and toolchain, which still has nearly every dependency built.
+# (Swatinem/rust-cache hashes Cargo.toml and .cargo/config.toml into the part of
+# its key that must match exactly, so any edit to them meant a cold build.)
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          linux-deps: "false"
       - run: cargo fmt --all -- --check
 
-  check:
+  clippy:
+    name: clippy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: dev features
+            flags: ""
+            cache: clippy-dev
+          - name: shipping features
+            flags: --no-default-features
+            cache: clippy-shipping
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ matrix.cache }}-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.cache }}-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+      - run: cargo clippy --all-targets --locked ${{ matrix.flags }} -- -D warnings
+
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Bevy's Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@v2
-      - name: Clippy (dev features)
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: Clippy (shipping features)
-        run: cargo clippy --all-targets --locked --no-default-features -- -D warnings
-      - name: Test
-        run: cargo test --locked
+      - uses: ./.github/actions/setup
+        with:
+          mold: "true"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+      - run: cargo test --profile ci --locked
+
+  # No GPU on CI runners: run every scenario without rendering. This catches
+  # scripts that no longer parse, unknown components and crashes, not visual
+  # problems. It builds the same artifacts as `test`, so it only restores that
+  # job's cache (saving from both jobs would race for the same key).
+  scenarios:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          mold: "true"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+      - name: Run scenarios
+        run: |
+          for script in scenarios/*.txt; do
+            echo "::group::$script"
+            cargo run --profile ci --locked -- --headless "$script" --no-render
+            echo "::endgroup::"
+          done

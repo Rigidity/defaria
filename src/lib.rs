@@ -4,9 +4,11 @@
 //! [`GamePlugin`], so parallel work rarely touches the same file.
 
 mod devtools;
-mod spinner;
+mod fly_camera;
+pub mod headless;
+mod voxel;
 
-pub use devtools::{DevToolsPlugin, ScreenshotMode};
+pub use devtools::{Cli, DevToolsPlugin, ScreenshotMode};
 
 use bevy::prelude::*;
 
@@ -15,6 +17,6 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(spinner::SpinnerPlugin);
+        app.add_plugins((fly_camera::FlyCameraPlugin, voxel::VoxelPlugin));
     }
 }

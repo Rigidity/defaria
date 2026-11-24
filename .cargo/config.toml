@@ -5,6 +5,8 @@ play = "run --release --no-default-features"
 dist = "build --profile dist --no-default-features"
 # Render N frames, save a PNG, exit. Usage: cargo shot [path] (defaults below).
 shot = "run -- --screenshot target/screenshot.png"
+# No window: run a scripted scenario. Usage: cargo headless <script>
+headless = "run -- --headless"
 
 # macOS: the default Apple linker (ld-prime) is already as fast as lld/sold,
 # so no linker override is needed here.

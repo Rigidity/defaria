@@ -58,12 +58,25 @@ pub struct ScreenshotMode {
     pub frames: u32,
 }
 
-impl ScreenshotMode {
-    /// Parses `--screenshot <path>` and `--frames <n>`. Returns `None` when no
-    /// screenshot was requested. Panics on unknown or malformed arguments.
-    pub fn from_args(args: impl IntoIterator<Item = String>) -> Option<Self> {
+/// Command-line flags.
+#[derive(Debug, Default)]
+pub struct Cli {
+    /// `--screenshot <path> [--frames N]`: windowed screenshot, then exit.
+    pub screenshot: Option<ScreenshotMode>,
+    /// `--headless <script>`: no window; run the script, then exit.
+    pub headless: Option<PathBuf>,
+    /// `--no-render` (with `--headless`): no GPU at all; screenshots are
+    /// skipped. For CI, which has no GPU.
+    pub no_render: bool,
+}
+
+impl Cli {
+    /// Parses the flags above. Panics on unknown or malformed arguments.
+    pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
         let mut path = None;
         let mut frames = 60;
+        let mut headless = None;
+        let mut no_render = false;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -78,10 +91,28 @@ impl ScreenshotMode {
                         .and_then(|n| n.parse().ok())
                         .expect("--frames needs a number");
                 }
+                "--headless" => {
+                    headless = Some(PathBuf::from(
+                        args.next().expect("--headless needs a script path"),
+                    ));
+                }
+                "--no-render" => no_render = true,
                 other => panic!("unknown argument: {other}"),
             }
         }
-        path.map(|path| Self { path, frames })
+        assert!(
+            path.is_none() || headless.is_none(),
+            "--headless takes screenshots from its script; don't combine it with --screenshot"
+        );
+        assert!(
+            !no_render || headless.is_some(),
+            "--no-render only works with --headless"
+        );
+        Self {
+            screenshot: path.map(|path| ScreenshotMode { path, frames }),
+            headless,
+            no_render,
+        }
     }
 }
 
@@ -127,15 +158,34 @@ mod tests {
     }
 
     #[test]
-    fn no_args_means_no_screenshot() {
-        assert!(ScreenshotMode::from_args(args(&[])).is_none());
+    fn no_args_means_windowed_play() {
+        let cli = Cli::from_args(args(&[]));
+        assert!(cli.screenshot.is_none());
+        assert!(cli.headless.is_none());
     }
 
     #[test]
     fn parses_path_and_frames() {
-        let mode = ScreenshotMode::from_args(args(&["--screenshot", "out/a.png", "--frames", "5"]))
+        let mode = Cli::from_args(args(&["--screenshot", "out/a.png", "--frames", "5"]))
+            .screenshot
             .unwrap();
         assert_eq!(mode.path, PathBuf::from("out/a.png"));
         assert_eq!(mode.frames, 5);
+    }
+
+    #[test]
+    fn parses_headless_script() {
+        let cli = Cli::from_args(args(&["--headless", "scenarios/fly.txt"]));
+        assert_eq!(cli.headless, Some(PathBuf::from("scenarios/fly.txt")));
+        assert!(!cli.no_render);
+
+        let cli = Cli::from_args(args(&["--headless", "scenarios/fly.txt", "--no-render"]));
+        assert!(cli.no_render);
+    }
+
+    #[test]
+    #[should_panic(expected = "--no-render only works with --headless")]
+    fn no_render_needs_headless() {
+        Cli::from_args(args(&["--no-render"]));
     }
 }

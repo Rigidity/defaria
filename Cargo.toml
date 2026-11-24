@@ -1,8 +1,8 @@
 [package]
-name = "defaria-2026"
+name = "defaria"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.97.1"
+rust-version = "1.100"
 publish = false
 
 [dependencies]
@@ -46,6 +46,16 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 debug = false
+
+# CI only (`--profile ci`): CI compiles Bevy from scratch whenever its cache
+# misses, and its tests don't need a fast Bevy, so skip optimizing and debug
+# info. Builds into target/ci/, so it never invalidates local dev builds.
+[profile.ci]
+inherits = "dev"
+debug = false
+
+[profile.ci.package."*"]
+opt-level = 0
 
 [profile.release]
 codegen-units = 1
