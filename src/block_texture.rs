@@ -44,11 +44,26 @@ pub enum Tile {
     Dirt,
     GrassTop,
     GrassSide,
+    Sand,
+    Gravel,
+    LogSide,
+    LogTop,
+    Planks,
 }
 
 impl Tile {
     /// Every tile, in layer order.
-    pub const ALL: [Tile; 4] = [Tile::Stone, Tile::Dirt, Tile::GrassTop, Tile::GrassSide];
+    pub const ALL: [Tile; 9] = [
+        Tile::Stone,
+        Tile::Dirt,
+        Tile::GrassTop,
+        Tile::GrassSide,
+        Tile::Sand,
+        Tile::Gravel,
+        Tile::LogSide,
+        Tile::LogTop,
+        Tile::Planks,
+    ];
 
     /// The tile's layer in the block texture. Exhaustive, so a new tile
     /// can't compile without one.
@@ -58,6 +73,11 @@ impl Tile {
             Tile::Dirt => 1,
             Tile::GrassTop => 2,
             Tile::GrassSide => 3,
+            Tile::Sand => 4,
+            Tile::Gravel => 5,
+            Tile::LogSide => 6,
+            Tile::LogTop => 7,
+            Tile::Planks => 8,
         }
     }
 
@@ -71,6 +91,15 @@ impl Tile {
                 Layer::new("dirt", palettes::dirt()),
                 Layer::new("grass_side", palettes::grass()),
             ],
+            Tile::Sand => vec![Layer::new("sand", palettes::sand())],
+            Tile::Gravel => vec![Layer::new("gravel", palettes::gravel())],
+            Tile::LogSide => vec![Layer::new("log_side", palettes::bark())],
+            // The cut end: growth rings, framed by bark cut from the side.
+            Tile::LogTop => vec![
+                Layer::new("log_top", palettes::log_end()),
+                Layer::new("log_top_bark", palettes::bark()),
+            ],
+            Tile::Planks => vec![Layer::new("planks", palettes::planks())],
         }
     }
 }
@@ -146,6 +175,57 @@ mod palettes {
             Srgba::rgb_u8(0x51, 0x9a, 0x2d),
             Srgba::rgb_u8(0x6b, 0xb5, 0x35),
             Srgba::rgb_u8(0x8f, 0xce, 0x45),
+        ])
+    }
+
+    /// Pale and warm, low contrast like dirt: the sand layer is fine noise.
+    pub fn sand() -> Palette {
+        Palette::ramp(&[
+            Srgba::rgb_u8(0xb8, 0xa0, 0x6a),
+            Srgba::rgb_u8(0xd2, 0xbc, 0x84),
+            Srgba::rgb_u8(0xe6, 0xd4, 0x9e),
+            Srgba::rgb_u8(0xf2, 0xe4, 0xb6),
+        ])
+    }
+
+    /// Warm grays with more contrast than stone, so the pebbles read.
+    pub fn gravel() -> Palette {
+        Palette::ramp(&[
+            Srgba::rgb_u8(0x4a, 0x46, 0x44),
+            Srgba::rgb_u8(0x6e, 0x6a, 0x66),
+            Srgba::rgb_u8(0x92, 0x8c, 0x86),
+            Srgba::rgb_u8(0xb4, 0xae, 0xa6),
+        ])
+    }
+
+    /// Dark brown bark, for log sides and the rim of the cut end.
+    pub fn bark() -> Palette {
+        Palette::ramp(&[
+            Srgba::rgb_u8(0x2e, 0x20, 0x14),
+            Srgba::rgb_u8(0x48, 0x34, 0x22),
+            Srgba::rgb_u8(0x5e, 0x46, 0x2e),
+            Srgba::rgb_u8(0x74, 0x58, 0x3a),
+        ])
+    }
+
+    /// Light heartwood, for the growth rings on a log's cut end.
+    pub fn log_end() -> Palette {
+        Palette::ramp(&[
+            Srgba::rgb_u8(0x7a, 0x58, 0x34),
+            Srgba::rgb_u8(0x9e, 0x78, 0x4a),
+            Srgba::rgb_u8(0xbc, 0x96, 0x62),
+            Srgba::rgb_u8(0xd2, 0xae, 0x78),
+        ])
+    }
+
+    /// Sawn boards, between the bark and the heartwood; the darkest level
+    /// is the seams between boards.
+    pub fn planks() -> Palette {
+        Palette::ramp(&[
+            Srgba::rgb_u8(0x5a, 0x3e, 0x22),
+            Srgba::rgb_u8(0x8a, 0x64, 0x3a),
+            Srgba::rgb_u8(0xa8, 0x7e, 0x4c),
+            Srgba::rgb_u8(0xbe, 0x94, 0x5e),
         ])
     }
 }
@@ -322,6 +402,36 @@ mod tests {
             .collect()
     }
 
+    /// Every PNG under the layer folder, including layers no tile uses yet
+    /// (item parts, leaves), decodes to a valid layer: 16×16, gray levels
+    /// only.
+    #[test]
+    fn every_layer_file_is_valid() {
+        fn pngs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pngs(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "png") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        pngs(
+            std::path::Path::new(&format!("assets/{LAYER_DIR}")),
+            &mut files,
+        );
+        assert!(files.len() >= layer_paths().len());
+        let palette = palettes::stone();
+        for file in files {
+            let image = decode(&std::fs::read(&file).unwrap());
+            if let Err(error) = layer::colorize(&image, &palette) {
+                panic!("{}: {error}", file.display());
+            }
+        }
+    }
+
     #[test]
     fn tile_layers_follow_tile_order() {
         for (index, tile) in Tile::ALL.iter().enumerate() {
@@ -437,11 +547,12 @@ mod tests {
 
     #[test]
     fn layers_hold_their_own_tile_and_full_mip_chains() {
-        let image = array_texture(&tiles(|i, _, _| [i as u8 * 50, 7, 9, 255]));
+        let image = array_texture(&tiles(|i, _, _| [i as u8 * 20, 7, 9, 255]));
+        let count = Tile::ALL.len() as u32;
         let size = image.texture_descriptor.size;
         assert_eq!(
             (size.width, size.height, size.depth_or_array_layers),
-            (16, 16, 4)
+            (16, 16, count)
         );
         assert_eq!(image.texture_descriptor.mip_level_count, 5);
         assert_eq!(
@@ -449,12 +560,12 @@ mod tests {
             TextureFormat::Rgba8UnormSrgb
         );
         assert_eq!(image.data_order, TextureDataOrder::LayerMajor);
-        assert_eq!(image.data.as_ref().unwrap().len(), offset(4, 0));
-        for layer in 0..4 {
+        assert_eq!(image.data.as_ref().unwrap().len(), offset(count, 0));
+        for layer in 0..count {
             for mip in 0..5 {
                 assert_eq!(
                     pixel(&image, layer, mip, 0, 0),
-                    [layer as u8 * 50, 7, 9, 255]
+                    [layer as u8 * 20, 7, 9, 255]
                 );
             }
         }
