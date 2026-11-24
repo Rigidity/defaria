@@ -13,23 +13,27 @@ env:
   CARGO_TERM_COLOR: always
   # CI builds once from scratch; incremental artifacts only cost time and cache space.
   CARGO_INCREMENTAL: 0
-  LINUX_DEPS: libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
 # Every check is its own job so they run in parallel and each one reports on
-# its own. Each job caches its own build: clippy only type-checks Bevy while
-# the tests compile it fully, so they can't share one cache.
+# its own. Shared setup (pinned toolchain, Linux packages, mold) lives in
+# .github/actions/setup.
 #
-# Cache keys change only with the toolchain or the lockfile. On a miss, the
-# restore keys fall back to the newest cache for the same job and toolchain,
-# which still has nearly every dependency built. (Swatinem/rust-cache hashes
-# Cargo.toml and .cargo/config.toml into the part of its key that must match
-# exactly, so any edit to them meant a cold ~30 minute build.)
+# Each job caches its own build: clippy only type-checks Bevy while the tests
+# compile it fully (with the unoptimized `ci` profile from Cargo.toml), so they
+# can't share one cache. Cache keys change only with the toolchain or the
+# lockfile; on a miss, the restore keys fall back to the newest cache for the
+# same job and toolchain, which still has nearly every dependency built.
+# (Swatinem/rust-cache hashes Cargo.toml and .cargo/config.toml into the part of
+# its key that must match exactly, so any edit to them meant a cold build.)
 
 jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          linux-deps: "false"
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -47,8 +51,7 @@ jobs:
             cache: clippy-shipping
     steps:
       - uses: actions/checkout@v4
-      - name: Install Bevy's Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $LINUX_DEPS
+      - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
           path: |
@@ -65,8 +68,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Bevy's Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $LINUX_DEPS
+      - uses: ./.github/actions/setup
+        with:
+          mold: "true"
       - uses: actions/cache@v4
         with:
           path: |
@@ -74,10 +78,10 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: test-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          key: test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            test-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
-      - run: cargo test --locked
+            test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+      - run: cargo test --profile ci --locked
 
   # No GPU on CI runners: run every scenario without rendering. This catches
   # scripts that no longer parse, unknown components and crashes, not visual
@@ -87,8 +91,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Bevy's Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $LINUX_DEPS
+      - uses: ./.github/actions/setup
+        with:
+          mold: "true"
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -96,13 +101,13 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: test-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          key: test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            test-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+            test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
       - name: Run scenarios
         run: |
           for script in scenarios/*.txt; do
             echo "::group::$script"
-            cargo run --locked -- --headless "$script" --no-render
+            cargo run --profile ci --locked -- --headless "$script" --no-render
             echo "::endgroup::"
           done

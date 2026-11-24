@@ -31,6 +31,8 @@ and `cargo test`. CI runs the same checks, plus clippy with
   reload, BRP) is on by default so every command shares one compiled Bevy.
   Don't add `--release` or `--no-default-features` while iterating; that builds
   a second copy of Bevy.
+- `[profile.ci]` (unoptimized Bevy) is for CI only. Don't use `--profile ci`
+  locally; it builds another copy of Bevy.
 - If cargo prints `Blocking waiting for file lock`, another build is using this
   checkout. Wait for it; don't kill it.
 

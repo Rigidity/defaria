@@ -47,6 +47,16 @@ debug = "line-tables-only"
 opt-level = 3
 debug = false
 
+# CI only (`--profile ci`): CI compiles Bevy from scratch whenever its cache
+# misses, and its tests don't need a fast Bevy, so skip optimizing and debug
+# info. Builds into target/ci/, so it never invalidates local dev builds.
+[profile.ci]
+inherits = "dev"
+debug = false
+
+[profile.ci.package."*"]
+opt-level = 0
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
