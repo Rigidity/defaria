@@ -1,9 +1,12 @@
 //! Our own material and shader for chunk meshes, replacing Bevy's PBR
 //! `StandardMaterial`.
 //!
-//! No lighting: the shader shows the block texture's pixels as they are, dimmed
-//! by a fixed amount per face direction so block edges stay readable. The
-//! shader is `assets/shaders/voxel.wesl` and hot reloads in dev builds.
+//! Bevy's lights don't touch it. The shader lights the block texture's pixels
+//! with the light baked into the mesh (sky and block light, and ambient
+//! occlusion; see `voxel` and `light`) and with the dynamic lights in
+//! [`LightingUniform`]. The shader is `assets/shaders/voxel.wesl` and hot
+//! reloads in dev builds. Its vertex stage is our own too, since chunk
+//! meshes carry their light in custom vertex attributes.
 //!
 //! The material doesn't sample the layer PNGs directly. Once every image
 //! the mods' textures use has loaded, and again whenever one hot reloads,
@@ -14,13 +17,25 @@
 use bevy::{
     asset::{AssetLoadFailedEvent, RenderAssetUsages},
     image::ImageLoaderSettings,
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{MaterialPipeline, MaterialPipelineKey},
     platform::collections::{HashMap, HashSet},
     prelude::*,
-    render::render_resource::AsBindGroup,
+    render::render_resource::{
+        AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    },
     shader::ShaderRef,
 };
 
-use crate::{block_texture, content::Content};
+use crate::{
+    block_texture,
+    content::Content,
+    voxel::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT},
+};
+
+/// The most dynamic lights drawn at once: the ones nearest the camera.
+/// Must match `MAX_DYNAMIC_LIGHTS` in the shader.
+pub const MAX_DYNAMIC_LIGHTS: usize = 16;
 
 /// The chunk shader, relative to `assets/`.
 pub const SHADER_PATH: &str = "shaders/voxel.wesl";
@@ -35,23 +50,86 @@ impl Plugin for VoxelMaterialPlugin {
     }
 }
 
-/// An unlit material that samples the block texture: an array with one
-/// layer per [`Content`] texture. Bindings must match `assets/shaders/voxel.wesl`.
+/// The chunk material: samples the block texture (an array with one layer
+/// per [`Content`] texture) and lights it. Bindings must match
+/// `assets/shaders/voxel.wesl`.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct VoxelMaterial {
     #[texture(0, dimension = "2d_array")]
     #[sampler(1)]
     pub blocks: Handle<Image>,
+    #[uniform(2)]
+    pub lighting: LightingUniform,
+}
+
+/// The light that isn't baked into chunk meshes. Kept up to date by
+/// `dynamic_light`.
+#[derive(ShaderType, Debug, Clone, Copy, PartialEq)]
+pub struct LightingUniform {
+    /// Sky light's linear colour at full strength; `w` is unused.
+    pub sky: Vec4,
+    /// How many of `dynamic` are in use.
+    pub dynamic_count: u32,
+    pub dynamic: [GpuDynamicLight; MAX_DYNAMIC_LIGHTS],
+}
+
+impl Default for LightingUniform {
+    fn default() -> Self {
+        Self {
+            sky: Vec4::ONE,
+            dynamic_count: 0,
+            dynamic: [GpuDynamicLight::default(); MAX_DYNAMIC_LIGHTS],
+        }
+    }
+}
+
+/// A dynamic light as the shader sees it.
+#[derive(ShaderType, Debug, Clone, Copy, PartialEq, Default)]
+pub struct GpuDynamicLight {
+    /// World position; `w` is unused.
+    pub position: Vec4,
+    /// Red, green and blue light levels, as for block light; `w` is unused.
+    pub levels: Vec4,
 }
 
 impl Material for VoxelMaterial {
+    fn vertex_shader() -> ShaderRef {
+        SHADER_PATH.into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         SHADER_PATH.into()
     }
 
-    /// Nothing is lit, so there's nothing to cast shadows onto.
+    /// Bevy's lights don't reach this material, so there's nothing to cast
+    /// shadows onto.
     fn enable_shadows() -> bool {
         false
+    }
+
+    /// The prepass would use Bevy's vertex shader, which doesn't know our
+    /// vertex layout, and nothing needs one.
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    /// Feeds the shader our vertex attributes, at the locations it reads
+    /// them from.
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.vertex.buffers = vec![layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
+            Mesh::ATTRIBUTE_UV_0.at_shader_location(2),
+            ATTRIBUTE_CORNER.at_shader_location(3),
+            ATTRIBUTE_LIGHT.at_shader_location(4),
+            ATTRIBUTE_FACE.at_shader_location(5),
+        ])?];
+        Ok(())
     }
 }
 
@@ -87,7 +165,10 @@ impl FromWorld for BlockMaterial {
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
         let material = world
             .resource_mut::<Assets<VoxelMaterial>>()
-            .add(VoxelMaterial { blocks });
+            .add(VoxelMaterial {
+                blocks,
+                lighting: default(),
+            });
         Self { material, layers }
     }
 }
@@ -185,6 +266,11 @@ mod tests {
         let shader = std::fs::read_to_string(format!("assets/{SHADER_PATH}")).unwrap();
         assert!(shader.contains("@binding(0) var blocks: texture_2d_array<f32>"));
         assert!(shader.contains("@binding(1) var blocks_sampler: sampler"));
+        assert!(shader.contains("@binding(2) var<uniform> lighting: Lighting"));
+        assert!(shader.contains(&format!(
+            "const MAX_DYNAMIC_LIGHTS: u32 = {MAX_DYNAMIC_LIGHTS}u;"
+        )));
+        assert!(shader.contains("fn vertex("));
         assert!(shader.contains("fn fragment("));
     }
 

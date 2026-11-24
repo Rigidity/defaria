@@ -22,11 +22,20 @@
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
 //! | `grain` | Print a texture-noise number for this frame (see below). |
 //! | `inspect <Component>` | Print that component on every entity that has it. |
+//! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears). |
+//! | `camera <x> <y> <z> <yaw> <pitch>` | Put the fly camera at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. |
+//! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //!
 //! Buttons are Bevy [`KeyCode`] names (`KeyW`, `Space`, `ShiftLeft`,
 //! `Escape`, …) or `MouseLeft`, `MouseRight`, `MouseMiddle`. Components are
 //! reflected type names, short (`FlyCamera`, `Transform`) or full
 //! (`defaria::fly_camera::FlyCamera`).
+//!
+//! `fill` and `camera` set up exact situations (a sealed room, a lamp, a
+//! view) without steering there with input. Edits go through the same path
+//! as the player's, so they relight and remesh on the frame they're made.
+//! `timing` is for comparing performance between runs on the same machine;
+//! put a `timing` just before the stretch to measure, to leave startup out.
 //!
 //! Commands between two `wait`s all happen on the same frame. `screenshot`,
 //! `grain` and `inspect` see the state at the end of that frame, so put a
@@ -53,7 +62,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bevy::{
@@ -76,6 +85,12 @@ use bevy::{
     time::TimeUpdateStrategy,
     window::{ExitCondition, PrimaryWindow, WindowResolution},
     winit::WinitPlugin,
+};
+
+use crate::{
+    content::{BlockState, Content},
+    fly_camera::{FlyCamera, MAX_PITCH},
+    terrain::Voxels,
 };
 
 /// Fixed time step for every headless frame.
@@ -130,8 +145,13 @@ impl Plugin for HeadlessPlugin {
                 rendering: self.rendering,
                 ..default()
             })
-            .add_systems(PreUpdate, run_script.before(InputSystems))
-            .add_systems(Last, (observe, exit_when_done).chain());
+            .add_systems(
+                PreUpdate,
+                (run_script, apply_world_commands)
+                    .chain()
+                    .before(InputSystems),
+            )
+            .add_systems(Last, (record_frame_time, observe, exit_when_done).chain());
         if self.rendering {
             app.add_systems(PreStartup, create_render_target)
                 .add_observer(render_to_image);
@@ -155,6 +175,19 @@ pub enum Command {
     Screenshot(PathBuf),
     Grain,
     Inspect(String),
+    Fill {
+        min: IVec3,
+        max: IVec3,
+        block: String,
+    },
+    Camera {
+        position: Vec3,
+        /// Degrees left of north.
+        yaw: f32,
+        /// Degrees up.
+        pitch: f32,
+    },
+    Timing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,6 +268,38 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             expect(1)?;
             commands.push(Command::Inspect(args[0].to_string()));
         }
+        "fill" => {
+            expect(7)?;
+            let corner = |at: usize| -> Result<IVec3, String> {
+                Ok(IVec3::new(
+                    parse_number(args[at])?,
+                    parse_number(args[at + 1])?,
+                    parse_number(args[at + 2])?,
+                ))
+            };
+            let (a, b) = (corner(0)?, corner(3)?);
+            commands.push(Command::Fill {
+                min: a.min(b),
+                max: a.max(b),
+                block: args[6].to_string(),
+            });
+        }
+        "camera" => {
+            expect(5)?;
+            commands.push(Command::Camera {
+                position: Vec3::new(
+                    parse_number(args[0])?,
+                    parse_number(args[1])?,
+                    parse_number(args[2])?,
+                ),
+                yaw: parse_number(args[3])?,
+                pitch: parse_number(args[4])?,
+            });
+        }
+        "timing" => {
+            expect(0)?;
+            commands.push(Command::Timing);
+        }
         other => return Err(format!("unknown command `{other}`")),
     }
     Ok(())
@@ -269,6 +334,12 @@ struct ScriptRunner {
     captures: Vec<Capture>,
     /// `inspect` commands to handle at the end of this frame.
     inspections: Vec<String>,
+    /// `fill` and `camera` commands to apply this frame, after input.
+    world_commands: Vec<Command>,
+    /// Whether a `timing` report is due at the end of this frame.
+    timing: bool,
+    /// Wall-clock frame times since the last `timing`.
+    frame_times: Vec<Duration>,
     /// Captures requested but not yet delivered by the renderer.
     pending_captures: usize,
     /// Frames since the last command ran, once there are none left.
@@ -282,6 +353,8 @@ impl ScriptRunner {
             && self.waiting == 0
             && self.captures.is_empty()
             && self.inspections.is_empty()
+            && self.world_commands.is_empty()
+            && !self.timing
     }
 }
 
@@ -367,8 +440,104 @@ fn run_script(
             Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
             Command::Grain => runner.captures.push(Capture::Grain),
             Command::Inspect(name) => runner.inspections.push(name),
+            Command::Fill { .. } | Command::Camera { .. } => runner.world_commands.push(command),
+            Command::Timing => runner.timing = true,
         }
     }
+}
+
+/// Applies this frame's `fill` and `camera` commands. A mistake in one (an
+/// unknown block, no camera) fails the run.
+fn apply_world_commands(world: &mut World) {
+    let commands = std::mem::take(&mut world.resource_mut::<ScriptRunner>().world_commands);
+    for command in commands {
+        let result = match command {
+            Command::Fill { min, max, block } => world
+                .run_system_cached_with(fill, (min, max, block))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
+            Command::Camera {
+                position,
+                yaw,
+                pitch,
+            } => world
+                .run_system_cached_with(place_camera, (position, yaw, pitch))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            error!("{error}");
+            world.write_message(AppExit::error());
+        }
+    }
+}
+
+fn fill(
+    In((min, max, id)): In<(IVec3, IVec3, String)>,
+    content: Res<Content>,
+    mut voxels: Voxels,
+) -> Result<(), String> {
+    let state = if id == crate::content::AIR {
+        BlockState::AIR
+    } else {
+        let id = if id.contains(':') {
+            id
+        } else {
+            format!("defaria:{id}")
+        };
+        content
+            .default_state(&id)
+            .ok_or_else(|| format!("fill: no block `{id}`"))?
+    };
+    for x in min.x..=max.x {
+        for y in min.y..=max.y {
+            for z in min.z..=max.z {
+                voxels.set(IVec3::new(x, y, z), state);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn place_camera(
+    In((position, yaw, pitch)): In<(Vec3, f32, f32)>,
+    mut cameras: Query<(&mut FlyCamera, &mut Transform)>,
+) -> Result<(), String> {
+    let (mut camera, mut transform) = cameras
+        .single_mut()
+        .map_err(|error| format!("camera: {error}"))?;
+    camera.yaw = yaw.to_radians();
+    camera.pitch = pitch.to_radians().clamp(-MAX_PITCH, MAX_PITCH);
+    *transform = Transform::from_translation(position).with_rotation(camera.rotation());
+    Ok(())
+}
+
+/// Keeps each frame's wall-clock time for `timing`: from the end of the
+/// last frame to the end of this one. Not from [`Time<Real>`], which steps
+/// by the fixed frame time here like the other clocks.
+fn record_frame_time(mut last: Local<Option<Instant>>, mut runner: ResMut<ScriptRunner>) {
+    let now = Instant::now();
+    if let Some(last) = last.replace(now) {
+        runner.frame_times.push(now - last);
+    }
+}
+
+/// Prints the frame times since the last report, and starts over.
+fn report_timing(runner: &mut ScriptRunner, frame: u32) {
+    let times = std::mem::take(&mut runner.frame_times);
+    runner.timing = false;
+    if times.is_empty() {
+        println!("[frame {frame}] timing: no frames yet");
+        return;
+    }
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let mean = times.iter().map(|&d| ms(d)).sum::<f64>() / times.len() as f64;
+    let worst = times.iter().map(|&d| ms(d)).fold(0.0, f64::max);
+    println!(
+        "[frame {frame}] timing: {} frames, mean {mean:.2} ms, worst {worst:.2} ms",
+        times.len()
+    );
 }
 
 /// A capture of the frame and what to do with it.
@@ -385,6 +554,12 @@ fn observe(world: &mut World) {
     let inspections = std::mem::take(&mut runner.inspections);
     let captures = std::mem::take(&mut runner.captures);
     let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
+    {
+        let mut runner = world.resource_mut::<ScriptRunner>();
+        if runner.timing {
+            report_timing(&mut runner, frame);
+        }
+    }
     for name in inspections {
         match inspect(world, &name) {
             Ok(lines) if lines.is_empty() => println!("[frame {frame}] no entity has {name}"),
@@ -634,7 +809,12 @@ fn exit_when_done(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{GamePlugin, fly_camera::FlyCamera};
+    use crate::{
+        GamePlugin,
+        fly_camera::FlyCamera,
+        light::{ChunkLight, Light},
+        terrain::{ChunkCoord, ChunkMap},
+    };
     use bevy::log::LogPlugin;
 
     #[test]
@@ -649,7 +829,10 @@ mod tests {
              \n\
              screenshot target/a.png\n\
              grain\n\
-             inspect Transform\n",
+             inspect Transform\n\
+             fill 3 9 -2 1 4 5 red_lamp\n\
+             camera 1 2.5 3 90 -45\n\
+             timing\n",
         )
         .unwrap();
         assert_eq!(
@@ -665,6 +848,17 @@ mod tests {
                 Command::Screenshot(PathBuf::from("target/a.png")),
                 Command::Grain,
                 Command::Inspect("Transform".into()),
+                Command::Fill {
+                    min: IVec3::new(1, 4, -2),
+                    max: IVec3::new(3, 9, 5),
+                    block: "red_lamp".into(),
+                },
+                Command::Camera {
+                    position: Vec3::new(1.0, 2.5, 3.0),
+                    yaw: 90.0,
+                    pitch: -45.0,
+                },
+                Command::Timing,
             ]
         );
     }
@@ -677,6 +871,77 @@ mod tests {
         assert!(Script::parse("wait").is_err());
         assert!(Script::parse("wait soon").is_err());
         assert!(Script::parse("grain 3").is_err());
+        assert!(Script::parse("fill 1 2 3 4 5 6").is_err());
+        assert!(Script::parse("fill 1 2 3 4 5 x stone").is_err());
+        assert!(Script::parse("camera 1 2 3 4").is_err());
+        assert!(Script::parse("timing now").is_err());
+    }
+
+    /// Runs the whole game with no GPU until the script ends, and returns
+    /// how it exited.
+    fn run_game(script: &str) -> (App, AppExit) {
+        let mut app = App::new();
+        app.add_plugins((
+            default_plugins(false).disable::<LogPlugin>(),
+            GamePlugin,
+            HeadlessPlugin {
+                script: Script::parse(script).unwrap(),
+                rendering: false,
+            },
+        ));
+        app.finish();
+        app.cleanup();
+        for _ in 0..200 {
+            app.update();
+            if let Some(exit) = app.should_exit() {
+                return (app, exit);
+            }
+        }
+        panic!("script never finished");
+    }
+
+    fn light_at(app: &mut App, pos: IVec3) -> Light {
+        let (coord, local) = ChunkCoord::split(pos);
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        app.world().get::<ChunkLight>(entity).unwrap().at(local)
+    }
+
+    /// End to end: `fill` builds a sealed room through the game's own edit
+    /// path, so it's lit like the player's edits: dark inside, with a lamp's
+    /// light falling off a level per block. `camera` moves the camera.
+    #[test]
+    fn fill_and_camera_set_up_a_scene() {
+        let (mut app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 60 30 60 stone\n\
+             fill 51 21 51 59 29 59 air\n\
+             fill 55 25 55 55 25 55 red_lamp\n\
+             camera 55.5 26.5 52 180 -10\n\
+             wait 1\n\
+             timing\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let red = crate::content::base()
+            .state(crate::content::block("red_lamp"))
+            .light;
+        for d in 1..4 {
+            let light = light_at(&mut app, IVec3::new(55 - d, 25, 55));
+            assert_eq!(light.sky(), 0, "the room is sealed");
+            assert_eq!(light.block()[0], red[0] - d as u8);
+        }
+        assert_eq!(light_at(&mut app, IVec3::new(52, 22, 52)).sky(), 0);
+        let (camera, transform) = camera(&mut app);
+        assert_eq!(transform.translation, Vec3::new(55.5, 26.5, 52.0));
+        assert!((camera.yaw - std::f32::consts::PI).abs() < 1e-5);
+        assert!((camera.pitch + 10f32.to_radians()).abs() < 1e-5);
+        // Yaw 180 faces south (+Z), at the lamp.
+        assert!(transform.forward().z > 0.9);
+    }
+
+    #[test]
+    fn filling_with_an_unknown_block_fails_the_run() {
+        let (_, exit) = run_game("wait 2\nfill 1 1 1 2 2 2 nonsense\nwait 1\n");
+        assert!(exit.is_error());
     }
 
     /// End to end: the whole game, no GPU, driven by a script.

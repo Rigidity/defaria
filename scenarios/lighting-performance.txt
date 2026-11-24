@@ -1,0 +1,132 @@
+# Frame times with lighting at work: the first frames (every chunk lit and
+# meshed), flying over the terrain, and placing and breaking a lamp on a
+# chunk corner over and over (each edit relights and remeshes the eight
+# chunks around the corner). Compare the `timing` lines between runs on the
+# same machine.
+# Run: cargo headless scenarios/lighting-performance.txt
+wait 5
+timing                             # startup
+hold MouseLeft 1
+hold KeyW 240                      # fly for four seconds
+timing
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+fill 64 32 64 64 32 64 lamp
+wait 2
+fill 64 32 64 64 32 64 air
+wait 2
+timing                             # 30 lamps placed and broken

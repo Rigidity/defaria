@@ -1,0 +1,32 @@
+# Ambient occlusion around every arrangement of neighbours: on a flat
+# stone platform built in the air, single blocks, a diagonal pair, an L, a
+# 2×2, a staircase, a pit and an overhang, seen from above at an angle and
+# then close up. Corners should darken smoothly, with no diagonal bands.
+# Run: cargo headless scenarios/ambient-occlusion.txt
+wait 5
+fill 20 45 20 44 45 44 stone       # the platform
+fill 23 46 23 23 46 23 planks      # a single block
+fill 27 46 23 27 46 23 planks      # a diagonal pair
+fill 28 46 24 28 46 24 planks
+fill 32 46 23 34 46 23 planks      # an L
+fill 32 46 24 32 46 25 planks
+fill 37 46 23 38 46 24 planks      # a 2×2
+fill 23 46 29 23 46 33 planks      # a staircase
+fill 24 46 29 24 47 33 planks
+fill 25 46 29 25 48 33 planks
+fill 30 45 30 32 45 32 air         # a pit, one block deep, with a
+fill 31 44 31 31 44 31 air         # deeper hole in the middle
+fill 30 44 30 32 44 32 stone
+fill 31 44 31 31 44 31 air
+fill 36 46 29 40 46 33 planks      # an overhang: a roof on a pillar
+fill 37 47 30 39 48 32 air
+fill 36 48 29 40 48 33 planks
+fill 37 46 30 39 47 32 air
+fill 38 46 31 38 47 31 stone
+camera 31 52 41 0 -45              # south of it, looking down at it
+wait 2
+screenshot target/scenarios/ambient-occlusion/0-overview.png
+wait 1
+camera 26 49.5 37 20 -30           # close up on the stairs and the pit
+wait 2
+screenshot target/scenarios/ambient-occlusion/1-close.png

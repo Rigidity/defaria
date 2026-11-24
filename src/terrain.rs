@@ -4,18 +4,24 @@
 //! stone, then a few layers of dirt, then one layer of grass on top. The world
 //! is [`WORLD_CHUNKS`] chunks; everything outside it is air.
 //!
-//! Chunks are meshed by [`remesh_changed_chunks`] whenever they change,
-//! including when they're spawned, so editing a chunk through [`Voxels`] is
-//! all it takes to update what's drawn.
+//! Chunks are meshed by [`remesh_changed_chunks`] whenever they or their
+//! light change, including when they're spawned, so editing a chunk through
+//! [`Voxels`] is all it takes to update what's drawn. Chunks are meshed in
+//! parallel, from copies of their blocks and light and the voxels around
+//! them.
 
-use std::collections::HashMap;
-
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::{
+    ecs::system::SystemParam,
+    platform::collections::{HashMap, HashSet},
+    prelude::*,
+    tasks::ComputeTaskPool,
+};
 
 use crate::{
     content::{BlockState, Content},
+    light::ChunkLight,
     perlin::Perlin,
-    voxel::{CHUNK_SIZE, Chunk},
+    voxel::{CHUNK_SIZE, Chunk, Neighborhood},
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
@@ -36,13 +42,14 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainSettings>()
             .init_resource::<ChunkMap>()
+            .add_message::<VoxelChanged>()
             .add_systems(Startup, spawn_chunks)
             .add_systems(Update, remesh_changed_chunks.in_set(RemeshChunks));
     }
 }
 
-/// Where changed chunks are remeshed. Systems that edit chunks run before
-/// it, so their edits show on the same frame.
+/// Where changed chunks are relit and remeshed. Systems that edit chunks
+/// run before it, so their edits show on the same frame.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RemeshChunks;
 
@@ -90,6 +97,49 @@ impl ChunkCoord {
         let size = IVec3::splat(CHUNK_SIZE as i32);
         (Self(pos.div_euclid(size)), pos.rem_euclid(size))
     }
+
+    /// The chunks whose meshes show world voxel `pos`: its own, and every
+    /// chunk across the edges and corners it touches (a voxel shades the
+    /// corners of faces next to it, and those can be in any of them).
+    pub fn touching(pos: IVec3) -> impl Iterator<Item = ChunkCoord> {
+        let (coord, local) = Self::split(pos);
+        let last = CHUNK_SIZE as i32 - 1;
+        let edge = local.map(|v| match v {
+            0 => -1,
+            v if v == last => 1,
+            _ => 0,
+        });
+        let steps = |axis: usize| {
+            if edge[axis] == 0 {
+                vec![0]
+            } else {
+                vec![0, edge[axis]]
+            }
+        };
+        let (xs, ys, zs) = (steps(0), steps(1), steps(2));
+        xs.into_iter().flat_map(move |x| {
+            let zs = zs.clone();
+            ys.clone().into_iter().flat_map(move |y| {
+                zs.clone()
+                    .into_iter()
+                    .map(move |z| ChunkCoord(coord.0 + IVec3::new(x, y, z)))
+            })
+        })
+    }
+
+    /// The 26 chunks around this one.
+    pub fn neighbours(self) -> impl Iterator<Item = ChunkCoord> {
+        (-1..=1)
+            .flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| IVec3::new(x, y, z))))
+            .filter(|&offset| offset != IVec3::ZERO)
+            .map(move |offset| ChunkCoord(self.0 + offset))
+    }
+}
+
+/// A voxel was set to a different block, through [`Voxels`].
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoxelChanged {
+    pub pos: IVec3,
 }
 
 /// Every chunk entity, by its coordinate. Filled as the chunks spawn.
@@ -111,6 +161,7 @@ impl ChunkMap {
 pub struct Voxels<'w, 's> {
     map: Res<'w, ChunkMap>,
     chunks: Query<'w, 's, &'static mut Chunk>,
+    changes: MessageWriter<'w, VoxelChanged>,
 }
 
 impl Voxels<'_, '_> {
@@ -121,10 +172,11 @@ impl Voxels<'_, '_> {
         Some(chunk.at(local))
     }
 
-    /// Sets the voxel at a world position, and returns whether it did: there's
-    /// nothing to set outside the world. A voxel on a chunk's edge also shows
-    /// or hides a face of the neighbouring chunk, so that chunk is marked
-    /// changed too, and both are remeshed.
+    /// Sets the voxel at a world position, and returns whether it's there to
+    /// set: there's nothing outside the world. A voxel on a chunk's edge also
+    /// shows, hides or shades faces of the chunks across that edge, so they
+    /// are marked changed too and remeshed with it. A change to a different
+    /// block sends [`VoxelChanged`].
     pub fn set(&mut self, pos: IVec3, state: BlockState) -> bool {
         let (coord, local) = ChunkCoord::split(pos);
         let Some(mut chunk) = self
@@ -134,24 +186,20 @@ impl Voxels<'_, '_> {
         else {
             return false;
         };
+        if chunk.at(local) == state {
+            return true;
+        }
         chunk.set_at(local, state);
-        let last = CHUNK_SIZE as i32 - 1;
-        for axis in 0..3 {
-            let mut offset = IVec3::ZERO;
-            offset[axis] = match local[axis] {
-                0 => -1,
-                l if l == last => 1,
-                _ => continue,
-            };
-            let neighbour = ChunkCoord(coord.0 + offset);
+        for touching in ChunkCoord::touching(pos) {
             if let Some(mut chunk) = self
                 .map
-                .get(neighbour)
+                .get(touching)
                 .and_then(|entity| self.chunks.get_mut(entity).ok())
             {
                 chunk.set_changed();
             }
         }
+        self.changes.write(VoxelChanged { pos });
         true
     }
 }
@@ -282,27 +330,49 @@ fn spawn_chunks(
     }
 }
 
-/// Rebuilds the mesh of every chunk that was spawned or changed since the
-/// last run, culling faces against the neighbouring chunks as they are now.
+/// Rebuilds the mesh of every chunk that was spawned or changed, or whose
+/// light changed, since the last run, and of the chunks around each one that
+/// was spawned (their faces against it are culled and shaded differently
+/// now). Meshes are built in parallel.
 pub fn remesh_changed_chunks(
     mut commands: Commands,
-    chunks: Query<(Entity, &ChunkCoord, Ref<Chunk>)>,
+    chunks: Query<(Entity, &ChunkCoord, Ref<Chunk>, Ref<ChunkLight>)>,
     map: Res<ChunkMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<BlockMaterial>,
     content: Res<Content>,
 ) {
-    for (entity, coord, chunk) in &chunks {
-        if !chunk.is_changed() {
-            continue;
+    let mut dirty = HashSet::new();
+    for (_, coord, chunk, light) in &chunks {
+        if chunk.is_changed() || light.is_changed() {
+            dirty.insert(*coord);
         }
-        let origin = coord.origin();
-        let mesh = chunk.mesh(&content, |local| {
-            let (coord, local) = ChunkCoord::split(origin + local);
-            map.get(coord)
-                .and_then(|entity| chunks.get(entity).ok())
-                .map_or(BlockState::AIR, |(_, _, chunk)| chunk.at(local))
-        });
+        if chunk.is_added() {
+            dirty.extend(coord.neighbours().filter(|n| map.get(*n).is_some()));
+        }
+    }
+    if dirty.is_empty() {
+        return;
+    }
+    let jobs: Vec<(Entity, Neighborhood)> = dirty
+        .into_iter()
+        .filter_map(|coord| {
+            let entity = map.get(coord)?;
+            let neighborhood = Neighborhood::gather(|offset| {
+                let (_, _, chunk, light) =
+                    chunks.get(map.get(ChunkCoord(coord.0 + offset))?).ok()?;
+                Some((chunk.into_inner(), light.into_inner()))
+            });
+            Some((entity, neighborhood))
+        })
+        .collect();
+    let built = ComputeTaskPool::get().scope(|scope| {
+        for (entity, neighborhood) in &jobs {
+            let content = &content;
+            scope.spawn(async move { (*entity, neighborhood.mesh(content)) });
+        }
+    });
+    for (entity, mesh) in built {
         // Chunks with nothing visible (all air, or buried) get no mesh; the
         // renderer warns about meshes with no vertices.
         if mesh.count_vertices() > 0 {
@@ -524,26 +594,43 @@ mod tests {
         assert_eq!(meshes(&mut app), before);
     }
 
-    /// An edit in a chunk's corner changes that chunk and the three chunks
-    /// across its faces there, and only those are remeshed.
+    /// An edit changes its chunk and every chunk across the edges and
+    /// corners it touches (their faces' corners can be shaded by it), and
+    /// only those are remeshed. Setting a voxel to what it already is
+    /// changes nothing.
     #[test]
     fn edits_on_a_border_remesh_the_chunks_across_it() {
         let mut app = app();
-        let set = |app: &mut App, pos: IVec3| {
+        let set = |app: &mut App, pos: IVec3, state: BlockState| {
             app.world_mut()
                 .run_system_once(move |mut voxels: Voxels| {
-                    assert!(voxels.set(pos, BlockState::AIR));
+                    assert!(voxels.set(pos, state));
                 })
                 .unwrap();
             app.update();
             app.world().resource::<ChangedChunks>().0.clone()
         };
+        let around = |chunk: IVec3, steps: IVec3| {
+            let mut chunks = Vec::new();
+            for x in [0, steps.x] {
+                for y in [0, steps.y] {
+                    for z in [0, steps.z] {
+                        chunks.push(chunk + IVec3::new(x, y, z));
+                    }
+                }
+            }
+            chunks.sort_by_key(|c| c.to_array());
+            chunks.dedup();
+            chunks
+        };
+        let planks = block("planks");
         let chunk = IVec3::new(2, 1, 2);
         let origin = ChunkCoord(chunk).origin();
         let before = meshes(&mut app);
-        let changed = set(&mut app, origin + IVec3::new(0, 15, 15));
-        let mut expected = [chunk, chunk - IVec3::X, chunk + IVec3::Y, chunk + IVec3::Z];
-        expected.sort_by_key(|c| c.to_array());
+        let corner = origin + IVec3::new(0, 15, 15);
+        let changed = set(&mut app, corner, planks);
+        let expected = around(chunk, IVec3::new(-1, 1, 1));
+        assert_eq!(changed.len(), 8);
         assert_eq!(changed, expected);
         // Every other chunk kept its mesh.
         let after = meshes(&mut app);
@@ -553,10 +640,13 @@ mod tests {
             }
         }
 
-        let changed = set(&mut app, origin + IVec3::new(15, 0, 0));
-        let mut expected = [chunk, chunk + IVec3::X, chunk - IVec3::Y, chunk - IVec3::Z];
-        expected.sort_by_key(|c| c.to_array());
-        assert_eq!(changed, expected);
+        let changed = set(&mut app, origin + IVec3::new(15, 0, 0), planks);
+        assert_eq!(changed, around(chunk, IVec3::new(1, -1, -1)));
+        let changed = set(&mut app, origin + IVec3::new(0, 5, 7), planks);
+        assert_eq!(changed, around(chunk, IVec3::new(-1, 0, 0)));
+        let changed = set(&mut app, origin + IVec3::new(4, 5, 7), planks);
+        assert_eq!(changed, [chunk]);
+        assert!(set(&mut app, corner, planks).is_empty(), "already planks");
     }
 
     #[test]

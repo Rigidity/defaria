@@ -1,0 +1,40 @@
+# Block light, sky light and the player's light, in a sealed stone room
+# built in the air above the hills, so nothing but its own lamps lights it.
+# Run: cargo headless scenarios/lighting.txt
+wait 5
+fill 40 40 40 56 48 56 stone       # the shell
+fill 41 41 41 55 47 55 air         # hollowed out
+fill 44 41 44 44 47 44 stone       # a pillar from floor to ceiling
+fill 50 41 46 52 41 48 planks      # a low platform with a step on it
+fill 51 42 47 51 42 47 planks
+fill 42 43 49 42 43 49 red_lamp    # red on the west wall
+fill 54 43 43 54 43 43 blue_lamp   # blue in the north-east corner
+fill 48 47 50 48 47 50 lamp        # a warm lamp in the ceiling
+camera 48.5 45.5 54.5 0 -25        # by the south wall, looking north
+press KeyL                         # the player's light starts on: off
+wait 1
+release KeyL
+wait 2
+screenshot target/scenarios/lighting/0-lamps.png
+wait 1
+
+fill 42 43 49 54 47 50 air         # take the red and warm lamps away
+fill 54 43 43 54 43 43 air         # and the blue one: dark
+wait 2
+screenshot target/scenarios/lighting/1-dark.png
+wait 1
+
+press KeyL                         # the player's light back on
+wait 1
+release KeyL
+wait 2
+screenshot target/scenarios/lighting/2-player-light.png
+wait 1
+
+press KeyL                         # off again, and open a hole in the roof
+wait 1
+release KeyL
+fill 46 48 46 49 48 48 air
+wait 2
+screenshot target/scenarios/lighting/3-skylight.png
+inspect DynamicLight

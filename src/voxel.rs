@@ -1,29 +1,75 @@
 //! 16×16×16 voxel chunks, each rendered as one custom mesh, plus the world's
-//! sky color. The terrain module decides what goes in the chunks, and
-//! `voxel_material` draws them.
+//! sky color. The terrain module decides what goes in the chunks, `light`
+//! lights them, and `voxel_material` draws them.
 //!
 //! A chunk holds a [`BlockState`] per voxel; what each state looks like
-//! comes from the mods (see `content`). Each face's vertices carry a UV
-//! within its tile (UV_0) and the tile's layer in the block texture array
-//! (UV_1.x).
+//! comes from the mods (see `content`).
 //!
 //! Meshing copies each block state's baked model faces into the chunk mesh,
 //! leaving out the faces covered by the neighbour on their `cull` side,
-//! including across chunk borders (the caller says what lies outside the
-//! chunk). Greedy meshing is the next step if vertex counts become a
-//! problem.
+//! including across chunk borders. It reads a [`Neighborhood`]: a copy of the
+//! chunk's blocks and light plus the one-voxel layer around it from the
+//! neighbouring chunks, so meshing never looks anything up in other chunks.
+//! Greedy meshing is the next step if vertex counts become a problem.
+//!
+//! # Lighting in the mesh
+//!
+//! Each corner of a face gets an ambient occlusion level and a light level
+//! per channel, Minecraft's "smooth lighting":
+//!
+//! - **Ambient occlusion** looks at the three voxels touching the corner in
+//!   the layer in front of the face: the two along its edges and the one
+//!   diagonally across. Each opaque one darkens the corner a step; with both
+//!   edges blocked the corner is fully dark, whatever the diagonal is.
+//! - **Light** is the average of those voxels and the one right in front of
+//!   the face, leaving out opaque ones (they hold no light) and the
+//!   diagonal when both edges are blocked (light can't get through there).
+//!
+//! The shader blends the four corners bilinearly across the face, rather
+//! than letting the GPU interpolate across the quad's two triangles. That
+//! interpolation depends on which way the diagonal runs and shows up as
+//! diagonal bands and creases; bilinear blending is symmetric, so every
+//! arrangement of light and shadow comes out smooth. So every vertex of a
+//! face carries all four corners' values ([`ATTRIBUTE_LIGHT`],
+//! [`ATTRIBUTE_FACE`]) plus where it sits on the face ([`ATTRIBUTE_CORNER`]).
+//!
+//! Faces of blocks that give off light are drawn at full brightness, so
+//! light sources glow.
 
 use bevy::{
     asset::RenderAssetUsages,
-    mesh::{Indices, PrimitiveTopology},
+    mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexFormat},
     prelude::*,
 };
 
-use crate::content::{BlockState, Content};
+use crate::{
+    content::{BakedFace, BlockState, Content, MAX_LIGHT},
+    light::{ChunkLight, Light},
+};
 
 /// Voxels along each axis of a chunk.
 pub const CHUNK_SIZE: usize = 16;
-const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+
+/// Where a vertex sits on its face, for blending the corners: `(0, 0)` at
+/// the first vertex, `(1, 0)` at the second, `(1, 1)` at the third and
+/// `(0, 1)` at the fourth.
+pub const ATTRIBUTE_CORNER: MeshVertexAttribute =
+    MeshVertexAttribute::new("Corner", 0x0DEF_A41A_0001, VertexFormat::Float32x2);
+/// The light at each of the face's four corners, in the order of
+/// [`ATTRIBUTE_CORNER`]: sky, red, green and blue, one byte each from the
+/// lowest, where 255 is [`MAX_LIGHT`]. The same on every vertex of a face.
+pub const ATTRIBUTE_LIGHT: MeshVertexAttribute =
+    MeshVertexAttribute::new("Light", 0x0DEF_A41A_0002, VertexFormat::Uint32x4);
+/// The face's layer in the block texture array, then its four corners'
+/// ambient occlusion, one byte each from the lowest: 3 is open, 0 is fully
+/// occluded. The same on every vertex of a face.
+pub const ATTRIBUTE_FACE: MeshVertexAttribute =
+    MeshVertexAttribute::new("Face", 0x0DEF_A41A_0003, VertexFormat::Uint32x2);
+
+/// What lies outside every loaded chunk, as the mesh sees it: open air in
+/// full sky light, so faces at the edge of the world are lit.
+pub const OPEN_SKY: Light = Light::new(MAX_LIGHT, [0; 3]);
 
 pub struct VoxelPlugin;
 
@@ -37,6 +83,7 @@ impl Plugin for VoxelPlugin {
 /// `(x, y, z)` to `(x + 1, y + 1, z + 1)` in the chunk's local space.
 #[derive(Component, Reflect, Debug, Clone)]
 #[reflect(Component)]
+#[require(ChunkLight)]
 pub struct Chunk {
     voxels: Vec<BlockState>,
 }
@@ -50,6 +97,7 @@ impl Default for Chunk {
 }
 
 impl Chunk {
+    #[cfg(test)]
     pub fn get(&self, x: usize, y: usize, z: usize) -> BlockState {
         self.voxels[Self::index(x, y, z)]
     }
@@ -60,12 +108,33 @@ impl Chunk {
 
     /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
     pub fn at(&self, pos: IVec3) -> BlockState {
-        self.get(pos.x as usize, pos.y as usize, pos.z as usize)
+        self.voxels[Self::index_of(pos)]
     }
 
     /// [`Chunk::set`] for a chunk-local position given as an `IVec3`.
     pub fn set_at(&mut self, pos: IVec3, state: BlockState) {
-        self.set(pos.x as usize, pos.y as usize, pos.z as usize, state);
+        self.voxels[Self::index_of(pos)] = state;
+    }
+
+    /// The voxel at an index from [`Chunk::index_of`].
+    pub fn get_index(&self, index: usize) -> BlockState {
+        self.voxels[index]
+    }
+
+    /// Where the voxel at a chunk-local position is stored. Chunk light
+    /// uses the same order.
+    pub fn index_of(pos: IVec3) -> usize {
+        Self::index(pos.x as usize, pos.y as usize, pos.z as usize)
+    }
+
+    /// The chunk-local position of the voxel stored at `index`.
+    pub fn position_of(index: usize) -> IVec3 {
+        let size = CHUNK_SIZE;
+        IVec3::new(
+            (index % size) as i32,
+            (index / (size * size)) as i32,
+            (index / size % size) as i32,
+        )
     }
 
     fn index(x: usize, y: usize, z: usize) -> usize {
@@ -82,57 +151,146 @@ impl Chunk {
         })
     }
 
-    /// The voxel at a chunk-local position that may lie outside the chunk:
-    /// inside, it comes from the chunk; outside, from `outside`.
-    fn get_or(&self, pos: IVec3, outside: &impl Fn(IVec3) -> BlockState) -> BlockState {
-        let size = CHUNK_SIZE as i32;
-        if pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(size)).all() {
-            self.at(pos)
-        } else {
-            outside(pos)
-        }
+    /// Meshes the chunk with `outside` giving the voxels around it, all in
+    /// full sky light.
+    #[cfg(test)]
+    pub fn mesh(&self, content: &Content, outside: impl Fn(IVec3) -> BlockState) -> Mesh {
+        let inside = |pos: IVec3| pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(16)).all();
+        Neighborhood::from_fn(|pos| {
+            let block = if inside(pos) {
+                self.at(pos)
+            } else {
+                outside(pos)
+            };
+            (block, OPEN_SKY)
+        })
+        .mesh(content)
+    }
+}
+
+/// Voxels along each axis of a [`Neighborhood`].
+const PADDED: usize = CHUNK_SIZE + 2;
+
+/// A chunk's blocks and light and the layer of voxels around it, copied out
+/// for meshing. Positions are chunk-local, from -1 to [`CHUNK_SIZE`].
+#[derive(Debug, Clone)]
+pub struct Neighborhood {
+    blocks: Vec<BlockState>,
+    light: Vec<Light>,
+}
+
+impl Neighborhood {
+    /// Copies the chunk at offset zero from `chunk` and the edges of the
+    /// chunks around it, by their offset (each coordinate -1, 0 or 1). A
+    /// chunk that isn't there reads as open sky.
+    pub fn gather<'a>(chunk: impl Fn(IVec3) -> Option<(&'a Chunk, &'a ChunkLight)>) -> Self {
+        let chunks: [_; 27] = std::array::from_fn(|i| {
+            let i = i as i32;
+            chunk(IVec3::new(i % 3, i / 3 % 3, i / 9) - IVec3::ONE)
+        });
+        let size = IVec3::splat(CHUNK_SIZE as i32);
+        Self::from_fn(|pos| {
+            let offset = pos.div_euclid(size) + IVec3::ONE;
+            match chunks[(offset.x + offset.y * 3 + offset.z * 9) as usize] {
+                Some((chunk, light)) => {
+                    let local = pos.rem_euclid(size);
+                    (chunk.at(local), light.at(local))
+                }
+                None => (BlockState::AIR, OPEN_SKY),
+            }
+        })
     }
 
-    /// Builds a mesh of every voxel's model faces, leaving out each face
-    /// whose neighbour on its `cull` side covers the side facing it.
-    /// `outside` gives the voxel at a chunk-local position just beyond the
-    /// chunk's edge, so faces buried against a neighbouring chunk are
-    /// skipped too.
-    pub fn mesh(&self, content: &Content, outside: impl Fn(IVec3) -> BlockState) -> Mesh {
+    /// Fills every position from `voxel`.
+    pub fn from_fn(voxel: impl Fn(IVec3) -> (BlockState, Light)) -> Self {
+        let mut blocks = Vec::with_capacity(PADDED.pow(3));
+        let mut light = Vec::with_capacity(PADDED.pow(3));
+        let range = -1..=CHUNK_SIZE as i32;
+        for y in range.clone() {
+            for z in range.clone() {
+                for x in range.clone() {
+                    let (block, level) = voxel(IVec3::new(x, y, z));
+                    blocks.push(block);
+                    light.push(level);
+                }
+            }
+        }
+        Self { blocks, light }
+    }
+
+    fn index(pos: IVec3) -> usize {
+        let p = (pos + IVec3::ONE).as_uvec3();
+        debug_assert!(
+            p.cmplt(UVec3::splat(PADDED as u32)).all(),
+            "{pos} is outside"
+        );
+        ((p.y as usize * PADDED) + p.z as usize) * PADDED + p.x as usize
+    }
+
+    pub fn block(&self, pos: IVec3) -> BlockState {
+        self.blocks[Self::index(pos)]
+    }
+
+    pub fn light(&self, pos: IVec3) -> Light {
+        self.light[Self::index(pos)]
+    }
+
+    /// Builds a mesh of every voxel's model faces in the middle chunk,
+    /// leaving out each face whose neighbour on its `cull` side covers the
+    /// side facing it, with ambient occlusion and light at every corner.
+    pub fn mesh(&self, content: &Content) -> Mesh {
+        let opaque: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|&block| content.state(block).is_opaque())
+            .collect();
+        let opaque_at = |pos: IVec3| opaque[Self::index(pos)];
+
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
-        let mut layers = Vec::new();
+        let mut corners = Vec::new();
+        let mut lights = Vec::new();
+        let mut faces = Vec::new();
         let mut indices = Vec::new();
 
-        for (x, y, z) in Self::positions() {
-            let voxel = self.get(x, y, z);
+        for (x, y, z) in Chunk::positions() {
+            let pos = IVec3::new(x as i32, y as i32, z as i32);
+            let voxel = self.block(pos);
             if voxel.is_air() {
                 continue;
             }
-            let origin = Vec3::new(x as f32, y as f32, z as f32);
-            let pos = IVec3::new(x as i32, y as i32, z as i32);
-            for face in &content.state(voxel).faces {
+            let origin = pos.as_vec3();
+            let state = content.state(voxel);
+            let glows = state.emits_light();
+            for face in &state.faces {
                 if let Some(side) = face.cull {
-                    let neighbour = self.get_or(pos + side.normal(), &outside);
+                    let neighbour = self.block(pos + side.normal());
                     if content.state(neighbour).occludes(side.opposite()) {
                         continue;
                     }
                 }
+                let shading = self.shade_face(pos, face, glows, &opaque_at);
                 let base = positions.len() as u32;
-                for vertex in &face.vertices {
+                let triangle = face.vertices.len() == 3;
+                for (i, vertex) in face.vertices.iter().enumerate() {
                     positions.push((origin + vertex.pos).to_array());
                     normals.push(face.normal.to_array());
                     uvs.push(vertex.uv.to_array());
-                    layers.push([face.layer as f32, 0.0]);
+                    // A triangle's third vertex is the fourth corner; the
+                    // third is made up so the blend is flat across it.
+                    let corner = if triangle && i == 2 { 3 } else { i };
+                    corners.push(CORNERS[corner]);
+                    lights.push(shading.light);
+                    faces.push([face.layer, shading.occlusion]);
                 }
                 // A triangle, or a quad as two counter-clockwise triangles.
-                let corners: &[u32] = if face.vertices.len() == 3 {
+                let order: &[u32] = if triangle {
                     &[0, 1, 2]
                 } else {
                     &[0, 1, 2, 0, 2, 3]
                 };
-                indices.extend(corners.iter().map(|i| base + i));
+                indices.extend(order.iter().map(|i| base + i));
             }
         }
 
@@ -143,9 +301,166 @@ impl Chunk {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-        // The shader reads the face's texture array layer from UV_1.x.
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, layers)
+        .with_inserted_attribute(ATTRIBUTE_CORNER, corners)
+        .with_inserted_attribute(ATTRIBUTE_LIGHT, lights)
+        .with_inserted_attribute(ATTRIBUTE_FACE, faces)
         .with_inserted_indices(Indices::U32(indices))
+    }
+
+    /// The light and ambient occlusion at a face's corners, packed for the
+    /// vertex attributes.
+    fn shade_face(
+        &self,
+        pos: IVec3,
+        face: &BakedFace,
+        glows: bool,
+        opaque: &impl Fn(IVec3) -> bool,
+    ) -> FaceShading {
+        let mut corners = [CornerShading::default(); 4];
+        let normal = face.normal.as_ivec3();
+        let axis_aligned = normal.abs().element_sum() == 1 && normal.as_vec3() == face.normal;
+        // A face on the block's boundary sees the voxel it faces; one inside
+        // the block (no `cull`) sees the block's own voxel.
+        let front = if face.cull.is_some() {
+            pos + normal
+        } else {
+            pos
+        };
+        for (i, vertex) in face.vertices.iter().enumerate() {
+            let corner = if face.vertices.len() == 3 && i == 2 {
+                3
+            } else {
+                i
+            };
+            corners[corner] = if axis_aligned {
+                self.shade_corner(front, normal, vertex.pos, opaque)
+            } else {
+                CornerShading::from_light(self.light(pos), 1, OPEN)
+            };
+        }
+        if face.vertices.len() == 3 {
+            // Extend the triangle's blend to the made-up corner, so it stays
+            // flat (affine) over the triangle.
+            corners[2] = corners[1].extend(corners[3], corners[0]);
+        }
+        if glows {
+            for corner in &mut corners {
+                corner.light[1..].fill(u8::MAX);
+                corner.occlusion = OPEN;
+            }
+        }
+        FaceShading {
+            light: corners.map(|c| u32::from_le_bytes(c.light)),
+            occlusion: u32::from_le_bytes(corners.map(|c| c.occlusion)),
+        }
+    }
+
+    /// The light and ambient occlusion at one corner of a face whose front
+    /// layer is at `front` (the voxel right in front of it), facing along
+    /// the axis-aligned `normal`. `vertex` is the corner's position in its
+    /// block.
+    fn shade_corner(
+        &self,
+        front: IVec3,
+        normal: IVec3,
+        vertex: Vec3,
+        opaque: &impl Fn(IVec3) -> bool,
+    ) -> CornerShading {
+        let axis = if normal.x != 0 {
+            0
+        } else if normal.y != 0 {
+            1
+        } else {
+            2
+        };
+        // Toward the corner along each of the face's two directions.
+        let toward = |along: usize| {
+            let mut step = IVec3::ZERO;
+            step[along] = if vertex[along] < 0.5 { -1 } else { 1 };
+            step
+        };
+        let (a, b) = (toward((axis + 1) % 3), toward((axis + 2) % 3));
+        let (side_a, side_b, diagonal) = (front + a, front + b, front + a + b);
+        let (blocked_a, blocked_b) = (opaque(side_a), opaque(side_b));
+        let blocked_diagonal = opaque(diagonal);
+        let occlusion = if blocked_a && blocked_b {
+            0
+        } else {
+            OPEN - blocked_a as u8 - blocked_b as u8 - blocked_diagonal as u8
+        };
+        let lit = [
+            (front, !opaque(front)),
+            (side_a, !blocked_a),
+            (side_b, !blocked_b),
+            (diagonal, !blocked_diagonal && !(blocked_a && blocked_b)),
+        ];
+        let mut sum = [0u32; 4];
+        let mut count = 0;
+        for (voxel, _) in lit.iter().filter(|(_, open)| *open) {
+            let light = self.light(*voxel);
+            for (channel, total) in sum.iter_mut().enumerate() {
+                *total += light.get(channel) as u32;
+            }
+            count += 1;
+        }
+        if count == 0 {
+            // Every voxel around the corner is opaque: use the one in front.
+            return CornerShading::from_light(self.light(front), 1, occlusion);
+        }
+        CornerShading::from_sum(sum, count, occlusion)
+    }
+}
+
+/// [`ATTRIBUTE_CORNER`] for each corner.
+const CORNERS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+/// The ambient occlusion level of a corner with nothing around it.
+const OPEN: u8 = 3;
+/// A light level's step in the packed bytes: [`MAX_LIGHT`] packs to 255.
+const LEVEL_STEP: f32 = u8::MAX as f32 / MAX_LIGHT as f32;
+
+/// One face's [`ATTRIBUTE_LIGHT`] and the occlusion half of its
+/// [`ATTRIBUTE_FACE`].
+struct FaceShading {
+    light: [u32; 4],
+    occlusion: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct CornerShading {
+    /// Sky, red, green and blue, 255 at [`MAX_LIGHT`].
+    light: [u8; 4],
+    occlusion: u8,
+}
+
+impl CornerShading {
+    fn from_light(light: Light, count: u32, occlusion: u8) -> Self {
+        Self::from_sum(
+            std::array::from_fn(|channel| light.get(channel) as u32),
+            count,
+            occlusion,
+        )
+    }
+
+    /// The average of `count` voxels' light, from each channel's total.
+    fn from_sum(sum: [u32; 4], count: u32, occlusion: u8) -> Self {
+        Self {
+            light: sum.map(|total| (total as f32 / count as f32 * LEVEL_STEP).round() as u8),
+            occlusion,
+        }
+    }
+
+    /// `self + other - opposite`, clamped: the fourth corner of a
+    /// parallelogram.
+    fn extend(self, other: Self, opposite: Self) -> Self {
+        let extend = |a: u8, b: u8, c: u8, max: u8| {
+            (a as i32 + b as i32 - c as i32).clamp(0, max as i32) as u8
+        };
+        Self {
+            light: std::array::from_fn(|i| {
+                extend(self.light[i], other.light[i], opposite.light[i], u8::MAX)
+            }),
+            occlusion: extend(self.occlusion, other.occlusion, opposite.occlusion, OPEN),
+        }
     }
 }
 
@@ -218,18 +533,32 @@ mod tests {
         assert_eq!(faces(&mesh(&filled(), below)), 5 * side);
     }
 
+    /// A neighbourhood copies each neighbouring chunk's edge from that
+    /// chunk's own coordinates, and reads missing chunks as open sky.
     #[test]
-    fn outside_is_queried_in_chunk_local_coordinates() {
-        let mut chunk = Chunk::default();
-        chunk.set(0, 0, 0, block("stone"));
-        let queried = std::cell::RefCell::new(Vec::new());
-        mesh(&chunk, |pos| {
-            queried.borrow_mut().push(pos);
-            BlockState::AIR
+    fn gather_copies_the_edges_of_the_chunks_around() {
+        let mut middle = Chunk::default();
+        middle.set(0, 0, 0, block("dirt"));
+        let mut west = Chunk::default();
+        west.set(15, 0, 0, block("stone"));
+        let mut corner = Chunk::default();
+        corner.set(0, 15, 15, block("sand"));
+        let mut light = ChunkLight::default();
+        light.set_at(IVec3::new(15, 0, 0), Light::new(3, [4, 5, 6]));
+        let dark = ChunkLight::default();
+        let n = Neighborhood::gather(|offset| match offset.to_array() {
+            [0, 0, 0] => Some((&middle, &dark)),
+            [-1, 0, 0] => Some((&west, &light)),
+            [1, -1, -1] => Some((&corner, &dark)),
+            _ => None,
         });
-        let mut queried = queried.into_inner();
-        queried.sort_by_key(|p| p.to_array());
-        assert_eq!(queried, [IVec3::NEG_X, IVec3::NEG_Y, IVec3::NEG_Z]);
+        assert_eq!(n.block(IVec3::ZERO), block("dirt"));
+        assert_eq!(n.light(IVec3::ZERO), Light::DARK);
+        assert_eq!(n.block(IVec3::new(-1, 0, 0)), block("stone"));
+        assert_eq!(n.light(IVec3::new(-1, 0, 0)), Light::new(3, [4, 5, 6]));
+        assert_eq!(n.block(IVec3::new(16, -1, -1)), block("sand"));
+        assert_eq!(n.block(IVec3::new(16, 16, 16)), BlockState::AIR);
+        assert_eq!(n.light(IVec3::new(16, 16, 16)), OPEN_SKY);
     }
 
     #[test]
@@ -372,12 +701,11 @@ mod tests {
         chunk.set(1, 1, 1, block("grass"));
         let mesh = mesh(&chunk, air);
         let normals = vec3s(&mesh, Mesh::ATTRIBUTE_NORMAL);
-        let layers = vec2s(&mesh, Mesh::ATTRIBUTE_UV_1);
         let content = base();
-        for (normal, layer) in normals.iter().zip(&layers) {
+        for (normal, face) in normals.iter().zip(faces_of(&mesh)) {
             let tile = tile_on(block("grass"), normal.as_ivec3());
             let expected = content.texture(&format!("defaria:{tile}")).unwrap();
-            assert_eq!(*layer, Vec2::new(expected as f32, 0.0));
+            assert_eq!(face[0], expected);
         }
     }
 
@@ -479,5 +807,181 @@ mod tests {
             panic!("no indices");
         };
         assert_eq!(indices, &[0, 1, 2, 3, 4, 5, 3, 5, 6]);
+    }
+
+    /// One face's shading, read back from the mesh: each corner's ambient
+    /// occlusion and light (sky, red, green, blue, 255 at level 15), in
+    /// corner order.
+    #[derive(Debug, PartialEq)]
+    struct Shading {
+        occlusion: [u8; 4],
+        light: [[u8; 4]; 4],
+    }
+
+    fn faces_of(mesh: &Mesh) -> Vec<[u32; 2]> {
+        let Some(VertexAttributeValues::Uint32x2(faces)) = mesh.attribute(ATTRIBUTE_FACE) else {
+            panic!("no face attribute");
+        };
+        faces.clone()
+    }
+
+    /// The shading of the face of block `pos` facing `normal`.
+    fn shading(mesh: &Mesh, pos: IVec3, normal: IVec3) -> Shading {
+        let positions = vec3s(mesh, Mesh::ATTRIBUTE_POSITION);
+        let normals = vec3s(mesh, Mesh::ATTRIBUTE_NORMAL);
+        let Some(VertexAttributeValues::Uint32x4(lights)) = mesh.attribute(ATTRIBUTE_LIGHT) else {
+            panic!("no light attribute");
+        };
+        let faces = faces_of(mesh);
+        let center = pos.as_vec3() + Vec3::splat(0.5) + normal.as_vec3() * 0.5;
+        let first = (0..positions.len())
+            .step_by(4)
+            .find(|&i| {
+                let middle = (positions[i] + positions[i + 2]) / 2.0;
+                normals[i] == normal.as_vec3() && middle.distance(center) < 1e-4
+            })
+            .unwrap_or_else(|| panic!("no face of {pos} facing {normal}"));
+        // Every vertex of a face carries the same corners.
+        for i in first..first + 4 {
+            assert_eq!((lights[i], faces[i]), (lights[first], faces[first]));
+        }
+        Shading {
+            occlusion: faces[first][1].to_le_bytes(),
+            light: lights[first].map(u32::to_le_bytes),
+        }
+    }
+
+    fn neighborhood(
+        blocks: &[(IVec3, BlockState)],
+        light: impl Fn(IVec3) -> Light,
+    ) -> Neighborhood {
+        Neighborhood::from_fn(|pos| {
+            let block = blocks
+                .iter()
+                .find(|(p, _)| *p == pos)
+                .map_or(BlockState::AIR, |(_, b)| *b);
+            (block, light(pos))
+        })
+    }
+
+    const FULL: [u8; 4] = [255, 0, 0, 0];
+
+    #[test]
+    fn open_faces_have_no_occlusion() {
+        let pos = IVec3::new(5, 5, 5);
+        let mesh = neighborhood(&[(pos, block("stone"))], |_| OPEN_SKY).mesh(base());
+        for normal in Direction::ALL.map(Direction::normal) {
+            let shading = shading(&mesh, pos, normal);
+            assert_eq!(shading.occlusion, [OPEN; 4], "{normal}");
+            assert_eq!(shading.light, [FULL; 4]);
+        }
+    }
+
+    /// A block beside the face's front voxel darkens the two corners on that
+    /// side; one only diagonally across darkens just its corner; two on both
+    /// sides of a corner close it completely.
+    #[test]
+    fn neighbours_occlude_the_corners_they_touch() {
+        let stone = block("stone");
+        let pos = IVec3::new(5, 5, 5);
+        let up = IVec3::Y;
+        // The top face's corners run (0,1,1), (1,1,1), (1,1,0), (0,1,0).
+        let top = |others: &[IVec3]| {
+            let mut blocks = vec![(pos, stone)];
+            blocks.extend(others.iter().map(|&o| (pos + up + o, stone)));
+            shading(&neighborhood(&blocks, |_| OPEN_SKY).mesh(base()), pos, up).occlusion
+        };
+        assert_eq!(top(&[IVec3::X]), [3, 2, 2, 3], "east edge");
+        assert_eq!(
+            top(&[IVec3::new(1, 0, 1)]),
+            [3, 2, 3, 3],
+            "south-east diagonal"
+        );
+        assert_eq!(top(&[IVec3::X, IVec3::Z]), [2, 0, 2, 3], "east and south");
+        assert_eq!(
+            top(&[IVec3::X, IVec3::Z, IVec3::new(1, 0, 1)]),
+            [2, 0, 2, 3],
+            "the diagonal doesn't matter once both edges are blocked"
+        );
+    }
+
+    /// A corner's light is the average of the voxels around it that aren't
+    /// opaque.
+    #[test]
+    fn corner_light_averages_the_open_voxels_around_it() {
+        let stone = block("stone");
+        let pos = IVec3::new(5, 5, 5);
+        // Sky 15 on the east half of the layer above, 7 on the west half;
+        // a block north-west above blocks a voxel, whose light is ignored.
+        let light = |p: IVec3| {
+            let sky = if p.x > pos.x { 15 } else { 7 };
+            Light::new(sky, [0, 0, 0])
+        };
+        let blocks = [(pos, stone), (pos + IVec3::new(-1, 1, -1), stone)];
+        let shading = shading(&neighborhood(&blocks, light).mesh(base()), pos, IVec3::Y);
+        let level = |avg: f32| (avg * LEVEL_STEP).round() as u8;
+        // Corners (0,1,1) and (0,1,0) see only west voxels; (1,1,*) see two
+        // of each. (0,1,0) has its diagonal blocked, leaving three.
+        assert_eq!(
+            shading.light.map(|c| c[0]),
+            [level(7.0), level(11.0), level(11.0), level(7.0)]
+        );
+        assert_eq!(shading.occlusion, [3, 3, 3, 2]);
+    }
+
+    /// Block light averages per colour channel, like the sky's.
+    #[test]
+    fn coloured_light_averages_per_channel() {
+        let pos = IVec3::new(5, 5, 5);
+        let light = |_| Light::new(0, [15, 3, 0]);
+        let shading = shading(
+            &neighborhood(&[(pos, block("stone"))], light).mesh(base()),
+            pos,
+            IVec3::X,
+        );
+        assert_eq!(shading.light, [[0, 255, 51, 0]; 4]);
+    }
+
+    /// The faces of a block that gives off light are drawn fully lit.
+    #[test]
+    fn light_sources_glow() {
+        let pos = IVec3::new(5, 5, 5);
+        let blocks = [
+            (pos, block("red_lamp")),
+            (pos + IVec3::new(1, 1, 0), block("stone")),
+        ];
+        let shading = shading(
+            &neighborhood(&blocks, |_| Light::DARK).mesh(base()),
+            pos,
+            IVec3::Y,
+        );
+        assert_eq!(shading.occlusion, [OPEN; 4]);
+        assert_eq!(shading.light, [[0, 255, 255, 255]; 4]);
+    }
+
+    /// A triangle's three corners are its own; the made-up fourth keeps the
+    /// blend flat across the triangle.
+    #[test]
+    fn triangles_extend_their_shading_to_a_fourth_corner() {
+        let a = CornerShading {
+            light: [10, 20, 30, 40],
+            occlusion: 3,
+        };
+        let b = CornerShading {
+            light: [20, 20, 250, 0],
+            occlusion: 1,
+        };
+        let c = CornerShading {
+            light: [30, 20, 10, 0],
+            occlusion: 3,
+        };
+        let d = b.extend(c, a);
+        assert_eq!(d.light, [40, 20, 230, 0]);
+        assert_eq!(d.occlusion, 1);
+        let mesh = shapes();
+        let mut chunk = Chunk::default();
+        chunk.set(2, 2, 2, shape(&mesh, "tri"));
+        let corners: Vec<Vec2> = vec2s(&chunk.mesh(&mesh, air), ATTRIBUTE_CORNER);
+        assert_eq!(corners, [Vec2::ZERO, Vec2::X, Vec2::Y]);
     }
 }
