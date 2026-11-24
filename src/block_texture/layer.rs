@@ -119,14 +119,18 @@ pub fn stack(layers: &[Vec<LinearRgba>]) -> Vec<u8> {
         .collect()
 }
 
+/// Test images in the layer format, for this module's tests and others'.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy::render::render_resource::TextureDimension;
-    use bevy::{asset::RenderAssetUsages, render::render_resource::Extent3d};
+pub(crate) mod test_images {
+    use super::{TILE_SIZE, gray};
+    use bevy::{
+        asset::RenderAssetUsages,
+        prelude::*,
+        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    };
 
     /// A [`TILE_SIZE`] square RGBA8 image filled by `paint(x, y)`.
-    fn image(paint: impl Fn(u32, u32) -> [u8; 4]) -> Image {
+    pub fn image(paint: impl Fn(u32, u32) -> [u8; 4]) -> Image {
         let data = (0..TILE_SIZE)
             .flat_map(|y| (0..TILE_SIZE).map(move |x| (x, y)))
             .flat_map(|(x, y)| paint(x, y))
@@ -143,6 +147,19 @@ mod tests {
             RenderAssetUsages::all(),
         )
     }
+
+    /// A [`TILE_SIZE`] square image of one gray level everywhere.
+    pub fn flat_gray(level: usize) -> Image {
+        let v = gray(level);
+        image(|_, _| [v, v, v, 255])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_images::image;
+    use super::*;
+    use bevy::render::render_resource::Extent3d;
 
     fn gray_pixel(level: usize) -> [u8; 4] {
         let v = gray(level);

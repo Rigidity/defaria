@@ -154,10 +154,8 @@ fn build_block_texture(
 mod tests {
     use super::*;
     use crate::block_texture::Tile;
-    use bevy::{
-        color::ColorToPacked,
-        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    };
+    use crate::block_texture::layer::test_images::flat_gray;
+    use bevy::color::ColorToPacked;
 
     /// The shader declares the bindings the material provides, at the same
     /// indices, and the fragment entry point Bevy looks for.
@@ -376,17 +374,7 @@ mod tests {
             .collect();
         let reserved = material_texture(&app);
         let mut material_events = MaterialEvents::new(&app);
-        let black = Image::new_fill(
-            Extent3d {
-                width: block_texture::TILE_SIZE,
-                height: block_texture::TILE_SIZE,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            &[0, 0, 0, 255],
-            TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::all(),
-        );
+        let black = flat_gray(0);
 
         let (last, first) = missing.split_last().unwrap();
         for handle in first {

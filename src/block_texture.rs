@@ -266,7 +266,7 @@ mod tests {
         color::ColorToPacked,
         image::{CompressedImageFormats, ImageFilterMode, ImageType},
     };
-    use layer::gray;
+    use layer::test_images::flat_gray;
     use std::collections::HashMap;
 
     /// Tiles filled by `paint(tile, x, y)`, for [`array_texture`].
@@ -320,22 +320,6 @@ mod tests {
                 (path, image)
             })
             .collect()
-    }
-
-    /// A [`TILE_SIZE`] square image of one gray level everywhere.
-    fn flat_gray(level: usize) -> Image {
-        let v = gray(level);
-        Image::new_fill(
-            Extent3d {
-                width: TILE_SIZE,
-                height: TILE_SIZE,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            &[v, v, v, 255],
-            TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::all(),
-        )
     }
 
     #[test]
