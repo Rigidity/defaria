@@ -6,7 +6,7 @@ Created in [T3 Code](https://t3.codes).
 
 ## Development
 
-Built with [Bevy](https://bevy.org) 0.20.1 on Rust 1.97.1, pinned in `rust-toolchain.toml`.
+Built with [Bevy](https://bevy.org) 0.20.1 on Rust 1.100.0, pinned in `rust-toolchain.toml`.
 See [AGENTS.md](AGENTS.md) for the full workflow.
 
 ```sh
