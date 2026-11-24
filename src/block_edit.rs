@@ -51,8 +51,7 @@ pub struct BlockEditPlugin;
 
 impl Plugin for BlockEditPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Content>()
-            .init_resource::<Hotbar>()
+        app.init_resource::<Hotbar>()
             .init_resource::<ActiveBlock>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
@@ -355,7 +354,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        content::{base, block},
+        content::{base, block, test_mod},
         headless::{HeadlessPlugin, Script, default_plugins},
         terrain::{ChunkCoord, ChunkMap, Terrain, TerrainBlocks, remesh_changed_chunks},
         voxel::Chunk,
@@ -592,6 +591,42 @@ mod tests {
         assert_eq!(voxel(&app, left, 12, 1, 5), block("log"));
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 11, 1, 5), BlockState::AIR);
+    }
+
+    /// An item that places no block (a tool, or a slot whose item didn't
+    /// load) does nothing on right click.
+    #[test]
+    fn right_click_with_an_item_that_places_nothing_does_nothing() {
+        let (mut app, left, _) = app();
+        app.insert_resource(Hotbar(vec![HotbarItem {
+            name: "Pickaxe".into(),
+            block: None,
+        }]));
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+        assert_eq!(voxel(&app, left, 14, 1, 5), block("dirt"));
+    }
+
+    /// The hotbar takes its names and blocks from the items, and a slot
+    /// whose item didn't load is left empty rather than shifting the keys.
+    #[test]
+    fn hotbar_comes_from_the_items() {
+        let mut world = World::new();
+        world.insert_resource(base().clone());
+        let hotbar = Hotbar::from_world(&mut world);
+        let names: Vec<&str> = hotbar.0.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Stone", "Dirt", "Grass", "Sand", "Gravel", "Log", "Planks"]
+        );
+        assert_eq!(hotbar.0[5].block, Some(block("log")));
+
+        world.insert_resource(test_mod(&[]));
+        let hotbar = Hotbar::from_world(&mut world);
+        assert_eq!(hotbar.0.len(), HOTBAR.len());
+        for item in hotbar.0 {
+            assert_eq!((item.name.as_str(), item.block), ("?", None));
+        }
     }
 
     /// The left chunk's block at x = 0 faces -X, where there's no chunk.

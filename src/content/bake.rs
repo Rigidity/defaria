@@ -15,8 +15,35 @@ use super::{
 };
 use crate::block_texture::Palette;
 
-/// The folders definition files live in, by kind.
-const KINDS: [&str; 5] = ["materials", "textures", "models", "blocks", "items"];
+/// The kinds of definition, each in its own folder.
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+    Materials,
+    Textures,
+    Models,
+    Blocks,
+    Items,
+}
+
+impl Kind {
+    const ALL: [Kind; 5] = [
+        Kind::Materials,
+        Kind::Textures,
+        Kind::Models,
+        Kind::Blocks,
+        Kind::Items,
+    ];
+
+    fn folder(self) -> &'static str {
+        match self {
+            Kind::Materials => "materials",
+            Kind::Textures => "textures",
+            Kind::Models => "models",
+            Kind::Blocks => "blocks",
+            Kind::Items => "items",
+        }
+    }
+}
 /// Most states one block may have.
 const MAX_STATES_PER_BLOCK: usize = 4096;
 /// Item stack size when nothing says otherwise.
@@ -134,16 +161,15 @@ fn parse_file(
     text: &str,
     defs: &mut Defs,
 ) -> Result<(), String> {
-    let (kind, rest) = path.split_once('/').unwrap_or(("", path));
-    let name = rest
-        .strip_suffix(".json5")
-        .filter(|_| KINDS.contains(&kind))
-        .ok_or_else(|| {
-            format!(
-                "not a definition: files go in {}, named <name>.json5",
-                KINDS.join(", ")
-            )
-        })?;
+    let (folder, rest) = path.split_once('/').unwrap_or(("", path));
+    let kind = Kind::ALL.into_iter().find(|kind| kind.folder() == folder);
+    let (Some(kind), Some(name)) = (kind, rest.strip_suffix(".json5")) else {
+        let folders: Vec<&str> = Kind::ALL.iter().map(|kind| kind.folder()).collect();
+        return Err(format!(
+            "not a definition: files go in {}, named <name>.json5",
+            folders.join(", ")
+        ));
+    };
     let id = qualify(name, namespace)?;
     fn def<T: DeserializeOwned>(
         id: String,
@@ -161,11 +187,11 @@ fn parse_file(
     }
     let file = format!("{dir}/{path}");
     match kind {
-        "materials" => defs.materials.push(def(id, namespace, file, text)?),
-        "textures" => defs.textures.push(def(id, namespace, file, text)?),
-        "models" => defs.models.push(def(id, namespace, file, text)?),
-        "blocks" => defs.blocks.push(def(id, namespace, file, text)?),
-        _ => defs.items.push(def(id, namespace, file, text)?),
+        Kind::Materials => defs.materials.push(def(id, namespace, file, text)?),
+        Kind::Textures => defs.textures.push(def(id, namespace, file, text)?),
+        Kind::Models => defs.models.push(def(id, namespace, file, text)?),
+        Kind::Blocks => defs.blocks.push(def(id, namespace, file, text)?),
+        Kind::Items => defs.items.push(def(id, namespace, file, text)?),
     }
     Ok(())
 }
@@ -365,25 +391,46 @@ fn add_block(def: &Def<BlockDef>, content: &mut Content) -> Result<(), String> {
         }
     }
 
-    let mut states = Vec::with_capacity(count);
+    // Each state's property values, look and model, last property fastest
+    // (undoing `Block::state_offset`).
+    let mut looks = Vec::with_capacity(count);
     for offset in 0..count {
-        // Undo `Block::state_offset`: the last property counts fastest.
         let mut rest = offset;
         let mut values = vec![(String::new(), String::new()); properties.len()];
         for (p, (name, options)) in properties.iter().enumerate().rev() {
             values[p] = (name.clone(), options[rest % options.len()].clone());
             rest /= options.len();
         }
-        let state = bake_state(def, &values, content).map_err(|error| {
-            if values.is_empty() {
-                error
-            } else {
-                let state: Vec<String> = values.iter().map(|(n, v)| format!("{n}={v}")).collect();
-                format!("state {}: {error}", state.join(","))
-            }
-        })?;
-        states.push(state);
+        let look = look(block, &values);
+        let model = look
+            .model(&values, &def.namespace, content)
+            .map_err(|error| in_state(&values, error))?;
+        looks.push((values, look, model));
     }
+    // A slot is skipped where the state's model doesn't have it, so a
+    // variant can switch to a model with other slots; a slot no model has
+    // is a mistake.
+    let slots: BTreeSet<&str> = looks
+        .iter()
+        .flat_map(|(_, _, model)| model.slots.keys().map(String::as_str))
+        .collect();
+    let named = block
+        .textures
+        .keys()
+        .chain(block.variants.iter().flat_map(|v| v.textures.keys()));
+    if let Some(slot) = named
+        .into_iter()
+        .find(|slot| !slots.contains(slot.as_str()))
+    {
+        return Err(format!("no model this block uses has a slot `{slot}`"));
+    }
+    let states = looks
+        .iter()
+        .map(|(values, look, model)| {
+            bake_state(look, model, values, &def.namespace, content)
+                .map_err(|error| in_state(values, error))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let index = content.blocks.len();
     content.blocks.push(Block {
@@ -401,56 +448,102 @@ fn add_block(def: &Def<BlockDef>, content: &mut Content) -> Result<(), String> {
     Ok(())
 }
 
-/// One state of a block: its look with every matching variant applied,
-/// `{property}` filled in, and the model's faces rotated and textured.
-fn bake_state(
-    def: &Def<BlockDef>,
-    values: &[(String, String)],
-    content: &Content,
-) -> Result<State, String> {
-    let mut look = def.def.look();
-    for variant in &def.def.variants {
+/// Names the state an error is about, if the block has properties.
+fn in_state(values: &[(String, String)], error: String) -> String {
+    if values.is_empty() {
+        return error;
+    }
+    let state: Vec<String> = values.iter().map(|(n, v)| format!("{n}={v}")).collect();
+    format!("state {}: {error}", state.join(","))
+}
+
+/// A block state's look: the block's own, with every matching variant
+/// applied in order. The model and rotation are replaced; textures merge
+/// slot by slot.
+struct Look<'d> {
+    model: Option<&'d str>,
+    rotate: Option<[i32; 3]>,
+    textures: BTreeMap<&'d str, &'d str>,
+}
+
+fn look<'d>(block: &'d BlockDef, values: &[(String, String)]) -> Look<'d> {
+    let mut look = Look {
+        model: block.model.as_deref(),
+        rotate: block.rotate,
+        textures: block
+            .textures
+            .iter()
+            .map(|(slot, texture)| (slot.as_str(), texture.as_str()))
+            .collect(),
+    };
+    for variant in &block.variants {
         let matches = variant.when.iter().all(|(name, wanted)| {
             values
                 .iter()
                 .any(|(n, v)| n == name && wanted.values().contains(v))
         });
         if matches {
-            let over = variant.look();
-            look.model = over.model.or(look.model);
-            look.textures.extend(over.textures);
-            look.rotate = over.rotate.or(look.rotate);
+            look.model = variant.model.as_deref().or(look.model);
+            look.rotate = variant.rotate.or(look.rotate);
+            look.textures.extend(
+                variant
+                    .textures
+                    .iter()
+                    .map(|(slot, texture)| (slot.as_str(), texture.as_str())),
+            );
         }
     }
+    look
+}
 
-    let model_ref = look.model.ok_or("no `model`")?;
-    let model_id = qualify(&fill(&model_ref, values)?, &def.namespace)?;
-    let model = content
-        .models
-        .get(&model_id)
-        .ok_or_else(|| format!("no model `{model_id}`"))?;
+impl Look<'_> {
+    /// The model, with `{property}` filled in.
+    fn model<'a>(
+        &self,
+        values: &[(String, String)],
+        namespace: &str,
+        content: &'a Content,
+    ) -> Result<&'a Model, String> {
+        let model = self.model.ok_or("no `model`")?;
+        let id = qualify(&fill(model, values)?, namespace)?;
+        content
+            .models
+            .get(&id)
+            .ok_or_else(|| format!("no model `{id}`"))
+    }
+}
+
+/// Bakes one block state: the model's faces rotated and textured.
+/// Textures for slots the model doesn't have are left out.
+fn bake_state(
+    look: &Look,
+    model: &Model,
+    values: &[(String, String)],
+    namespace: &str,
+    content: &Content,
+) -> Result<State, String> {
     let rotation = rotation(look.rotate.unwrap_or([0; 3]))?;
     let rotate_direction = |d: Direction| {
         Direction::from_normal((rotation * d.normal().as_vec3()).round().as_ivec3()).unwrap()
     };
 
-    let mut textures = HashMap::new();
-    for (slot, texture) in &look.textures {
+    let mut layers = HashMap::new();
+    for (&slot, texture) in &look.textures {
         if !model.slots.contains_key(slot) {
-            return Err(format!("`{model_id}` has no slot `{slot}`"));
+            continue;
         }
-        let id = qualify(&fill(texture, values)?, &def.namespace)?;
+        let id = qualify(&fill(texture, values)?, namespace)?;
         let layer = content
             .texture(&id)
             .ok_or_else(|| format!("no texture `{id}`"))?;
-        textures.insert(slot.as_str(), layer);
+        layers.insert(slot, layer);
     }
 
     let faces = model
         .faces
         .iter()
         .map(|face| {
-            let layer = slot_texture(&face.slot, model, &textures)?;
+            let layer = slot_texture(&face.slot, model, &layers)?;
             let vertices: Vec<Vertex> = face
                 .vertices
                 .iter()
@@ -631,43 +724,7 @@ mod tests {
     use super::*;
     use crate::content::load::ModFiles;
 
-    const MANIFEST: &str = r#"{ id: "test", name: "Test" }"#;
-
-    const QUAD: &str = r#"{
-        slots: { all: null, side: "all" },
-        occludes: ["up"],
-        faces: [{
-            texture: "side", cull: "up",
-            vertices: [
-                { pos: [0, 1, 1], uv: [0, 1] },
-                { pos: [1, 1, 1], uv: [1, 1] },
-                { pos: [1, 1, 0], uv: [1, 0] },
-                { pos: [0, 1, 0], uv: [0, 0] },
-            ],
-        }],
-    }"#;
-
-    /// A mod with a material, two textures, the one-quad model and `files`.
-    fn content(files: &[(&str, &str)]) -> Content {
-        let mut all = vec![
-            ("images/a.png", ""),
-            (
-                "materials/grey.json5",
-                r##"{ palette: ["#000000", "#ffffff"] }"##,
-            ),
-            (
-                "textures/a.json5",
-                r#"{ layers: [{ image: "a", material: "grey" }] }"#,
-            ),
-            (
-                "textures/b.json5",
-                r##"{ layers: [{ image: "a", palette: ["#ff0000", "#00ff00", "#0000ff"] }] }"##,
-            ),
-            ("models/quad.json5", QUAD),
-        ];
-        all.extend_from_slice(files);
-        Content::from_mods(vec![ModFiles::new("mods/test", MANIFEST, &all)])
-    }
+    use crate::content::{QUAD, test_mod as content};
 
     fn errors(content: &Content) -> String {
         content.errors.join("\n")
@@ -732,10 +789,76 @@ mod tests {
         let turned = face(&[("tex", "b"), ("turn", "yes")]);
         assert_eq!(turned.normal, Vec3::NEG_X);
         assert_eq!(turned.cull, Some(Direction::West));
+        // About the block's centre: the quad on the top moves to the west
+        // side, still inside the block.
+        for vertex in &turned.vertices {
+            assert_eq!(vertex.pos.x, 0.0, "{vertex:?}");
+            assert!(vertex.pos.cmpge(Vec3::ZERO).all() && vertex.pos.cmple(Vec3::ONE).all());
+        }
         // The second variant's `side` beats the block's `all`.
         assert_eq!(turned.layer, a);
         let state = content.state(block.state(&[("turn", "yes")]).unwrap());
         assert!(state.occludes(Direction::West) && !state.occludes(Direction::Up));
+    }
+
+    /// When several matching variants set the same thing, the last wins:
+    /// the model and rotation are replaced, and textures are merged slot by
+    /// slot, so a slot only the block sets survives. A block can set slots
+    /// for one model and switch to another with different slots.
+    #[test]
+    fn later_variants_win_and_textures_merge_by_slot() {
+        let content = content(&[(
+            "blocks/thing.json5",
+            r#"{
+                properties: { p: ["x", "y"] },
+                model: "quad",
+                rotate: [0, 0, 90],
+                textures: { all: "a", top: "a", bottom: "b" },
+                variants: [
+                    { when: { p: "y" }, rotate: [0, 0, 180], textures: { top: "b" } },
+                    { when: { p: "y" }, model: "pair", rotate: [0, 0, 0], textures: { top: "c" } },
+                ],
+            }"#,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let [a, b, c] = ["test:a", "test:b", "test:c"].map(|id| content.texture(id).unwrap());
+        let block = content.block("test:thing").unwrap();
+
+        let x = content.state(block.state(&[("p", "x")]).unwrap());
+        assert_eq!(x.faces.len(), 1);
+        assert_eq!(x.faces[0].normal, Vec3::NEG_X);
+        assert_eq!(x.faces[0].layer, a);
+
+        let y = content.state(block.state(&[("p", "y")]).unwrap());
+        let faces: Vec<(Vec3, u32)> = y.faces.iter().map(|f| (f.normal, f.layer)).collect();
+        assert_eq!(faces, [(Vec3::Y, c), (Vec3::NEG_Y, b)]);
+    }
+
+    /// A broken texture leaves out the block that uses it, and that block's
+    /// item: each is reported against its own file.
+    #[test]
+    fn a_broken_definition_takes_its_dependents_with_it() {
+        let content = content(&[
+            (
+                "textures/broken.json5",
+                r#"{ layers: [{ image: "missing", material: "grey" }] }"#,
+            ),
+            (
+                "blocks/user.json5",
+                r#"{ model: "quad", textures: { all: "broken" } }"#,
+            ),
+            (
+                "blocks/fine.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+        ]);
+        assert_eq!(content.errors.len(), 2, "{}", errors(&content));
+        assert!(content.errors[0].contains("textures/broken.json5"));
+        assert!(content.errors[1].contains("blocks/user.json5"));
+        assert!(content.errors[1].contains("no texture `test:broken`"));
+        assert!(content.block("test:user").is_none());
+        assert!(content.item("test:user").is_none());
+        assert!(content.block("test:fine").is_some());
     }
 
     #[test]
@@ -840,7 +963,7 @@ mod tests {
             (
                 "blocks/x.json5",
                 r#"{ model: "quad", textures: { all: "a" "#,
-                "",
+                "line 1",
             ),
             (
                 "blocks/x.json5",
@@ -850,7 +973,7 @@ mod tests {
             (
                 "blocks/x.json5",
                 r#"{ model: "quad", textures: { al: "a" } }"#,
-                "no slot `al`",
+                "has a slot `al`",
             ),
             (
                 "blocks/x.json5",
@@ -876,6 +999,21 @@ mod tests {
                 "blocks/x.json5",
                 r#"{ properties: { p: ["a"] }, model: "quad", textures: { all: "a" }, variants: [{ when: { p: "c" } }] }"#,
                 "`p` has no value `c`",
+            ),
+            (
+                "blocks/x.json5",
+                r#"{ properties: { p: ["a"] }, model: "quad", textures: { all: "a" }, variants: [{ when: { q: "a" } }] }"#,
+                "variant 1: no property `q`",
+            ),
+            (
+                "blocks/x.json5",
+                r#"{ properties: { p: ["a", "a"] }, model: "quad", textures: { all: "a" } }"#,
+                "lists a value twice",
+            ),
+            (
+                "blocks/x.json5",
+                r#"{ properties: { p: [] }, model: "quad", textures: { all: "a" } }"#,
+                "`p` has no values",
             ),
             (
                 "blocks/x.json5",

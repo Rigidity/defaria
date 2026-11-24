@@ -69,7 +69,9 @@ can be stone in one texture and copper in another.
 `scripts/gray-layer.py` turns any 16×16 image into one.
 
 Images load through the asset server, so in dev builds editing one updates
-the game while it runs.
+the game while it runs. An image that's missing, the wrong size or uses
+other colors is logged, and the tiles that use it show a magenta and black
+checkerboard until it's fixed.
 
 ## Materials
 
@@ -170,8 +172,10 @@ fills.
 ```
 
 `textures` fills the model's slots; each slot it leaves empty falls back as
-the model says. Naming a slot the model doesn't have is an error, and so is
-a face whose slot ends up with no texture.
+the model says. A face whose slot ends up with no texture is an error.
+Textures for slots a state's model doesn't have are ignored for that state,
+so a block can set textures for several models and switch between them in
+variants; naming a slot that none of the block's models has is an error.
 
 ### States, properties and variants
 

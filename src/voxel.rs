@@ -156,7 +156,7 @@ fn set_sky_color(mut commands: Commands) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{Direction, base, block};
+    use crate::content::{Direction, base, block, test_mod};
     use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
 
     /// A completely full chunk: stone, topped with dirt, topped with grass.
@@ -379,5 +379,105 @@ mod tests {
             let expected = content.texture(&format!("defaria:{tile}")).unwrap();
             assert_eq!(*layer, Vec2::new(expected as f32, 0.0));
         }
+    }
+
+    /// Mod `test` plus a `wall` that covers every side but draws nothing, a
+    /// `lid` ([`crate::content::QUAD`]: a top face, covering only its top),
+    /// a `pair` (a top and a bottom face with no `cull`) and a one-triangle
+    /// `tri`.
+    fn shapes() -> Content {
+        let content = test_mod(&[
+            (
+                "models/wall.json5",
+                r#"{ slots: { all: null }, occludes: ["up", "down", "north", "south", "east", "west"], faces: [] }"#,
+            ),
+            (
+                "models/tri.json5",
+                r#"{ slots: { all: null }, faces: [{ texture: "all", cull: "up", vertices: [
+                    { pos: [0, 1, 1], uv: [0, 1] }, { pos: [1, 1, 1], uv: [1, 1] }, { pos: [1, 1, 0], uv: [1, 0] },
+                ] }] }"#,
+            ),
+            (
+                "blocks/wall.json5",
+                r#"{ model: "wall", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/lid.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/pair.json5",
+                r#"{ model: "pair", textures: { top: "a", bottom: "a" } }"#,
+            ),
+            (
+                "blocks/tri.json5",
+                r#"{ model: "tri", textures: { all: "a" } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        content
+    }
+
+    fn shape(content: &Content, name: &str) -> BlockState {
+        content.default_state(&format!("test:{name}")).unwrap()
+    }
+
+    /// A face is hidden by what its neighbour covers on the side facing it,
+    /// not by what the neighbour covers on the far side.
+    #[test]
+    fn faces_are_hidden_by_the_side_of_the_neighbour_facing_them() {
+        let content = shapes();
+        let (lid, wall) = (shape(&content, "lid"), shape(&content, "wall"));
+        // A lid under a lid: the upper one covers only its top, not the
+        // bottom facing the lower lid's face, so both faces show.
+        let mut chunk = Chunk::default();
+        chunk.set(1, 1, 1, lid);
+        chunk.set(1, 2, 1, lid);
+        assert_eq!(chunk.mesh(&content, air).count_vertices(), 8);
+        // A wall covers its bottom, so the lid's face under it goes.
+        chunk.set(1, 2, 1, wall);
+        assert_eq!(chunk.mesh(&content, air).count_vertices(), 0);
+        // A lid on the far side of the chunk border, under a wall outside it.
+        let mut edge = Chunk::default();
+        edge.set(1, CHUNK_SIZE - 1, 1, lid);
+        assert_eq!(edge.mesh(&content, |_| wall).count_vertices(), 0);
+        assert_eq!(edge.mesh(&content, air).count_vertices(), 4);
+    }
+
+    /// Faces with no `cull` side draw even when buried.
+    #[test]
+    fn faces_without_a_cull_side_always_draw() {
+        let content = shapes();
+        let mut chunk = Chunk::default();
+        chunk.set(1, 1, 1, shape(&content, "pair"));
+        let wall = |_| shape(&content, "wall");
+        let mesh = chunk.mesh(&content, wall);
+        assert_eq!(mesh.count_vertices(), 8);
+        for (x, y, z) in [
+            (0, 1, 1),
+            (2, 1, 1),
+            (1, 0, 1),
+            (1, 2, 1),
+            (1, 1, 0),
+            (1, 1, 2),
+        ] {
+            chunk.set(x, y, z, shape(&content, "wall"));
+        }
+        assert_eq!(chunk.mesh(&content, air).count_vertices(), 8);
+    }
+
+    /// A three-vertex face is one triangle: three vertices, three indices.
+    #[test]
+    fn triangles_mesh_as_one_triangle() {
+        let content = shapes();
+        let mut chunk = Chunk::default();
+        chunk.set(2, 2, 2, shape(&content, "tri"));
+        chunk.set(4, 2, 2, shape(&content, "lid"));
+        let mesh = chunk.mesh(&content, air);
+        assert_eq!(mesh.count_vertices(), 3 + 4);
+        let Some(Indices::U32(indices)) = mesh.indices() else {
+            panic!("no indices");
+        };
+        assert_eq!(indices, &[0, 1, 2, 3, 4, 5, 3, 5, 6]);
     }
 }

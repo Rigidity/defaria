@@ -30,7 +30,6 @@ pub struct VoxelMaterialPlugin;
 impl Plugin for VoxelMaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
-            .init_resource::<Content>()
             .init_resource::<BlockMaterial>()
             .add_systems(Update, build_block_texture);
     }

@@ -88,7 +88,14 @@ impl Direction {
     }
 
     pub fn opposite(self) -> Self {
-        Self::from_normal(-self.normal()).unwrap()
+        match self {
+            Direction::Up => Direction::Down,
+            Direction::Down => Direction::Up,
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        }
     }
 
     fn bit(self) -> u8 {
@@ -391,6 +398,83 @@ pub fn block(name: &str) -> BlockState {
     base()
         .default_state(&format!("defaria:{name}"))
         .unwrap_or_else(|| panic!("no block defaria:{name}"))
+}
+
+/// A model with one face, on top of the block, in slot `side`, which
+/// falls back to `all`. It covers only its top.
+#[cfg(test)]
+pub const QUAD: &str = r#"{
+    slots: { all: null, side: "all" },
+    occludes: ["up"],
+    faces: [{
+        texture: "side", cull: "up",
+        vertices: [
+            { pos: [0, 1, 1], uv: [0, 1] },
+            { pos: [1, 1, 1], uv: [1, 1] },
+            { pos: [1, 1, 0], uv: [1, 0] },
+            { pos: [0, 1, 0], uv: [0, 0] },
+        ],
+    }],
+}"#;
+
+/// A model with a top face in slot `top` and a bottom face in slot
+/// `bottom`, neither culled. It covers nothing.
+#[cfg(test)]
+const PAIR: &str = r#"{
+    slots: { top: null, bottom: null },
+    faces: [
+        {
+            texture: "top",
+            vertices: [
+                { pos: [0, 1, 1], uv: [0, 1] },
+                { pos: [1, 1, 1], uv: [1, 1] },
+                { pos: [1, 1, 0], uv: [1, 0] },
+                { pos: [0, 1, 0], uv: [0, 0] },
+            ],
+        },
+        {
+            texture: "bottom",
+            vertices: [
+                { pos: [0, 0, 0], uv: [0, 1] },
+                { pos: [1, 0, 0], uv: [1, 1] },
+                { pos: [1, 0, 1], uv: [1, 0] },
+                { pos: [0, 0, 1], uv: [0, 0] },
+            ],
+        },
+    ],
+}"#;
+
+/// Mod `test`, in memory: image `a`, material `grey`, textures `a`, `b` and
+/// `c`, models `quad` ([`QUAD`]) and `pair`, plus `files`.
+#[cfg(test)]
+pub fn test_mod(files: &[(&str, &str)]) -> Content {
+    let mut all = vec![
+        ("images/a.png", ""),
+        (
+            "materials/grey.json5",
+            r##"{ palette: ["#000000", "#ffffff"] }"##,
+        ),
+        (
+            "textures/a.json5",
+            r#"{ layers: [{ image: "a", material: "grey" }] }"#,
+        ),
+        (
+            "textures/b.json5",
+            r##"{ layers: [{ image: "a", palette: ["#ff0000", "#00ff00", "#0000ff"] }] }"##,
+        ),
+        (
+            "textures/c.json5",
+            r##"{ layers: [{ image: "a", palette: ["#000000", "#00ff00"] }] }"##,
+        ),
+        ("models/quad.json5", QUAD),
+        ("models/pair.json5", PAIR),
+    ];
+    all.extend_from_slice(files);
+    Content::from_mods(vec![load::ModFiles::new(
+        "mods/test",
+        r#"{ id: "test", name: "Test" }"#,
+        &all,
+    )])
 }
 
 #[cfg(test)]

@@ -129,36 +129,6 @@ fn default_true() -> bool {
     true
 }
 
-/// How a block state is drawn: the fields a block and its variants share.
-/// (Not `#[serde(flatten)]`ed into them, because flatten and
-/// `deny_unknown_fields` don't work together.)
-#[derive(Debug, Clone, Default)]
-pub struct LookDef {
-    pub model: Option<String>,
-    pub textures: BTreeMap<String, String>,
-    pub rotate: Option<[i32; 3]>,
-}
-
-impl BlockDef {
-    pub fn look(&self) -> LookDef {
-        LookDef {
-            model: self.model.clone(),
-            textures: self.textures.clone(),
-            rotate: self.rotate,
-        }
-    }
-}
-
-impl VariantDef {
-    pub fn look(&self) -> LookDef {
-        LookDef {
-            model: self.model.clone(),
-            textures: self.textures.clone(),
-            rotate: self.rotate,
-        }
-    }
-}
-
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct VariantDef {

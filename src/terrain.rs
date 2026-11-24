@@ -34,8 +34,7 @@ pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Content>()
-            .init_resource::<TerrainSettings>()
+        app.init_resource::<TerrainSettings>()
             .init_resource::<ChunkMap>()
             .add_systems(Startup, spawn_chunks)
             .add_systems(Update, remesh_changed_chunks.in_set(RemeshChunks));
