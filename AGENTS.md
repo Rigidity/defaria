@@ -81,7 +81,11 @@ changes.
    inspect FlyCamera     # short or full reflected type name
    ```
    Commands: `wait`, `press`, `release`, `hold`, `mouse`, `screenshot`,
-   `inspect`. The full format is documented at the top of `src/headless.rs`.
+   `grain` (prints how noisy the frame's textures are), `inspect`. The full
+   format is documented at the top of `src/headless.rs`. Commands between two
+   `wait`s run on the same frame, so put a `wait 1` after a `screenshot`
+   before input meant to come after it. A rendered run fails if a shader
+   fails to compile.
    Keys are `KeyCode` names; mouse buttons are `MouseLeft`/`MouseRight`/
    `MouseMiddle`. Add `--no-render` to run without a GPU (screenshots are
    skipped); CI runs every scenario in `scenarios/` that way, so they must keep

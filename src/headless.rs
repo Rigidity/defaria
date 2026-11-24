@@ -19,6 +19,7 @@
 //! | `hold <button> <frames>` | `press`, `wait <frames>`, `release`. |
 //! | `mouse <dx> <dy>` | Move the mouse by that many pixels this frame. |
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
+//! | `grain` | Print how grainy this frame's terrain is (see below). |
 //! | `inspect <Component>` | Print that component on every entity that has it. |
 //!
 //! Buttons are Bevy [`KeyCode`] names (`KeyW`, `Space`, `ShiftLeft`,
@@ -26,10 +27,29 @@
 //! reflected type names, short (`FlyCamera`, `Transform`) or full
 //! (`defaria::fly_camera::FlyCamera`).
 //!
-//! Commands between two `wait`s all happen on the same frame. `screenshot`
-//! and `inspect` see the state at the end of that frame.
+//! Commands between two `wait`s all happen on the same frame. `screenshot`,
+//! `grain` and `inspect` see the state at the end of that frame, so put a
+//! `wait` between a `screenshot` and input meant to come after it.
+//!
+//! `grain` measures texture noise: the mean difference between neighbouring
+//! pixels (0–255, averaged over RGB) across every pair where neither pixel is
+//! the sky ([`ClearColor`]). Lower is smoother. Compare it between runs of
+//! the same view, for example before and after a texture or shader change.
+//! Like `screenshot`, it's skipped with `--no-render`.
+//!
+//! A rendered run fails (exits with an error) if any render pipeline failed
+//! to compile, such as a shader with an error, since that otherwise only
+//! shows up as missing geometry in screenshots.
 
-use std::{collections::VecDeque, path::PathBuf, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use bevy::{
     app::PluginGroupBuilder,
@@ -42,8 +62,8 @@ use bevy::{
     prelude::*,
     reflect::enums::{DynamicEnum, DynamicVariant},
     render::{
-        RenderPlugin,
-        render_resource::{TextureFormat, TextureUsages},
+        Render, RenderApp, RenderPlugin,
+        render_resource::{CachedPipelineState, PipelineCache, TextureFormat, TextureUsages},
         settings::WgpuSettings,
         view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
     },
@@ -106,8 +126,15 @@ impl Plugin for HeadlessPlugin {
             .add_systems(PreUpdate, run_script.before(InputSystems))
             .add_systems(Last, (observe, exit_when_done).chain());
         if self.rendering {
-            app.add_systems(PreStartup, create_render_target)
+            let errors = PipelineErrors::default();
+            app.insert_resource(errors.clone())
+                .add_systems(PreStartup, create_render_target)
                 .add_observer(render_to_image);
+            if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+                render_app
+                    .insert_resource(errors)
+                    .add_systems(Render, count_pipeline_errors);
+            }
         }
     }
 }
@@ -125,6 +152,7 @@ pub enum Command {
     Release(Button),
     MoveMouse(Vec2),
     Screenshot(PathBuf),
+    Grain,
     Inspect(String),
 }
 
@@ -197,6 +225,10 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
         "screenshot" => {
             expect(1)?;
             commands.push(Command::Screenshot(PathBuf::from(args[0])));
+        }
+        "grain" => {
+            expect(0)?;
+            commands.push(Command::Grain);
         }
         "inspect" => {
             expect(1)?;
@@ -322,7 +354,9 @@ fn run_script(
             Command::MoveMouse(delta) => {
                 mouse_motion.write(MouseMotion { delta });
             }
-            Command::Screenshot(_) | Command::Inspect(_) => runner.observations.push(command),
+            Command::Screenshot(_) | Command::Grain | Command::Inspect(_) => {
+                runner.observations.push(command)
+            }
         }
     }
 }
@@ -332,6 +366,7 @@ fn run_script(
 fn observe(world: &mut World) {
     let observations = std::mem::take(&mut world.resource_mut::<ScriptRunner>().observations);
     let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
+    let mut captures = Vec::new();
     for observation in observations {
         match observation {
             Command::Inspect(name) => match inspect(world, &name) {
@@ -346,34 +381,117 @@ fn observe(world: &mut World) {
                     world.write_message(AppExit::error());
                 }
             },
-            Command::Screenshot(path) => screenshot(world, path, frame),
-            _ => unreachable!("only screenshot and inspect are deferred"),
+            Command::Screenshot(_) | Command::Grain => captures.push(observation),
+            _ => unreachable!("only screenshot, grain and inspect are deferred"),
+        }
+    }
+    capture(world, captures, frame);
+}
+
+/// Captures this frame once for all of its `screenshot` and `grain`
+/// commands: Bevy takes only one screenshot per render target per frame.
+fn capture(world: &mut World, captures: Vec<Command>, frame: u32) {
+    if captures.is_empty() {
+        return;
+    }
+    let Some(target) = world.get_resource::<HeadlessTarget>() else {
+        for command in captures {
+            match command {
+                Command::Screenshot(path) => println!(
+                    "[frame {frame}] skipped screenshot {} (rendering is off)",
+                    path.display()
+                ),
+                _ => println!("[frame {frame}] skipped grain (rendering is off)"),
+            }
+        }
+        return;
+    };
+    let image = target.0.clone();
+    world.resource_mut::<ScriptRunner>().pending_screenshots += 1;
+    let mut entity = world.spawn(Screenshot::image(image));
+    entity.observe(
+        |_: On<ScreenshotCaptured>, mut runner: ResMut<ScriptRunner>| {
+            runner.pending_screenshots -= 1;
+        },
+    );
+    for command in captures {
+        match command {
+            Command::Screenshot(path) => {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir).expect("create screenshot directory");
+                }
+                println!("[frame {frame}] screenshot {}", path.display());
+                entity.observe(save_to_disk(path));
+            }
+            _ => {
+                entity.observe(
+                    move |captured: On<ScreenshotCaptured>, sky: Res<ClearColor>| match grain(
+                        &captured.image,
+                        sky.0,
+                    ) {
+                        Some((value, pairs)) => {
+                            println!("[frame {frame}] grain {value:.2} over {pairs} pixel pairs")
+                        }
+                        None => println!("[frame {frame}] grain: no non-sky pixels"),
+                    },
+                );
+            }
         }
     }
 }
 
-fn screenshot(world: &mut World, path: PathBuf, frame: u32) {
-    let Some(target) = world.get_resource::<HeadlessTarget>() else {
-        println!(
-            "[frame {frame}] skipped screenshot {} (rendering is off)",
-            path.display()
-        );
-        return;
+/// How grainy an image is: the mean absolute difference between each pixel
+/// and its right and lower neighbours, in 0–255 units averaged over RGB,
+/// counting only pairs where neither pixel is within a few units of `sky`.
+/// Returns the value and the number of pairs, or `None` if there are none.
+pub fn grain(image: &Image, sky: Color) -> Option<(f32, usize)> {
+    let (width, height) = (image.width(), image.height());
+    let to_rgb = |color: Color| {
+        let [r, g, b, _] = color.to_srgba().to_u8_array();
+        [r, g, b]
     };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).expect("create screenshot directory");
+    let sky = to_rgb(sky);
+    let pixels: Vec<Option<[u8; 3]>> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let rgb = to_rgb(image.get_color_at(x, y).ok()?);
+            let is_sky = rgb.iter().zip(sky).all(|(&c, s)| c.abs_diff(s) <= 6);
+            (!is_sky).then_some(rgb)
+        })
+        .collect();
+    let at = |x: u32, y: u32| pixels[(y * width + x) as usize];
+    let (mut total, mut pairs) = (0u64, 0usize);
+    for y in 0..height {
+        for x in 0..width {
+            let Some(here) = at(x, y) else { continue };
+            let neighbours = [
+                (x + 1 < width).then(|| at(x + 1, y)).flatten(),
+                (y + 1 < height).then(|| at(x, y + 1)).flatten(),
+            ];
+            for there in neighbours.into_iter().flatten() {
+                total += here
+                    .iter()
+                    .zip(there)
+                    .map(|(&a, b)| a.abs_diff(b) as u64)
+                    .sum::<u64>();
+                pairs += 1;
+            }
+        }
     }
-    let image = target.0.clone();
-    world.resource_mut::<ScriptRunner>().pending_screenshots += 1;
-    println!("[frame {frame}] screenshot {}", path.display());
-    world
-        .spawn(Screenshot::image(image))
-        .observe(save_to_disk(path))
-        .observe(
-            |_: On<ScreenshotCaptured>, mut runner: ResMut<ScriptRunner>| {
-                runner.pending_screenshots -= 1;
-            },
-        );
+    (pairs > 0).then(|| (total as f32 / pairs as f32 / 3.0, pairs))
+}
+
+/// Render pipelines that failed to compile, counted in the render world and
+/// read in the main world when the script ends.
+#[derive(Resource, Clone, Default)]
+struct PipelineErrors(Arc<AtomicUsize>);
+
+fn count_pipeline_errors(cache: Res<PipelineCache>, errors: Res<PipelineErrors>) {
+    let failed = cache
+        .pipelines()
+        .filter(|pipeline| matches!(pipeline.state, CachedPipelineState::Err(_)))
+        .count();
+    errors.0.store(failed, Ordering::Relaxed);
 }
 
 /// Formats `name` (a reflected component type) on every entity that has it.
@@ -407,12 +525,23 @@ fn inspect(world: &mut World, name: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-fn exit_when_done(mut runner: ResMut<ScriptRunner>, mut exit: MessageWriter<AppExit>) {
+fn exit_when_done(
+    mut runner: ResMut<ScriptRunner>,
+    pipeline_errors: Option<Res<PipelineErrors>>,
+    mut exit: MessageWriter<AppExit>,
+) {
     if !runner.finished() {
         return;
     }
     if runner.pending_screenshots == 0 || !runner.rendering {
-        exit.write(AppExit::Success);
+        // Checked once screenshots are saved, so they're there to look at.
+        let failed = pipeline_errors.map_or(0, |errors| errors.0.load(Ordering::Relaxed));
+        if failed > 0 {
+            error!("{failed} render pipeline(s) failed to compile; see the errors above");
+            exit.write(AppExit::error());
+        } else {
+            exit.write(AppExit::Success);
+        }
         return;
     }
     runner.frames_after_end += 1;
@@ -439,6 +568,7 @@ mod tests {
              mouse 10 -5.5\n\
              \n\
              screenshot target/a.png\n\
+             grain\n\
              inspect Transform\n",
         )
         .unwrap();
@@ -453,6 +583,7 @@ mod tests {
                 Command::Release(Button::Mouse(MouseButton::Left)),
                 Command::MoveMouse(Vec2::new(10.0, -5.5)),
                 Command::Screenshot(PathBuf::from("target/a.png")),
+                Command::Grain,
                 Command::Inspect("Transform".into()),
             ]
         );
@@ -465,6 +596,7 @@ mod tests {
         assert!(Script::parse("jump").is_err());
         assert!(Script::parse("wait").is_err());
         assert!(Script::parse("wait soon").is_err());
+        assert!(Script::parse("grain 3").is_err());
     }
 
     /// End to end: the whole game, no GPU, driven by a script.
@@ -523,6 +655,71 @@ mod tests {
             (turned + 100.0 * start.0.sensitivity).abs() < 1e-5,
             "{turned}"
         );
+    }
+
+    /// An image whose pixel (x, y) is `paint(x, y)`.
+    fn image(width: u32, height: u32, paint: impl Fn(u32, u32) -> [u8; 3]) -> Image {
+        let data = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                let [r, g, b] = paint(x, y);
+                [r, g, b, 255]
+            })
+            .collect();
+        Image::new(
+            bevy::render::render_resource::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            data,
+            TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::all(),
+        )
+    }
+
+    #[test]
+    fn grain_measures_neighbour_differences_away_from_the_sky() {
+        let sky = Color::srgb_u8(100, 150, 200);
+        let flat = image(8, 8, |_, _| [40, 90, 40]);
+        assert_eq!(grain(&flat, sky), Some((0.0, 2 * 7 * 8)));
+
+        let checker = image(
+            8,
+            8,
+            |x, y| if (x + y) % 2 == 0 { [0; 3] } else { [255; 3] },
+        );
+        assert_eq!(grain(&checker, sky).unwrap().0, 255.0);
+
+        // Edges against the sky don't count: black ground under a sky band.
+        let horizon = image(8, 8, |_, y| if y < 4 { [100, 150, 200] } else { [0; 3] });
+        assert_eq!(grain(&horizon, sky), Some((0.0, 2 * 7 * 4 - 4)));
+
+        let all_sky = image(4, 4, |_, _| [101, 149, 200]);
+        assert_eq!(grain(&all_sky, sky), None);
+    }
+
+    /// A shader that fails to compile makes the run fail, not just render
+    /// nothing. Simulated, since tests have no GPU to compile shaders on.
+    #[test]
+    fn failed_pipelines_fail_the_run() {
+        let mut app = App::new();
+        app.add_plugins((
+            default_plugins(false).disable::<LogPlugin>(),
+            HeadlessPlugin {
+                script: Script::parse("wait 1").unwrap(),
+                rendering: false,
+            },
+        ))
+        .insert_resource(PipelineErrors(Arc::new(AtomicUsize::new(1))));
+        app.finish();
+        app.cleanup();
+        let exit = (0..10).find_map(|_| {
+            app.update();
+            app.should_exit()
+        });
+        assert_eq!(exit, Some(AppExit::error()));
     }
 
     fn camera(app: &mut App) -> (FlyCamera, Transform) {

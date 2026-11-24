@@ -1,6 +1,8 @@
 # Look at the block textures from several distances and angles, to check
 # mipmapping: close-up pixels should stay crisp, and distant or grazing
-# surfaces should look smooth, not grainy or shimmering.
+# surfaces should look smooth, not grainy or shimmering. `grain` prints a
+# number for the grazing and far views; compare it before and after texture
+# or shader changes (lower is smoother).
 # Run: cargo headless scenarios/texture-distances.txt
 wait 5
 screenshot target/scenarios/texture-distances/0-start.png
@@ -16,10 +18,12 @@ wait 1
 mouse 0 -330       # look out over the hills, just below the horizon
 wait 1
 screenshot target/scenarios/texture-distances/2-grazing.png
+grain
 wait 1
 
 hold Space 420     # climb high above the world
 mouse 0 330        # look down at it from far away
 wait 1
 screenshot target/scenarios/texture-distances/3-far.png
+grain
 inspect FlyCamera
