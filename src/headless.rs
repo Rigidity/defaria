@@ -891,7 +891,7 @@ mod tests {
                 .graph()
                 .systems
                 .iter()
-                .any(|(_, system, _)| system.name().as_string().contains("record_pipeline_status")),
+                .any(|(_, system, _)| system.name().to_string().contains("record_pipeline_status")),
             "record_pipeline_status isn't in the Render schedule"
         );
     }
