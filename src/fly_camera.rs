@@ -10,6 +10,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use bevy::{
+    core_pipeline::tonemapping::{DebandDither, Tonemapping},
     input::mouse::AccumulatedMouseMotion,
     prelude::*,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
@@ -18,6 +19,12 @@ use bevy::{
 /// Keep pitch just inside ±90° so the camera never looks exactly straight up
 /// or down, where yaw becomes ambiguous.
 const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
+
+/// Where the camera spawns: just above the hills near the middle of the
+/// 128×64×128 terrain, so there's ground right below.
+pub const START_POSITION: Vec3 = Vec3::new(64.0, 56.0, 92.0);
+/// The point the camera looks at when it spawns: the middle of the terrain.
+pub const START_TARGET: Vec3 = Vec3::new(64.0, 28.0, 56.0);
 
 pub struct FlyCameraPlugin;
 
@@ -61,9 +68,7 @@ impl FlyCamera {
 }
 
 fn spawn_camera(mut commands: Commands) {
-    // Start outside the voxel grid, looking back at it from above.
-    let position = Vec3::new(36.0, 26.0, 36.0);
-    let target = Vec3::splat(8.0);
+    let (position, target) = (START_POSITION, START_TARGET);
     let (yaw, pitch, _) = Transform::from_translation(position)
         .looking_at(target, Vec3::Y)
         .rotation
@@ -76,6 +81,11 @@ fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Name::new("Fly Camera"),
         Transform::from_translation(position).with_rotation(camera.rotation()),
+        // Show the shader's colors as they are: Bevy's default tonemapping
+        // shifts hues and contrast, and dithering adds noise, both of which
+        // fight hand-picked pixel art colors.
+        Tonemapping::None,
+        DebandDither::Disabled,
         camera,
     ));
 }
