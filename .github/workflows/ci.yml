@@ -27,7 +27,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Bevy's Linux dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@v2
+      # Cache Bevy's build. The key changes only with the toolchain or the
+      # lockfile; when it misses, the restore keys fall back to the newest cache
+      # for the same toolchain, which still has nearly every dependency built.
+      # (Swatinem/rust-cache hashes Cargo.toml and .cargo/config.toml into the
+      # part of its key that must match exactly, so any edit to them meant a
+      # cold ~30 minute build.)
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
       - name: Clippy (dev features)
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Clippy (shipping features)
