@@ -37,6 +37,11 @@ pub enum Voxel {
     Stone,
     Dirt,
     Grass,
+    Sand,
+    Gravel,
+    /// A tree trunk standing upright: bark on the sides, rings on the ends.
+    Log,
+    Planks,
 }
 
 impl Voxel {
@@ -54,6 +59,11 @@ impl Voxel {
             Voxel::Grass if normal == Vec3::Y => Tile::GrassTop,
             Voxel::Grass if normal == Vec3::NEG_Y => Tile::Dirt,
             Voxel::Grass => Tile::GrassSide,
+            Voxel::Sand => Tile::Sand,
+            Voxel::Gravel => Tile::Gravel,
+            Voxel::Log if normal.y != 0.0 => Tile::LogTop,
+            Voxel::Log => Tile::LogSide,
+            Voxel::Planks => Tile::Planks,
         })
     }
 }
@@ -378,6 +388,9 @@ mod tests {
             assert_eq!(Voxel::Grass.tile(side), Some(Tile::GrassSide));
         }
         assert_eq!(Voxel::Stone.tile(Vec3::Y), Some(Tile::Stone));
+        assert_eq!(Voxel::Log.tile(Vec3::Y), Some(Tile::LogTop));
+        assert_eq!(Voxel::Log.tile(Vec3::NEG_Y), Some(Tile::LogTop));
+        assert_eq!(Voxel::Log.tile(Vec3::X), Some(Tile::LogSide));
         assert_eq!(Voxel::Air.tile(Vec3::Y), None);
     }
 

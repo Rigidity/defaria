@@ -302,10 +302,13 @@ fn create_render_target(mut commands: Commands, mut images: ResMut<Assets<Image>
 }
 
 /// Points every camera at the offscreen image, since there's no window.
+/// The UI draws on the camera that targets the primary window unless one is
+/// marked as the default, so mark it, or the HUD wouldn't show.
 fn render_to_image(add: On<Add<Camera>>, target: Res<HeadlessTarget>, mut commands: Commands) {
-    commands
-        .entity(add.entity)
-        .insert(RenderTarget::Image(target.0.clone().into()));
+    commands.entity(add.entity).insert((
+        RenderTarget::Image(target.0.clone().into()),
+        IsDefaultUiCamera,
+    ));
 }
 
 /// Runs this frame's commands, up to the next `wait`. Runs before Bevy's input

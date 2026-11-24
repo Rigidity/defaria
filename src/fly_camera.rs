@@ -30,10 +30,18 @@ pub struct FlyCameraPlugin;
 
 impl Plugin for FlyCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera)
-            .add_systems(Update, (grab_cursor, look, fly).chain());
+        app.add_systems(Startup, spawn_camera).add_systems(
+            Update,
+            (grab_cursor, look, fly).chain().in_set(FlyCameraSystems),
+        );
     }
 }
+
+/// The fly camera's input systems: cursor grabbing, looking and flying.
+/// Systems that need the cursor's state from before this frame's click
+/// (like block editing) run before them.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FlyCameraSystems;
 
 #[derive(Component, Reflect, Debug, Clone)]
 #[reflect(Component)]
