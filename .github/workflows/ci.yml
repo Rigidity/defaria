@@ -34,3 +34,13 @@ jobs:
         run: cargo clippy --all-targets --locked --no-default-features -- -D warnings
       - name: Test
         run: cargo test --locked
+      # No GPU on CI runners: run every scenario without rendering. This catches
+      # scripts that no longer parse, unknown components and crashes, not visual
+      # problems.
+      - name: Scenarios
+        run: |
+          for script in scenarios/*.txt; do
+            echo "::group::$script"
+            cargo run --locked -- --headless "$script" --no-render
+            echo "::endgroup::"
+          done

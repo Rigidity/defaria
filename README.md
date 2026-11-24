@@ -1,6 +1,6 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# defaria-2026
+# defaria
 
 Created in [T3 Code](https://t3.codes).
 
@@ -13,6 +13,7 @@ See [AGENTS.md](AGENTS.md) for the full workflow.
 cargo run                    # dev build: dynamic linking, asset hot reload, BRP on :15702
 cargo test                   # headless tests
 cargo shot                   # render 60 frames, save target/screenshot.png, exit
+cargo headless <script>      # no window: play a scripted scenario (see scenarios/)
 cargo play                   # optimized build without dev features
 cargo dist                   # shipping build (fat LTO, stripped, panic=abort)
 ```
