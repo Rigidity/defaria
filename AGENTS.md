@@ -139,6 +139,21 @@ runs rounds of code review and headless playtesting, fixes what they find, and
 ends in a PR. Agents other than Claude Code can read `SKILL.md` there and
 follow it directly.
 
+## Art and Retro Diffusion
+
+Block textures are 16×16 grayscale layer images in `assets/textures/layers/`,
+colored by per-layer palettes and stacked at runtime (`src/block_texture.rs`).
+Layers use only the 8 gray levels that `cargo test` checks for.
+
+The Retro Diffusion MCP runs on a monthly subscription with a limited
+allowance of plan usage. Read
+`.claude/skills/retro-diffusion/SKILL.md` before any Retro Diffusion call.
+In short: generate only when the user asks for that specific art, check
+plan usage first, one call at a time and never in parallel, always the
+house style for the material (see the skill) at 16×16, converted with
+`scripts/gray-layer.py`, and record every result in
+`assets/textures/layers/SOURCES.md`.
+
 ## Code layout
 
 - `src/main.rs`: CLI flags and `App` setup only.
@@ -150,8 +165,9 @@ follow it directly.
 - `src/headless.rs`: headless mode and the scenario script runner.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `assets/`: loaded through `AssetServer`. They hot reload in dev builds.
+  Block texture layers are in `assets/textures/layers/`.
 - `scripts/`: helper scripts, such as `pr-screenshots.sh` for PR
-  descriptions.
+  descriptions and `gray-layer.py` for turning images into texture layers.
 
 ## Conventions
 

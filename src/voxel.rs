@@ -44,7 +44,7 @@ impl Voxel {
         self != Voxel::Air
     }
 
-    /// The atlas tile drawn on the face pointing along `normal`. `None` for
+    /// The tile drawn on the face pointing along `normal`. `None` for
     /// air, which has no faces.
     pub fn tile(self, normal: Vec3) -> Option<Tile> {
         Some(match self {
@@ -124,7 +124,7 @@ impl Chunk {
     }
 
     /// Builds a mesh of every solid voxel's faces that touch a non-solid
-    /// voxel, textured from the block atlas. `outside` gives the
+    /// voxel, textured from the block texture. `outside` gives the
     /// voxel at a chunk-local position just beyond the chunk's edge, so faces
     /// buried against a neighbouring chunk are skipped too.
     pub fn mesh(&self, outside: impl Fn(IVec3) -> Voxel) -> Mesh {

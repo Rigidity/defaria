@@ -1,18 +1,25 @@
 //! Our own material and shader for chunk meshes, replacing Bevy's PBR
 //! `StandardMaterial`.
 //!
-//! No lighting: the shader shows the block atlas's pixels as they are, dimmed
+//! No lighting: the shader shows the block texture's pixels as they are, dimmed
 //! by a fixed amount per face direction so block edges stay readable. The
 //! shader is `assets/shaders/voxel.wesl` and hot reloads in dev builds.
 //!
-//! The material doesn't sample the atlas PNG directly. Whenever the PNG
-//! loads (or hot reloads), [`block_texture::build`] turns it into a
-//! mipmapped array texture, one layer per tile, and the material samples
-//! that.
+//! The material doesn't sample the layer PNGs directly. Once they've all
+//! loaded, and again whenever one hot reloads, [`block_texture::build`]
+//! colorizes and stacks them into a mipmapped array texture, one layer per
+//! tile, and the material samples that.
 
-use bevy::{prelude::*, render::render_resource::AsBindGroup, shader::ShaderRef};
+use bevy::{
+    asset::RenderAssetUsages,
+    image::ImageLoaderSettings,
+    platform::collections::{HashMap, HashSet},
+    prelude::*,
+    render::render_resource::AsBindGroup,
+    shader::ShaderRef,
+};
 
-use crate::block_texture::{self, ATLAS_PATH};
+use crate::block_texture;
 
 /// The chunk shader, relative to `assets/`.
 pub const SHADER_PATH: &str = "shaders/voxel.wesl";
@@ -47,28 +54,54 @@ impl Material for VoxelMaterial {
     }
 }
 
-/// The material every chunk mesh shares, and the textures behind it.
+/// The material every chunk mesh shares, and the images behind it.
 #[derive(Resource, Debug, Clone)]
 pub struct BlockMaterial {
     pub material: Handle<VoxelMaterial>,
-    /// The atlas PNG as loaded. The material's texture is built from it.
-    pub atlas: Handle<Image>,
+    /// The grayscale layer images as loaded, by asset path. The material's
+    /// texture is built from them.
+    pub layers: HashMap<String, Handle<Image>>,
 }
 
 impl FromWorld for BlockMaterial {
     fn from_world(world: &mut World) -> Self {
-        let atlas = world.resource::<AssetServer>().load(ATLAS_PATH);
+        let server = world.resource::<AssetServer>();
+        let layers = block_texture::layer_paths()
+            .into_iter()
+            .map(|path| {
+                // The GPU only needs the built texture, so keep the layers
+                // on the CPU. Hot reloads reapply these settings.
+                let handle = server
+                    .load_builder()
+                    .with_settings(|settings: &mut ImageLoaderSettings| {
+                        settings.asset_usage = RenderAssetUsages::MAIN_WORLD;
+                    })
+                    .load(path.clone());
+                (path, handle)
+            })
+            .collect();
         // A handle with no image behind it yet: chunks don't draw until the
-        // atlas has loaded and the real texture replaces it.
+        // layers have loaded and the real texture replaces it.
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
         let material = world
             .resource_mut::<Assets<VoxelMaterial>>()
             .add(VoxelMaterial { blocks });
-        Self { material, atlas }
+        Self { material, layers }
     }
 }
 
-/// Rebuilds the block texture whenever the atlas PNG loads or changes.
+/// Rebuilds the block texture once every layer image has loaded, and again
+/// whenever one changes.
+///
+/// Reacts to `Added` (first load) and `Modified` (hot reload, or a change
+/// through `get_mut`). Not `LoadedWithDependencies`: a hot reload sends it
+/// as well as `Modified`, often a frame apart, which would build twice.
+/// Images have no dependencies, so `Added` already means loaded.
+///
+/// The first build waits until an event has arrived for every layer, not
+/// just until every image is present: an image lands in `Assets` a frame
+/// before its event can be read, so building on presence alone would build
+/// once early and again when the last event arrives.
 ///
 /// Each rebuild is a new image asset, not an overwrite of the old one: when
 /// an image's size and format don't change, Bevy updates the existing GPU
@@ -77,25 +110,35 @@ impl FromWorld for BlockMaterial {
 fn build_block_texture(
     mut events: MessageReader<AssetEvent<Image>>,
     block: Res<BlockMaterial>,
+    // Layers an `Added` or `Modified` event has arrived for.
+    mut seen: Local<HashSet<AssetId<Image>>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
 ) {
-    let changed = events.read().any(|event| match event {
-        AssetEvent::LoadedWithDependencies { id } | AssetEvent::Modified { id } => {
-            *id == block.atlas.id()
+    let mut changed = false;
+    // Read every event, not just up to the first match: unread events stay
+    // queued and would trigger another build next frame.
+    for event in events.read() {
+        if let AssetEvent::Added { id } | AssetEvent::Modified { id } = event
+            && block.layers.values().any(|layer| layer.id() == *id)
+        {
+            seen.insert(*id);
+            changed = true;
         }
-        _ => false,
-    });
-    if !changed {
+    }
+    // Until the last layer arrives; its own event brings us back.
+    let ready = block
+        .layers
+        .values()
+        .all(|layer| seen.contains(&layer.id()) && images.contains(layer));
+    if !changed || !ready {
         return;
     }
-    let Some(atlas) = images.get(&block.atlas) else {
-        return;
-    };
-    let texture = match block_texture::build(atlas) {
+    let built = block_texture::build(|path| images.get(block.layers.get(path)?));
+    let texture = match built {
         Ok(texture) => texture,
         Err(error) => {
-            error!("can't build block texture from {ATLAS_PATH}: {error}");
+            error!("can't build the block texture: {error}");
             return;
         }
     };
@@ -111,6 +154,8 @@ fn build_block_texture(
 mod tests {
     use super::*;
     use crate::block_texture::Tile;
+    use crate::block_texture::layer::test_images::flat_gray;
+    use bevy::color::ColorToPacked;
 
     /// The shader declares the bindings the material provides, at the same
     /// indices, and the fragment entry point Bevy looks for.
@@ -135,14 +180,12 @@ mod tests {
         app
     }
 
-    /// The material's texture: runs the app until the atlas has loaded and
-    /// a texture has been built from it.
+    /// The material's texture: runs the app until the layers have loaded
+    /// and a texture has been built from them.
     fn built_texture(app: &mut App) -> Handle<Image> {
         for _ in 0..400 {
             app.update();
-            let block = app.world().resource::<BlockMaterial>();
-            let materials = app.world().resource::<Assets<VoxelMaterial>>();
-            let blocks = materials.get(&block.material).unwrap().blocks.clone();
+            let blocks = material_texture(app);
             if app.world().resource::<Assets<Image>>().contains(&blocks) {
                 return blocks;
             }
@@ -151,8 +194,64 @@ mod tests {
         panic!("block texture never built");
     }
 
+    /// The texture the material samples right now.
+    fn material_texture(app: &App) -> Handle<Image> {
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        materials.get(&block.material).unwrap().blocks.clone()
+    }
+
+    fn layer(app: &App, name: &str) -> Handle<Image> {
+        let block = app.world().resource::<BlockMaterial>();
+        block.layers[&block_texture::layer_path(name)].clone()
+    }
+
+    /// Fills a loaded layer with one RGBA color, through `get_mut` like a
+    /// hot reload.
+    fn paint(app: &mut App, layer: &Handle<Image>, rgba: [u8; 4]) {
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .get_mut(layer)
+            .unwrap()
+            .data
+            .as_mut()
+            .unwrap()
+            .chunks_mut(4)
+            .for_each(|pixel| pixel.copy_from_slice(&rgba));
+    }
+
+    /// Reads material events from now on; `modified` says whether the
+    /// material was marked modified since.
+    struct MaterialEvents(bevy::ecs::message::MessageCursor<AssetEvent<VoxelMaterial>>);
+
+    impl MaterialEvents {
+        fn new(app: &App) -> Self {
+            let messages = app
+                .world()
+                .resource::<Messages<AssetEvent<VoxelMaterial>>>();
+            Self(messages.get_cursor_current())
+        }
+
+        fn modified(&mut self, app: &App) -> bool {
+            self.count(app) > 0
+        }
+
+        /// How many times the material was marked modified since the last
+        /// call, which is once per build.
+        fn count(&mut self, app: &App) -> usize {
+            let material = app.world().resource::<BlockMaterial>().material.id();
+            let messages = app
+                .world()
+                .resource::<Messages<AssetEvent<VoxelMaterial>>>();
+            self.0
+                .read(messages)
+                .filter(|event| event.is_modified(material))
+                .count()
+        }
+    }
+
     #[test]
-    fn block_texture_is_built_once_the_atlas_loads() {
+    fn block_texture_is_built_once_the_layers_load() {
         let mut app = app();
         let blocks = built_texture(&mut app);
         let texture = app
@@ -161,57 +260,147 @@ mod tests {
             .get(&blocks)
             .unwrap();
         let size = texture.texture_descriptor.size;
-        assert_eq!(size.depth_or_array_layers, Tile::COUNT as u32);
+        assert_eq!(size.depth_or_array_layers, Tile::ALL.len() as u32);
         assert_eq!(texture.texture_descriptor.mip_level_count, 5);
     }
 
-    /// Changing the atlas (as hot reload does) builds a fresh texture asset,
+    /// Changing a layer (as hot reload does) builds a fresh texture asset,
     /// so it's uploaded whole, and marks the material modified, so its bind
     /// group picks the new texture up.
     #[test]
-    fn changing_the_atlas_rebuilds_the_texture_and_updates_the_material() {
+    fn changing_a_layer_rebuilds_the_texture_and_updates_the_material() {
         let mut app = app();
         let old = built_texture(&mut app);
-        // Read material events from here on.
-        let mut material_events = app
-            .world()
-            .resource::<Messages<AssetEvent<VoxelMaterial>>>()
-            .get_cursor_current();
+        let mut material_events = MaterialEvents::new(&app);
 
-        // Repaint the atlas solid red, through `get_mut` like a reload.
-        let atlas = app.world().resource::<BlockMaterial>().atlas.clone();
-        app.world_mut()
-            .resource_mut::<Assets<Image>>()
-            .get_mut(&atlas)
-            .unwrap()
-            .data
-            .as_mut()
-            .unwrap()
-            .chunks_mut(4)
-            .for_each(|pixel| pixel.copy_from_slice(&[255, 0, 0, 255]));
+        // Repaint stone solid black, through `get_mut` like a reload.
+        let stone = layer(&app, "stone");
+        paint(&mut app, &stone, [0, 0, 0, 255]);
         app.update();
         app.update();
 
-        let block = app.world().resource::<BlockMaterial>();
-        let new = app
-            .world()
-            .resource::<Assets<VoxelMaterial>>()
-            .get(&block.material)
-            .unwrap()
-            .blocks
-            .clone();
+        let new = material_texture(&app);
         assert_ne!(new.id(), old.id(), "rebuilt texture must be a new asset");
         let texture = app.world().resource::<Assets<Image>>().get(&new).unwrap();
-        // Every layer and mip is red now; check the last layer's smallest mip.
+        // Stone is the first array layer; its first pixel is the darkest
+        // stone color now.
+        let darkest = Tile::Stone.layers()[0].palette.color(0);
         let data = texture.data.as_ref().unwrap();
-        assert_eq!(data[data.len() - 4..], [255, 0, 0, 255]);
+        assert_eq!(data[..4], darkest.to_u8_array());
 
-        let modified = material_events
-            .read(
-                app.world()
-                    .resource::<Messages<AssetEvent<VoxelMaterial>>>(),
-            )
-            .any(|event| event.is_modified(&block.material));
-        assert!(modified, "material wasn't marked modified");
+        assert!(
+            material_events.modified(&app),
+            "material wasn't marked modified"
+        );
+    }
+
+    /// Once built, nothing is rebuilt until a layer changes.
+    #[test]
+    fn the_texture_is_left_alone_while_no_layer_changes() {
+        let mut app = app();
+        let built = built_texture(&mut app);
+        let mut material_events = MaterialEvents::new(&app);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_eq!(material_texture(&app), built);
+        assert!(!material_events.modified(&app), "material was rebuilt");
+    }
+
+    /// A layer that breaks the rules (here, a gray that isn't one of the
+    /// levels) keeps the previous texture on screen, and fixing it builds
+    /// a new one.
+    #[test]
+    fn a_bad_layer_keeps_the_previous_texture_until_fixed() {
+        let mut app = app();
+        let good = built_texture(&mut app);
+        let stone = layer(&app, "stone");
+
+        paint(&mut app, &stone, [100, 100, 100, 255]);
+        app.update();
+        app.update();
+        assert_eq!(material_texture(&app), good);
+        assert!(app.world().resource::<Assets<Image>>().contains(&good));
+
+        paint(&mut app, &stone, [0, 0, 0, 255]);
+        app.update();
+        app.update();
+        assert_ne!(material_texture(&app), good);
+    }
+
+    /// Changes to two layers in the same frame build once, not once each.
+    #[test]
+    fn two_layers_changing_together_build_once() {
+        let mut app = app();
+        built_texture(&mut app);
+        let mut material_events = MaterialEvents::new(&app);
+        for name in ["stone", "dirt"] {
+            let layer = layer(&app, name);
+            paint(&mut app, &layer, [0, 0, 0, 255]);
+        }
+        let mut builds = 0;
+        for _ in 0..6 {
+            app.update();
+            builds += material_events.count(&app);
+        }
+        assert_eq!(builds, 1);
+    }
+
+    /// Nothing is built while any layer is missing, and layers arriving on
+    /// different frames build once, when the last arrives. Inserted by hand
+    /// rather than loaded from disk, so the timing is exact: an image lands
+    /// in `Assets` a frame before its `Added` event can be read.
+    #[test]
+    fn layers_arriving_one_per_frame_build_once_after_the_last() {
+        let mut app = app();
+        // Swap every layer's handle for one with no image behind it.
+        let paths: Vec<String> = app
+            .world()
+            .resource::<BlockMaterial>()
+            .layers
+            .keys()
+            .cloned()
+            .collect();
+        let missing: Vec<Handle<Image>> = paths
+            .into_iter()
+            .map(|path| {
+                let handle = app.world().resource::<Assets<Image>>().reserve_handle();
+                app.world_mut()
+                    .resource_mut::<BlockMaterial>()
+                    .layers
+                    .insert(path, handle.clone());
+                handle
+            })
+            .collect();
+        let reserved = material_texture(&app);
+        let mut material_events = MaterialEvents::new(&app);
+        let black = flat_gray(0);
+
+        let (last, first) = missing.split_last().unwrap();
+        for handle in first {
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .insert(handle, black.clone())
+                .unwrap();
+            // One frame per layer: each frame reads the previous layer's
+            // event while the current layer is already present.
+            app.update();
+            assert_eq!(
+                material_texture(&app),
+                reserved,
+                "built with a layer missing"
+            );
+        }
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .insert(last, black)
+            .unwrap();
+        let mut builds = 0;
+        for _ in 0..6 {
+            app.update();
+            builds += material_events.count(&app);
+        }
+        assert_eq!(builds, 1);
+        assert_ne!(material_texture(&app), reserved);
     }
 }
