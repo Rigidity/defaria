@@ -499,6 +499,34 @@ mod tests {
         }
     }
 
+    /// The log's cut end shows its bark rim over the rings: the corner
+    /// comes from the bark layer (`log_top_bark`, on top) and the middle from
+    /// the rings (`log_top`), each colored by its own palette.
+    #[test]
+    fn log_top_has_bark_around_the_rings() {
+        let layers = layers_on_disk();
+        let pixels = |name: &str| layers[&layer_path(name)].data.clone().unwrap();
+        let (rings, bark) = (pixels("log_top"), pixels("log_top_bark"));
+        let at = |x: u32, y: u32| ((y * TILE_SIZE + x) * 4) as usize;
+        let (corner, middle) = (at(0, 0), at(8, 8));
+        assert_eq!(bark[corner + 3], 255, "the bark covers the corner");
+        assert_eq!(bark[middle + 3], 0, "the bark leaves the middle open");
+
+        let image = build(|path| layers.get(path)).unwrap();
+        let tile = Tile::LogTop.layer();
+        let color = |palette: Palette, gray: u8| {
+            palette.color(layer::level_of(gray).unwrap()).to_u8_array()
+        };
+        assert_eq!(
+            pixel(&image, tile, 0, 0, 0),
+            color(palettes::bark(), bark[corner])
+        );
+        assert_eq!(
+            pixel(&image, tile, 0, 8, 8),
+            color(palettes::log_end(), rings[middle])
+        );
+    }
+
     /// Every pixel of every built tile is opaque: the shader ignores alpha,
     /// so a hole would show the color hiding behind it.
     #[test]
