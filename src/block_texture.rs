@@ -36,20 +36,48 @@ pub const TILE_SIZE: u32 = 16;
 const MAX_ANISOTROPY: u16 = 16;
 
 /// Builds the block texture: layer `i` is `textures[i]`. `image` looks up a
-/// loaded layer image by its asset path; every image the textures use must
-/// resolve.
+/// loaded layer image by its asset path.
+///
+/// A texture that can't be built (an image missing, or breaking the layer
+/// rules) gets [`placeholder`] in its layer instead, so one bad image only
+/// marks its own tiles, and the other layers keep their places. Returns the
+/// texture and one message per texture that failed.
 pub fn build<'a>(
     textures: &[Texture],
     image: impl Fn(&str) -> Option<&'a Image>,
-) -> Result<Image, String> {
-    if textures.is_empty() {
-        return Err("there are no textures".into());
-    }
-    let tiles = textures
+) -> (Image, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut tiles: Vec<Vec<u8>> = textures
         .iter()
-        .map(|texture| compose(texture, &image).map_err(|error| format!("{}: {error}", texture.id)))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(array_texture(&tiles))
+        .map(|texture| {
+            compose(texture, &image).unwrap_or_else(|error| {
+                errors.push(format!("{}: {error}", texture.id));
+                placeholder()
+            })
+        })
+        .collect();
+    // An array texture needs at least one layer.
+    if tiles.is_empty() {
+        tiles.push(placeholder());
+    }
+    (array_texture(&tiles), errors)
+}
+
+/// The tile shown for a texture that couldn't be built: a magenta and black
+/// checkerboard, which no real texture looks like.
+pub fn placeholder() -> Vec<u8> {
+    const MAGENTA: [u8; 4] = [255, 0, 255, 255];
+    const BLACK: [u8; 4] = [0, 0, 0, 255];
+    (0..TILE_SIZE)
+        .flat_map(|y| (0..TILE_SIZE).map(move |x| (x, y)))
+        .flat_map(|(x, y)| {
+            if (x / 4 + y / 4).is_multiple_of(2) {
+                MAGENTA
+            } else {
+                BLACK
+            }
+        })
+        .collect()
 }
 
 /// Colorizes and stacks one texture's layers into sRGB RGBA8 pixels.
@@ -237,7 +265,9 @@ mod tests {
     }
 
     fn build_base(layers: &HashMap<String, Image>) -> Image {
-        build(&base().textures, |path| layers.get(path)).unwrap()
+        let (image, errors) = build(&base().textures, |path| layers.get(path));
+        assert!(errors.is_empty(), "{errors:?}");
+        image
     }
 
     /// Every PNG in every mod's images, including ones no texture uses yet
@@ -389,23 +419,56 @@ mod tests {
         assert_eq!(pixel(&image, tile("grass_side"), 0, 0, 0), grass);
     }
 
+    /// The pixels of array layer `layer`'s full-size mip.
+    fn tile_pixels(image: &Image, layer: u32) -> Vec<u8> {
+        let at = offset(layer, 0);
+        image.data.as_ref().unwrap()[at..at + (TILE_SIZE * TILE_SIZE * 4) as usize].to_vec()
+    }
+
+    /// A missing or bad image shows the placeholder in the tiles that use
+    /// it, names the texture and file, and leaves every other tile as it
+    /// should be.
     #[test]
-    fn a_missing_or_bad_layer_names_the_texture_and_file() {
-        let textures = &base().textures;
-        let error = build(textures, |_| None).unwrap_err();
-        let first = &textures[0];
-        assert!(
-            error.contains(&first.id) && error.contains(&first.layers[0].image),
-            "{error}"
-        );
+    fn a_missing_or_bad_layer_marks_only_its_own_tiles() {
+        let good = layers_on_disk();
+        let expected = build_base(&good);
+        let stone = image_path("stone");
 
-        let mut red = flat_gray(0);
-        red.data.as_mut().unwrap()[0] = 200;
-        let error = build(textures, |_| Some(&red)).unwrap_err();
-        assert!(error.contains("not gray"), "{error}");
+        let mut bad = good.clone();
+        bad.get_mut(&stone).unwrap().data.as_mut().unwrap()[0] = 200;
+        let missing = {
+            let mut layers = good.clone();
+            layers.remove(&stone);
+            layers
+        };
+        for (layers, message) in [(&bad, "not gray"), (&missing, "isn't loaded")] {
+            let (image, errors) = build(&base().textures, |path| layers.get(path));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].contains("defaria:stone")
+                    && errors[0].contains(&stone)
+                    && errors[0].contains(message),
+                "{errors:?}"
+            );
+            for (layer, texture) in base().textures.iter().enumerate() {
+                let layer = layer as u32;
+                let wanted = if texture.id == "defaria:stone" {
+                    placeholder()
+                } else {
+                    tile_pixels(&expected, layer)
+                };
+                assert_eq!(tile_pixels(&image, layer), wanted, "{}", texture.id);
+            }
+        }
+    }
 
-        let error = build(&[], |_| Some(&red)).unwrap_err();
-        assert!(error.contains("no textures"), "{error}");
+    /// With no textures at all there's still a valid one-layer texture.
+    #[test]
+    fn no_textures_build_a_placeholder_layer() {
+        let (image, errors) = build(&[], |_| None);
+        assert!(errors.is_empty());
+        assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 1);
+        assert_eq!(tile_pixels(&image, 0), placeholder());
     }
 
     #[test]
