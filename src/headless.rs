@@ -6,7 +6,8 @@
 //! advances a fixed 1/60 s per frame, so runs are deterministic.
 //!
 //! Add `--no-render` to run without a GPU at all: everything works except
-//! screenshots, which are skipped. CI runs every scenario this way.
+//! `screenshot` and `grain`, which are skipped. CI runs every scenario this
+//! way.
 //!
 //! # Script format
 //!
@@ -19,7 +20,7 @@
 //! | `hold <button> <frames>` | `press`, `wait <frames>`, `release`. |
 //! | `mouse <dx> <dy>` | Move the mouse by that many pixels this frame. |
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
-//! | `grain` | Print how grainy this frame's terrain is (see below). |
+//! | `grain` | Print a texture-noise number for this frame (see below). |
 //! | `inspect <Component>` | Print that component on every entity that has it. |
 //!
 //! Buttons are Bevy [`KeyCode`] names (`KeyW`, `Space`, `ShiftLeft`,
@@ -31,15 +32,19 @@
 //! `grain` and `inspect` see the state at the end of that frame, so put a
 //! `wait` between a `screenshot` and input meant to come after it.
 //!
-//! `grain` measures texture noise: the mean difference between neighbouring
-//! pixels (0–255, averaged over RGB) across every pair where neither pixel is
-//! the sky ([`ClearColor`]). Lower is smoother. Compare it between runs of
-//! the same view, for example before and after a texture or shader change.
-//! Like `screenshot`, it's skipped with `--no-render`.
+//! `grain` is the mean difference between neighbouring pixels (0–255,
+//! averaged over RGB) across every pair where neither pixel is the sky
+//! ([`ClearColor`]). Lower is smoother. Block edges, face shading and how far
+//! apart the tile colours are all count, so only compare it between runs of
+//! the same view with the same art, for example before and after a shader or
+//! filtering change.
 //!
-//! A rendered run fails (exits with an error) if any render pipeline failed
-//! to compile, such as a shader with an error, since that otherwise only
-//! shows up as missing geometry in screenshots.
+//! A rendered run fails (exits with an error) if a render pipeline failed to
+//! compile, such as a shader with an error, since that otherwise only shows
+//! up as missing geometry in screenshots. When the script ends, the run waits
+//! for pipelines still compiling, but a pipeline that hasn't been requested
+//! yet (say, because its textures are still loading on the first frames)
+//! can't be checked, so scenarios should run for at least a few frames.
 
 use std::{
     collections::VecDeque,
@@ -62,11 +67,12 @@ use bevy::{
     prelude::*,
     reflect::enums::{DynamicEnum, DynamicVariant},
     render::{
-        Render, RenderApp, RenderPlugin,
+        Render, RenderApp, RenderPlugin, RenderSystems,
         render_resource::{CachedPipelineState, PipelineCache, TextureFormat, TextureUsages},
         settings::WgpuSettings,
         view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
     },
+    shader::ShaderCacheError,
     time::TimeUpdateStrategy,
     window::{ExitCondition, PrimaryWindow, WindowResolution},
     winit::WinitPlugin,
@@ -126,15 +132,9 @@ impl Plugin for HeadlessPlugin {
             .add_systems(PreUpdate, run_script.before(InputSystems))
             .add_systems(Last, (observe, exit_when_done).chain());
         if self.rendering {
-            let errors = PipelineErrors::default();
-            app.insert_resource(errors.clone())
-                .add_systems(PreStartup, create_render_target)
+            app.add_systems(PreStartup, create_render_target)
                 .add_observer(render_to_image);
-            if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-                render_app
-                    .insert_resource(errors)
-                    .add_systems(Render, count_pipeline_errors);
-            }
+            share_pipeline_status(app);
         }
     }
 }
@@ -265,7 +265,7 @@ struct ScriptRunner {
     /// Frames left before the next command runs.
     waiting: u32,
     /// `screenshot` and `inspect` commands to handle at the end of this frame.
-    observations: Vec<Command>,
+    observations: Vec<Observation>,
     pending_screenshots: usize,
     /// Frames since the last command ran, once there are none left.
     frames_after_end: u32,
@@ -354,22 +354,38 @@ fn run_script(
             Command::MoveMouse(delta) => {
                 mouse_motion.write(MouseMotion { delta });
             }
-            Command::Screenshot(_) | Command::Grain | Command::Inspect(_) => {
-                runner.observations.push(command)
-            }
+            Command::Screenshot(path) => runner.observations.push(Observation::Screenshot(path)),
+            Command::Grain => runner.observations.push(Observation::Grain),
+            Command::Inspect(name) => runner.observations.push(Observation::Inspect(name)),
         }
     }
 }
 
-/// Handles this frame's `screenshot` and `inspect` commands, after the game's
-/// systems have run.
+/// A command that looks at the end of the frame instead of acting at its
+/// start.
+#[derive(Debug)]
+enum Observation {
+    Screenshot(PathBuf),
+    Grain,
+    Inspect(String),
+}
+
+/// A capture of the frame and what to do with it.
+#[derive(Debug)]
+enum Capture {
+    Save(PathBuf),
+    Grain,
+}
+
+/// Handles this frame's `screenshot`, `grain` and `inspect` commands, after
+/// the game's systems have run.
 fn observe(world: &mut World) {
     let observations = std::mem::take(&mut world.resource_mut::<ScriptRunner>().observations);
     let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
     let mut captures = Vec::new();
     for observation in observations {
         match observation {
-            Command::Inspect(name) => match inspect(world, &name) {
+            Observation::Inspect(name) => match inspect(world, &name) {
                 Ok(lines) if lines.is_empty() => println!("[frame {frame}] no entity has {name}"),
                 Ok(lines) => {
                     for line in lines {
@@ -381,8 +397,8 @@ fn observe(world: &mut World) {
                     world.write_message(AppExit::error());
                 }
             },
-            Command::Screenshot(_) | Command::Grain => captures.push(observation),
-            _ => unreachable!("only screenshot, grain and inspect are deferred"),
+            Observation::Screenshot(path) => captures.push(Capture::Save(path)),
+            Observation::Grain => captures.push(Capture::Grain),
         }
     }
     capture(world, captures, frame);
@@ -390,18 +406,18 @@ fn observe(world: &mut World) {
 
 /// Captures this frame once for all of its `screenshot` and `grain`
 /// commands: Bevy takes only one screenshot per render target per frame.
-fn capture(world: &mut World, captures: Vec<Command>, frame: u32) {
+fn capture(world: &mut World, captures: Vec<Capture>, frame: u32) {
     if captures.is_empty() {
         return;
     }
     let Some(target) = world.get_resource::<HeadlessTarget>() else {
-        for command in captures {
-            match command {
-                Command::Screenshot(path) => println!(
+        for capture in captures {
+            match capture {
+                Capture::Save(path) => println!(
                     "[frame {frame}] skipped screenshot {} (rendering is off)",
                     path.display()
                 ),
-                _ => println!("[frame {frame}] skipped grain (rendering is off)"),
+                Capture::Grain => println!("[frame {frame}] skipped grain (rendering is off)"),
             }
         }
         return;
@@ -414,29 +430,29 @@ fn capture(world: &mut World, captures: Vec<Command>, frame: u32) {
             runner.pending_screenshots -= 1;
         },
     );
-    for command in captures {
-        match command {
-            Command::Screenshot(path) => {
+    for capture in captures {
+        match capture {
+            Capture::Save(path) => {
                 if let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir).expect("create screenshot directory");
                 }
                 println!("[frame {frame}] screenshot {}", path.display());
                 entity.observe(save_to_disk(path));
             }
-            _ => {
-                entity.observe(
-                    move |captured: On<ScreenshotCaptured>, sky: Res<ClearColor>| match grain(
-                        &captured.image,
-                        sky.0,
-                    ) {
-                        Some((value, pairs)) => {
-                            println!("[frame {frame}] grain {value:.2} over {pairs} pixel pairs")
-                        }
-                        None => println!("[frame {frame}] grain: no non-sky pixels"),
-                    },
-                );
+            Capture::Grain => {
+                entity.observe(print_grain(frame));
             }
         }
+    }
+}
+
+/// An observer that prints the captured frame's [`grain`].
+fn print_grain(frame: u32) -> impl FnMut(On<ScreenshotCaptured>, Res<ClearColor>) {
+    move |captured, sky| match grain(&captured.image, sky.0) {
+        Some((value, pairs)) => {
+            println!("[frame {frame}] grain {value:.2} over {pairs} pixel pairs")
+        }
+        None => println!("[frame {frame}] grain: no non-sky pixels"),
     }
 }
 
@@ -444,7 +460,7 @@ fn capture(world: &mut World, captures: Vec<Command>, frame: u32) {
 /// and its right and lower neighbours, in 0–255 units averaged over RGB,
 /// counting only pairs where neither pixel is within a few units of `sky`.
 /// Returns the value and the number of pairs, or `None` if there are none.
-pub fn grain(image: &Image, sky: Color) -> Option<(f32, usize)> {
+fn grain(image: &Image, sky: Color) -> Option<(f32, usize)> {
     let (width, height) = (image.width(), image.height());
     let to_rgb = |color: Color| {
         let [r, g, b, _] = color.to_srgba().to_u8_array();
@@ -481,17 +497,46 @@ pub fn grain(image: &Image, sky: Color) -> Option<(f32, usize)> {
     (pairs > 0).then(|| (total as f32 / pairs as f32 / 3.0, pairs))
 }
 
-/// Render pipelines that failed to compile, counted in the render world and
-/// read in the main world when the script ends.
+/// The render pipelines' state, written in the render world and read in the
+/// main world when the script ends.
 #[derive(Resource, Clone, Default)]
-struct PipelineErrors(Arc<AtomicUsize>);
+struct PipelineStatus {
+    /// Pipelines that failed in a way Bevy won't retry, such as a shader
+    /// that doesn't compile.
+    failed: Arc<AtomicUsize>,
+    /// Pipelines still queued or compiling, including ones waiting to retry.
+    pending: Arc<AtomicUsize>,
+}
 
-fn count_pipeline_errors(cache: Res<PipelineCache>, errors: Res<PipelineErrors>) {
-    let failed = cache
-        .pipelines()
-        .filter(|pipeline| matches!(pipeline.state, CachedPipelineState::Err(_)))
-        .count();
-    errors.0.store(failed, Ordering::Relaxed);
+/// Shares one [`PipelineStatus`] between the main world and the render
+/// world, and keeps it up to date from the render world.
+fn share_pipeline_status(app: &mut App) {
+    let status = PipelineStatus::default();
+    app.insert_resource(status.clone());
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        render_app.insert_resource(status).add_systems(
+            Render,
+            // After `RenderSystems::Render`, where the pipeline queue is
+            // processed, so this frame's results are in.
+            record_pipeline_status.in_set(RenderSystems::Cleanup),
+        );
+    }
+}
+
+fn record_pipeline_status(cache: Res<PipelineCache>, status: Res<PipelineStatus>) {
+    let (mut failed, mut pending) = (0, 0);
+    for pipeline in cache.pipelines() {
+        match &pipeline.state {
+            CachedPipelineState::Ok(_) => {}
+            CachedPipelineState::Err(
+                ShaderCacheError::ProcessShaderError(_) | ShaderCacheError::CreateShaderModule(_),
+            ) => failed += 1,
+            // Queued, compiling, or a missing shader or import Bevy retries.
+            _ => pending += 1,
+        }
+    }
+    status.failed.store(failed, Ordering::Relaxed);
+    status.pending.store(pending, Ordering::Relaxed);
 }
 
 /// Formats `name` (a reflected component type) on every entity that has it.
@@ -527,27 +572,38 @@ fn inspect(world: &mut World, name: &str) -> Result<Vec<String>, String> {
 
 fn exit_when_done(
     mut runner: ResMut<ScriptRunner>,
-    pipeline_errors: Option<Res<PipelineErrors>>,
+    pipelines: Option<Res<PipelineStatus>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if !runner.finished() {
         return;
     }
-    if runner.pending_screenshots == 0 || !runner.rendering {
-        // Checked once screenshots are saved, so they're there to look at.
-        let failed = pipeline_errors.map_or(0, |errors| errors.0.load(Ordering::Relaxed));
-        if failed > 0 {
-            error!("{failed} render pipeline(s) failed to compile; see the errors above");
+    let (failed, pending) = pipelines.map_or((0, 0), |status| {
+        (
+            status.failed.load(Ordering::Relaxed),
+            status.pending.load(Ordering::Relaxed),
+        )
+    });
+    let screenshots_pending = runner.rendering && runner.pending_screenshots > 0;
+    // Wait for screenshots to be saved, so they're there to look at, and for
+    // pipelines to finish compiling, so a broken shader can't slip through.
+    if screenshots_pending || pending > 0 {
+        runner.frames_after_end += 1;
+        if runner.frames_after_end > SCREENSHOT_TIMEOUT_FRAMES {
+            if screenshots_pending {
+                error!("screenshots were never captured; giving up");
+            } else {
+                error!("{pending} render pipeline(s) never finished compiling; giving up");
+            }
             exit.write(AppExit::error());
-        } else {
-            exit.write(AppExit::Success);
         }
         return;
     }
-    runner.frames_after_end += 1;
-    if runner.frames_after_end > SCREENSHOT_TIMEOUT_FRAMES {
-        error!("screenshots were never captured; giving up");
+    if failed > 0 {
+        error!("{failed} render pipeline(s) failed to compile; see the errors above");
         exit.write(AppExit::error());
+    } else {
+        exit.write(AppExit::Success);
     }
 }
 
@@ -700,26 +756,82 @@ mod tests {
         assert_eq!(grain(&all_sky, sky), None);
     }
 
-    /// A shader that fails to compile makes the run fail, not just render
-    /// nothing. Simulated, since tests have no GPU to compile shaders on.
-    #[test]
-    fn failed_pipelines_fail_the_run() {
+    /// A headless app with no GPU running `script`, with `status` standing
+    /// in for what the render world would report.
+    fn app_with_pipelines(script: &str, status: PipelineStatus) -> App {
         let mut app = App::new();
         app.add_plugins((
             default_plugins(false).disable::<LogPlugin>(),
             HeadlessPlugin {
-                script: Script::parse("wait 1").unwrap(),
+                script: Script::parse(script).unwrap(),
                 rendering: false,
             },
         ))
-        .insert_resource(PipelineErrors(Arc::new(AtomicUsize::new(1))));
+        .insert_resource(status);
         app.finish();
         app.cleanup();
-        let exit = (0..10).find_map(|_| {
+        app
+    }
+
+    fn status(failed: usize, pending: usize) -> PipelineStatus {
+        PipelineStatus {
+            failed: Arc::new(AtomicUsize::new(failed)),
+            pending: Arc::new(AtomicUsize::new(pending)),
+        }
+    }
+
+    fn run_until_exit(app: &mut App, frames: usize) -> Option<AppExit> {
+        (0..frames).find_map(|_| {
             app.update();
             app.should_exit()
-        });
-        assert_eq!(exit, Some(AppExit::error()));
+        })
+    }
+
+    /// A pipeline that failed to compile (say, a broken shader) fails the
+    /// run. Simulated, since tests have no GPU to compile shaders on.
+    #[test]
+    fn failed_pipelines_fail_the_run() {
+        let mut app = app_with_pipelines("wait 1", status(1, 0));
+        assert_eq!(run_until_exit(&mut app, 10), Some(AppExit::error()));
+    }
+
+    /// The run doesn't end while pipelines are still compiling, so a short
+    /// script can't finish before a broken shader is found.
+    #[test]
+    fn exit_waits_for_pipelines_to_finish_compiling() {
+        let status = status(0, 1);
+        let mut app = app_with_pipelines("wait 1", status.clone());
+        assert_eq!(run_until_exit(&mut app, 20), None);
+        status.pending.store(0, Ordering::Relaxed);
+        status.failed.store(1, Ordering::Relaxed);
+        assert_eq!(run_until_exit(&mut app, 5), Some(AppExit::error()));
+    }
+
+    /// The main world reads the very counters the render world writes, and
+    /// the render world updates them every frame.
+    #[test]
+    fn pipeline_status_is_shared_with_the_render_world() {
+        let mut app = App::new();
+        app.insert_sub_app(RenderApp, SubApp::new());
+        share_pipeline_status(&mut app);
+        let main = app.world().resource::<PipelineStatus>().clone();
+        let render_app = app.sub_app(RenderApp);
+        let render = render_app.world().resource::<PipelineStatus>();
+        assert!(Arc::ptr_eq(&main.failed, &render.failed));
+        assert!(Arc::ptr_eq(&main.pending, &render.pending));
+        let schedule = render_app
+            .world()
+            .resource::<Schedules>()
+            .get(Render)
+            .expect("no Render schedule");
+        assert!(
+            schedule
+                .graph()
+                .systems
+                .iter()
+                .any(|(_, system, _)| system.name().as_string().contains("record_pipeline_status")),
+            "record_pipeline_status isn't in the Render schedule"
+        );
     }
 
     fn camera(app: &mut App) -> (FlyCamera, Transform) {

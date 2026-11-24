@@ -81,14 +81,15 @@ changes.
    inspect FlyCamera     # short or full reflected type name
    ```
    Commands: `wait`, `press`, `release`, `hold`, `mouse`, `screenshot`,
-   `grain` (prints how noisy the frame's textures are), `inspect`. The full
+   `grain` (a texture-noise number for the frame; lower is smoother, and only
+   comparable between runs with the same view and art), `inspect`. The full
    format is documented at the top of `src/headless.rs`. Commands between two
    `wait`s run on the same frame, so put a `wait 1` after a `screenshot`
    before input meant to come after it. A rendered run fails if a shader
    fails to compile.
    Keys are `KeyCode` names; mouse buttons are `MouseLeft`/`MouseRight`/
-   `MouseMiddle`. Add `--no-render` to run without a GPU (screenshots are
-   skipped); CI runs every scenario in `scenarios/` that way, so they must keep
+   `MouseMiddle`. Add `--no-render` to run without a GPU (`screenshot` and
+   `grain` are skipped); CI runs every scenario in `scenarios/` that way, so they must keep
    working. Write screenshots under `target/`. Keep reusable scenarios in
    `scenarios/`; put one-off ones in your scratch directory.
 3. **End-to-end tests:** the same scripts run inside `cargo test` with no GPU
