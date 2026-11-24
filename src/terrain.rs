@@ -208,14 +208,6 @@ impl Terrain {
         }
         chunk
     }
-
-    /// Meshes a chunk, culling faces against its neighbours in the world as
-    /// generated. The game meshes chunks with [`remesh_changed_chunks`].
-    #[cfg(test)]
-    pub fn mesh(&self, coord: ChunkCoord, chunk: &Chunk) -> Mesh {
-        let origin = coord.origin();
-        chunk.mesh(|local| self.voxel(origin + local))
-    }
 }
 
 /// The voxel at height `y` in a column whose surface is `height` voxels tall.
@@ -291,6 +283,8 @@ pub fn remesh_changed_chunks(
 
 #[cfg(test)]
 mod tests {
+    use bevy::ecs::system::RunSystemOnce;
+
     use super::*;
 
     fn terrain() -> Terrain {
@@ -410,16 +404,57 @@ mod tests {
         }
     }
 
+    /// The terrain plugin with the systems it needs, run for one frame, and
+    /// a record of which chunks changed in each frame.
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), TerrainPlugin))
+            .init_asset::<Mesh>()
+            .insert_resource(BlockMaterial {
+                material: Handle::default(),
+                layers: default(),
+            })
+            .init_resource::<Changed>()
+            .add_systems(Update, record_changed.in_set(RemeshChunks));
+        app.update();
+        app
+    }
+
+    #[derive(Resource, Default)]
+    struct Changed(Vec<IVec3>);
+
+    fn record_changed(chunks: Query<(&ChunkCoord, Ref<Chunk>)>, mut changed: ResMut<Changed>) {
+        changed.0 = chunks
+            .iter()
+            .filter(|(_, chunk)| chunk.is_changed())
+            .map(|(coord, _)| coord.0)
+            .collect();
+        changed.0.sort_by_key(|c| c.to_array());
+    }
+
+    fn meshes(app: &mut App) -> HashMap<ChunkCoord, Option<AssetId<Mesh>>> {
+        let mut chunks = app.world_mut().query::<(&ChunkCoord, Option<&Mesh3d>)>();
+        chunks
+            .iter(app.world())
+            .map(|(coord, mesh)| (*coord, mesh.map(|mesh| mesh.id())))
+            .collect()
+    }
+
     /// Faces between two solid voxels in different chunks are culled, so the
     /// whole world's faces equal the faces of the terrain as one solid.
     #[test]
     fn no_faces_hidden_between_chunks() {
-        let terrain = terrain();
-        let total: usize = chunk_coords()
-            .map(|coord| terrain.mesh(coord, &terrain.chunk(coord)).count_vertices() / 4)
+        let mut app = app();
+        let ids = meshes(&mut app);
+        let assets = app.world().resource::<Assets<Mesh>>();
+        let total: usize = ids
+            .values()
+            .flatten()
+            .map(|&id| assets.get(id).unwrap().count_vertices() / 4)
             .sum();
 
         // Count exposed faces directly from the heightmap.
+        let terrain = terrain();
         let mut expected = 0;
         for (x, z) in columns() {
             let h = terrain.height(x, z);
@@ -434,15 +469,85 @@ mod tests {
     }
 
     #[test]
-    fn plugin_spawns_every_chunk_at_its_origin() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), TerrainPlugin))
-            .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial {
-                material: Handle::default(),
-                layers: default(),
-            });
+    fn unchanged_chunks_keep_their_meshes() {
+        let mut app = app();
+        let before = meshes(&mut app);
         app.update();
+        assert!(app.world().resource::<Changed>().0.is_empty());
+        assert_eq!(meshes(&mut app), before);
+    }
+
+    /// An edit in a chunk's corner changes that chunk and the three chunks
+    /// across its faces there, and only those are remeshed.
+    #[test]
+    fn edits_on_a_border_remesh_the_chunks_across_it() {
+        let mut app = app();
+        let set = |app: &mut App, pos: IVec3| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| {
+                    assert!(voxels.set(pos, Voxel::Air));
+                })
+                .unwrap();
+            app.update();
+            app.world().resource::<Changed>().0.clone()
+        };
+        let chunk = IVec3::new(2, 1, 2);
+        let origin = ChunkCoord(chunk).origin();
+        let before = meshes(&mut app);
+        let changed = set(&mut app, origin + IVec3::new(0, 15, 15));
+        let mut expected = [chunk, chunk - IVec3::X, chunk + IVec3::Y, chunk + IVec3::Z];
+        expected.sort_by_key(|c| c.to_array());
+        assert_eq!(changed, expected);
+        // Every other chunk kept its mesh.
+        let after = meshes(&mut app);
+        for (coord, mesh) in &before {
+            if !expected.contains(&coord.0) {
+                assert_eq!(after[coord], *mesh, "{coord:?}");
+            }
+        }
+
+        let changed = set(&mut app, origin + IVec3::new(15, 0, 0));
+        let mut expected = [chunk, chunk + IVec3::X, chunk - IVec3::Y, chunk - IVec3::Z];
+        expected.sort_by_key(|c| c.to_array());
+        assert_eq!(changed, expected);
+    }
+
+    #[test]
+    fn voxels_are_read_and_written_by_world_position() {
+        let mut app = app();
+        let terrain = terrain();
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| {
+                for pos in [IVec3::new(5, 3, 70), IVec3::new(127, 0, 0)] {
+                    assert_eq!(voxels.get(pos), Some(terrain.voxel(pos)));
+                }
+                // Outside the world there's nothing to read or write.
+                for pos in [IVec3::new(-1, 0, 0), IVec3::new(0, WORLD_SIZE.y, 0)] {
+                    assert_eq!(voxels.get(pos), None);
+                    assert!(!voxels.set(pos, Voxel::Stone));
+                }
+                let pos = IVec3::new(20, 40, 33);
+                assert!(voxels.set(pos, Voxel::Planks));
+                assert_eq!(voxels.get(pos), Some(Voxel::Planks));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn split_finds_the_chunk_and_local_position() {
+        assert_eq!(
+            ChunkCoord::split(IVec3::new(17, 0, 15)),
+            (ChunkCoord(IVec3::new(1, 0, 0)), IVec3::new(1, 0, 15))
+        );
+        assert_eq!(
+            ChunkCoord::split(IVec3::new(-1, 0, 0)),
+            (ChunkCoord(IVec3::new(-1, 0, 0)), IVec3::new(15, 0, 0))
+        );
+    }
+
+    #[test]
+    fn plugin_spawns_every_chunk_at_its_origin() {
+        let mut app = app();
 
         let mut chunks = app
             .world_mut()
