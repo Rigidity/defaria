@@ -618,6 +618,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hotbar_highlights_the_active_slot() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ActiveBlock>()
+            .add_systems(Startup, spawn_hud)
+            .add_systems(Update, update_hotbar);
+        for active in [0, 2, 6] {
+            app.world_mut().resource_mut::<ActiveBlock>().0 = active;
+            app.update();
+            let mut slots = app
+                .world_mut()
+                .query::<(&HotbarSlot, &BackgroundColor, &Children)>();
+            let slots: Vec<_> = slots
+                .iter(app.world())
+                .map(|(slot, background, children)| {
+                    let text = app.world().get::<TextColor>(children[0]).unwrap().0;
+                    (slot.0, background.0, text)
+                })
+                .collect();
+            assert_eq!(slots.len(), HOTBAR.len());
+            for (slot, background, text) in slots {
+                let expected = if slot == active {
+                    (ACTIVE_SLOT_COLOR, ACTIVE_SLOT_TEXT)
+                } else {
+                    (SLOT_COLOR, SLOT_TEXT)
+                };
+                assert_eq!((background, text), expected, "slot {slot}, active {active}");
+            }
+        }
+    }
+
     fn world_voxel(app: &mut App, pos: IVec3) -> Voxel {
         let (coord, local) = ChunkCoord::split(pos);
         let mut chunks = app.world_mut().query::<(&ChunkCoord, &Chunk)>();

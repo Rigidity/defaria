@@ -414,16 +414,19 @@ mod tests {
                 material: Handle::default(),
                 layers: default(),
             })
-            .init_resource::<Changed>()
+            .init_resource::<ChangedChunks>()
             .add_systems(Update, record_changed.in_set(RemeshChunks));
         app.update();
         app
     }
 
     #[derive(Resource, Default)]
-    struct Changed(Vec<IVec3>);
+    struct ChangedChunks(Vec<IVec3>);
 
-    fn record_changed(chunks: Query<(&ChunkCoord, Ref<Chunk>)>, mut changed: ResMut<Changed>) {
+    fn record_changed(
+        chunks: Query<(&ChunkCoord, Ref<Chunk>)>,
+        mut changed: ResMut<ChangedChunks>,
+    ) {
         changed.0 = chunks
             .iter()
             .filter(|(_, chunk)| chunk.is_changed())
@@ -473,7 +476,7 @@ mod tests {
         let mut app = app();
         let before = meshes(&mut app);
         app.update();
-        assert!(app.world().resource::<Changed>().0.is_empty());
+        assert!(app.world().resource::<ChangedChunks>().0.is_empty());
         assert_eq!(meshes(&mut app), before);
     }
 
@@ -489,7 +492,7 @@ mod tests {
                 })
                 .unwrap();
             app.update();
-            app.world().resource::<Changed>().0.clone()
+            app.world().resource::<ChangedChunks>().0.clone()
         };
         let chunk = IVec3::new(2, 1, 2);
         let origin = ChunkCoord(chunk).origin();

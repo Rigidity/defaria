@@ -10,7 +10,7 @@ hold KeyS 3
 mouse 0 800        # look straight down at the ground
 wait 2
 screenshot target/scenarios/build-blocks/0-aim.png
-inspect Transform
+inspect FlyCamera
 wait 1
 hold MouseLeft 1   # break the grass block straight down
 wait 1
