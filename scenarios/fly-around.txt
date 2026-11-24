@@ -1,4 +1,4 @@
-# Fly toward the voxel cube, turn, and look down at it.
+# Fly forward over the terrain, turn, and look down at it.
 # Run: cargo headless scenarios/fly-around.txt
 wait 5
 screenshot target/scenarios/fly-around/0-start.png
