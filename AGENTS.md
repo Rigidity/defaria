@@ -142,7 +142,7 @@ follow it directly.
 ## Art and Retro Diffusion
 
 Block textures are 16×16 grayscale layer images in `assets/textures/layers/`,
-colored by per-tile palettes and stacked at runtime (`src/block_texture.rs`).
+colored by per-layer palettes and stacked at runtime (`src/block_texture.rs`).
 Layers use only the 8 gray levels that `cargo test` checks for.
 
 The Retro Diffusion MCP runs on a monthly subscription with a limited
@@ -150,8 +150,8 @@ allowance of plan usage. Read
 `.claude/skills/retro-diffusion/SKILL.md` before any Retro Diffusion call.
 In short: generate only when the user asks for that specific art, check
 plan usage first, one call at a time and never in parallel, always the
-house style at 16×16, converted with `scripts/gray-layer.py`, and record
-every result in
+house style for the material (see the skill) at 16×16, converted with
+`scripts/gray-layer.py`, and record every result in
 `assets/textures/layers/SOURCES.md`.
 
 ## Code layout

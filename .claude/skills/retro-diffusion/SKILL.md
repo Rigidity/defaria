@@ -1,6 +1,6 @@
 ---
 name: retro-diffusion
-description: Rules for making defaria art with the Retro Diffusion MCP (mcp__claude_ai_Retro_Diffusion__*). Read before ANY Retro Diffusion call, metered or free, and whenever the user asks for new or replacement block textures, layer images or other pixel art in this repo. Covers when generating is allowed at all, checking usage first, the one house style, the 16×16 size, the grayscale palette, one job at a time, and how results land in assets/textures/layers/.
+description: Rules for making defaria art with the Retro Diffusion MCP (mcp__claude_ai_Retro_Diffusion__*). Read before ANY Retro Diffusion call, metered or free, and whenever the user asks for new or replacement block textures, layer images or other pixel art in this repo. Covers when generating is allowed at all, checking usage first, the house styles (one per kind of material), the 16×16 size, converting results to the 8 gray levels locally (no palette is sent), one job at a time, and how results land in assets/textures/layers/.
 ---
 
 # Retro Diffusion rules
@@ -117,8 +117,9 @@ position.
 
 1. Download the output into your scratch directory, not straight into
    `assets/`.
-2. Check it is 16×16. If the returned image is an upscaled copy, recover
-   the native grid locally (free) rather than using `fix_pixel_art`.
+2. Check it is 16×16 (`file <download>.png`). The house styles return
+   16×16 natively; if one doesn't, stop and tell the user rather than
+   resizing it or paying for `fix_pixel_art`.
 3. Convert it to a layer with `scripts/gray-layer.py`:
    ```sh
    python3 scripts/gray-layer.py <download>.png <scratch>/<name>.png --even --preview <scratch>/<name>-tiled.png

@@ -103,24 +103,14 @@ pub fn stack(layers: &[Vec<LinearRgba>]) -> Vec<u8> {
     let mut out = vec![LinearRgba::NONE; len];
     for layer in layers {
         for (dst, src) in out.iter_mut().zip(layer) {
-            let keep = 1.0 - src.alpha;
-            *dst = LinearRgba::new(
-                src.red * src.alpha + dst.red * keep,
-                src.green * src.alpha + dst.green * keep,
-                src.blue * src.alpha + dst.blue * keep,
-                src.alpha + dst.alpha * keep,
-            );
+            let premultiplied = (*src * src.alpha).with_alpha(src.alpha);
+            *dst = premultiplied + *dst * (1.0 - src.alpha);
         }
     }
     out.iter()
-        .flat_map(|pixel| {
+        .flat_map(|&pixel| {
             let straight = if pixel.alpha > 0.0 {
-                LinearRgba::new(
-                    pixel.red / pixel.alpha,
-                    pixel.green / pixel.alpha,
-                    pixel.blue / pixel.alpha,
-                    pixel.alpha,
-                )
+                (pixel / pixel.alpha).with_alpha(pixel.alpha)
             } else {
                 LinearRgba::NONE
             };

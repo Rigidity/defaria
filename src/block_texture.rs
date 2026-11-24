@@ -374,6 +374,37 @@ mod tests {
         );
     }
 
+    /// The grass overhang hangs from the top edge of the side face and lets
+    /// the dirt show below it: every column is opaque from the top down to
+    /// some depth and transparent below, and the bottom row is all dirt.
+    #[test]
+    fn grass_side_overhang_hangs_from_the_top() {
+        let layers = layers_on_disk();
+        let side = &layers[&layer_path("grass_side")];
+        let pixels = side.data.as_ref().unwrap();
+        let alpha = |x: u32, y: u32| pixels[((y * TILE_SIZE + x) * 4 + 3) as usize];
+        for x in 0..TILE_SIZE {
+            let depth = (0..TILE_SIZE).take_while(|&y| alpha(x, y) == 255).count() as u32;
+            assert!(depth >= 1, "column {x} has no grass at the top");
+            assert!(depth < TILE_SIZE, "column {x} hides the dirt completely");
+            for y in depth..TILE_SIZE {
+                assert_eq!(
+                    alpha(x, y),
+                    0,
+                    "column {x} has grass below its overhang at {y}"
+                );
+            }
+        }
+        let image = build(|path| layers.get(path)).unwrap();
+        let bottom = TILE_SIZE - 1;
+        for x in 0..TILE_SIZE {
+            assert_eq!(
+                pixel(&image, Tile::GrassSide.layer(), 0, x, bottom),
+                pixel(&image, Tile::Dirt.layer(), 0, x, bottom),
+            );
+        }
+    }
+
     /// Every pixel of every built tile is opaque: the shader ignores alpha,
     /// so a hole would show the color hiding behind it.
     #[test]
@@ -481,6 +512,17 @@ mod tests {
                 "mip {mip}"
             );
         }
+    }
+
+    /// Alpha is already linear: half-transparent averages to 128, with no
+    /// sRGB curve applied.
+    #[test]
+    fn mips_average_alpha_without_the_srgb_curve() {
+        let image = array_texture(&tiles(|_, x, y| {
+            let a = if (x + y).is_multiple_of(2) { 255 } else { 0 };
+            [0, 0, 0, a]
+        }));
+        assert_eq!(pixel(&image, 0, 1, 0, 0)[3], 128);
     }
 
     #[test]

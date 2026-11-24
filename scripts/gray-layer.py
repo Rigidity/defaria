@@ -5,8 +5,14 @@ Converts each pixel to gray by luminance, then stretches the image so its
 darkest pixel lands on level LOW and its brightest on level HIGH (1 and 6 by
 default), spreading the rest linearly and rounding to the nearest of the 8
 levels the game accepts (see `gray()` in src/block_texture/layer.rs).
-Fully transparent pixels stay transparent. This is the house processing
-step for Retro Diffusion output; see .claude/skills/retro-diffusion/SKILL.md.
+This is the house processing step for Retro Diffusion output; see
+.claude/skills/retro-diffusion/SKILL.md.
+
+Transparency is kept: each pixel's alpha is written through unchanged, as
+the game blends partly transparent layer pixels. Only fully opaque pixels
+set the stretch's darkest and brightest points, so a soft edge doesn't
+squeeze the rest. Transparency must be in an alpha channel; a PNG that uses
+a tRNS chunk instead is refused.
 
 --soften blurs the gray values slightly before the stretch (each pixel
 weighted 4 to 1 against each of its 4 neighbours, wrapping at the edges so
@@ -21,7 +27,7 @@ the squares. Evening them out removes those lines without touching the
 detail inside them. It runs on the gray values before quantizing, then
 nudges a few pixels by one level where rounding brought a stripe back.
 
-Only for opaque images.
+--soften and --even need a fully opaque image.
 
 Usage:
     python3 scripts/gray-layer.py IN.png OUT.png [--low 1] [--high 6]
@@ -53,6 +59,8 @@ def read_png(path):
             width, height, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", body)
         elif kind == b"IDAT":
             idat += body
+        elif kind == b"tRNS":
+            raise SystemExit(f"{path}: transparency in a tRNS chunk isn't supported; save with an alpha channel")
     if depth != 8 or interlace or ctype not in (0, 2, 4, 6):
         raise SystemExit(f"{path}: only 8-bit non-interlaced gray/RGB(A) PNGs are supported")
     channels = {0: 1, 2: 3, 4: 2, 6: 4}[ctype]
@@ -165,8 +173,9 @@ def main():
     if (len(image[0]), len(image)) != (SIZE, SIZE):
         raise SystemExit(f"{args.input} is {len(image[0])}x{len(image)}, expected {SIZE}x{SIZE}")
 
+    alpha = [[a for _, _, _, a in row] for row in image]
     lum = [[0.2126 * r + 0.7152 * g + 0.0722 * b if a else None for r, g, b, a in row] for row in image]
-    if (args.soften or args.even) and any(v is None for row in lum for v in row):
+    if (args.soften or args.even) and any(a != 255 for row in alpha for a in row):
         raise SystemExit("--soften and --even need a fully opaque image")
     if args.soften:
         lum = [
@@ -178,7 +187,10 @@ def main():
         ]
     if args.even:
         lum = even_rows_and_columns(lum)
-    values = [v for row in lum for v in row if v is not None]
+    opaque = [v for row, arow in zip(lum, alpha) for v, a in zip(row, arow) if a == 255]
+    values = opaque or [v for row in lum for v in row if v is not None]
+    if not values:
+        raise SystemExit(f"{args.input} is fully transparent")
     lo, hi = min(values), max(values)
     span = (hi - lo) or 1
 
@@ -186,20 +198,21 @@ def main():
         [None if v is None else args.low + (v - lo) / span * (args.high - args.low) for v in row]
         for row in lum
     ]
-    levels = [[None if v is None else round(v) for v in row] for row in exact]
+    # Partly transparent pixels can fall outside the opaque pixels' range.
+    levels = [[None if v is None else min(args.high, max(args.low, round(v))) for v in row] for row in exact]
     if args.even:
         levels = restore_even(levels, exact, args.low, args.high)
 
     counts = [0] * LEVELS
     out = []
-    for row in levels:
+    for row, arow in zip(levels, alpha):
         line = []
-        for level in row:
+        for level, a in zip(row, arow):
             if level is None:
                 line.append((0, 0, 0, 0))
                 continue
             counts[level] += 1
-            line.append((GRAY[level],) * 3 + (255,))
+            line.append((GRAY[level],) * 3 + (a,))
         out.append(line)
     write_png(args.output, out)
     print("pixels per level:", {level: n for level, n in enumerate(counts) if n})
