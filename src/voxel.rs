@@ -37,6 +37,11 @@ pub enum Voxel {
     Stone,
     Dirt,
     Grass,
+    Sand,
+    Gravel,
+    /// A tree trunk standing upright: bark on the sides, rings on the ends.
+    Log,
+    Planks,
 }
 
 impl Voxel {
@@ -54,6 +59,11 @@ impl Voxel {
             Voxel::Grass if normal == Vec3::Y => Tile::GrassTop,
             Voxel::Grass if normal == Vec3::NEG_Y => Tile::Dirt,
             Voxel::Grass => Tile::GrassSide,
+            Voxel::Sand => Tile::Sand,
+            Voxel::Gravel => Tile::Gravel,
+            Voxel::Log if normal.y != 0.0 => Tile::LogTop,
+            Voxel::Log => Tile::LogSide,
+            Voxel::Planks => Tile::Planks,
         })
     }
 }
@@ -98,6 +108,16 @@ impl Chunk {
         self.voxels[Self::index(x, y, z)] = voxel;
     }
 
+    /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
+    pub fn at(&self, pos: IVec3) -> Voxel {
+        self.get(pos.x as usize, pos.y as usize, pos.z as usize)
+    }
+
+    /// [`Chunk::set`] for a chunk-local position given as an `IVec3`.
+    pub fn set_at(&mut self, pos: IVec3, voxel: Voxel) {
+        self.set(pos.x as usize, pos.y as usize, pos.z as usize, voxel);
+    }
+
     fn index(x: usize, y: usize, z: usize) -> usize {
         assert!(
             x < CHUNK_SIZE && y < CHUNK_SIZE && z < CHUNK_SIZE,
@@ -117,7 +137,7 @@ impl Chunk {
     fn get_or(&self, pos: IVec3, outside: &impl Fn(IVec3) -> Voxel) -> Voxel {
         let size = CHUNK_SIZE as i32;
         if pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(size)).all() {
-            self.get(pos.x as usize, pos.y as usize, pos.z as usize)
+            self.at(pos)
         } else {
             outside(pos)
         }
@@ -378,6 +398,9 @@ mod tests {
             assert_eq!(Voxel::Grass.tile(side), Some(Tile::GrassSide));
         }
         assert_eq!(Voxel::Stone.tile(Vec3::Y), Some(Tile::Stone));
+        assert_eq!(Voxel::Log.tile(Vec3::Y), Some(Tile::LogTop));
+        assert_eq!(Voxel::Log.tile(Vec3::NEG_Y), Some(Tile::LogTop));
+        assert_eq!(Voxel::Log.tile(Vec3::X), Some(Tile::LogSide));
         assert_eq!(Voxel::Air.tile(Vec3::Y), None);
     }
 

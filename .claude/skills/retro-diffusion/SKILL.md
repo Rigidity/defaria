@@ -71,7 +71,13 @@ position.
    | Material | `prompt_style` | Prompt shape |
    |---|---|---|
    | Organic or noisy: stone, dirt, gravel, sand, grass | `rd_plus__mc_texture` | `<material and its details>, flat block surface texture, grayscale, even lighting` |
-   | Masonry with clear shapes: cobblestone, bricks, tiles | `rd_lite__default` | `close-up of a <material> surface filling the entire frame edge to edge, <shapes and details>, no outline, no border, no background, grayscale, even lighting` |
+   | Masonry with clear shapes: cobblestone, bricks, tiles, planks, a log's cut end | `rd_lite__default` | `close-up of a <material> surface filling the entire frame edge to edge, <shapes and details>, no outline, no border, no background, grayscale, even lighting` |
+   | Items: tools and weapons (layers in `items/`) | `rd_fast__mc_item` | `a <item> with a <material> <part> and a <material> <part>, diagonal from bottom left to top right, on a plain white background` |
+
+   Items are the one place color words belong in the prompt: naming each
+   part's material (wooden handle, iron head) makes the parts different
+   hues, which is how they are split into one layer per part. The color
+   is thrown away in the conversion.
 
    And for every generation:
 
@@ -104,7 +110,13 @@ position.
      strength 0.6) returned the sketch nearly unchanged, with broken
      seams, at twice the plan usage. Not worth it at this size.
 
-   In every prompt: no color words (color comes from palettes), no "pixel
+   - `rd_fast__mc_item` (tools, November 2026) gets the handle and the
+     shading right but smears small heads (a pickaxe came back as a
+     blob), sometimes points the wrong way, and lets blades run off the
+     canvas. Keep its handles and shading; redraw heads along the tool
+     axis by hand.
+
+   In every block prompt: no color words (color comes from palettes), no "pixel
    art" (the style does that), no light direction, no borders or frames.
 
 7. **Overlays and variants come from existing layers, not new
