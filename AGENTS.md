@@ -102,6 +102,30 @@ changes.
    Components only show up in BRP and `inspect` if they derive `Reflect` with
    `#[reflect(Component)]`.
 
+## Screenshots in pull requests
+
+When a PR changes anything you can see, its description shows it:
+
+1. Pick the one to four screenshots that best show the change, from the
+   scenarios you ran. When the change is an improvement, include a before and
+   after pair of the same view: run the scenario on the base branch in a
+   scratch worktree that shares the target directory (see
+   `.claude/skills/review-loop/references/reviewer-brief.md` for the
+   commands).
+2. Copy them somewhere temporary, with names that say what they show
+   (`close-up.png`, `far-view-before.png`). The name becomes the alt text.
+3. Upload them, which prints Markdown image links:
+   ```sh
+   scripts/pr-screenshots.sh <pr-number> <image.png>...
+   ```
+   The script commits the images to the `rigidity/pr-screenshots` branch and
+   links them by commit. It doesn't touch your working tree or your branch.
+4. Add a `## Screenshots` section to the PR description, with a line for each
+   image saying what it shows and which scenario made it.
+
+When a later push changes what's visible, upload new screenshots and update
+the section.
+
 ## Reviewed PRs
 
 When asked to take work through review ("with reviews", "drive this to
@@ -121,6 +145,8 @@ follow it directly.
 - `src/headless.rs`: headless mode and the scenario script runner.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `assets/`: loaded through `AssetServer`. They hot reload in dev builds.
+- `scripts/`: helper scripts, such as `pr-screenshots.sh` for PR
+  descriptions.
 
 ## Conventions
 
