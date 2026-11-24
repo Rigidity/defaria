@@ -329,7 +329,7 @@ mod tests {
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial {
                 material: Handle::default(),
-                atlas: Handle::default(),
+                layers: Vec::new(),
             });
         app.update();
 
