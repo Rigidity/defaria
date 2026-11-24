@@ -154,18 +154,23 @@ fn queue_loaded_chunks(
     mut queue: ResMut<LightQueue>,
 ) {
     for (coord, chunk) in &chunks {
-        let under_sky = coord.0.y == WORLD_CHUNKS.y - 1;
-        queue.chunk_loaded(coord.0, chunk, &table, under_sky, |neighbour| {
+        queue.chunk_loaded(coord.0, chunk, &table, under_sky(*coord), |neighbour| {
             map.get(ChunkCoord(neighbour)).is_some()
         });
     }
+}
+
+/// Whether a chunk is at the top of the world, with the sky shining into
+/// its top layer.
+fn under_sky(coord: ChunkCoord) -> bool {
+    coord.0.y == WORLD_CHUNKS.y - 1
 }
 
 /// Queues the light around every voxel that changed.
 fn queue_changed_voxels(mut changes: MessageReader<VoxelChanged>, mut queue: ResMut<LightQueue>) {
     for change in changes.read() {
         let (coord, _) = ChunkCoord::split(change.pos);
-        queue.voxel_changed(change.pos, coord.0.y == WORLD_CHUNKS.y - 1);
+        queue.voxel_changed(change.pos, under_sky(coord));
     }
 }
 

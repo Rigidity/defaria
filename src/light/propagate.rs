@@ -207,27 +207,13 @@ impl LightQueue {
             let (removals, additions) = (&mut self.removals[channel], &mut self.additions[channel]);
             while let Some(coord) = removals.keys().next().copied() {
                 let nodes = removals.remove(&coord).unwrap_or_default();
-                let mut fill = Fill {
-                    coord,
-                    channel,
-                    table,
-                    removals,
-                    additions,
-                    touched: 0,
-                };
+                let mut fill = Fill::new(coord, channel, table, removals, additions);
                 store.with_chunk(coord, |chunk, light| fill.remove(nodes, chunk, light));
                 fill.report(&mut remesh);
             }
             while let Some(coord) = additions.keys().next().copied() {
                 let nodes = additions.remove(&coord).unwrap_or_default();
-                let mut fill = Fill {
-                    coord,
-                    channel,
-                    table,
-                    removals,
-                    additions,
-                    touched: 0,
-                };
+                let mut fill = Fill::new(coord, channel, table, removals, additions);
                 store.with_chunk(coord, |chunk, light| fill.add(nodes, chunk, light));
                 fill.report(&mut remesh);
             }
@@ -249,7 +235,24 @@ struct Fill<'a> {
     touched: u32,
 }
 
-impl Fill<'_> {
+impl<'a> Fill<'a> {
+    fn new(
+        coord: IVec3,
+        channel: usize,
+        table: &'a LightTable,
+        removals: &'a mut HashMap<IVec3, Vec<Node>>,
+        additions: &'a mut HashMap<IVec3, Vec<Node>>,
+    ) -> Self {
+        Self {
+            coord,
+            channel,
+            table,
+            removals,
+            additions,
+            touched: 0,
+        }
+    }
+
     fn remove(&mut self, nodes: Vec<Node>, chunk: &Chunk, light: &mut ChunkLight) {
         let mut queue = VecDeque::from(nodes);
         let mut spread = Vec::new();

@@ -30,3 +30,10 @@ wait 1
 camera 26 49.5 37 20 -30           # close up on the stairs and the pit
 wait 2
 screenshot target/scenarios/ambient-occlusion/1-close.png
+wait 1
+fill 22 45 38 42 45 44 sand        # a calm floor that shows the shading best
+fill 30 46 41 30 46 41 planks      # a single block and a pair, from above
+fill 33 46 41 34 46 41 planks
+camera 31.5 53 42 0 -89
+wait 2
+screenshot target/scenarios/ambient-occlusion/2-from-above.png

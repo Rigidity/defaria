@@ -17,7 +17,7 @@
 use bevy::{
     asset::{AssetLoadFailedEvent, RenderAssetUsages},
     image::ImageLoaderSettings,
-    mesh::MeshVertexBufferLayoutRef,
+    mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef},
     pbr::{MaterialPipeline, MaterialPipelineKey},
     platform::collections::{HashMap, HashSet},
     prelude::*,
@@ -121,17 +121,26 @@ impl Material for VoxelMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        descriptor.vertex.buffers = vec![layout.0.get_layout(&[
-            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
-            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
-            Mesh::ATTRIBUTE_UV_0.at_shader_location(2),
-            ATTRIBUTE_CORNER.at_shader_location(3),
-            ATTRIBUTE_LIGHT.at_shader_location(4),
-            ATTRIBUTE_FACE.at_shader_location(5),
-        ])?];
+        let inputs: Vec<_> = VERTEX_INPUTS
+            .iter()
+            .enumerate()
+            .map(|(location, (attribute, _))| attribute.at_shader_location(location as u32))
+            .collect();
+        descriptor.vertex.buffers = vec![layout.0.get_layout(&inputs)?];
         Ok(())
     }
 }
+
+/// The shader's vertex inputs, at locations 0, 1, 2, ... in this order:
+/// each mesh attribute and how the shader declares it.
+const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 6] = [
+    (Mesh::ATTRIBUTE_POSITION, "position: vec3<f32>"),
+    (Mesh::ATTRIBUTE_NORMAL, "normal: vec3<f32>"),
+    (Mesh::ATTRIBUTE_UV_0, "uv: vec2<f32>"),
+    (ATTRIBUTE_CORNER, "corner: vec2<f32>"),
+    (ATTRIBUTE_LIGHT, "light: vec4<u32>"),
+    (ATTRIBUTE_FACE, "face: vec2<u32>"),
+];
 
 /// The material every chunk mesh shares, and the images behind it.
 #[derive(Resource, Debug, Clone)]
@@ -272,15 +281,9 @@ mod tests {
         )));
         assert!(shader.contains("fn vertex("));
         // The vertex inputs at the locations `specialize` feeds them to.
-        for input in [
-            "@location(0) position: vec3<f32>",
-            "@location(1) normal: vec3<f32>",
-            "@location(2) uv: vec2<f32>",
-            "@location(3) corner: vec2<f32>",
-            "@location(4) light: vec4<u32>",
-            "@location(5) face: vec2<u32>",
-        ] {
-            assert!(shader.contains(input), "the shader doesn't read {input}");
+        for (location, (_, declaration)) in VERTEX_INPUTS.iter().enumerate() {
+            let input = format!("@location({location}) {declaration}");
+            assert!(shader.contains(&input), "the shader doesn't read {input}");
         }
         assert!(shader.contains("fn fragment("));
     }
