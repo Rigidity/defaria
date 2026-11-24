@@ -391,8 +391,10 @@ mod tests {
         assert_ne!(tile(&app, &texture, "dirt"), block_texture::placeholder());
     }
 
+    /// Sends the failure event Bevy sends when `layer` fails to load. The
+    /// system only reads the event's id.
     fn fail(app: &mut App, layer: &Handle<Image>) {
-        let path = bevy::asset::AssetPath::from("mods/defaria/images/stone.png");
+        let path = bevy::asset::AssetPath::from("failed.png");
         app.world_mut()
             .write_message(AssetLoadFailedEvent::<Image> {
                 id: layer.id(),

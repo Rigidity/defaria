@@ -133,14 +133,11 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         report(&def.file, result);
     }
     for def in &defs.textures {
-        let result = texture(def, &content, &images, &dirs).map(|(texture, problems)| {
-            let layer = content.textures.len() as u32;
-            content.texture_index.insert(def.id.clone(), layer);
-            content.textures.push(texture);
-            problems
-        });
-        match result {
-            Ok(problems) => {
+        match texture(def, &content, &images, &dirs) {
+            Ok((texture, problems)) => {
+                let layer = content.textures.len() as u32;
+                content.texture_index.insert(def.id.clone(), layer);
+                content.textures.push(texture);
                 for problem in problems {
                     report(&def.file, Err(problem));
                 }
@@ -1100,9 +1097,17 @@ mod tests {
                 "models/x.json5",
                 r#"{ slots: { a: null }, faces: [{ texture: "a", vertices: [
                     { pos: [0, 0, 0], uv: [0, 0] }, { pos: [1, 0, 0], uv: [0, 0] },
-                    { pos: [1, 1, 0], uv: [0, 0] }, { pos: [Infinity, 1, 0], uv: [NaN, 0] },
+                    { pos: [1, 1, 0], uv: [0, 0] }, { pos: [Infinity, 1, 0], uv: [0, 0] },
                 ] }] }"#,
                 "vertex 4 has a number that isn't finite",
+            ),
+            (
+                "models/x.json5",
+                r#"{ slots: { a: null }, faces: [{ texture: "a", vertices: [
+                    { pos: [0, 0, 0], uv: [0, 0] }, { pos: [1, 0, 0], uv: [NaN, 0] },
+                    { pos: [1, 1, 0], uv: [0, 0] },
+                ] }] }"#,
+                "vertex 2 has a number that isn't finite",
             ),
             (
                 "blocks/x.json5",
