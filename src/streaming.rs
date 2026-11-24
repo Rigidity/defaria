@@ -132,8 +132,10 @@ impl StreamingSettings {
     /// Whether a chunk `offset` from a loader's chunk is within reach,
     /// `extra` chunks further out than what's loaded.
     fn reaches(&self, offset: IVec3, extra: i32) -> bool {
-        let radius = self.radius + extra;
-        offset.xz().length_squared() <= radius * radius
+        // In i64: a long jump makes the offset too big to square in i32.
+        let radius = (self.radius + extra) as i64;
+        let (x, z) = (offset.x as i64, offset.z as i64);
+        x * x + z * z <= radius * radius
             && (-self.below - extra..=self.above + extra).contains(&offset.y)
     }
 }
@@ -201,23 +203,45 @@ struct NewChunk {
 }
 
 impl Chunks {
-    /// Whether `chunk` is within the loaders' reach, `extra` chunks
-    /// further out than what's loaded.
-    fn wanted(&self, chunk: IVec3, settings: &StreamingSettings, extra: i32) -> bool {
-        self.centers
-            .iter()
-            .any(|&center| settings.reaches(chunk - center, extra))
+    /// Whether `chunk` is loaded, loading, or loaded and waiting to spawn.
+    fn has(&self, chunk: IVec3) -> bool {
+        self.loaded.contains_key(&chunk)
+            || self.loading.contains_key(&chunk)
+            || self.ready.iter().any(|(c, _)| *c == chunk)
     }
+}
+
+impl LoadedChunk {
+    /// Copies the chunk into the store if it has changes the store doesn't
+    /// have: edits, or (unless `edits_only`) never having been saved.
+    fn save(&mut self, coord: IVec3, store: &WorldStore, data: &Query<&Chunk>, edits_only: bool) {
+        if !self.edited && (self.saved || edits_only) {
+            return;
+        }
+        if let Ok(chunk) = data.get(self.entity) {
+            store.save(coord, chunk.clone());
+        }
+        self.edited = false;
+        self.saved = true;
+    }
+}
+
+/// Whether `chunk` is within reach of a loader in one of `centers`,
+/// `extra` chunks further out than what's loaded.
+fn wanted(centers: &[IVec3], chunk: IVec3, settings: &StreamingSettings, extra: i32) -> bool {
+    centers
+        .iter()
+        .any(|&center| settings.reaches(chunk - center, extra))
 }
 
 /// How far a chunk is from the nearest of `centers`, for loading the
 /// nearest first.
-fn distance_squared(centers: &[IVec3], chunk: IVec3) -> i32 {
+fn distance_squared(centers: &[IVec3], chunk: IVec3) -> i64 {
     centers
         .iter()
-        .map(|&center| (chunk - center).length_squared())
+        .map(|&center| (chunk - center).as_i64vec3().length_squared())
         .min()
-        .unwrap_or(i32::MAX)
+        .unwrap_or(i64::MAX)
 }
 
 /// Opens the world in [`WorldFolder`] (keeping its seed), or one in memory
@@ -227,6 +251,7 @@ fn open_world(
     folder: Option<Res<WorldFolder>>,
     mut settings: ResMut<TerrainSettings>,
     content: Res<Content>,
+    light: Res<LightTable>,
     sky: Res<Sky>,
 ) {
     let folder = folder.and_then(|folder| match save::open_world(&folder.0, settings.seed) {
@@ -246,7 +271,7 @@ fn open_world(
             settings.clone(),
             TerrainBlocks::from_content(&content),
         )),
-        light: Arc::new(LightTable::new(&content)),
+        light: Arc::new(light.clone()),
         sky: sky.clone(),
     });
 }
@@ -298,7 +323,7 @@ fn plan_chunks(
     }
     queue.sort_by_key(|c| c.to_array());
     queue.dedup();
-    queue.retain(|c| !chunks.loaded.contains_key(c) && !chunks.loading.contains_key(c));
+    queue.retain(|&c| !chunks.has(c));
     // Furthest first, so the nearest pops off the end.
     queue.sort_by_key(|&c| std::cmp::Reverse(distance_squared(&chunks.centers, c)));
     chunks.queue = queue;
@@ -309,13 +334,8 @@ fn plan_chunks(
         centers,
         ..
     } = &mut *chunks;
-    let wanted = |c: IVec3| {
-        centers
-            .iter()
-            .any(|&center| settings.reaches(c - center, 0))
-    };
-    loading.retain(|&c, _| wanted(c));
-    ready.retain(|(c, _)| wanted(*c));
+    loading.retain(|&c, _| wanted(centers, c, &settings, 0));
+    ready.retain(|(c, _)| wanted(centers, *c, &settings, 0));
 }
 
 /// Saves and despawns the chunks that have gone out of reach.
@@ -331,28 +351,19 @@ fn unload_chunks(
         .loaded
         .keys()
         .copied()
-        .filter(|&c| !chunks.wanted(c, &settings, settings.unload_margin))
+        .filter(|&c| !wanted(&chunks.centers, c, &settings, settings.unload_margin))
         .collect();
     if gone.is_empty() {
         return;
     }
     for &coord in &gone {
-        let loaded = chunks.loaded.remove(&coord).unwrap();
-        if loaded.edited || !loaded.saved {
-            save_chunk(&source.store, coord, &loaded, &data);
-        }
+        let mut loaded = chunks.loaded.remove(&coord).unwrap();
+        loaded.save(coord, &source.store, &data, false);
         map.remove(ChunkCoord(coord));
         commands.entity(loaded.entity).despawn();
     }
     let around: HashSet<IVec3> = gone.iter().flat_map(|&c| around(c)).collect();
     update_completeness(&mut commands, &mut chunks, around);
-}
-
-/// Copies a loaded chunk into the store.
-fn save_chunk(store: &WorldStore, coord: IVec3, loaded: &LoadedChunk, data: &Query<&Chunk>) {
-    if let Ok(chunk) = data.get(loaded.entity) {
-        store.save(coord, chunk.clone());
-    }
 }
 
 /// Starts loading the nearest wanted chunks, up to the limit.
@@ -366,7 +377,7 @@ fn start_loads(
         let Some(coord) = chunks.queue.pop() else {
             break;
         };
-        if chunks.loaded.contains_key(&coord) || chunks.loading.contains_key(&coord) {
+        if chunks.has(coord) {
             continue;
         }
         let source = source.clone();
@@ -423,6 +434,9 @@ fn spawn_loaded_chunks(
         let Some((coord, new)) = chunks.ready.pop() else {
             break;
         };
+        if chunks.loaded.contains_key(&coord) {
+            continue;
+        }
         let extra = (new.light, Prelit, AwaitingNeighbours);
         let entity = spawn_chunk(&mut commands, &mut map, ChunkCoord(coord), new.chunk, extra);
         chunks.loaded.insert(
@@ -497,11 +511,7 @@ fn autosave(
     }
     chunks.since_save = 0.0;
     for (&coord, loaded) in chunks.loaded.iter_mut() {
-        if loaded.edited {
-            save_chunk(&source.store, coord, loaded, &data);
-            loaded.edited = false;
-            loaded.saved = true;
-        }
+        loaded.save(coord, &source.store, &data, true);
     }
     let store = source.store.clone();
     chunks.flush = Some(IoTaskPool::get().spawn(async move {
@@ -526,11 +536,7 @@ fn save_on_exit(
         block_on(task);
     }
     for (&coord, loaded) in chunks.loaded.iter_mut() {
-        if loaded.edited || !loaded.saved {
-            save_chunk(&source.store, coord, loaded, &data);
-            loaded.edited = false;
-            loaded.saved = true;
-        }
+        loaded.save(coord, &source.store, &data, false);
     }
     let written = source.store.flush();
     info!("saved the world ({written} regions written)");
@@ -741,6 +747,36 @@ mod tests {
         );
     }
 
+    /// Moving while loaded chunks are still waiting to be spawned doesn't
+    /// load them a second time: every chunk has one entity.
+    #[test]
+    fn moving_mid_load_loads_each_chunk_once() {
+        let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
+        app.world_mut()
+            .resource_mut::<StreamingSettings>()
+            .spawns_per_frame = 1;
+        let mut loaders = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<ChunkLoader>>();
+        for step in 1..=6 {
+            loaders.single_mut(app.world_mut()).unwrap().translation =
+                Vec3::new(8.0 + 16.0 * step as f32, 40.0, 8.0);
+            for _ in 0..3 {
+                app.update();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        app.world_mut()
+            .resource_mut::<StreamingSettings>()
+            .spawns_per_frame = 24;
+        settle(&mut app);
+        let mut chunks = app.world_mut().query::<&ChunkCoord>();
+        let coords: Vec<ChunkCoord> = chunks.iter(app.world()).copied().collect();
+        let unique: HashSet<ChunkCoord> = coords.iter().copied().collect();
+        assert_eq!(coords.len(), unique.len(), "a chunk was spawned twice");
+        assert_eq!(coords.len(), loaded(&app).len());
+    }
+
     #[test]
     fn edits_survive_unloading() {
         let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
@@ -750,6 +786,47 @@ mod tests {
         assert_eq!(get(&mut app, pos), None, "unloaded");
         move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
         assert_eq!(get(&mut app, pos), Some(block("lamp")));
+    }
+
+    /// A chunk that came from the save keeps an edit made to it through
+    /// unloading too, not only one that was generated.
+    #[test]
+    fn edits_to_saved_chunks_survive_unloading() {
+        let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
+        let pos = IVec3::new(3, 50, -5);
+        let coord = ChunkCoord::split(pos).0.0;
+        // Away and back, so the chunk comes back from the save.
+        move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
+        move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
+        assert!(app.world().resource::<Chunks>().loaded[&coord].saved);
+        set(&mut app, pos, block("lamp"));
+        move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
+        move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
+        assert_eq!(get(&mut app, pos), Some(block("lamp")));
+    }
+
+    /// Generated chunks are saved when they unload, edited or not, so the
+    /// world stays as it was first generated.
+    #[test]
+    fn untouched_generated_chunks_are_saved_on_unloading() {
+        let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
+        let coord = IVec3::new(0, 2, 0);
+        let store = app.world().resource::<WorldSource>().store.clone();
+        assert!(store.load(coord).is_none(), "not saved while loaded");
+        move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
+        assert!(store.load(coord).is_some());
+    }
+
+    /// The world is just as there far away; distances that would overflow
+    /// when squared in `i32` don't.
+    #[test]
+    fn very_long_jumps_work() {
+        let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
+        move_loader(&mut app, Vec3::new(1.0e7, 40.0, -1.0e7));
+        let center = ChunkCoord::split(IVec3::new(10_000_000, 40, -10_000_000))
+            .0
+            .0;
+        assert_eq!(loaded(&app), cylinder(center, 0));
     }
 
     /// A world on disk keeps its edits and its seed through a restart, and

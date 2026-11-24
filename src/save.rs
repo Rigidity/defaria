@@ -268,12 +268,42 @@ impl WorldStore {
             .collect();
         let mut written = 0;
         for (coord, region) in regions {
-            let file = {
+            let unencoded: Vec<(u16, Arc<Chunk>)> = {
                 let mut region = region.lock().unwrap();
                 if !region.dirty {
                     continue;
                 }
                 region.dirty = false;
+                region
+                    .chunks
+                    .iter()
+                    .filter_map(|(&index, stored)| match stored {
+                        Stored::Chunk(chunk) => Some((index, chunk.clone())),
+                        Stored::Blob(_) => None,
+                    })
+                    .collect()
+            };
+            // Encode without the lock, so saving and loading chunks in this
+            // region (on the main thread, and loading tasks) don't wait.
+            let encoded: Vec<(u16, Arc<Chunk>, Arc<[u8]>)> = unencoded
+                .into_iter()
+                .map(|(index, chunk)| {
+                    let blob = chunk::encode(&chunk, &self.names).into();
+                    (index, chunk, blob)
+                })
+                .collect();
+            let file = {
+                let mut region = region.lock().unwrap();
+                for (index, chunk, blob) in encoded {
+                    // Unless it was saved again while this was encoding.
+                    if let Some(Stored::Chunk(current)) = region.chunks.get(&index)
+                        && Arc::ptr_eq(current, &chunk)
+                    {
+                        region.chunks.insert(index, Stored::Blob(blob));
+                    }
+                }
+                // What was saved meanwhile (rarely anything) is encoded
+                // here; the region is dirty again, so it's written again too.
                 for stored in region.chunks.values_mut() {
                     if let Stored::Chunk(chunk) = stored {
                         *stored = Stored::Blob(chunk::encode(chunk, &self.names).into());

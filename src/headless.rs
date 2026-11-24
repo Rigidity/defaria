@@ -882,6 +882,9 @@ pub fn test_game(script: Script) -> App {
 /// Updates `app` until the world around its camera has loaded.
 #[cfg(test)]
 pub fn settle(app: &mut App) {
+    // A camera moved this frame reaches the loading a frame late.
+    app.update();
+    app.update();
     for _ in 0..SETTLE_TIMEOUT_FRAMES {
         app.update();
         if app.world().resource::<StreamingStatus>().settled {
@@ -1013,6 +1016,43 @@ mod tests {
         assert!((camera.pitch + 10f32.to_radians()).abs() < 1e-5);
         // Yaw 180 faces south (+Z), at the lamp.
         assert!(transform.forward().z > 0.9);
+    }
+
+    /// `settle` waits for the world around a new camera position to load,
+    /// so a `fill` right after it lands in loaded chunks.
+    #[test]
+    fn settle_waits_for_the_world_after_a_jump() {
+        let (mut app, exit) = run_game(
+            "camera 5000.5 -1000.5 5000.5 0 0\n\
+             settle\n\
+             fill 5000 -1000 5000 5000 -1000 5000 red_lamp\n\
+             wait 1\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let red = crate::content::base()
+            .state(crate::content::block("red_lamp"))
+            .light;
+        let lamp = light_at(&mut app, IVec3::new(5000, -1000, 5000));
+        assert_eq!(lamp.block()[0], red[0], "the lamp was placed and lit");
+    }
+
+    /// A world that never finishes loading fails the run rather than
+    /// hanging.
+    #[test]
+    fn a_world_that_never_loads_fails_the_run() {
+        let mut app = test_game(Script::parse("wait 1\n").unwrap());
+        app.insert_resource(crate::streaming::StreamingSettings {
+            max_loading: 0,
+            ..default()
+        });
+        for _ in 0..SETTLE_TIMEOUT_FRAMES + 10 {
+            app.update();
+            if let Some(exit) = app.should_exit() {
+                assert!(exit.is_error());
+                return;
+            }
+        }
+        panic!("the run never gave up");
     }
 
     #[test]

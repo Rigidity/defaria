@@ -50,3 +50,23 @@ updates for the loaded chunks below them.
 
 **When to revisit.** When caves leaking sky light or tall builds not
 shading the ground start to matter, or when worlds get an atmosphere top.
+
+## A fixed range of chunks is loaded around the player (2026-11-24)
+
+**Decision.** Chunks within 10 sideways, 6 above and 8 below the player's
+chunk are loaded (`StreamingSettings` in `src/streaming.rs`), wherever the
+player is.
+
+**What's wrong with it.** Fly more than about 130 blocks above the highest
+ground and the ground drops out of the loaded range, so the view below is
+empty sky; well before that, the edge of the loaded disc shows. Loading
+further down everywhere costs memory and loading time for chunks that are
+mostly solid rock.
+
+**What should replace it.** Load what can be seen rather than a fixed box:
+for example, below the player, down to the surface in each column (which
+the surface tracker in the decision above would know), with far chunks at
+a lower level of detail.
+
+**When to revisit.** When flying high or seeing far matters, or alongside
+the surface tracker.
