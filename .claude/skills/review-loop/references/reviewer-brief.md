@@ -32,6 +32,7 @@ Rules:
   git worktree remove --force <scratch dir>/mutant
   ```
   Run every cargo command in it with that `CARGO_TARGET_DIR`. Remove the worktree when you're done.
+  Both checkouts build the same binary path (`<target>/debug/defaria`), so a build in the scratch worktree replaces the branch's binary, and cargo may then run that stale binary for the branch. When you're done there, `touch src/main.rs` in the main checkout before running anything in it again. To time base and branch side by side, copy each binary out after building it and run the copies directly.
 - Bevy APIs changed a lot between versions. Before claiming an API exists, doesn't exist or behaves a certain way, check the 0.20 source in ~/.cargo/registry/src/*/bevy_*-0.20.*/.
 - Judge the change against the goal above. Points under "Settled" were decided by the user; don't re-raise them. Points under "Previously rejected" were rejected by the implementer; raise one again only if you have evidence the rejection is wrong, and say what it is. Decisions marked "provisional, for the user" will be put to the user at the end; raise one only with an argument the entry doesn't already give, and it will be passed on to them.
 - Prefer a few findings you're confident in over many guesses. If you aren't sure, say so in the finding.

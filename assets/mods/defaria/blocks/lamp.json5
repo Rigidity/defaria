@@ -3,5 +3,5 @@
   name: "Lamp",
   model: "cube",
   textures: { all: "lamp" },
-  light: [15, 13, 10],
+  light: [15, 14, 12],
 }

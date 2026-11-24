@@ -168,6 +168,41 @@ impl Chunk {
     }
 }
 
+/// The axis an axis-aligned vector points along: 0, 1 or 2 for X, Y or Z.
+pub fn axis_of(direction: IVec3) -> usize {
+    if direction.x != 0 {
+        0
+    } else if direction.y != 0 {
+        1
+    } else {
+        2
+    }
+}
+
+/// The offsets of the chunks whose meshes show the voxel at a chunk-local
+/// position: zero (its own chunk), and one for every chunk across the faces,
+/// edges and corners it lies on, since a voxel shades the corners of faces
+/// next to it.
+pub fn touching_offsets(local: IVec3) -> impl Iterator<Item = IVec3> {
+    let last = CHUNK_SIZE as i32 - 1;
+    let edge = local.map(|v| match v {
+        0 => -1,
+        v if v == last => 1,
+        _ => 0,
+    });
+    // One bit per axis: step across that axis's edge or not. Steps along an
+    // axis the voxel isn't on an edge of would repeat an offset.
+    (0..8)
+        .filter(move |bits| (0..3).all(|axis| bits & (1 << axis) == 0 || edge[axis] != 0))
+        .map(move |bits| {
+            IVec3::new(
+                if bits & 1 != 0 { edge.x } else { 0 },
+                if bits & 2 != 0 { edge.y } else { 0 },
+                if bits & 4 != 0 { edge.z } else { 0 },
+            )
+        })
+}
+
 /// Voxels along each axis of a [`Neighborhood`].
 const PADDED: usize = CHUNK_SIZE + 2;
 
@@ -366,13 +401,7 @@ impl Neighborhood {
         vertex: Vec3,
         opaque: &impl Fn(IVec3) -> bool,
     ) -> CornerShading {
-        let axis = if normal.x != 0 {
-            0
-        } else if normal.y != 0 {
-            1
-        } else {
-            2
-        };
+        let axis = axis_of(normal);
         // Toward the corner along each of the face's two directions.
         let toward = |along: usize| {
             let mut step = IVec3::ZERO;
@@ -929,6 +958,30 @@ mod tests {
         assert_eq!(shading.occlusion, [3, 3, 3, 2]);
     }
 
+    /// With both edges of a corner blocked, light can't get round to it, so
+    /// the diagonal voxel's light is left out even when it's open.
+    #[test]
+    fn closed_corners_ignore_the_diagonal() {
+        let stone = block("stone");
+        let pos = IVec3::new(5, 5, 5);
+        // Bright only at the open diagonal above the (1, 1, 1) corner.
+        let diagonal = pos + IVec3::new(1, 1, 1);
+        let light = |p: IVec3| Light::new(if p == diagonal { 15 } else { 3 }, [0; 3]);
+        let blocks = [
+            (pos, stone),
+            (pos + IVec3::new(1, 1, 0), stone),
+            (pos + IVec3::new(0, 1, 1), stone),
+        ];
+        let shading = shading(&neighborhood(&blocks, light).mesh(base()), pos, IVec3::Y);
+        let level = |avg: f32| (avg * LEVEL_STEP).round() as u8;
+        assert_eq!(shading.occlusion[1], 0, "corner (1, 1, 1) is closed");
+        assert_eq!(
+            shading.light[1][0],
+            level(3.0),
+            "only the front voxel counts"
+        );
+    }
+
     /// Block light averages per colour channel, like the sky's.
     #[test]
     fn coloured_light_averages_per_channel() {
@@ -983,5 +1036,20 @@ mod tests {
         chunk.set(2, 2, 2, shape(&mesh, "tri"));
         let corners: Vec<Vec2> = vec2s(&chunk.mesh(&mesh, air), ATTRIBUTE_CORNER);
         assert_eq!(corners, [Vec2::ZERO, Vec2::X, Vec2::Y]);
+
+        // In a mesh, with light differing at each corner: the third packed
+        // corner is the made-up one.
+        let pos = IVec3::new(2, 2, 2);
+        let light = |p: IVec3| Light::new((p.x * 3 + p.z) as u8, [0; 3]);
+        let tri = shape(&mesh, "tri");
+        let built =
+            Neighborhood::from_fn(|p| (if p == pos { tri } else { BlockState::AIR }, light(p)))
+                .mesh(&mesh);
+        let Some(VertexAttributeValues::Uint32x4(lights)) = built.attribute(ATTRIBUTE_LIGHT) else {
+            panic!("no light attribute");
+        };
+        let sky = lights[0].map(|corner| corner.to_le_bytes()[0] as i32);
+        assert_ne!(sky[0], sky[1]);
+        assert_eq!(sky[2], (sky[1] + sky[3] - sky[0]).clamp(0, 255));
     }
 }

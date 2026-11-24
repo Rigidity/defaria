@@ -21,7 +21,7 @@ use crate::{
     content::{BlockState, Content},
     light::ChunkLight,
     perlin::Perlin,
-    voxel::{CHUNK_SIZE, Chunk, Neighborhood},
+    voxel::{CHUNK_SIZE, Chunk, Neighborhood, touching_offsets},
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
@@ -103,28 +103,7 @@ impl ChunkCoord {
     /// corners of faces next to it, and those can be in any of them).
     pub fn touching(pos: IVec3) -> impl Iterator<Item = ChunkCoord> {
         let (coord, local) = Self::split(pos);
-        let last = CHUNK_SIZE as i32 - 1;
-        let edge = local.map(|v| match v {
-            0 => -1,
-            v if v == last => 1,
-            _ => 0,
-        });
-        let steps = |axis: usize| {
-            if edge[axis] == 0 {
-                vec![0]
-            } else {
-                vec![0, edge[axis]]
-            }
-        };
-        let (xs, ys, zs) = (steps(0), steps(1), steps(2));
-        xs.into_iter().flat_map(move |x| {
-            let zs = zs.clone();
-            ys.clone().into_iter().flat_map(move |y| {
-                zs.clone()
-                    .into_iter()
-                    .map(move |z| ChunkCoord(coord.0 + IVec3::new(x, y, z)))
-            })
-        })
+        touching_offsets(local).map(move |offset| ChunkCoord(coord.0 + offset))
     }
 
     /// The 26 chunks around this one.
@@ -334,6 +313,11 @@ fn spawn_chunks(
 /// light changed, since the last run, and of the chunks around each one that
 /// was spawned (their faces against it are culled and shaded differently
 /// now). Meshes are built in parallel.
+///
+/// For streaming, two things to change when chunks start loading one at a
+/// time: mesh a chunk only once all its neighbours are loaded (otherwise
+/// each arrival remeshes the chunks around it again), and build meshes on
+/// the async task pool over several frames instead of blocking this one.
 pub fn remesh_changed_chunks(
     mut commands: Commands,
     chunks: Query<(Entity, &ChunkCoord, Ref<Chunk>, Ref<ChunkLight>)>,

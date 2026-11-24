@@ -23,7 +23,7 @@ fill 37 47 30 39 48 32 air
 fill 36 48 29 40 48 33 planks
 fill 37 46 30 39 47 32 air
 fill 38 46 31 38 47 31 stone
-camera 31 52 41 0 -45              # south of it, looking down at it
+camera 32 64 50 0 -50              # south of it, looking down at it all
 wait 2
 screenshot target/scenarios/ambient-occlusion/0-overview.png
 wait 1

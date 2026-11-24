@@ -527,17 +527,21 @@ fn record_frame_time(mut last: Local<Option<Instant>>, mut runner: ResMut<Script
 fn report_timing(runner: &mut ScriptRunner, frame: u32) {
     let times = std::mem::take(&mut runner.frame_times);
     runner.timing = false;
+    println!("[frame {frame}] timing: {}", timing_summary(&times));
+}
+
+/// How many frames, and their mean and worst times.
+fn timing_summary(times: &[Duration]) -> String {
     if times.is_empty() {
-        println!("[frame {frame}] timing: no frames yet");
-        return;
+        return "no frames yet".into();
     }
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     let mean = times.iter().map(|&d| ms(d)).sum::<f64>() / times.len() as f64;
     let worst = times.iter().map(|&d| ms(d)).fold(0.0, f64::max);
-    println!(
-        "[frame {frame}] timing: {} frames, mean {mean:.2} ms, worst {worst:.2} ms",
+    format!(
+        "{} frames, mean {mean:.2} ms, worst {worst:.2} ms",
         times.len()
-    );
+    )
 }
 
 /// A capture of the frame and what to do with it.
@@ -936,6 +940,30 @@ mod tests {
         assert!((camera.pitch + 10f32.to_radians()).abs() < 1e-5);
         // Yaw 180 faces south (+Z), at the lamp.
         assert!(transform.forward().z > 0.9);
+    }
+
+    #[test]
+    fn timing_summarizes_the_frames() {
+        let ms = Duration::from_millis;
+        assert_eq!(
+            timing_summary(&[ms(2), ms(4), ms(9)]),
+            "3 frames, mean 5.00 ms, worst 9.00 ms"
+        );
+        assert_eq!(timing_summary(&[]), "no frames yet");
+    }
+
+    /// Each `timing` covers the frames since the one before.
+    #[test]
+    fn timing_starts_over_after_each_report() {
+        let (app, exit) = run_game("wait 3\ntiming\nwait 2\n");
+        assert_eq!(exit, AppExit::Success);
+        let runner = app.world().resource::<ScriptRunner>();
+        assert!(!runner.timing);
+        assert!(
+            runner.frame_times.len() <= 3,
+            "{} frames kept after the report",
+            runner.frame_times.len()
+        );
     }
 
     #[test]

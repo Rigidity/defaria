@@ -27,7 +27,7 @@ use crate::{
 /// Switches the player's light on and off.
 pub const TOGGLE_PLAYER_LIGHT: KeyCode = KeyCode::KeyL;
 /// The player's light: red, green and blue levels. A warm torch light.
-pub const PLAYER_LIGHT: Vec3 = Vec3::new(15.0, 13.0, 10.0);
+pub const PLAYER_LIGHT: Vec3 = Vec3::new(15.0, 14.0, 12.0);
 
 pub struct DynamicLightPlugin;
 
@@ -98,7 +98,9 @@ fn update_lighting(
             .map(|(light, transform)| (*light, transform.translation())),
     );
     // Only touch the material when something changed: modifying it makes
-    // the renderer prepare it again.
+    // the renderer prepare it again, along with every chunk that uses it.
+    // That's cheap with a few hundred chunks (a moving light costs ~0.2 ms a
+    // frame); with many more, move the lights to a buffer of their own.
     if materials
         .get(&block.material)
         .is_some_and(|material| material.lighting != uniform)
@@ -187,18 +189,50 @@ mod tests {
 
     fn app() -> App {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .init_resource::<ButtonInput<KeyCode>>()
-            .add_observer(give_the_player_a_light)
-            .add_systems(Update, toggle_player_light);
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            TransformPlugin,
+            DynamicLightPlugin,
+        ))
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<SkyLight>()
+        .init_asset::<VoxelMaterial>();
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<VoxelMaterial>>()
+            .add(VoxelMaterial {
+                blocks: Handle::default(),
+                lighting: default(),
+            });
+        app.insert_resource(BlockMaterial {
+            material,
+            layers: default(),
+        });
         app
     }
 
+    fn lighting(app: &App) -> LightingUniform {
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        materials.get(&block.material).unwrap().lighting
+    }
+
+    /// The player's light reaches the chunk material where the player is,
+    /// and L takes it away and brings it back.
     #[test]
     fn the_player_carries_a_light_that_l_toggles() {
         let mut app = app();
-        let player = app.world_mut().spawn(FlyCamera::default()).id();
+        let at = Vec3::new(3.0, 40.0, -7.0);
+        let player = app
+            .world_mut()
+            .spawn((FlyCamera::default(), Transform::from_translation(at)))
+            .id();
         app.update();
+        let drawn = |app: &App| lighting(app).dynamic_count;
+        assert_eq!(drawn(&app), 1);
+        assert_eq!(lighting(&app).dynamic[0].position, at.extend(0.0));
+        assert_eq!(lighting(&app).dynamic[0].levels, PLAYER_LIGHT.extend(0.0));
         let on = |app: &App| app.world().get::<DynamicLight>(player).unwrap().on;
         assert!(on(&app), "the player's light starts on");
         assert_eq!(
@@ -216,7 +250,9 @@ mod tests {
         };
         press(&mut app);
         assert!(!on(&app));
+        assert_eq!(drawn(&app), 0);
         press(&mut app);
         assert!(on(&app));
+        assert_eq!(drawn(&app), 1);
     }
 }

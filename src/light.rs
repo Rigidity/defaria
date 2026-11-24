@@ -164,7 +164,8 @@ fn queue_loaded_chunks(
 /// Queues the light around every voxel that changed.
 fn queue_changed_voxels(mut changes: MessageReader<VoxelChanged>, mut queue: ResMut<LightQueue>) {
     for change in changes.read() {
-        queue.voxel_changed(change.pos);
+        let (coord, _) = ChunkCoord::split(change.pos);
+        queue.voxel_changed(change.pos, coord.0.y == WORLD_CHUNKS.y - 1);
     }
 }
 
@@ -224,6 +225,73 @@ impl FromWorld for LightTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        content::{BlockState, base, block},
+        terrain::{TerrainPlugin, Voxels},
+        voxel::CHUNK_SIZE,
+        voxel_material::BlockMaterial,
+    };
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// The terrain and its light, with no rendering.
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(base().clone())
+            .add_plugins((AssetPlugin::default(), TerrainPlugin, LightPlugin))
+            .init_asset::<Mesh>()
+            .insert_resource(BlockMaterial {
+                material: Handle::default(),
+                layers: default(),
+            });
+        app.update();
+        app
+    }
+
+    fn set(app: &mut App, pos: IVec3, state: BlockState) {
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| {
+                assert!(voxels.set(pos, state));
+            })
+            .unwrap();
+        app.update();
+    }
+
+    fn mesh(app: &App, coord: IVec3) -> Option<AssetId<Mesh>> {
+        let entity = app.world().resource::<ChunkMap>().get(ChunkCoord(coord))?;
+        app.world().get::<Mesh3d>(entity).map(|mesh| mesh.id())
+    }
+
+    /// A lamp's light reaching into a chunk its edit didn't touch remeshes
+    /// that chunk too; chunks out of reach keep their meshes.
+    #[test]
+    fn light_changes_remesh_the_chunks_they_reach() {
+        let mut app = app();
+        // High in the air, where the terrain doesn't reach: a stone in the
+        // middle of one chunk, and a lamp 3 voxels into the next.
+        let (lit, lamp_chunk) = (IVec3::new(1, 3, 2), IVec3::new(2, 3, 2));
+        let origin = |coord: IVec3| coord * CHUNK_SIZE as i32;
+        set(&mut app, origin(lit) + IVec3::splat(8), block("stone"));
+        let before = mesh(&app, lit).expect("the stone has a mesh");
+        let far = IVec3::new(7, 0, 7);
+        let far_before = mesh(&app, far);
+        assert!(far_before.is_some());
+
+        let lamp = origin(lamp_chunk) + IVec3::new(3, 8, 8);
+        set(&mut app, lamp, block("red_lamp"));
+        let entity = app
+            .world()
+            .resource::<ChunkMap>()
+            .get(ChunkCoord(lit))
+            .unwrap();
+        let light = app.world().get::<ChunkLight>(entity).unwrap();
+        assert!(
+            light.at(IVec3::new(9, 8, 8)).block()[0] > 0,
+            "the light got there"
+        );
+        assert_ne!(mesh(&app, lit), Some(before), "lit chunk wasn't remeshed");
+        assert_eq!(mesh(&app, far), far_before, "far chunk was remeshed");
+    }
 
     #[test]
     fn light_packs_four_channels() {

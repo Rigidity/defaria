@@ -34,7 +34,8 @@ use bevy::{
 use super::{CHANNELS, ChunkLight, Light, MAX_LIGHT, SKY};
 use crate::{
     content::{BlockState, Content},
-    voxel::{CHUNK_SIZE, CHUNK_VOLUME, Chunk},
+    terrain::ChunkCoord,
+    voxel::{CHUNK_SIZE, CHUNK_VOLUME, Chunk, axis_of, touching_offsets},
 };
 
 /// Access to the loaded chunks, one at a time.
@@ -151,13 +152,7 @@ impl LightQueue {
                 continue;
             }
             // The neighbour's layer facing this chunk.
-            let axis = if direction.x != 0 {
-                0
-            } else if direction.y != 0 {
-                1
-            } else {
-                2
-            };
+            let axis = axis_of(direction);
             let layer = if direction[axis] > 0 { 0 } else { last };
             for (u, v) in square() {
                 let mut pos = IVec3::ZERO;
@@ -173,15 +168,22 @@ impl LightQueue {
     }
 
     /// Queues the light around a voxel that changed, by world position.
-    pub fn voxel_changed(&mut self, pos: IVec3) {
+    /// `under_sky` says whether its chunk is at the top of the world, where
+    /// the top layer gets sky light from above.
+    pub fn voxel_changed(&mut self, pos: IVec3, under_sky: bool) {
         let (coord, local) = split(pos);
-        let index = Chunk::index_of(local) as u16;
+        let index = Chunk::index_of(local);
         for channel in self.removals.iter_mut() {
             channel.entry(coord).or_default().push(Node {
-                index,
+                index: index as u16,
                 level: 0,
                 flags: CHANGED,
             });
+        }
+        // The sky shines into the top layer from outside the world, so no
+        // neighbour spreads it back: offer it again, as on loading.
+        if under_sky && local.y == CHUNK_SIZE as i32 - 1 {
+            self.add(SKY, coord, index, MAX_LIGHT, 0);
         }
     }
 
@@ -211,9 +213,10 @@ impl LightQueue {
                     table,
                     removals,
                     additions,
-                    remesh: &mut remesh,
+                    touched: 0,
                 };
                 store.with_chunk(coord, |chunk, light| fill.remove(nodes, chunk, light));
+                fill.report(&mut remesh);
             }
             while let Some(coord) = additions.keys().next().copied() {
                 let nodes = additions.remove(&coord).unwrap_or_default();
@@ -223,9 +226,10 @@ impl LightQueue {
                     table,
                     removals,
                     additions,
-                    remesh: &mut remesh,
+                    touched: 0,
                 };
                 store.with_chunk(coord, |chunk, light| fill.add(nodes, chunk, light));
+                fill.report(&mut remesh);
             }
         }
         remesh
@@ -240,7 +244,9 @@ struct Fill<'a> {
     table: &'a LightTable,
     removals: &'a mut HashMap<IVec3, Vec<Node>>,
     additions: &'a mut HashMap<IVec3, Vec<Node>>,
-    remesh: &'a mut HashSet<IVec3>,
+    /// The chunks whose meshes show a voxel whose light changed, as a bit
+    /// per offset from this chunk (see [`offset_bit`]).
+    touched: u32,
 }
 
 impl Fill<'_> {
@@ -369,33 +375,32 @@ impl Fill<'_> {
         let mut cell = light.get(index);
         cell.set(self.channel, level);
         light.set(index, cell);
-        self.remesh.insert(self.coord);
-        let pos = Chunk::position_of(index);
-        let last = CHUNK_SIZE as i32 - 1;
-        let side = |v: i32| match v {
-            0 => -1,
-            v if v == last => 1,
-            _ => 0,
-        };
-        let edge = pos.map(side);
-        if edge == IVec3::ZERO {
-            return;
+        for offset in touching_offsets(Chunk::position_of(index)) {
+            self.touched |= offset_bit(offset);
         }
-        // Every chunk across the edges and corners this voxel touches.
-        for x in [0, edge.x] {
-            for y in [0, edge.y] {
-                for z in [0, edge.z] {
-                    self.remesh.insert(self.coord + IVec3::new(x, y, z));
-                }
+    }
+
+    /// Adds the chunks [`Fill::set`] touched to `remesh`.
+    fn report(&self, remesh: &mut HashSet<IVec3>) {
+        for bit in 0..27 {
+            if self.touched & (1 << bit) != 0 {
+                let offset = IVec3::new(bit % 3, bit / 3 % 3, bit / 9) - IVec3::ONE;
+                remesh.insert(self.coord + offset);
             }
         }
     }
 }
 
-/// A position in chunks and voxels: the chunk offset and the position in it.
+/// A bit for each offset to a chunk around (or at) this one.
+fn offset_bit(offset: IVec3) -> u32 {
+    let i = offset + IVec3::ONE;
+    1 << (i.x + i.y * 3 + i.z * 9)
+}
+
+/// A position in chunks and voxels: the chunk and the position in it.
 fn split(pos: IVec3) -> (IVec3, IVec3) {
-    let size = IVec3::splat(CHUNK_SIZE as i32);
-    (pos.div_euclid(size), pos.rem_euclid(size))
+    let (coord, local) = ChunkCoord::split(pos);
+    (coord.0, local)
 }
 
 /// Every position on a chunk face, as two coordinates.

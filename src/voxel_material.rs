@@ -271,6 +271,17 @@ mod tests {
             "const MAX_DYNAMIC_LIGHTS: u32 = {MAX_DYNAMIC_LIGHTS}u;"
         )));
         assert!(shader.contains("fn vertex("));
+        // The vertex inputs at the locations `specialize` feeds them to.
+        for input in [
+            "@location(0) position: vec3<f32>",
+            "@location(1) normal: vec3<f32>",
+            "@location(2) uv: vec2<f32>",
+            "@location(3) corner: vec2<f32>",
+            "@location(4) light: vec4<u32>",
+            "@location(5) face: vec2<u32>",
+        ] {
+            assert!(shader.contains(input), "the shader doesn't read {input}");
+        }
         assert!(shader.contains("fn fragment("));
     }
 

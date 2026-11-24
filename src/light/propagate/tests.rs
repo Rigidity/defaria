@@ -59,7 +59,7 @@ impl TestWorld {
     fn set(&mut self, queue: &mut LightQueue, pos: IVec3, state: BlockState) {
         let (coord, local) = split(pos);
         self.chunks.get_mut(&coord).unwrap().0.set_at(local, state);
-        queue.voxel_changed(pos);
+        queue.voxel_changed(pos, coord.y == self.top);
     }
 
     fn light(&self, pos: IVec3) -> Light {
@@ -435,6 +435,120 @@ fn reports_the_chunks_to_remesh() {
     // Setting it to what it already is changes nothing.
     world.set(&mut queue, edge, block("lamp"));
     assert!(world.run(&mut queue).is_empty());
+}
+
+/// Light changing at a voxel on a chunk's corner reports all eight chunks
+/// that meet there: the corner shades faces in each of them.
+#[test]
+fn light_on_a_chunk_corner_remeshes_every_chunk_there() {
+    let (mut world, mut queue) = (TestWorld::new(9), LightQueue::default());
+    let corner = IVec3::new(0, 15, 15);
+    let chunks: Vec<IVec3> = coords(IVec3::splat(2))
+        .into_iter()
+        .map(|c| c - IVec3::X)
+        .collect();
+    for &coord in &chunks {
+        world.load(&mut queue, coord, |pos| {
+            if pos == corner {
+                BlockState::AIR
+            } else {
+                block("stone")
+            }
+        });
+    }
+    world.run(&mut queue);
+    world.set(&mut queue, corner, block("lamp"));
+    let remesh = world.run(&mut queue);
+    assert_eq!(remesh, chunks.into_iter().collect::<HashSet<_>>());
+}
+
+/// The top layer of the world gets its sky from above the world: breaking
+/// a block there, or a hole in a roof there, lets the sky straight back in.
+#[test]
+fn the_sky_comes_back_into_the_top_layer() {
+    let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, |pos| {
+        if pos.y <= 3 || pos.y == 15 {
+            block("stone")
+        } else {
+            BlockState::AIR
+        }
+    });
+    world.run(&mut queue);
+    assert_eq!(world.light(IVec3::new(8, 8, 8)).sky(), 0, "under the roof");
+    let hole = IVec3::new(8, 15, 8);
+    world.set(&mut queue, hole, BlockState::AIR);
+    world.run(&mut queue);
+    assert_eq!(world.light(hole).sky(), MAX_LIGHT);
+    assert_eq!(world.light(IVec3::new(8, 4, 8)).sky(), MAX_LIGHT);
+    world.assert_matches_reference();
+    // Place and break a block in open sky at the top.
+    let open = IVec3::new(3, 14, 3);
+    world.set(&mut queue, hole, block("stone"));
+    world.set(&mut queue, IVec3::new(3, 15, 3), BlockState::AIR);
+    world.run(&mut queue);
+    world.assert_matches_reference();
+    world.set(&mut queue, IVec3::new(3, 15, 3), block("stone"));
+    world.run(&mut queue);
+    world.set(&mut queue, IVec3::new(3, 15, 3), BlockState::AIR);
+    world.run(&mut queue);
+    assert_eq!(world.light(open).sky(), MAX_LIGHT);
+    world.assert_matches_reference();
+}
+
+/// Many random worlds with chunks loading in random order while voxels
+/// change in the same runs, checked against the reference after every run.
+#[test]
+fn random_loads_and_edits_keep_the_light_right() {
+    let blocks = [
+        BlockState::AIR,
+        BlockState::AIR,
+        BlockState::AIR,
+        block("stone"),
+        block("stone"),
+        block("lamp"),
+        block("red_lamp"),
+        block("blue_lamp"),
+    ];
+    let size = IVec3::new(3, 2, 2);
+    for seed in 1..10u64 {
+        let mut rng = Rng((seed * 0x9E37_79B9) | 1);
+        let fill = random_block(seed);
+        let (mut world, mut queue) = (TestWorld::new(size.y - 1), LightQueue::default());
+        let mut order = coords(size);
+        for i in (1..order.len()).rev() {
+            order.swap(i, rng.below(i as u64 + 1) as usize);
+        }
+        let rest = order.split_off(order.len() / 2);
+        for &coord in &order {
+            world.load(&mut queue, coord, &fill);
+        }
+        world.run(&mut queue);
+        let mut rest = rest.into_iter();
+        for step in 0..20 {
+            if rng.below(3) == 0
+                && let Some(coord) = rest.next()
+            {
+                world.load(&mut queue, coord, &fill);
+            }
+            let loaded: Vec<IVec3> = world.chunks.keys().copied().collect();
+            for _ in 0..1 + rng.below(8) {
+                let coord = loaded[rng.below(loaded.len() as u64) as usize];
+                let local = IVec3::new(
+                    rng.below(16) as i32,
+                    rng.below(16) as i32,
+                    rng.below(16) as i32,
+                );
+                let state = blocks[rng.below(blocks.len() as u64) as usize];
+                world.set(&mut queue, coord * CHUNK_SIZE as i32 + local, state);
+            }
+            world.run(&mut queue);
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                world.assert_matches_reference()
+            }));
+            assert!(checked.is_ok(), "seed {seed}, step {step}");
+        }
+    }
 }
 
 /// Light doesn't cross into a chunk that isn't loaded, and fills in when it
