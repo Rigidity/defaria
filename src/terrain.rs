@@ -330,7 +330,6 @@ mod tests {
             .insert_resource(BlockMaterial {
                 material: Handle::default(),
                 atlas: Handle::default(),
-                blocks: Handle::default(),
             });
         app.update();
 

@@ -143,6 +143,26 @@ mod tests {
         }
     }
 
+    /// No creases at cell borders: the slope just left of a lattice line
+    /// matches the slope just right of it. (A linear fade would leave the
+    /// noise continuous but kinked there.)
+    #[test]
+    fn slope_is_smooth_across_cell_borders() {
+        let perlin = Perlin::new(5);
+        let (h, eps) = (1e-3_f32, 1e-2_f32);
+        for border in -3..3 {
+            for y in [0.21, 0.5, 0.77, 1.33] {
+                let x = border as f32;
+                let left = (perlin.get(x - eps, y) - perlin.get(x - eps - h, y)) / h;
+                let right = (perlin.get(x + eps + h, y) - perlin.get(x + eps, y)) / h;
+                assert!(
+                    (left - right).abs() < 0.1,
+                    "kink at x = {x}, y = {y}: slope {left} vs {right}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn same_seed_same_noise_different_seed_different_noise() {
         let (a, b, c) = (Perlin::new(42), Perlin::new(42), Perlin::new(43));
