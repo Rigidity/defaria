@@ -3,13 +3,19 @@
 //! Each column's height comes from fractal Perlin noise. Below the surface is
 //! stone, then a few layers of dirt, then one layer of grass on top. The world
 //! is [`WORLD_CHUNKS`] chunks; everything outside it is air.
+//!
+//! Chunks are meshed by [`remesh_changed_chunks`] whenever they change,
+//! including when they're spawned, so editing a chunk through [`Voxels`] is
+//! all it takes to update what's drawn.
 
-use bevy::prelude::*;
+use std::collections::HashMap;
+
+use bevy::{ecs::system::SystemParam, prelude::*};
 
 use crate::{
     perlin::Perlin,
     voxel::{CHUNK_SIZE, Chunk, Voxel},
-    voxel_material::BlockMaterial,
+    voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
 /// Chunks along each axis of the world.
@@ -28,9 +34,16 @@ pub struct TerrainPlugin;
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainSettings>()
-            .add_systems(Startup, spawn_chunks);
+            .init_resource::<ChunkMap>()
+            .add_systems(Startup, spawn_chunks)
+            .add_systems(Update, remesh_changed_chunks.in_set(RemeshChunks));
     }
 }
+
+/// Where changed chunks are remeshed. Systems that edit chunks run before
+/// it, so their edits show on the same frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RemeshChunks;
 
 /// How the terrain is shaped. Read once at startup.
 #[derive(Resource, Reflect, Debug, Clone)]
@@ -70,6 +83,76 @@ impl ChunkCoord {
     pub fn origin(self) -> IVec3 {
         self.0 * CHUNK_SIZE as i32
     }
+
+    /// The chunk holding world voxel `pos`, and `pos` within that chunk.
+    pub fn split(pos: IVec3) -> (Self, IVec3) {
+        let size = IVec3::splat(CHUNK_SIZE as i32);
+        (Self(pos.div_euclid(size)), pos.rem_euclid(size))
+    }
+}
+
+/// Every chunk entity, by its coordinate. Filled as the chunks spawn.
+#[derive(Resource, Debug, Default)]
+pub struct ChunkMap(HashMap<ChunkCoord, Entity>);
+
+impl ChunkMap {
+    pub fn get(&self, coord: ChunkCoord) -> Option<Entity> {
+        self.0.get(&coord).copied()
+    }
+
+    pub fn insert(&mut self, coord: ChunkCoord, chunk: Entity) {
+        self.0.insert(coord, chunk);
+    }
+}
+
+/// Reads and writes voxels by world position, across every chunk.
+#[derive(SystemParam)]
+pub struct Voxels<'w, 's> {
+    map: Res<'w, ChunkMap>,
+    chunks: Query<'w, 's, &'static mut Chunk>,
+}
+
+impl Voxels<'_, '_> {
+    /// The voxel at a world position; `None` outside the world.
+    pub fn get(&self, pos: IVec3) -> Option<Voxel> {
+        let (coord, local) = ChunkCoord::split(pos);
+        let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
+        Some(chunk.at(local))
+    }
+
+    /// Sets the voxel at a world position, and returns whether it did: there's
+    /// nothing to set outside the world. A voxel on a chunk's edge also shows
+    /// or hides a face of the neighbouring chunk, so that chunk is marked
+    /// changed too, and both are remeshed.
+    pub fn set(&mut self, pos: IVec3, voxel: Voxel) -> bool {
+        let (coord, local) = ChunkCoord::split(pos);
+        let Some(mut chunk) = self
+            .map
+            .get(coord)
+            .and_then(|entity| self.chunks.get_mut(entity).ok())
+        else {
+            return false;
+        };
+        chunk.set_at(local, voxel);
+        let last = CHUNK_SIZE as i32 - 1;
+        for axis in 0..3 {
+            let mut offset = IVec3::ZERO;
+            offset[axis] = match local[axis] {
+                0 => -1,
+                l if l == last => 1,
+                _ => continue,
+            };
+            let neighbour = ChunkCoord(coord.0 + offset);
+            if let Some(mut chunk) = self
+                .map
+                .get(neighbour)
+                .and_then(|entity| self.chunks.get_mut(entity).ok())
+            {
+                chunk.set_changed();
+            }
+        }
+        true
+    }
 }
 
 /// Answers "what voxel is at this world position?" for the whole world.
@@ -102,6 +185,7 @@ impl Terrain {
     }
 
     /// The voxel at a world position. Air outside the world.
+    #[cfg(test)]
     pub fn voxel(&self, pos: IVec3) -> Voxel {
         if pos.cmplt(IVec3::ZERO).any() || pos.cmpge(WORLD_SIZE).any() {
             return Voxel::Air;
@@ -125,7 +209,9 @@ impl Terrain {
         chunk
     }
 
-    /// Meshes a chunk, culling faces against its neighbours in the world.
+    /// Meshes a chunk, culling faces against its neighbours in the world as
+    /// generated. The game meshes chunks with [`remesh_changed_chunks`].
+    #[cfg(test)]
     pub fn mesh(&self, coord: ChunkCoord, chunk: &Chunk) -> Mesh {
         let origin = coord.origin();
         chunk.mesh(|local| self.voxel(origin + local))
@@ -150,30 +236,55 @@ pub fn chunk_coords() -> impl Iterator<Item = ChunkCoord> {
     })
 }
 
-fn spawn_chunks(
+/// Spawns every chunk of the world. [`remesh_changed_chunks`] meshes them
+/// on the same frame.
+fn spawn_chunks(mut commands: Commands, settings: Res<TerrainSettings>, mut map: ResMut<ChunkMap>) {
+    let terrain = Terrain::new(settings.clone());
+    for coord in chunk_coords() {
+        let IVec3 { x, y, z } = coord.0;
+        let entity = commands
+            .spawn((
+                Name::new(format!("Chunk ({x}, {y}, {z})")),
+                Transform::from_translation(coord.origin().as_vec3()),
+                coord,
+                terrain.chunk(coord),
+            ))
+            .id();
+        map.insert(coord, entity);
+    }
+}
+
+/// Rebuilds the mesh of every chunk that was spawned or changed since the
+/// last run, culling faces against the neighbouring chunks as they are now.
+pub fn remesh_changed_chunks(
     mut commands: Commands,
-    settings: Res<TerrainSettings>,
+    chunks: Query<(Entity, &ChunkCoord, Ref<Chunk>)>,
+    map: Res<ChunkMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<BlockMaterial>,
 ) {
-    let terrain = Terrain::new(settings.clone());
-    for coord in chunk_coords() {
-        let chunk = terrain.chunk(coord);
-        let mesh = terrain.mesh(coord, &chunk);
-        let IVec3 { x, y, z } = coord.0;
-        let mut entity = commands.spawn((
-            Name::new(format!("Chunk ({x}, {y}, {z})")),
-            Transform::from_translation(coord.origin().as_vec3()),
-            coord,
-            chunk,
-        ));
+    for (entity, coord, chunk) in &chunks {
+        if !chunk.is_changed() {
+            continue;
+        }
+        let origin = coord.origin();
+        let mesh = chunk.mesh(|local| {
+            let (coord, local) = ChunkCoord::split(origin + local);
+            map.get(coord)
+                .and_then(|entity| chunks.get(entity).ok())
+                .map_or(Voxel::Air, |(_, _, chunk)| chunk.at(local))
+        });
         // Chunks with nothing visible (all air, or buried) get no mesh; the
         // renderer warns about meshes with no vertices.
         if mesh.count_vertices() > 0 {
-            entity.insert((
+            commands.entity(entity).insert((
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(material.material.clone()),
             ));
+        } else {
+            commands
+                .entity(entity)
+                .remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
         }
     }
 }

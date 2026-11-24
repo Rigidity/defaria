@@ -9,10 +9,8 @@
 //!   targeted block, and a hotbar along the bottom lists the blocks with the
 //!   active one highlighted.
 //!
-//! Edited chunks, and neighbouring chunks whose faces the edit uncovers or
-//! hides, are remeshed in the same frame.
-
-use std::collections::HashMap;
+//! Edits go through [`Voxels`], and the terrain remeshes the changed chunks
+//! on the same frame.
 
 use bevy::{
     prelude::*,
@@ -21,9 +19,8 @@ use bevy::{
 
 use crate::{
     fly_camera::{FlyCamera, FlyCameraSystems},
-    terrain::ChunkCoord,
-    voxel::{CHUNK_SIZE, Chunk, Voxel},
-    voxel_material::{BlockMaterial, VoxelMaterial},
+    terrain::{RemeshChunks, Voxels},
+    voxel::Voxel,
 };
 
 /// How far away, in blocks, you can break or place.
@@ -59,10 +56,16 @@ impl Plugin for BlockEditPlugin {
             .add_systems(
                 Update,
                 (
-                    (select_block, edit_blocks, remesh_edited_chunks)
+                    // Before the fly camera, so the click that locks the
+                    // cursor finds it still unlocked and edits nothing.
+                    (select_block, edit_blocks)
                         .chain()
-                        .before(FlyCameraSystems),
-                    (update_hotbar, outline_target),
+                        .before(FlyCameraSystems)
+                        .before(RemeshChunks),
+                    update_hotbar,
+                    // After the camera moves, so the outline matches the
+                    // frame being drawn.
+                    outline_target.after(FlyCameraSystems),
                 ),
             );
     }
@@ -96,15 +99,11 @@ impl Hit {
     }
 }
 
-/// The first block within `reach` along the ray from `origin` in
-/// direction `dir` for which `solid` is true. Steps through every block the
-/// ray touches, in order (Amanatides & Woo), so it can't skip through
-/// corners.
-pub fn raycast(origin: Vec3, dir: Vec3, reach: f32, solid: impl Fn(IVec3) -> bool) -> Option<Hit> {
-    let dir = dir.normalize_or_zero();
-    if dir == Vec3::ZERO {
-        return None;
-    }
+/// The first block within `reach` along `ray` for which `solid` is true.
+/// Steps through every block the ray touches, in order (Amanatides & Woo),
+/// so it can't skip through corners.
+pub fn raycast(ray: Ray3d, reach: f32, solid: impl Fn(IVec3) -> bool) -> Option<Hit> {
+    let (origin, dir) = (ray.origin, *ray.direction);
     let mut block = origin.floor().as_ivec3();
     if solid(block) {
         return Some(Hit {
@@ -112,10 +111,12 @@ pub fn raycast(origin: Vec3, dir: Vec3, reach: f32, solid: impl Fn(IVec3) -> boo
             normal: IVec3::ZERO,
         });
     }
-    let step = IVec3::new(sign(dir.x), sign(dir.y), sign(dir.z));
+    // An axis the ray doesn't move along is never stepped: its `next` is
+    // infinite.
+    let step = dir.signum().as_ivec3();
     // Ray distance to cross one whole block along each axis, and to the
     // next block boundary along each axis.
-    let delta = Vec3::from_array(dir.to_array().map(|d| (1.0 / d).abs()));
+    let delta = dir.recip().abs();
     let mut next = Vec3::from_array(std::array::from_fn(|axis| {
         let (o, d) = (origin[axis], dir[axis]);
         if d > 0.0 {
@@ -147,29 +148,6 @@ pub fn raycast(origin: Vec3, dir: Vec3, reach: f32, solid: impl Fn(IVec3) -> boo
     }
 }
 
-fn sign(x: f32) -> i32 {
-    if x > 0.0 {
-        1
-    } else if x < 0.0 {
-        -1
-    } else {
-        0
-    }
-}
-
-/// The chunk holding world block `pos`, and `pos` within it.
-fn split(pos: IVec3) -> (IVec3, IVec3) {
-    let size = CHUNK_SIZE as i32;
-    (
-        pos.div_euclid(IVec3::splat(size)),
-        pos.rem_euclid(IVec3::splat(size)),
-    )
-}
-
-fn local_get(chunk: &Chunk, local: IVec3) -> Voxel {
-    chunk.get(local.x as usize, local.y as usize, local.z as usize)
-}
-
 fn select_block(keys: Res<ButtonInput<KeyCode>>, mut active: ResMut<ActiveBlock>) {
     if let Some(index) = HOTBAR_KEYS.iter().position(|&key| keys.just_pressed(key)) {
         active.0 = index;
@@ -177,8 +155,8 @@ fn select_block(keys: Res<ButtonInput<KeyCode>>, mut active: ResMut<ActiveBlock>
 }
 
 /// The ray from the camera through the crosshair.
-fn camera_ray(transform: &Transform) -> (Vec3, Vec3) {
-    (transform.translation, transform.forward().as_vec3())
+fn camera_ray(transform: &Transform) -> Ray3d {
+    Ray3d::new(transform.translation, transform.forward())
 }
 
 fn edit_blocks(
@@ -186,10 +164,8 @@ fn edit_blocks(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
     active: Res<ActiveBlock>,
-    mut chunks: Query<(Entity, &ChunkCoord, &mut Chunk)>,
+    mut voxels: Voxels,
 ) {
-    // Runs before the fly camera's systems, so on the click that locks
-    // the cursor it's still unlocked here and nothing is edited.
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
@@ -200,96 +176,24 @@ fn edit_blocks(
     if !breaking && !placing {
         return;
     }
-    let index: HashMap<IVec3, Entity> = chunks
-        .iter()
-        .map(|(entity, coord, _)| (coord.0, entity))
-        .collect();
-    // `None` outside the world.
-    let voxel = |pos: IVec3| {
-        let (coord, local) = split(pos);
-        let entity = *index.get(&coord)?;
-        Some(local_get(chunks.get(entity).ok()?.2, local))
-    };
-    let (origin, dir) = camera_ray(&camera);
-    let Some(hit) = raycast(origin, dir, REACH, |pos| {
-        voxel(pos).is_some_and(Voxel::is_solid)
+    let ray = camera_ray(&camera);
+    let Some(hit) = raycast(ray, REACH, |pos| {
+        voxels.get(pos).is_some_and(Voxel::is_solid)
     }) else {
         return;
     };
-    let (pos, new) = if breaking {
-        (hit.block, Voxel::Air)
-    } else {
-        let Some(pos) = hit.place_at() else {
-            return;
-        };
-        // Not into the camera, outside the world, or over another block.
-        if pos == origin.floor().as_ivec3() || voxel(pos) != Some(Voxel::Air) {
-            return;
-        }
-        (pos, active.voxel())
-    };
-
-    let (coord, local) = split(pos);
-    let mut chunk = chunks.get_mut(index[&coord]).unwrap().2;
-    chunk.set(local.x as usize, local.y as usize, local.z as usize, new);
-    // A block on a chunk's edge also shows or hides a face of the
-    // neighbouring chunk's block; mark that chunk for remeshing too.
-    let last = CHUNK_SIZE as i32 - 1;
-    for axis in 0..3 {
-        let mut offset = IVec3::ZERO;
-        if local[axis] == 0 {
-            offset[axis] = -1;
-        } else if local[axis] == last {
-            offset[axis] = 1;
-        } else {
-            continue;
-        }
-        if let Some(&neighbour) = index.get(&(coord + offset)) {
-            chunks.get_mut(neighbour).unwrap().2.set_changed();
-        }
-    }
-}
-
-/// Rebuilds the mesh of every chunk changed since the last run, culling
-/// faces against the neighbouring chunks as they are now. Skips chunks that
-/// were just spawned: the terrain meshes those itself.
-fn remesh_edited_chunks(
-    mut commands: Commands,
-    chunks: Query<(Entity, &ChunkCoord, Ref<Chunk>)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    material: Res<BlockMaterial>,
-) {
-    let changed: Vec<(Entity, ChunkCoord)> = chunks
-        .iter()
-        .filter(|(_, _, chunk)| chunk.is_changed() && !chunk.is_added())
-        .map(|(entity, coord, _)| (entity, *coord))
-        .collect();
-    if changed.is_empty() {
+    if breaking {
+        voxels.set(hit.block, Voxel::Air);
         return;
     }
-    let all: HashMap<IVec3, &Chunk> = chunks
-        .iter()
-        .map(|(_, coord, chunk)| (coord.0, chunk.into_inner()))
-        .collect();
-    for (entity, coord) in changed {
-        let origin = coord.origin();
-        let mesh = all[&coord.0].mesh(|local| {
-            let (coord, local) = split(origin + local);
-            all.get(&coord)
-                .map_or(Voxel::Air, |chunk| local_get(chunk, local))
-        });
-        // Like the terrain: no mesh at all rather than an empty one.
-        if mesh.count_vertices() > 0 {
-            commands.entity(entity).insert((
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material.material.clone()),
-            ));
-        } else {
-            commands
-                .entity(entity)
-                .remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
-        }
+    let Some(pos) = hit.place_at() else {
+        return;
+    };
+    // Not into the camera, outside the world, or over another block.
+    if pos == ray.origin.floor().as_ivec3() || voxels.get(pos) != Some(Voxel::Air) {
+        return;
     }
+    voxels.set(pos, active.voxel());
 }
 
 /// Outlines the block under the crosshair while the cursor is locked.
@@ -297,21 +201,13 @@ fn outline_target(
     mut gizmos: Gizmos,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
-    chunks: Query<(&ChunkCoord, &Chunk)>,
+    voxels: Voxels,
 ) {
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
-    let index: HashMap<IVec3, &Chunk> = chunks
-        .iter()
-        .map(|(coord, chunk)| (coord.0, chunk))
-        .collect();
-    let (origin, dir) = camera_ray(&camera);
-    let hit = raycast(origin, dir, REACH, |pos| {
-        let (coord, local) = split(pos);
-        index
-            .get(&coord)
-            .is_some_and(|chunk| local_get(chunk, local).is_solid())
+    let hit = raycast(camera_ray(&camera), REACH, |pos| {
+        voxels.get(pos).is_some_and(Voxel::is_solid)
     });
     if let Some(hit) = hit {
         let center = hit.block.as_vec3() + Vec3::splat(0.5);
@@ -418,16 +314,28 @@ fn update_hotbar(
 
 #[cfg(test)]
 mod tests {
+    use bevy::log::LogPlugin;
+
     use super::*;
+    use crate::{
+        headless::{HeadlessPlugin, Script, default_plugins},
+        terrain::{ChunkCoord, ChunkMap, Terrain, remesh_changed_chunks},
+        voxel::Chunk,
+        voxel_material::BlockMaterial,
+    };
 
     fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> bool + '_ {
         move |pos| blocks.contains(&pos)
     }
 
+    fn ray(origin: Vec3, dir: Vec3) -> Ray3d {
+        Ray3d::new(origin, Dir3::new(dir).unwrap())
+    }
+
     #[test]
     fn ray_hits_the_first_block_and_the_face_it_entered() {
         let blocks = [IVec3::new(3, 0, 0), IVec3::new(5, 0, 0)];
-        let hit = raycast(Vec3::new(0.5, 0.5, 0.5), Vec3::X, 8.0, solid_at(&blocks));
+        let hit = raycast(ray(Vec3::splat(0.5), Vec3::X), 8.0, solid_at(&blocks));
         assert_eq!(
             hit,
             Some(Hit {
@@ -442,8 +350,7 @@ mod tests {
     fn ray_looking_down_hits_the_top_face() {
         let blocks = [IVec3::new(2, 1, 2)];
         let hit = raycast(
-            Vec3::new(2.5, 5.2, 2.5),
-            Vec3::NEG_Y,
+            ray(Vec3::new(2.5, 5.2, 2.5), Vec3::NEG_Y),
             8.0,
             solid_at(&blocks),
         )
@@ -452,20 +359,21 @@ mod tests {
         assert_eq!(hit.place_at(), Some(IVec3::new(2, 2, 2)));
     }
 
+    /// From x = 0.5, block 8's near face is 7.5 away and block 9's is 8.5.
     #[test]
     fn ray_stops_at_its_reach() {
-        let blocks = [IVec3::new(10, 0, 0)];
-        let origin = Vec3::new(0.5, 0.5, 0.5);
-        assert_eq!(raycast(origin, Vec3::X, 8.0, solid_at(&blocks)), None);
-        assert!(raycast(origin, Vec3::X, 10.0, solid_at(&blocks)).is_some());
+        let origin = Vec3::splat(0.5);
+        let near = [IVec3::new(8, 0, 0)];
+        let far = [IVec3::new(9, 0, 0)];
+        assert!(raycast(ray(origin, Vec3::X), 8.0, solid_at(&near)).is_some());
+        assert_eq!(raycast(ray(origin, Vec3::X), 8.0, solid_at(&far)), None);
     }
 
     #[test]
     fn ray_works_at_negative_coordinates() {
         let blocks = [IVec3::new(-3, -1, 0)];
         let hit = raycast(
-            Vec3::new(-0.5, -0.5, 0.5),
-            Vec3::NEG_X,
+            ray(Vec3::new(-0.5, -0.5, 0.5), Vec3::NEG_X),
             8.0,
             solid_at(&blocks),
         )
@@ -480,8 +388,7 @@ mod tests {
     fn diagonal_ray_visits_every_block_it_crosses() {
         let visited = std::cell::RefCell::new(Vec::new());
         raycast(
-            Vec3::new(0.2, 0.5, 0.7),
-            Vec3::new(1.0, 0.0, -1.0),
+            ray(Vec3::new(0.2, 0.5, 0.7), Vec3::new(1.0, 0.0, -1.0)),
             3.0,
             |pos| {
                 visited.borrow_mut().push(pos);
@@ -499,25 +406,13 @@ mod tests {
     #[test]
     fn ray_starting_inside_a_block_hits_it_with_no_face() {
         let blocks = [IVec3::ZERO];
-        let hit = raycast(Vec3::splat(0.5), Vec3::X, 8.0, solid_at(&blocks)).unwrap();
+        let hit = raycast(ray(Vec3::splat(0.5), Vec3::X), 8.0, solid_at(&blocks)).unwrap();
         assert_eq!(hit.block, IVec3::ZERO);
         assert_eq!(hit.place_at(), None);
     }
 
-    #[test]
-    fn split_finds_the_chunk_and_local_position() {
-        assert_eq!(
-            split(IVec3::new(17, 0, 15)),
-            (IVec3::new(1, 0, 0), IVec3::new(1, 0, 15))
-        );
-        assert_eq!(
-            split(IVec3::new(-1, 0, 0)),
-            (IVec3::new(-1, 0, 0), IVec3::new(15, 0, 0))
-        );
-    }
-
     /// Two chunks side by side along X, a camera locked in front of them,
-    /// and the edit systems; no rendering.
+    /// and the edit and remesh systems; no rendering.
     fn app() -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -529,9 +424,13 @@ mod tests {
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ActiveBlock>()
+            .init_resource::<ChunkMap>()
             .add_systems(
                 Update,
-                (select_block, edit_blocks, remesh_edited_chunks).chain(),
+                (
+                    (select_block, edit_blocks).chain().before(RemeshChunks),
+                    remesh_changed_chunks.in_set(RemeshChunks),
+                ),
             );
         app.world_mut().spawn((
             Window::default(),
@@ -547,22 +446,49 @@ mod tests {
             left.set(15, y, 5, Voxel::Stone);
         }
         left.set(14, 1, 5, Voxel::Dirt);
-        let left = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), left)).id();
         let mut right = Chunk::default();
         right.set(0, 1, 5, Voxel::Stone);
-        let right = app.world_mut().spawn((ChunkCoord(IVec3::X), right)).id();
+        let mut chunks = [Entity::PLACEHOLDER; 2];
+        for (i, (coord, chunk)) in [(IVec3::ZERO, left), (IVec3::X, right)]
+            .into_iter()
+            .enumerate()
+        {
+            let entity = app.world_mut().spawn((ChunkCoord(coord), chunk)).id();
+            app.world_mut()
+                .resource_mut::<ChunkMap>()
+                .insert(ChunkCoord(coord), entity);
+            chunks[i] = entity;
+        }
         // Looking along +X at block (14, 1, 5) from three blocks away.
         app.world_mut().spawn((
             FlyCamera::default(),
             Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
         ));
-        // Let the spawn-time change ticks pass.
+        // Meshes the new chunks and lets their change ticks pass.
         app.update();
-        (app, left, right)
+        (app, chunks[0], chunks[1])
     }
 
     fn voxel(app: &App, chunk: Entity, x: usize, y: usize, z: usize) -> Voxel {
         app.world().get::<Chunk>(chunk).unwrap().get(x, y, z)
+    }
+
+    fn mesh(app: &App, chunk: Entity) -> Option<AssetId<Mesh>> {
+        app.world().get::<Mesh3d>(chunk).map(|mesh| mesh.id())
+    }
+
+    fn vertices(app: &App, chunk: Entity) -> usize {
+        let id = mesh(app, chunk).expect("chunk has a mesh");
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        meshes.get(id).unwrap().count_vertices()
+    }
+
+    fn look_at(app: &mut App, from: Vec3, dir: Vec3) {
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<FlyCamera>>();
+        *camera.single_mut(app.world_mut()).unwrap() =
+            Transform::from_translation(from).looking_to(dir, Vec3::Y);
     }
 
     fn click(app: &mut App, button: MouseButton) {
@@ -588,14 +514,30 @@ mod tests {
     #[test]
     fn left_click_breaks_the_targeted_block_and_remeshes() {
         let (mut app, left, _) = app();
-        assert!(app.world().get::<Mesh3d>(left).is_none());
+        let before = mesh(&app, left);
         click(&mut app, MouseButton::Left);
         assert_eq!(voxel(&app, left, 14, 1, 5), Voxel::Air);
         assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Stone);
-        assert!(app.world().get::<Mesh3d>(left).is_some());
+        assert_ne!(mesh(&app, left), before);
         // Again: the next block along is now the target.
         click(&mut app, MouseButton::Left);
         assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Air);
+    }
+
+    #[test]
+    fn holding_the_button_breaks_only_one_block() {
+        let (mut app, left, _) = app();
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.press(MouseButton::Left);
+        for _ in 0..3 {
+            app.update();
+            // The next frame of holding: still pressed, no longer new.
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear();
+        }
+        assert_eq!(voxel(&app, left, 14, 1, 5), Voxel::Air);
+        assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Stone);
     }
 
     #[test]
@@ -612,21 +554,45 @@ mod tests {
         assert_eq!(voxel(&app, left, 11, 1, 5), Voxel::Air);
     }
 
+    /// The left chunk's block at x = 0 faces -X, where there's no chunk.
+    #[test]
+    fn right_click_never_places_outside_the_world() {
+        let (mut app, left, _) = app();
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(0, 1, 8, Voxel::Stone);
+        look_at(&mut app, Vec3::new(-2.5, 1.5, 8.5), Vec3::X);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 0, 1, 8), Voxel::Stone);
+        assert_eq!(voxel(&app, left, 1, 1, 8), Voxel::Air);
+    }
+
     #[test]
     fn breaking_on_a_chunk_border_remeshes_the_neighbour() {
         let (mut app, left, right) = app();
+        // The right chunk's lone block has its -X face against the left
+        // chunk's wall, so it starts with 5 faces.
+        assert_eq!(vertices(&app, right), 5 * 4);
         click(&mut app, MouseButton::Left);
-        assert!(app.world().get::<Mesh3d>(right).is_none());
-        // Breaking (15, 1, 5) uncovers the -X face of the right chunk's
-        // block at (0, 1, 5).
+        // Breaking (15, 1, 5) uncovers that face.
         click(&mut app, MouseButton::Left);
         assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Air);
-        let mesh = app
-            .world()
-            .get::<Mesh3d>(right)
-            .expect("neighbour remeshed");
-        let meshes = app.world().resource::<Assets<Mesh>>();
-        assert_eq!(meshes.get(&mesh.0).unwrap().count_vertices(), 6 * 4);
+        assert_eq!(vertices(&app, right), 6 * 4);
+    }
+
+    /// The edit is at the right chunk's x = 0, so the chunk to its -X
+    /// remeshes, and with nothing left in it the right chunk has no mesh.
+    #[test]
+    fn breaking_the_last_block_of_a_chunk_removes_its_mesh() {
+        let (mut app, left, right) = app();
+        let before = vertices(&app, left);
+        look_at(&mut app, Vec3::new(19.5, 1.5, 5.5), Vec3::NEG_X);
+        click(&mut app, MouseButton::Left);
+        assert_eq!(voxel(&app, right, 0, 1, 5), Voxel::Air);
+        assert_eq!(mesh(&app, right), None);
+        // The wall's block at (15, 1, 5) shows its +X face now.
+        assert_eq!(vertices(&app, left), before + 4);
     }
 
     #[test]
@@ -650,5 +616,68 @@ mod tests {
             press_key(&mut app, key);
             assert_eq!(app.world().resource::<ActiveBlock>().0, index);
         }
+    }
+
+    fn world_voxel(app: &mut App, pos: IVec3) -> Voxel {
+        let (coord, local) = ChunkCoord::split(pos);
+        let mut chunks = app.world_mut().query::<(&ChunkCoord, &Chunk)>();
+        chunks
+            .iter(app.world())
+            .find(|(c, _)| **c == coord)
+            .map_or(Voxel::Air, |(_, chunk)| chunk.at(local))
+    }
+
+    /// Through the real game and input pipeline: the click that locks the
+    /// cursor edits nothing, the next one breaks the block under the
+    /// crosshair, and a right click puts the active block (stone) back.
+    #[test]
+    fn locking_click_edits_nothing_then_clicks_break_and_place() {
+        let script = Script::parse(
+            "wait 2\n\
+             hold MouseLeft 1  # lock the cursor\n\
+             wait 1\n\
+             hold MouseLeft 1  # break\n\
+             wait 1\n\
+             hold MouseRight 1  # place\n\
+             wait 2\n",
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            default_plugins(false).disable::<LogPlugin>(),
+            crate::GamePlugin,
+            HeadlessPlugin {
+                script,
+                rendering: false,
+            },
+        ));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let (x, z) = (40, 40);
+        let height = Terrain::new(default()).height(x, z);
+        let top = IVec3::new(x, height - 1, z);
+        let below = top - IVec3::Y;
+        assert_eq!(world_voxel(&mut app, top), Voxel::Grass);
+        let below_before = world_voxel(&mut app, below);
+        assert!(below_before.is_solid());
+        // Three blocks above the top, looking straight down.
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<FlyCamera>>();
+        *camera.single_mut(app.world_mut()).unwrap() =
+            Transform::from_xyz(x as f32 + 0.5, height as f32 + 3.5, z as f32 + 0.5)
+                .looking_to(Vec3::NEG_Y, Vec3::Z);
+
+        let mut frames = 1;
+        while app.should_exit().is_none() {
+            app.update();
+            frames += 1;
+            assert!(frames < 100, "script never finished");
+        }
+        // Grass broken once, not twice, and stone placed in its place.
+        assert_eq!(world_voxel(&mut app, top), Voxel::Stone);
+        assert_eq!(world_voxel(&mut app, below), below_before);
     }
 }
