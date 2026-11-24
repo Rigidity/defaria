@@ -69,9 +69,9 @@ can be stone in one texture and copper in another.
 `scripts/gray-layer.py` turns any 16×16 image into one.
 
 Images load through the asset server, so in dev builds editing one updates
-the game while it runs. An image that's missing, the wrong size or uses
-other colors is logged, and the tiles that use it show a magenta and black
-checkerboard until it's fixed.
+the game while it runs. An image that's missing, won't load, is the wrong
+size or uses other colors is logged, and the tiles that use it show a
+magenta and black checkerboard until it's fixed.
 
 ## Materials
 

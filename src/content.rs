@@ -144,6 +144,8 @@ pub struct Model {
 pub struct ModelFace {
     pub slot: String,
     pub cull: Option<Direction>,
+    /// Worked out from the first three vertices.
+    pub normal: Vec3,
     /// Three or four, counter-clockwise seen from the front.
     pub vertices: Vec<Vertex>,
 }
