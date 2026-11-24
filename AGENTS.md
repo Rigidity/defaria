@@ -141,9 +141,11 @@ follow it directly.
 
 ## Art and Retro Diffusion
 
-Block textures are 16×16 grayscale layer images in `assets/textures/layers/`,
-colored by per-layer palettes and stacked at runtime (`src/block_texture.rs`).
-Layers use only the 8 gray levels that `cargo test` checks for.
+Block textures are 16×16 grayscale layer images in a mod's `images/` folder
+(the base game's are in `assets/mods/defaria/images/`), colored by material
+palettes and stacked at runtime as the mod's texture files say
+(`src/block_texture.rs`). Layers use only the 8 gray levels that `cargo test`
+checks for.
 
 The Retro Diffusion MCP runs on a monthly subscription with a limited
 allowance of plan usage. Read
@@ -152,7 +154,19 @@ In short: generate only when the user asks for that specific art, check
 plan usage first, one call at a time and never in parallel, always the
 house style for the material (see the skill) at 16×16, converted with
 `scripts/gray-layer.py`, and record every result in
-`assets/textures/layers/SOURCES.md`.
+`assets/mods/defaria/images/SOURCES.md`.
+
+## Content and mods
+
+Blocks, items, models, textures and materials are data, not code: JSON5
+files in mod folders under `assets/mods/`, loaded by `src/content.rs` into
+the `Content` resource. The base game is the `defaria` mod. To add or
+change a block, edit or add files there rather than Rust. The formats are
+documented in `docs/modding.md`; keep that file, the serde types in
+`src/content/schema.rs` and the base mod in step. Chunks store
+`BlockState`s, which index `Content::states`; look blocks up by id
+(`content.default_state("defaria:stone")`), and in tests use
+`content::base()` and `content::block("stone")`.
 
 ## Code layout
 
@@ -164,8 +178,11 @@ house style for the material (see the skill) at 16×16, converted with
 - `src/devtools.rs`: CLI flags, windowed screenshot mode and BRP.
 - `src/headless.rs`: headless mode and the scenario script runner.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
+- `src/content.rs` (and `src/content/`): mod loading and the `Content`
+  registry.
 - `assets/`: loaded through `AssetServer`. They hot reload in dev builds.
-  Block texture layers are in `assets/textures/layers/`.
+  Mods are in `assets/mods/`; their JSON5 files load once at startup.
+- `docs/modding.md`: the mod file formats.
 - `scripts/`: helper scripts, such as `pr-screenshots.sh` for PR
   descriptions and `gray-layer.py` for turning images into texture layers.
 

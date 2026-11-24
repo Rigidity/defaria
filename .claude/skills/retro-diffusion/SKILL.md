@@ -1,6 +1,6 @@
 ---
 name: retro-diffusion
-description: Rules for making defaria art with the Retro Diffusion MCP (mcp__claude_ai_Retro_Diffusion__*). Read before ANY Retro Diffusion call, metered or free, and whenever the user asks for new or replacement block textures, layer images or other pixel art in this repo. Covers when generating is allowed at all, checking usage first, the house styles (one per kind of material), the 16×16 size, converting results to the 8 gray levels locally (no palette is sent), one job at a time, and how results land in assets/textures/layers/.
+description: Rules for making defaria art with the Retro Diffusion MCP (mcp__claude_ai_Retro_Diffusion__*). Read before ANY Retro Diffusion call, metered or free, and whenever the user asks for new or replacement block textures, layer images or other pixel art in this repo. Covers when generating is allowed at all, checking usage first, the house styles (one per kind of material), the 16×16 size, converting results to the 8 gray levels locally (no palette is sent), one job at a time, and how results land in assets/mods/defaria/images/.
 ---
 
 # Retro Diffusion rules
@@ -20,14 +20,16 @@ directly.
 Block textures are stacks of **grayscale layer images**, colored at runtime
 (see `src/block_texture.rs` and `src/block_texture/layer.rs`):
 
-- Each layer is a 16×16 PNG in `assets/textures/layers/`.
+- Each layer is a 16×16 PNG in a mod's `images/` folder; the base game's
+  are in `assets/mods/defaria/images/`.
 - It may use only the 8 gray levels `0, 36, 73, 109, 146, 182, 219, 255`
   (`gray()` in `layer.rs`), plus fully or partly transparent pixels.
 - Each gray level is an index into a palette, darkest first. The game gives
   every level its own color, then stacks the colored layers into a tile.
-- So a layer is about **shape and shading only**. Color, and which layers
-  stack into which tile, live in code (`Tile::layers`, and later in json5
-  files). Never ask Retro Diffusion for color.
+- So a layer is about **shape and shading only**. Color lives in material
+  files (`materials/*.json5`) and which layers stack into which tile in
+  texture files (`textures/*.json5`); see `docs/modding.md`. Never ask
+  Retro Diffusion for color.
 
 `cargo test` checks every layer on disk (`layers_on_disk_build`): wrong size,
 a color, or a gray outside the 8 levels fails the build with the pixel's
@@ -123,7 +125,7 @@ position.
    generations.** A layer that covers only part of a tile (like
    `grass_side.png`, grass hanging over dirt) is cut from a full layer by
    hand with transparency. Another color of the same material is a new
-   palette in code, not a new image.
+   material (a palette in `materials/`), not a new image.
 
 ## After a generation
 
@@ -146,7 +148,7 @@ position.
    placed by hand, but use them sparingly: anything high-contrast repeats
    on every block. Every layer goes through the
    same stretch, so one palette looks the same on any layer. If the result
-   looks too grainy, lower the contrast of its palette in code (fewer
+   looks too grainy, lower the contrast of its material's palette (fewer
    steps between the darkest and lightest stops) rather than the layer:
    the layer keeps all its detail and the palette sets how strong it
    looks. That's how the stone is done. `--soften` and a narrower range
@@ -157,10 +159,10 @@ position.
    don't spend plan usage on `seam_tiling` unless the user asks. A bad
    seam or a lopsided light direction is a reason to report back, not to
    regenerate unasked.
-5. Only when the user is happy: save it as `assets/textures/layers/<name>.png`
+5. Only when the user is happy: save it as `assets/mods/defaria/images/<name>.png`
    (lowercase snake case). Never overwrite an existing layer unless the user
    said to replace it.
-6. Record it in `assets/textures/layers/SOURCES.md`: file, date, style,
+6. Record it in `assets/mods/defaria/images/SOURCES.md`: file, date, style,
    prompt, the response's `request_id` (the API doesn't return a seed) and
    the plan usage left afterwards (`billing.plan_usage_left_pct` in the
    response; `get_balance` rounds it). Reuse a recorded prompt shape when

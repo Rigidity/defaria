@@ -1,0 +1,4 @@
+// Warm grays with more contrast than stone, so the pebbles read.
+{
+  palette: ["#4a4644", "#6e6a66", "#928c86", "#b4aea6"],
+}

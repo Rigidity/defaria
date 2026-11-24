@@ -2,13 +2,16 @@
 //! sky color. The terrain module decides what goes in the chunks, and
 //! `voxel_material` draws them.
 //!
-//! Each face's vertices carry a UV within its tile (UV_0) and the tile's
-//! layer in the block texture array (UV_1.x); see `block_texture` for the
-//! tiles themselves.
+//! A chunk holds a [`BlockState`] per voxel; what each state looks like
+//! comes from the mods (see `content`). Each face's vertices carry a UV
+//! within its tile (UV_0) and the tile's layer in the block texture array
+//! (UV_1.x).
 //!
-//! Meshing emits only the faces that touch air, including across chunk
-//! borders (the caller says what lies outside the chunk). Greedy meshing is
-//! the next step if vertex counts become a problem.
+//! Meshing copies each block state's baked model faces into the chunk mesh,
+//! leaving out the faces covered by the neighbour on their `cull` side,
+//! including across chunk borders (the caller says what lies outside the
+//! chunk). Greedy meshing is the next step if vertex counts become a
+//! problem.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -16,7 +19,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::block_texture::Tile;
+use crate::content::{BlockState, Content};
 
 /// Voxels along each axis of a chunk.
 pub const CHUNK_SIZE: usize = 16;
@@ -30,92 +33,39 @@ impl Plugin for VoxelPlugin {
     }
 }
 
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Voxel {
-    #[default]
-    Air,
-    Stone,
-    Dirt,
-    Grass,
-    Sand,
-    Gravel,
-    /// A tree trunk standing upright: bark on the sides, rings on the ends.
-    Log,
-    Planks,
-}
-
-impl Voxel {
-    pub fn is_solid(self) -> bool {
-        self != Voxel::Air
-    }
-
-    /// The tile drawn on the face pointing along `normal`. `None` for
-    /// air, which has no faces.
-    pub fn tile(self, normal: Vec3) -> Option<Tile> {
-        Some(match self {
-            Voxel::Air => return None,
-            Voxel::Stone => Tile::Stone,
-            Voxel::Dirt => Tile::Dirt,
-            Voxel::Grass if normal == Vec3::Y => Tile::GrassTop,
-            Voxel::Grass if normal == Vec3::NEG_Y => Tile::Dirt,
-            Voxel::Grass => Tile::GrassSide,
-            Voxel::Sand => Tile::Sand,
-            Voxel::Gravel => Tile::Gravel,
-            Voxel::Log if normal.y != 0.0 => Tile::LogTop,
-            Voxel::Log => Tile::LogSide,
-            Voxel::Planks => Tile::Planks,
-        })
-    }
-}
-
 /// A cube of voxels. Voxel `(x, y, z)` occupies the unit cube from
 /// `(x, y, z)` to `(x + 1, y + 1, z + 1)` in the chunk's local space.
 #[derive(Component, Reflect, Debug, Clone)]
 #[reflect(Component)]
 pub struct Chunk {
-    voxels: Vec<Voxel>,
+    voxels: Vec<BlockState>,
 }
 
 impl Default for Chunk {
     fn default() -> Self {
         Self {
-            voxels: vec![Voxel::Air; CHUNK_VOLUME],
+            voxels: vec![BlockState::AIR; CHUNK_VOLUME],
         }
     }
 }
 
 impl Chunk {
-    /// A completely full chunk: stone, topped with dirt, topped with grass.
-    #[cfg(test)]
-    pub fn filled() -> Self {
-        let mut chunk = Self::default();
-        for (x, y, z) in Self::positions() {
-            let voxel = match y {
-                y if y == CHUNK_SIZE - 1 => Voxel::Grass,
-                y if y >= CHUNK_SIZE - 4 => Voxel::Dirt,
-                _ => Voxel::Stone,
-            };
-            chunk.set(x, y, z, voxel);
-        }
-        chunk
-    }
-
-    pub fn get(&self, x: usize, y: usize, z: usize) -> Voxel {
+    pub fn get(&self, x: usize, y: usize, z: usize) -> BlockState {
         self.voxels[Self::index(x, y, z)]
     }
 
-    pub fn set(&mut self, x: usize, y: usize, z: usize, voxel: Voxel) {
-        self.voxels[Self::index(x, y, z)] = voxel;
+    pub fn set(&mut self, x: usize, y: usize, z: usize, state: BlockState) {
+        self.voxels[Self::index(x, y, z)] = state;
     }
 
     /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
-    pub fn at(&self, pos: IVec3) -> Voxel {
+    pub fn at(&self, pos: IVec3) -> BlockState {
         self.get(pos.x as usize, pos.y as usize, pos.z as usize)
     }
 
     /// [`Chunk::set`] for a chunk-local position given as an `IVec3`.
-    pub fn set_at(&mut self, pos: IVec3, voxel: Voxel) {
-        self.set(pos.x as usize, pos.y as usize, pos.z as usize, voxel);
+    pub fn set_at(&mut self, pos: IVec3, state: BlockState) {
+        self.set(pos.x as usize, pos.y as usize, pos.z as usize, state);
     }
 
     fn index(x: usize, y: usize, z: usize) -> usize {
@@ -134,7 +84,7 @@ impl Chunk {
 
     /// The voxel at a chunk-local position that may lie outside the chunk:
     /// inside, it comes from the chunk; outside, from `outside`.
-    fn get_or(&self, pos: IVec3, outside: &impl Fn(IVec3) -> Voxel) -> Voxel {
+    fn get_or(&self, pos: IVec3, outside: &impl Fn(IVec3) -> BlockState) -> BlockState {
         let size = CHUNK_SIZE as i32;
         if pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(size)).all() {
             self.at(pos)
@@ -143,11 +93,12 @@ impl Chunk {
         }
     }
 
-    /// Builds a mesh of every solid voxel's faces that touch a non-solid
-    /// voxel, textured from the block texture. `outside` gives the
-    /// voxel at a chunk-local position just beyond the chunk's edge, so faces
-    /// buried against a neighbouring chunk are skipped too.
-    pub fn mesh(&self, outside: impl Fn(IVec3) -> Voxel) -> Mesh {
+    /// Builds a mesh of every voxel's model faces, leaving out each face
+    /// whose neighbour on its `cull` side covers the side facing it.
+    /// `outside` gives the voxel at a chunk-local position just beyond the
+    /// chunk's edge, so faces buried against a neighbouring chunk are
+    /// skipped too.
+    pub fn mesh(&self, content: &Content, outside: impl Fn(IVec3) -> BlockState) -> Mesh {
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
@@ -156,28 +107,32 @@ impl Chunk {
 
         for (x, y, z) in Self::positions() {
             let voxel = self.get(x, y, z);
-            if !voxel.is_solid() {
+            if voxel.is_air() {
                 continue;
             }
             let origin = Vec3::new(x as f32, y as f32, z as f32);
             let pos = IVec3::new(x as i32, y as i32, z as i32);
-            for face in &FACES {
-                if self
-                    .get_or(pos + face.normal.as_ivec3(), &outside)
-                    .is_solid()
-                {
-                    continue;
+            for face in &content.state(voxel).faces {
+                if let Some(side) = face.cull {
+                    let neighbour = self.get_or(pos + side.normal(), &outside);
+                    if content.state(neighbour).occludes(side.opposite()) {
+                        continue;
+                    }
                 }
-                let Some(tile) = voxel.tile(face.normal) else {
-                    continue;
-                };
                 let base = positions.len() as u32;
-                positions.extend(face.corners.map(|corner| (origin + corner).to_array()));
-                normals.extend([face.normal.to_array(); 4]);
-                uvs.extend(FACE_UVS.map(|uv| uv.to_array()));
-                layers.extend([[tile.layer() as f32, 0.0]; 4]);
-                // Two counter-clockwise triangles per quad.
-                indices.extend([0, 1, 2, 0, 2, 3].map(|i| base + i));
+                for vertex in &face.vertices {
+                    positions.push((origin + vertex.pos).to_array());
+                    normals.push(face.normal.to_array());
+                    uvs.push(vertex.uv.to_array());
+                    layers.push([face.layer as f32, 0.0]);
+                }
+                // A triangle, or a quad as two counter-clockwise triangles.
+                let corners: &[u32] = if face.vertices.len() == 3 {
+                    &[0, 1, 2]
+                } else {
+                    &[0, 1, 2, 0, 2, 3]
+                };
+                indices.extend(corners.iter().map(|i| base + i));
             }
         }
 
@@ -194,86 +149,6 @@ impl Chunk {
     }
 }
 
-struct Face {
-    normal: Vec3,
-    /// Corners in counter-clockwise order when viewed from outside the cube,
-    /// starting at the bottom left: bottom left, bottom right, top right, top
-    /// left. On side faces "up" is +Y, so textures stand upright.
-    corners: [Vec3; 4],
-}
-
-/// Tile UVs for each face's corners, in [`Face::corners`] order. `v` points
-/// down the image, so the image's top row is at the face's top edge.
-const FACE_UVS: [Vec2; 4] = [
-    Vec2::new(0.0, 1.0),
-    Vec2::new(1.0, 1.0),
-    Vec2::new(1.0, 0.0),
-    Vec2::new(0.0, 0.0),
-];
-
-const FACES: [Face; 6] = [
-    // +X
-    Face {
-        normal: Vec3::X,
-        corners: [
-            Vec3::new(1.0, 0.0, 1.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(1.0, 1.0, 1.0),
-        ],
-    },
-    // -X
-    Face {
-        normal: Vec3::NEG_X,
-        corners: [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-            Vec3::new(0.0, 1.0, 1.0),
-            Vec3::new(0.0, 1.0, 0.0),
-        ],
-    },
-    // +Y
-    Face {
-        normal: Vec3::Y,
-        corners: [
-            Vec3::new(0.0, 1.0, 1.0),
-            Vec3::new(1.0, 1.0, 1.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-        ],
-    },
-    // -Y
-    Face {
-        normal: Vec3::NEG_Y,
-        corners: [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 1.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        ],
-    },
-    // +Z
-    Face {
-        normal: Vec3::Z,
-        corners: [
-            Vec3::new(0.0, 0.0, 1.0),
-            Vec3::new(1.0, 0.0, 1.0),
-            Vec3::new(1.0, 1.0, 1.0),
-            Vec3::new(0.0, 1.0, 1.0),
-        ],
-    },
-    // -Z
-    Face {
-        normal: Vec3::NEG_Z,
-        corners: [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-        ],
-    },
-];
-
 fn set_sky_color(mut commands: Commands) {
     commands.insert_resource(ClearColor(Color::srgb(0.53, 0.75, 0.95)));
 }
@@ -281,18 +156,29 @@ fn set_sky_color(mut commands: Commands) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::{Direction, base, block};
     use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
 
-    #[test]
-    fn filled_chunk_is_layered() {
-        let chunk = Chunk::filled();
-        assert_eq!(chunk.get(3, CHUNK_SIZE - 1, 7), Voxel::Grass);
-        assert_eq!(chunk.get(3, CHUNK_SIZE - 2, 7), Voxel::Dirt);
-        assert_eq!(chunk.get(3, 0, 7), Voxel::Stone);
+    /// A completely full chunk: stone, topped with dirt, topped with grass.
+    fn filled() -> Chunk {
+        let mut chunk = Chunk::default();
+        for (x, y, z) in Chunk::positions() {
+            let state = match y {
+                y if y == CHUNK_SIZE - 1 => block("grass"),
+                y if y >= CHUNK_SIZE - 4 => block("dirt"),
+                _ => block("stone"),
+            };
+            chunk.set(x, y, z, state);
+        }
+        chunk
     }
 
-    fn air(_: IVec3) -> Voxel {
-        Voxel::Air
+    fn air(_: IVec3) -> BlockState {
+        BlockState::AIR
+    }
+
+    fn mesh(chunk: &Chunk, outside: impl Fn(IVec3) -> BlockState) -> Mesh {
+        chunk.mesh(base(), outside)
     }
 
     fn faces(mesh: &Mesh) -> usize {
@@ -303,37 +189,43 @@ mod tests {
     #[test]
     fn lone_voxel_gets_six_faces() {
         let mut chunk = Chunk::default();
-        chunk.set(5, 5, 5, Voxel::Dirt);
-        assert_eq!(faces(&chunk.mesh(air)), 6);
+        chunk.set(5, 5, 5, block("dirt"));
+        assert_eq!(faces(&mesh(&chunk, air)), 6);
     }
 
     #[test]
     fn faces_between_solid_voxels_are_culled() {
         let mut chunk = Chunk::default();
-        chunk.set(5, 5, 5, Voxel::Dirt);
-        chunk.set(6, 5, 5, Voxel::Stone);
-        assert_eq!(faces(&chunk.mesh(air)), 10);
+        chunk.set(5, 5, 5, block("dirt"));
+        chunk.set(6, 5, 5, block("stone"));
+        assert_eq!(faces(&mesh(&chunk, air)), 10);
     }
 
     #[test]
     fn filled_chunk_shows_only_its_surface() {
         let side = CHUNK_SIZE * CHUNK_SIZE;
-        assert_eq!(faces(&Chunk::filled().mesh(air)), 6 * side);
+        assert_eq!(faces(&mesh(&filled(), air)), 6 * side);
         // Solid all around: nothing is visible.
-        assert_eq!(faces(&Chunk::filled().mesh(|_| Voxel::Stone)), 0);
+        assert_eq!(faces(&mesh(&filled(), |_| block("stone"))), 0);
         // Solid below only (like a chunk stacked on another): the bottom goes.
-        let below = |pos: IVec3| if pos.y < 0 { Voxel::Stone } else { Voxel::Air };
-        assert_eq!(faces(&Chunk::filled().mesh(below)), 5 * side);
+        let below = |pos: IVec3| {
+            if pos.y < 0 {
+                block("stone")
+            } else {
+                BlockState::AIR
+            }
+        };
+        assert_eq!(faces(&mesh(&filled(), below)), 5 * side);
     }
 
     #[test]
     fn outside_is_queried_in_chunk_local_coordinates() {
         let mut chunk = Chunk::default();
-        chunk.set(0, 0, 0, Voxel::Stone);
+        chunk.set(0, 0, 0, block("stone"));
         let queried = std::cell::RefCell::new(Vec::new());
-        chunk.mesh(|pos| {
+        mesh(&chunk, |pos| {
             queried.borrow_mut().push(pos);
-            Voxel::Air
+            BlockState::AIR
         });
         let mut queried = queried.into_inner();
         queried.sort_by_key(|p| p.to_array());
@@ -342,82 +234,63 @@ mod tests {
 
     #[test]
     fn empty_chunk_has_empty_mesh() {
-        let mesh = Chunk::default().mesh(air);
+        let mesh = mesh(&Chunk::default(), air);
         assert_eq!(mesh.count_vertices(), 0);
         assert_eq!(mesh.indices().unwrap().len(), 0);
+    }
+
+    fn vec3s(mesh: &Mesh, attribute: MeshVertexAttribute) -> Vec<Vec3> {
+        let Some(VertexAttributeValues::Float32x3(values)) = mesh.attribute(attribute) else {
+            panic!("missing {attribute:?}");
+        };
+        values.iter().map(|&v| Vec3::from(v)).collect()
+    }
+
+    fn vec2s(mesh: &Mesh, attribute: MeshVertexAttribute) -> Vec<Vec2> {
+        let Some(VertexAttributeValues::Float32x2(values)) = mesh.attribute(attribute) else {
+            panic!("missing {attribute:?}");
+        };
+        values.iter().map(|&v| Vec2::from(v)).collect()
     }
 
     #[test]
     fn single_voxel_spans_its_unit_cube() {
         let mut chunk = Chunk::default();
-        chunk.set(2, 3, 4, Voxel::Stone);
-        let mesh = chunk.mesh(air);
-        let Some(VertexAttributeValues::Float32x3(positions)) =
-            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-        else {
-            panic!("missing positions");
-        };
+        chunk.set(2, 3, 4, block("stone"));
+        let positions = vec3s(&mesh(&chunk, air), Mesh::ATTRIBUTE_POSITION);
         let (min, max) = positions
             .iter()
-            .map(|&p| Vec3::from(p))
-            .fold((Vec3::MAX, Vec3::MIN), |(min, max), p| {
+            .fold((Vec3::MAX, Vec3::MIN), |(min, max), &p| {
                 (min.min(p), max.max(p))
             });
         assert_eq!(min, Vec3::new(2.0, 3.0, 4.0));
         assert_eq!(max, Vec3::new(3.0, 4.0, 5.0));
     }
 
-    fn uvs(mesh: &Mesh, attribute: MeshVertexAttribute) -> Vec<Vec2> {
-        let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(attribute) else {
-            panic!("missing UVs");
-        };
-        uvs.iter().map(|&uv| Vec2::from(uv)).collect()
-    }
-
-    /// Corner order is bottom left, bottom right, top right, top left, as
-    /// seen from outside: the texture is neither mirrored nor rotated, and
-    /// side faces have their top edge at +Y.
+    /// The cube model's faces: one per side, each culled against its own
+    /// side, with corners starting at the bottom left of the texture and
+    /// running counter-clockwise from outside, so the texture is neither
+    /// mirrored nor rotated and side faces have their top edge at +Y.
     #[test]
-    fn face_corners_start_bottom_left_and_go_round() {
-        for face in &FACES {
-            let [bl, br, tr, tl] = face.corners;
+    fn cube_faces_start_bottom_left_and_go_round() {
+        let stone = base().state(block("stone"));
+        let mut sides: Vec<Direction> = stone.faces.iter().filter_map(|f| f.cull).collect();
+        sides.sort_by_key(|d| *d as u8);
+        assert_eq!(sides, Direction::ALL);
+        for face in &stone.faces {
+            let side = face.cull.unwrap();
+            assert_eq!(face.normal, side.normal().as_vec3());
+            assert!(stone.occludes(side));
+            let [bl, br, tr, tl] = [0, 1, 2, 3].map(|i| face.vertices[i].pos);
             let (right, up) = (br - bl, tl - bl);
             assert_eq!(right.cross(up), face.normal);
             assert_eq!(tr, bl + right + up);
             if face.normal.y == 0.0 {
-                assert_eq!(up, Vec3::Y, "side face {:?} isn't upright", face.normal);
+                assert_eq!(up, Vec3::Y, "side face {side:?} isn't upright");
             }
-        }
-    }
-
-    #[test]
-    fn grass_has_a_top_sides_and_a_dirt_bottom() {
-        assert_eq!(Voxel::Grass.tile(Vec3::Y), Some(Tile::GrassTop));
-        assert_eq!(Voxel::Grass.tile(Vec3::NEG_Y), Some(Tile::Dirt));
-        for side in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z] {
-            assert_eq!(Voxel::Grass.tile(side), Some(Tile::GrassSide));
-        }
-        assert_eq!(Voxel::Stone.tile(Vec3::Y), Some(Tile::Stone));
-        assert_eq!(Voxel::Log.tile(Vec3::Y), Some(Tile::LogTop));
-        assert_eq!(Voxel::Log.tile(Vec3::NEG_Y), Some(Tile::LogTop));
-        assert_eq!(Voxel::Log.tile(Vec3::X), Some(Tile::LogSide));
-        assert_eq!(Voxel::Air.tile(Vec3::Y), None);
-    }
-
-    #[test]
-    fn each_face_samples_its_own_tile_layer() {
-        let mut chunk = Chunk::default();
-        chunk.set(1, 1, 1, Voxel::Grass);
-        let mesh = chunk.mesh(air);
-        let uv = uvs(&mesh, Mesh::ATTRIBUTE_UV_0);
-        let layer = uvs(&mesh, Mesh::ATTRIBUTE_UV_1);
-        // The mesher emits faces in FACES order.
-        for (i, face) in FACES.iter().enumerate() {
-            let tile = Voxel::Grass.tile(face.normal).unwrap().layer() as f32;
-            assert_eq!(uv[i * 4..i * 4 + 4], FACE_UVS);
-            for corner in &layer[i * 4..i * 4 + 4] {
-                assert_eq!(*corner, Vec2::new(tile, 0.0));
-            }
+            let uvs = face.vertices.iter().map(|v| v.uv).collect::<Vec<_>>();
+            // `v` points down the image, so its top row is the face's top.
+            assert_eq!(uvs, [Vec2::Y, Vec2::ONE, Vec2::X, Vec2::ZERO]);
         }
     }
 
@@ -425,12 +298,86 @@ mod tests {
     /// backface culling hides the outside of the cube.
     #[test]
     fn faces_wind_counter_clockwise_around_their_normal() {
-        for face in &FACES {
-            let [a, b, c, d] = face.corners;
-            for (p, q, r) in [(a, b, c), (a, c, d)] {
-                let winding = (q - p).cross(r - p).normalize();
-                assert_eq!(winding, face.normal);
+        for name in ["stone", "log"] {
+            for state in [block(name), BlockState(block(name).0 + 1)] {
+                for face in &base().state(state).faces {
+                    let [a, b, c, d] = [0, 1, 2, 3].map(|i| face.vertices[i].pos);
+                    for (p, q, r) in [(a, b, c), (a, c, d)] {
+                        let winding = (q - p).cross(r - p).normalize();
+                        assert_eq!(winding, face.normal);
+                    }
+                }
             }
+        }
+    }
+
+    /// The tile on each side, by the side's normal.
+    fn tiles(state: BlockState) -> Vec<(IVec3, String)> {
+        let content = base();
+        let mut tiles: Vec<_> = content
+            .state(state)
+            .faces
+            .iter()
+            .map(|face| {
+                let id = &content.textures[face.layer as usize].id;
+                (
+                    face.normal.as_ivec3(),
+                    id.trim_start_matches("defaria:").to_owned(),
+                )
+            })
+            .collect();
+        tiles.sort_by_key(|(normal, _)| normal.to_array());
+        tiles
+    }
+
+    fn tile_on(state: BlockState, normal: IVec3) -> String {
+        tiles(state)
+            .into_iter()
+            .find(|(n, _)| *n == normal)
+            .unwrap()
+            .1
+    }
+
+    #[test]
+    fn grass_has_a_top_sides_and_a_dirt_bottom() {
+        let grass = block("grass");
+        assert_eq!(tile_on(grass, IVec3::Y), "grass_top");
+        assert_eq!(tile_on(grass, IVec3::NEG_Y), "dirt");
+        for side in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+            assert_eq!(tile_on(grass, side), "grass_side");
+        }
+        assert_eq!(tile_on(block("stone"), IVec3::Y), "stone");
+    }
+
+    /// A log has rings on the ends of its axis and bark around it.
+    #[test]
+    fn logs_show_their_rings_along_their_axis() {
+        let log = base().block("defaria:log").unwrap();
+        for (axis, normal) in [("y", IVec3::Y), ("x", IVec3::X), ("z", IVec3::Z)] {
+            let state = log.state(&[("axis", axis)]).unwrap();
+            for (side, tile) in tiles(state) {
+                let expected = if side.abs() == normal {
+                    "log_top"
+                } else {
+                    "log_side"
+                };
+                assert_eq!(tile, expected, "axis {axis}, side {side}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_face_samples_its_own_tile_layer() {
+        let mut chunk = Chunk::default();
+        chunk.set(1, 1, 1, block("grass"));
+        let mesh = mesh(&chunk, air);
+        let normals = vec3s(&mesh, Mesh::ATTRIBUTE_NORMAL);
+        let layers = vec2s(&mesh, Mesh::ATTRIBUTE_UV_1);
+        let content = base();
+        for (normal, layer) in normals.iter().zip(&layers) {
+            let tile = tile_on(block("grass"), normal.as_ivec3());
+            let expected = content.texture(&format!("defaria:{tile}")).unwrap();
+            assert_eq!(*layer, Vec2::new(expected as f32, 0.0));
         }
     }
 }

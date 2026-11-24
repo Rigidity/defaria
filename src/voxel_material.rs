@@ -5,10 +5,11 @@
 //! by a fixed amount per face direction so block edges stay readable. The
 //! shader is `assets/shaders/voxel.wesl` and hot reloads in dev builds.
 //!
-//! The material doesn't sample the layer PNGs directly. Once they've all
-//! loaded, and again whenever one hot reloads, [`block_texture::build`]
-//! colorizes and stacks them into a mipmapped array texture, one layer per
-//! tile, and the material samples that.
+//! The material doesn't sample the layer PNGs directly. Once every image
+//! the mods' textures use has loaded, and again whenever one hot reloads,
+//! [`block_texture::build`] colorizes and stacks them into a mipmapped array
+//! texture, one layer per [`Content`] texture, and the material samples
+//! that.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -19,7 +20,7 @@ use bevy::{
     shader::ShaderRef,
 };
 
-use crate::block_texture;
+use crate::{block_texture, content::Content};
 
 /// The chunk shader, relative to `assets/`.
 pub const SHADER_PATH: &str = "shaders/voxel.wesl";
@@ -29,13 +30,14 @@ pub struct VoxelMaterialPlugin;
 impl Plugin for VoxelMaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
+            .init_resource::<Content>()
             .init_resource::<BlockMaterial>()
             .add_systems(Update, build_block_texture);
     }
 }
 
 /// An unlit material that samples the block texture: an array with one
-/// layer per [`block_texture::Tile`]. Bindings must match `assets/shaders/voxel.wesl`.
+/// layer per [`Content`] texture. Bindings must match `assets/shaders/voxel.wesl`.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct VoxelMaterial {
     #[texture(0, dimension = "2d_array")]
@@ -65,8 +67,9 @@ pub struct BlockMaterial {
 
 impl FromWorld for BlockMaterial {
     fn from_world(world: &mut World) -> Self {
+        let paths = world.resource::<Content>().image_paths();
         let server = world.resource::<AssetServer>();
-        let layers = block_texture::layer_paths()
+        let layers = paths
             .into_iter()
             .map(|path| {
                 // The GPU only needs the built texture, so keep the layers
@@ -110,6 +113,7 @@ impl FromWorld for BlockMaterial {
 fn build_block_texture(
     mut events: MessageReader<AssetEvent<Image>>,
     block: Res<BlockMaterial>,
+    content: Res<Content>,
     // Layers an `Added` or `Modified` event has arrived for.
     mut seen: Local<HashSet<AssetId<Image>>>,
     mut images: ResMut<Assets<Image>>,
@@ -134,7 +138,9 @@ fn build_block_texture(
     if !changed || !ready {
         return;
     }
-    let built = block_texture::build(|path| images.get(block.layers.get(path)?));
+    let built = block_texture::build(&content.textures, |path| {
+        images.get(block.layers.get(path)?)
+    });
     let texture = match built {
         Ok(texture) => texture,
         Err(error) => {
@@ -153,8 +159,8 @@ fn build_block_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_texture::Tile;
-    use crate::block_texture::layer::test_images::flat_gray;
+    use crate::block_texture::{TILE_SIZE, layer::test_images::flat_gray, mip_levels};
+    use crate::content::base;
     use bevy::color::ColorToPacked;
 
     /// The shader declares the bindings the material provides, at the same
@@ -172,6 +178,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Image>()
             .init_asset::<VoxelMaterial>()
+            .insert_resource(base().clone())
             .register_asset_loader(bevy::image::ImageLoader::new(
                 bevy::image::CompressedImageFormats::NONE,
             ))
@@ -203,7 +210,7 @@ mod tests {
 
     fn layer(app: &App, name: &str) -> Handle<Image> {
         let block = app.world().resource::<BlockMaterial>();
-        block.layers[&block_texture::layer_path(name)].clone()
+        block.layers[&format!("mods/defaria/images/{name}.png")].clone()
     }
 
     /// Fills a loaded layer with one RGBA color, through `get_mut` like a
@@ -260,7 +267,7 @@ mod tests {
             .get(&blocks)
             .unwrap();
         let size = texture.texture_descriptor.size;
-        assert_eq!(size.depth_or_array_layers, Tile::ALL.len() as u32);
+        assert_eq!(size.depth_or_array_layers, base().textures.len() as u32);
         assert_eq!(texture.texture_descriptor.mip_level_count, 5);
     }
 
@@ -282,11 +289,15 @@ mod tests {
         let new = material_texture(&app);
         assert_ne!(new.id(), old.id(), "rebuilt texture must be a new asset");
         let texture = app.world().resource::<Assets<Image>>().get(&new).unwrap();
-        // Stone is the first array layer; its first pixel is the darkest
-        // stone color now.
-        let darkest = Tile::Stone.layers()[0].palette.color(0);
+        // The stone tile's first pixel is the darkest stone color now.
+        let darkest = base().materials["defaria:stone"].color(0);
+        let tile = base().texture("defaria:stone").unwrap() as usize;
+        let per_layer: u32 = (0..mip_levels(TILE_SIZE))
+            .map(|mip| (TILE_SIZE >> mip).pow(2) * 4)
+            .sum();
+        let at = tile * per_layer as usize;
         let data = texture.data.as_ref().unwrap();
-        assert_eq!(data[..4], darkest.to_u8_array());
+        assert_eq!(data[at..at + 4], darkest.to_u8_array());
 
         assert!(
             material_events.modified(&app),

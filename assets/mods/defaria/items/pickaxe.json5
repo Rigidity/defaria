@@ -1,0 +1,5 @@
+{
+  name: "Pickaxe",
+  texture: "pickaxe",
+  max_stack: 1,
+}

@@ -1,0 +1,6 @@
+{
+  layers: [
+    { image: "items/shovel_handle", material: "planks" },
+    { image: "items/shovel_head", material: "iron" },
+  ],
+}

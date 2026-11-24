@@ -1,0 +1,6 @@
+{
+  layers: [
+    { image: "items/knife_handle", material: "planks" },
+    { image: "items/knife_blade", material: "iron" },
+  ],
+}

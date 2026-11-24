@@ -4,7 +4,7 @@
 //!   crosshair and right click places the active block against the face
 //!   you're looking at. The click that locks the cursor doesn't break
 //!   anything.
-//! - The number keys 1–7 pick the active block from [`HOTBAR`].
+//! - The number keys 1–7 pick the active block from the [`HOTBAR`] items.
 //! - A crosshair marks the middle of the screen, an outline shows the
 //!   targeted block, and a hotbar along the bottom lists the blocks with the
 //!   active one highlighted.
@@ -18,23 +18,23 @@ use bevy::{
 };
 
 use crate::{
+    content::{BlockState, Content},
     fly_camera::{FlyCamera, FlyCameraSystems},
     terrain::{RemeshChunks, Voxels},
-    voxel::Voxel,
 };
 
 /// How far away, in blocks, you can break or place.
 pub const REACH: f32 = 8.0;
 
-/// The blocks on the number keys, in order: key 1 is the first.
-pub const HOTBAR: [Voxel; 7] = [
-    Voxel::Stone,
-    Voxel::Dirt,
-    Voxel::Grass,
-    Voxel::Sand,
-    Voxel::Gravel,
-    Voxel::Log,
-    Voxel::Planks,
+/// The items on the number keys, in order: key 1 is the first.
+pub const HOTBAR: [&str; 7] = [
+    "defaria:stone",
+    "defaria:dirt",
+    "defaria:grass",
+    "defaria:sand",
+    "defaria:gravel",
+    "defaria:log",
+    "defaria:planks",
 ];
 
 const HOTBAR_KEYS: [KeyCode; HOTBAR.len()] = [
@@ -51,7 +51,9 @@ pub struct BlockEditPlugin;
 
 impl Plugin for BlockEditPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ActiveBlock>()
+        app.init_resource::<Content>()
+            .init_resource::<Hotbar>()
+            .init_resource::<ActiveBlock>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
@@ -71,16 +73,47 @@ impl Plugin for BlockEditPlugin {
     }
 }
 
-/// The block that right click places: an index into [`HOTBAR`].
+/// The hotbar's items, as the content defines them.
+#[derive(Resource, Debug, Clone)]
+pub struct Hotbar(pub Vec<HotbarItem>);
+
+#[derive(Debug, Clone)]
+pub struct HotbarItem {
+    pub name: String,
+    /// The block it places, if any.
+    pub block: Option<BlockState>,
+}
+
+impl FromWorld for Hotbar {
+    /// Looks up the [`HOTBAR`] items. One that didn't load is reported and
+    /// leaves its slot empty.
+    fn from_world(world: &mut World) -> Self {
+        let content = world.resource::<Content>();
+        Self(
+            HOTBAR
+                .iter()
+                .map(|&id| match content.item(id) {
+                    Some(item) => HotbarItem {
+                        name: item.name.clone(),
+                        block: item.block,
+                    },
+                    None => {
+                        error!("the hotbar needs item `{id}`, which didn't load");
+                        HotbarItem {
+                            name: "?".into(),
+                            block: None,
+                        }
+                    }
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The hotbar slot whose item right click places.
 #[derive(Resource, Reflect, Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[reflect(Resource)]
 pub struct ActiveBlock(pub usize);
-
-impl ActiveBlock {
-    pub fn voxel(self) -> Voxel {
-        HOTBAR[self.0]
-    }
-}
 
 /// A block a ray ran into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +197,7 @@ fn edit_blocks(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
     active: Res<ActiveBlock>,
+    hotbar: Res<Hotbar>,
     mut voxels: Voxels,
 ) {
     if cursor.grab_mode == CursorGrabMode::None {
@@ -178,22 +212,25 @@ fn edit_blocks(
     }
     let ray = camera_ray(&camera);
     let Some(hit) = raycast(ray, REACH, |pos| {
-        voxels.get(pos).is_some_and(Voxel::is_solid)
+        voxels.get(pos).is_some_and(|state| !state.is_air())
     }) else {
         return;
     };
     if breaking {
-        voxels.set(hit.block, Voxel::Air);
+        voxels.set(hit.block, BlockState::AIR);
         return;
     }
+    let Some(block) = hotbar.0.get(active.0).and_then(|item| item.block) else {
+        return;
+    };
     let Some(pos) = hit.place_at() else {
         return;
     };
     // Not into the camera, outside the world, or over another block.
-    if pos == ray.origin.floor().as_ivec3() || voxels.get(pos) != Some(Voxel::Air) {
+    if pos == ray.origin.floor().as_ivec3() || voxels.get(pos) != Some(BlockState::AIR) {
         return;
     }
-    voxels.set(pos, active.voxel());
+    voxels.set(pos, block);
 }
 
 /// Outlines the block under the crosshair while the cursor is locked.
@@ -207,7 +244,7 @@ fn outline_target(
         return;
     }
     let hit = raycast(camera_ray(&camera), REACH, |pos| {
-        voxels.get(pos).is_some_and(Voxel::is_solid)
+        voxels.get(pos).is_some_and(|state| !state.is_air())
     });
     if let Some(hit) = hit {
         let center = hit.block.as_vec3() + Vec3::splat(0.5);
@@ -218,7 +255,7 @@ fn outline_target(
     }
 }
 
-/// One slot of the hotbar, showing [`HOTBAR`]`[index]`.
+/// One slot of the hotbar, showing [`Hotbar`]`[index]`.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
 #[reflect(Component)]
 struct HotbarSlot(usize);
@@ -228,7 +265,7 @@ const ACTIVE_SLOT_COLOR: Color = Color::srgba(0.95, 0.85, 0.35, 0.85);
 const SLOT_TEXT: Color = Color::srgb(0.9, 0.9, 0.9);
 const ACTIVE_SLOT_TEXT: Color = Color::srgb(0.1, 0.1, 0.1);
 
-fn spawn_hud(mut commands: Commands) {
+fn spawn_hud(mut commands: Commands, items: Res<Hotbar>) {
     // Crosshair: two thin bars crossing at the middle of the screen.
     let bar = |width: f32, height: f32| {
         (
@@ -267,7 +304,7 @@ fn spawn_hud(mut commands: Commands) {
             },
         ))
         .with_children(|hotbar| {
-            for (index, voxel) in HOTBAR.iter().enumerate() {
+            for (index, item) in items.0.iter().enumerate() {
                 hotbar.spawn((
                     HotbarSlot(index),
                     Node {
@@ -276,7 +313,7 @@ fn spawn_hud(mut commands: Commands) {
                     },
                     BackgroundColor(SLOT_COLOR),
                     children![(
-                        Text::new(format!("{} {voxel:?}", index + 1)),
+                        Text::new(format!("{} {}", index + 1, item.name)),
                         TextFont::from_font_size(16.0),
                         TextColor(SLOT_TEXT),
                     )],
@@ -318,8 +355,9 @@ mod tests {
 
     use super::*;
     use crate::{
+        content::{base, block},
         headless::{HeadlessPlugin, Script, default_plugins},
-        terrain::{ChunkCoord, ChunkMap, Terrain, remesh_changed_chunks},
+        terrain::{ChunkCoord, ChunkMap, Terrain, TerrainBlocks, remesh_changed_chunks},
         voxel::Chunk,
         voxel_material::BlockMaterial,
     };
@@ -421,6 +459,8 @@ mod tests {
                 material: Handle::default(),
                 layers: default(),
             })
+            .insert_resource(base().clone())
+            .init_resource::<Hotbar>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ActiveBlock>()
@@ -443,11 +483,11 @@ mod tests {
         let mut left = Chunk::default();
         // A wall at x = 14..=15 of the left chunk, on the chunk border.
         for y in 0..4 {
-            left.set(15, y, 5, Voxel::Stone);
+            left.set(15, y, 5, block("stone"));
         }
-        left.set(14, 1, 5, Voxel::Dirt);
+        left.set(14, 1, 5, block("dirt"));
         let mut right = Chunk::default();
-        right.set(0, 1, 5, Voxel::Stone);
+        right.set(0, 1, 5, block("stone"));
         let mut chunks = [Entity::PLACEHOLDER; 2];
         for (i, (coord, chunk)) in [(IVec3::ZERO, left), (IVec3::X, right)]
             .into_iter()
@@ -469,7 +509,7 @@ mod tests {
         (app, chunks[0], chunks[1])
     }
 
-    fn voxel(app: &App, chunk: Entity, x: usize, y: usize, z: usize) -> Voxel {
+    fn voxel(app: &App, chunk: Entity, x: usize, y: usize, z: usize) -> BlockState {
         app.world().get::<Chunk>(chunk).unwrap().get(x, y, z)
     }
 
@@ -516,12 +556,12 @@ mod tests {
         let (mut app, left, _) = app();
         let before = mesh(&app, left);
         click(&mut app, MouseButton::Left);
-        assert_eq!(voxel(&app, left, 14, 1, 5), Voxel::Air);
-        assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Stone);
+        assert_eq!(voxel(&app, left, 14, 1, 5), BlockState::AIR);
+        assert_eq!(voxel(&app, left, 15, 1, 5), block("stone"));
         assert_ne!(mesh(&app, left), before);
         // Again: the next block along is now the target.
         click(&mut app, MouseButton::Left);
-        assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Air);
+        assert_eq!(voxel(&app, left, 15, 1, 5), BlockState::AIR);
     }
 
     #[test]
@@ -536,8 +576,8 @@ mod tests {
                 .resource_mut::<ButtonInput<MouseButton>>()
                 .clear();
         }
-        assert_eq!(voxel(&app, left, 14, 1, 5), Voxel::Air);
-        assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Stone);
+        assert_eq!(voxel(&app, left, 14, 1, 5), BlockState::AIR);
+        assert_eq!(voxel(&app, left, 15, 1, 5), block("stone"));
     }
 
     #[test]
@@ -546,12 +586,12 @@ mod tests {
         press_key(&mut app, KeyCode::Digit6);
         assert_eq!(*app.world().resource::<ActiveBlock>(), ActiveBlock(5));
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 13, 1, 5), Voxel::Log);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("log"));
         // Placing again stacks toward the camera, but never into it.
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 12, 1, 5), Voxel::Log);
+        assert_eq!(voxel(&app, left, 12, 1, 5), block("log"));
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 11, 1, 5), Voxel::Air);
+        assert_eq!(voxel(&app, left, 11, 1, 5), BlockState::AIR);
     }
 
     /// The left chunk's block at x = 0 faces -X, where there's no chunk.
@@ -561,11 +601,11 @@ mod tests {
         app.world_mut()
             .get_mut::<Chunk>(left)
             .unwrap()
-            .set(0, 1, 8, Voxel::Stone);
+            .set(0, 1, 8, block("stone"));
         look_at(&mut app, Vec3::new(-2.5, 1.5, 8.5), Vec3::X);
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 0, 1, 8), Voxel::Stone);
-        assert_eq!(voxel(&app, left, 1, 1, 8), Voxel::Air);
+        assert_eq!(voxel(&app, left, 0, 1, 8), block("stone"));
+        assert_eq!(voxel(&app, left, 1, 1, 8), BlockState::AIR);
     }
 
     #[test]
@@ -577,7 +617,7 @@ mod tests {
         click(&mut app, MouseButton::Left);
         // Breaking (15, 1, 5) uncovers that face.
         click(&mut app, MouseButton::Left);
-        assert_eq!(voxel(&app, left, 15, 1, 5), Voxel::Air);
+        assert_eq!(voxel(&app, left, 15, 1, 5), BlockState::AIR);
         assert_eq!(vertices(&app, right), 6 * 4);
     }
 
@@ -589,7 +629,7 @@ mod tests {
         let before = vertices(&app, left);
         look_at(&mut app, Vec3::new(19.5, 1.5, 5.5), Vec3::NEG_X);
         click(&mut app, MouseButton::Left);
-        assert_eq!(voxel(&app, right, 0, 1, 5), Voxel::Air);
+        assert_eq!(voxel(&app, right, 0, 1, 5), BlockState::AIR);
         assert_eq!(mesh(&app, right), None);
         // The wall's block at (15, 1, 5) shows its +X face now.
         assert_eq!(vertices(&app, left), before + 4);
@@ -605,8 +645,8 @@ mod tests {
             .grab_mode = CursorGrabMode::None;
         click(&mut app, MouseButton::Left);
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 14, 1, 5), Voxel::Dirt);
-        assert_eq!(voxel(&app, left, 13, 1, 5), Voxel::Air);
+        assert_eq!(voxel(&app, left, 14, 1, 5), block("dirt"));
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
     }
 
     #[test]
@@ -622,6 +662,8 @@ mod tests {
     fn hotbar_highlights_the_active_slot() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .insert_resource(base().clone())
+            .init_resource::<Hotbar>()
             .init_resource::<ActiveBlock>()
             .add_systems(Startup, spawn_hud)
             .add_systems(Update, update_hotbar);
@@ -650,13 +692,13 @@ mod tests {
         }
     }
 
-    fn world_voxel(app: &mut App, pos: IVec3) -> Voxel {
+    fn world_voxel(app: &mut App, pos: IVec3) -> BlockState {
         let (coord, local) = ChunkCoord::split(pos);
         let mut chunks = app.world_mut().query::<(&ChunkCoord, &Chunk)>();
         chunks
             .iter(app.world())
             .find(|(c, _)| **c == coord)
-            .map_or(Voxel::Air, |(_, chunk)| chunk.at(local))
+            .map_or(BlockState::AIR, |(_, chunk)| chunk.at(local))
     }
 
     /// Through the real game and input pipeline: the click that locks the
@@ -688,12 +730,12 @@ mod tests {
         app.update();
 
         let (x, z) = (40, 40);
-        let height = Terrain::new(default()).height(x, z);
+        let height = Terrain::new(default(), TerrainBlocks::from_content(base())).height(x, z);
         let top = IVec3::new(x, height - 1, z);
         let below = top - IVec3::Y;
-        assert_eq!(world_voxel(&mut app, top), Voxel::Grass);
+        assert_eq!(world_voxel(&mut app, top), block("grass"));
         let below_before = world_voxel(&mut app, below);
-        assert!(below_before.is_solid());
+        assert!(!below_before.is_air());
         // Three blocks above the top, looking straight down.
         let mut camera = app
             .world_mut()
@@ -709,7 +751,7 @@ mod tests {
             assert!(frames < 100, "script never finished");
         }
         // Grass broken once, not twice, and stone placed in its place.
-        assert_eq!(world_voxel(&mut app, top), Voxel::Stone);
+        assert_eq!(world_voxel(&mut app, top), block("stone"));
         assert_eq!(world_voxel(&mut app, below), below_before);
     }
 }

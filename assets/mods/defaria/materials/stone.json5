@@ -1,0 +1,4 @@
+// Low contrast: the stone image carries a lot of fine detail, which looks grainy at full contrast.
+{
+  palette: ["#33353d", "#52535a", "#6f6f74", "#95938f"],
+}
