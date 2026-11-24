@@ -39,6 +39,10 @@ pub use schema::Direction;
 pub const MODS_DIR: &str = "mods";
 /// The id of the block that's nothing at all. Not defined by any mod.
 pub const AIR: &str = "air";
+/// The brightest light level, in each colour channel and the sky's.
+pub const MAX_LIGHT: u8 = 15;
+/// [`State::occludes`] bits for every side.
+const ALL_SIDES: u8 = (1 << Direction::ALL.len()) - 1;
 
 pub struct ContentPlugin;
 
@@ -206,9 +210,23 @@ pub struct State {
     pub faces: Vec<BakedFace>,
     /// Bit per [`Direction`]: sides this state covers completely.
     occludes: u8,
+    /// The light it gives off: red, green and blue levels, up to
+    /// [`MAX_LIGHT`].
+    pub light: [u8; 3],
 }
 
 impl State {
+    /// Whether light can't pass through it, and it shades the corners of
+    /// faces next to it: true when it covers every side.
+    pub fn is_opaque(&self) -> bool {
+        self.occludes == ALL_SIDES
+    }
+
+    /// Whether it gives off any light.
+    pub fn emits_light(&self) -> bool {
+        self.light != [0; 3]
+    }
+
     /// Whether this state covers its whole `side`, hiding the neighbour's
     /// face against it.
     pub fn occludes(&self, side: Direction) -> bool {

@@ -153,8 +153,8 @@ fills.
 - **UVs** are within the tile, from `[0, 0]` at its top left to `[1, 1]`
   at its bottom right.
 - A face has 3 or 4 **vertices**, counter-clockwise when you look at its
-  front. Only the front is drawn, and its shading comes from the direction
-  it faces.
+  front. Only the front is drawn. It's lit by the light in front of it: the
+  voxel past its `cull` side, or the block's own voxel if it has no `cull`.
 - **`cull`** is for faces that lie on the block's boundary: the face is
   hidden when the neighbour on that side `occludes` the side facing it.
   Leave it out for faces that should always draw.
@@ -177,6 +177,27 @@ Textures for slots a state's model doesn't have are ignored for that state,
 so a block can set textures for several models and switch between them in
 variants; naming a slot that none of the block's models has is an error.
 
+### Light
+
+```json5
+{
+  name: "Red Lamp",
+  model: "cube",
+  textures: { all: "red_lamp" },
+  light: [15, 3, 2],               // red, green, blue: 0 to 15 each
+}
+```
+
+`light` makes the block give off light: a level from 0 to 15 for each of
+red, green and blue. Each colour spreads on its own and drops one level per
+block, so a level-15 colour reaches 14 blocks and colours shift as they
+fade. A block that gives off light is drawn fully lit. Variants can set
+`light` too; a later one replaces an earlier one's.
+
+A block whose model covers all six sides (`occludes` every side) is
+opaque: light doesn't pass through it, and it shades the corners of the
+faces next to it (ambient occlusion). Every other block lets light through.
+
 ### States, properties and variants
 
 A block can have **properties**, each with a list of values; the first is
@@ -197,10 +218,10 @@ can look different.
 }
 ```
 
-For each state the game starts from the block's own `model`, `textures`
-and `rotate`, then applies every variant whose `when` matches, in order. A
-later variant's `model` and `rotate` replace earlier ones, and its
-`textures` are merged in slot by slot. A `when` value may be one value or
+For each state the game starts from the block's own `model`, `textures`,
+`rotate` and `light`, then applies every variant whose `when` matches, in
+order. A later variant's `model`, `rotate` and `light` replace earlier
+ones, and its `textures` are merged in slot by slot. A `when` value may be one value or
 a list of any that match: `{ when: { axis: ["x", "z"] } }`. A variant with
 no `when` always applies.
 

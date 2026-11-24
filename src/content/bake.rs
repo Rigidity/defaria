@@ -10,8 +10,8 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use serde::de::DeserializeOwned;
 
 use super::{
-    AIR, BakedFace, Block, Content, Direction, Item, ModInfo, Model, ModelFace, State, Texture,
-    TextureLayer, Vertex, load::LoadedMod, qualify, schema::*,
+    AIR, BakedFace, Block, Content, Direction, Item, MAX_LIGHT, ModInfo, Model, ModelFace, State,
+    Texture, TextureLayer, Vertex, load::LoadedMod, qualify, schema::*,
 };
 use crate::block_texture::Palette;
 
@@ -480,6 +480,7 @@ fn in_state(values: &[(String, String)], error: String) -> String {
 struct Look<'d> {
     model: Option<&'d str>,
     rotate: Option<[i32; 3]>,
+    light: Option<[u8; 3]>,
     textures: BTreeMap<&'d str, &'d str>,
 }
 
@@ -487,6 +488,7 @@ fn look<'d>(block: &'d BlockDef, values: &[(String, String)]) -> Look<'d> {
     let mut look = Look {
         model: block.model.as_deref(),
         rotate: block.rotate,
+        light: block.light,
         textures: block
             .textures
             .iter()
@@ -502,6 +504,7 @@ fn look<'d>(block: &'d BlockDef, values: &[(String, String)]) -> Look<'d> {
         if matches {
             look.model = variant.model.as_deref().or(look.model);
             look.rotate = variant.rotate.or(look.rotate);
+            look.light = variant.light.or(look.light);
             look.textures.extend(
                 variant
                     .textures
@@ -541,6 +544,12 @@ fn bake_state(
     content: &Content,
 ) -> Result<State, String> {
     let rotation = rotation(look.rotate.unwrap_or([0; 3]))?;
+    let light = look.light.unwrap_or_default();
+    if let Some(level) = light.iter().find(|&&level| level > MAX_LIGHT) {
+        return Err(format!(
+            "light level {level} is too bright; the most is {MAX_LIGHT}"
+        ));
+    }
     let rotate_direction = |d: Direction| {
         Direction::from_normal((rotation * d.normal().as_vec3()).round().as_ivec3()).unwrap()
     };
@@ -588,6 +597,7 @@ fn bake_state(
         values: values.to_vec(),
         faces,
         occludes,
+        light,
     })
 }
 
@@ -766,6 +776,58 @@ mod tests {
         let item = content.item("test:thing").unwrap();
         assert_eq!(item.block, Some(block.default_state()));
         assert_eq!(item.max_stack, DEFAULT_MAX_STACK);
+    }
+
+    /// `light` gives a block's light per colour channel; variants replace
+    /// it. Cubes are opaque to light, other shapes aren't.
+    #[test]
+    fn blocks_give_off_the_light_they_say() {
+        let content = content(&[
+            (
+                "blocks/lamp.json5",
+                r#"{
+                    properties: { color: ["red", "off"] },
+                    model: "quad",
+                    textures: { all: "a" },
+                    light: [15, 2, 0],
+                    variants: [{ when: { color: "off" }, light: [0, 0, 0] }],
+                }"#,
+            ),
+            (
+                "blocks/plain.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let lamp = content.block("test:lamp").unwrap();
+        let red = content.state(lamp.state(&[("color", "red")]).unwrap());
+        assert_eq!(red.light, [15, 2, 0]);
+        assert!(red.emits_light());
+        let off = content.state(lamp.state(&[("color", "off")]).unwrap());
+        assert!(!off.emits_light());
+        let plain = content.state(content.default_state("test:plain").unwrap());
+        assert_eq!(plain.light, [0; 3]);
+        assert!(!plain.is_opaque(), "a quad lets light through");
+        assert!(
+            crate::content::base()
+                .state(crate::content::block("stone"))
+                .is_opaque()
+        );
+        assert!(!content.state(crate::content::BlockState::AIR).is_opaque());
+    }
+
+    #[test]
+    fn light_brighter_than_the_maximum_is_an_error() {
+        let content = content(&[(
+            "blocks/sun.json5",
+            r#"{ model: "quad", textures: { all: "a" }, light: [16, 0, 0] }"#,
+        )]);
+        assert!(content.block("test:sun").is_none());
+        assert!(
+            errors(&content).contains("light level 16"),
+            "{}",
+            errors(&content)
+        );
     }
 
     #[test]

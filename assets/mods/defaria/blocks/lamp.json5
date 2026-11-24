@@ -1,0 +1,7 @@
+// Gives off warm white light: red, green and blue levels, out of 15.
+{
+  name: "Lamp",
+  model: "cube",
+  textures: { all: "lamp" },
+  light: [15, 13, 10],
+}
