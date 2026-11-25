@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn items_with_a_texture_show_their_tile_flat() {
         let content = base();
-        let pickaxe = content.default_item_look("defaria:pickaxe").unwrap();
+        let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
         let layer = pickaxe.texture.unwrap() as usize;
         let tiles = solid_tiles(|i| [i as u8, 1, 2, 255]);
         let icon = item_icon(content, pickaxe, &tiles);
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(icon.size, TILE_SIZE);
         assert_eq!(icon.data, tiles[layer]);
 
-        let stone = content.default_item_look("defaria:stone").unwrap();
+        let stone = content.default_item_info("defaria:stone").unwrap();
         let icon = item_icon(content, stone, &tiles);
         assert!(!icon.flat);
         assert_eq!(icon.size, BLOCK_ICON_SIZE);

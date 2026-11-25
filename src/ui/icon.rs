@@ -156,14 +156,18 @@ mod tests {
             Color::NONE
         );
 
-        // The tiles arrive: every icon is drawn.
+        // The tiles arrive: every icon is drawn, one per item state.
         let tile = [200u8, 100, 50, 255].repeat(256);
         app.insert_resource(BlockTiles(vec![tile; base().textures.len()]));
         app.update();
         let images = app.world().resource::<Assets<Image>>();
-        for handle in &app.world().resource::<ItemIcons>().0 {
+        let icons = app.world().resource::<ItemIcons>();
+        assert_eq!(icons.0.len(), base().item_states.len());
+        for handle in &icons.0 {
             assert!(images.get(handle).is_some());
         }
+        let last = ItemState(base().item_states.len() as u32 - 1);
+        assert!(images.get(icons.get(last).unwrap()).is_some());
         let size = images.get(&handle).unwrap().size();
         assert_eq!(size, UVec2::splat(raster::BLOCK_ICON_SIZE));
     }

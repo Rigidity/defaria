@@ -485,7 +485,8 @@ impl Content {
     }
 
     /// What item `id`'s default state is.
-    pub fn default_item_look(&self, id: &str) -> Option<&ItemStateInfo> {
+    #[cfg(test)]
+    pub fn default_item_info(&self, id: &str) -> Option<&ItemStateInfo> {
         self.item_state(self.default_item(id)?)
     }
 
@@ -497,12 +498,12 @@ impl Content {
 
     /// The item an [`ItemState`] is a state of.
     pub fn item_of(&self, state: ItemState) -> Option<&Item> {
-        self.item_state(state).map(|look| &self.items[look.item])
+        self.item_state(state).map(|info| &self.items[info.item])
     }
 
     /// The display name of an [`ItemState`].
     pub fn item_name(&self, state: ItemState) -> Option<&str> {
-        self.item_state(state).map(|look| look.name.as_str())
+        self.item_state(state).map(|info| info.name.as_str())
     }
 
     /// Every image some texture uses, as asset paths, each once.
@@ -714,12 +715,12 @@ mod tests {
             assert_eq!(content.state(state).faces.len(), 6, "{id}");
             // Every block gets an item that places it.
             assert_eq!(
-                content.default_item_look(&id).unwrap().block,
+                content.default_item_info(&id).unwrap().block,
                 Some(state),
                 "{id}"
             );
         }
-        let pickaxe = content.default_item_look("defaria:pickaxe").unwrap();
+        let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
         assert_eq!(pickaxe.block, None);
         assert_eq!(pickaxe.name, "Iron Pickaxe (Oak)");
         assert_eq!(content.item("defaria:pickaxe").unwrap().max_stack, 1);

@@ -730,6 +730,9 @@ impl When {
                 Condition::Is(values) => (values, false),
                 Condition::Not(not) => (&not.not, true),
             };
+            if patterns.values().is_empty() {
+                return Err(format!("`{name}` lists no values"));
+            }
             let mut matches = vec![false; property.values.len()];
             for pattern in patterns.values() {
                 let hits = pattern_matches(property, pattern, namespace, content)?;
@@ -828,24 +831,24 @@ fn add_block(
     let index = content.blocks.len();
     let mut states = Vec::with_capacity(count);
     for (value_index, values, look, model) in &looks {
-        let state = bake_state(
-            look,
-            model,
-            values,
-            &def.namespace,
-            index,
-            content,
-            textures,
-        )
-        .and_then(|mut state| {
-            let name = look.name.or(block.name.as_deref());
-            state.name = match name {
-                Some(name) => fill_name(name, &properties, value_index, content)?,
-                None => title_case(&def.id),
-            };
-            Ok(state)
-        })
-        .map_err(|error| in_state(values, error))?;
+        let name = match look.name.or(block.name.as_deref()) {
+            Some(name) => fill_name(name, &properties, value_index, content),
+            None => Ok(title_case(&def.id)),
+        };
+        let state = name
+            .and_then(|name| {
+                bake_state(
+                    look,
+                    model,
+                    values,
+                    name,
+                    &def.namespace,
+                    index,
+                    content,
+                    textures,
+                )
+            })
+            .map_err(|error| in_state(values, error))?;
         states.push(state);
     }
 
@@ -926,13 +929,13 @@ impl Look<'_> {
     }
 }
 
-/// Bakes one block state: the model's faces rotated and textured.
-/// Textures for slots the model doesn't have are left out. The name is
-/// left for the caller.
+/// Bakes one block state, called `name`: the model's faces rotated and
+/// textured. Textures for slots the model doesn't have are left out.
 fn bake_state(
     look: &Look,
     model: &Model,
     values: &[(String, String)],
+    name: String,
     namespace: &str,
     block: usize,
     content: &mut Content,
@@ -999,7 +1002,7 @@ fn bake_state(
         .collect();
     Ok(State {
         block,
-        name: String::new(),
+        name,
         values: values.to_vec(),
         faces,
         collision,
@@ -1127,10 +1130,17 @@ fn add_items(
             .blocks
             .iter()
             .any(|block| block.id == def.id && block.def.item);
-        if is_block_item {
-            continue;
+        if !is_block_item {
+            report(&def.file, standalone_item(def, content, textures));
+        } else if content.block(&def.id).is_none() {
+            report(
+                &def.file,
+                Err(format!(
+                    "block `{}` didn't load, so it has no item to change",
+                    def.id
+                )),
+            );
         }
-        report(&def.file, standalone_item(def, content, textures));
     }
 }
 
@@ -1160,33 +1170,33 @@ fn block_item(
         .collect();
     let count = check_count(&properties)?;
     let item = content.items.len();
-    let mut looks = Vec::with_capacity(count);
+    let mut states = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
-        let state = placed_state(&block, &values)?;
-        let mut look = ItemStateInfo {
-            item,
-            values: values.clone(),
-            name: content.state(state).name.clone(),
-            texture: None,
-            block: Some(state),
-        };
-        if let Some(file) = file {
-            let namespace = &file.namespace;
-            if let Some(name) = &file.def.name {
-                look.name = fill_name(name, &properties, &index, content)?;
+        let info = (|| {
+            let state = placed_state(&block, &values)?;
+            let mut info = ItemStateInfo {
+                item,
+                values: values.clone(),
+                name: content.state(state).name.clone(),
+                texture: None,
+                block: Some(state),
+            };
+            if let Some(file) = file {
+                if let Some(name) = &file.def.name {
+                    info.name = fill_name(name, &properties, &index, content)?;
+                }
+                if let Some(texture) = &file.def.texture {
+                    info.texture =
+                        Some(textures.bake_ref(texture, &values, &file.namespace, content)?);
+                }
             }
-            if let Some(texture) = &file.def.texture {
-                look.texture = Some(
-                    textures
-                        .bake_ref(texture, &values, namespace, content)
-                        .map_err(|error| in_state(&values, error))?,
-                );
-            }
-        }
-        looks.push(look);
+            Ok::<_, String>(info)
+        })()
+        .map_err(|error| in_state(&values, error))?;
+        states.push(info);
     }
     let max_stack = max_stack(file.and_then(|file| file.def.max_stack))?;
-    push_item(id, properties, max_stack, looks, content);
+    push_item(id, properties, max_stack, states, content);
     Ok(())
 }
 
@@ -1212,9 +1222,9 @@ fn standalone_item(
         None => None,
     };
     let item = content.items.len();
-    let mut looks = Vec::with_capacity(count);
+    let mut states = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
-        let look = (|| {
+        let info = (|| {
             let name = match &item_def.name {
                 Some(name) => fill_name(name, &properties, &index, content)?,
                 None => title_case(&def.id),
@@ -1238,10 +1248,10 @@ fn standalone_item(
             })
         })()
         .map_err(|error| in_state(&values, error))?;
-        looks.push(look);
+        states.push(info);
     }
     let max_stack = max_stack(item_def.max_stack)?;
-    push_item(&def.id, properties, max_stack, looks, content);
+    push_item(&def.id, properties, max_stack, states, content);
     Ok(())
 }
 
@@ -1274,7 +1284,7 @@ fn push_item(
     id: &str,
     properties: Vec<Property>,
     max_stack: u32,
-    looks: Vec<ItemStateInfo>,
+    states: Vec<ItemStateInfo>,
     content: &mut Content,
 ) {
     content.item_index.insert(id.into(), content.items.len());
@@ -1282,10 +1292,10 @@ fn push_item(
         id: id.into(),
         properties,
         first_state: content.item_states.len() as u32,
-        state_count: looks.len() as u32,
+        state_count: states.len() as u32,
         max_stack,
     });
-    content.item_states.extend(looks);
+    content.item_states.extend(states);
 }
 
 #[cfg(test)]
@@ -1314,7 +1324,7 @@ mod tests {
         assert_eq!(state.faces[0].normal, Vec3::Y);
         assert!(state.occludes(Direction::Up));
         assert!(!state.occludes(Direction::Down));
-        let item = content.default_item_look("test:thing").unwrap();
+        let item = content.default_item_info("test:thing").unwrap();
         assert_eq!(item.block, Some(block.default_state()));
         assert_eq!(item.name, "Thing");
         assert_eq!(
@@ -1589,6 +1599,50 @@ mod tests {
         assert!(content.block("test:user").is_none());
         assert!(content.item("test:user").is_none());
         assert!(content.block("test:fine").is_some());
+
+        // An item file changing a block that didn't load says so.
+        let content = crate::content::test_mod(&[
+            (
+                "blocks/sun.json5",
+                r#"{ model: "quad", textures: { all: "a" }, light: [16, 0, 0] }"#,
+            ),
+            ("items/sun.json5", r#"{ max_stack: 7 }"#),
+        ]);
+        let all = errors(&content);
+        assert_eq!(content.errors.len(), 2, "{all}");
+        assert!(
+            content.errors[1].contains("items/sun.json5")
+                && content.errors[1].contains("block `test:sun` didn't load"),
+            "{all}"
+        );
+        assert!(content.item("test:sun").is_none());
+    }
+
+    /// `when` can name materials directly (in this mod or not), list them,
+    /// and mix them with tags under `not`.
+    #[test]
+    fn conditions_name_materials_by_id() {
+        let content = materials(&[(
+            "blocks/x.json5",
+            r##"{
+                properties: { ore: { materials: "#ore", optional: true } },
+                model: "quad",
+                textures: { all: "a" },
+                variants: [
+                    { when: { ore: "coal" }, name: "Coal" },
+                    { when: { ore: ["test:iron", "none"] }, light: [1, 1, 1] },
+                    { when: { ore: { not: ["coal", "#metal"] } }, name: "Plain" },
+                ],
+            }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let block = content.block("test:x").unwrap();
+        let state = |ore| content.state(block.state(&[("ore", ore)]).unwrap());
+        assert_eq!(state("test:coal").name, "Coal");
+        assert!(!state("test:coal").emits_light());
+        assert!(state("test:iron").emits_light() && state("none").emits_light());
+        assert_eq!(state("none").name, "Plain");
+        assert_eq!(state("test:iron").name, "X");
     }
 
     #[test]
@@ -1638,17 +1692,17 @@ mod tests {
             ("items/seeds.json5", r#"{ texture: "b", block: "hidden" }"#),
         ]);
         assert!(content.errors.is_empty(), "{}", errors(&content));
-        let thing = content.default_item_look("test:thing").unwrap();
+        let thing = content.default_item_info("test:thing").unwrap();
         assert_eq!(thing.name, "Special thing");
         assert_eq!(content.item("test:thing").unwrap().max_stack, 16);
         assert_eq!(thing.block, content.default_state("test:thing"));
         // What an item file leaves out comes from the block.
-        let plain = content.default_item_look("test:plain").unwrap();
+        let plain = content.default_item_info("test:plain").unwrap();
         assert_eq!(plain.name, "Plain thing");
         assert_eq!(content.item("test:plain").unwrap().max_stack, 8);
         assert_eq!(plain.block, content.default_state("test:plain"));
         assert!(content.item("test:hidden").is_none());
-        let seeds = content.default_item_look("test:seeds").unwrap();
+        let seeds = content.default_item_info("test:seeds").unwrap();
         assert_eq!(seeds.name, "Seeds");
         assert_eq!(seeds.block, content.default_state("test:hidden"));
         assert_eq!(seeds.texture, content.texture("test:b"));
@@ -2185,6 +2239,12 @@ mod tests {
                 "textures/x.json5",
                 r##"{ layers: [{ image: "a", palette: ["#000", "#fff"], role: "bark" }] }"##,
                 "`role` is for layers with a `material`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: ["a"] }, model: "quad", textures: { all: "a" },
+                     variants: [{ when: { w: [] } }] }"##,
+                "`w` lists no values",
             ),
             (
                 "blocks/x.json5",

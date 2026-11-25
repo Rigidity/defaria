@@ -110,7 +110,7 @@ pub struct PropertySpec {
     #[serde(default)]
     pub values: Option<Vec<String>>,
     /// Materials, each a material or `#tag` for every material with that
-    /// tag, in load order. A material listed again is skipped, so
+    /// tag, in order of id. A material listed again is skipped, so
     /// `["stone", "#rock"]` puts stone first.
     #[serde(default)]
     pub materials: Option<OneOrMany>,
