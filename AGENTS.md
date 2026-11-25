@@ -171,6 +171,13 @@ step with the work, using `scripts/roadmap.sh` (needs the `project` scope:
   (`.claude/hooks/roadmap-reminder.sh`) reminds you after `gh issue create`.
   The project's own auto-add workflow can add sub-issues without an Order;
   give them one.
+- **Labels:** give every issue the labels that fit it from `gh label list`:
+  the areas it touches (`rendering`, `ui`, `world` and so on), `enhancement`
+  or `refactor`, and the flags (`mod-format`, `save-format`, `art`,
+  `needs-decision`). If an issue needs a label that doesn't exist yet,
+  because it starts a new area or needs a new flag, create it with
+  `gh label create <name> --color <hex> --description <what it's for>`
+  rather than leaving the issue without one.
 - **Checking:** `scripts/roadmap.sh check` lists open issues missing from
   the project, items with no Order, epics in the project and Orders that
   two items share, and fails if there are any. Run it after filing, closing
