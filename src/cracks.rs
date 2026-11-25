@@ -54,7 +54,8 @@ impl Plugin for CracksPlugin {
 }
 
 /// The crack overlay. `drawn` is the state and the hidden sides its mesh
-/// was built for.
+/// was built for, and whether that left any faces to draw. It has no mesh
+/// until the first block with faces to crack.
 #[derive(Component, Reflect, Debug, Default)]
 #[reflect(Component)]
 pub struct Cracks {
@@ -62,13 +63,14 @@ pub struct Cracks {
     #[reflect(ignore)]
     drawn: Option<(BlockState, u8)>,
     #[reflect(ignore)]
+    empty: bool,
+    #[reflect(ignore)]
     stages: Vec<Handle<StandardMaterial>>,
 }
 
 fn spawn_cracks(
     mut commands: Commands,
     server: Res<AssetServer>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let stages: Vec<_> = (0..STAGES)
@@ -93,7 +95,6 @@ fn spawn_cracks(
         .collect();
     commands.spawn((
         Name::new("Cracks"),
-        Mesh3d(meshes.add(empty_mesh())),
         MeshMaterial3d(stages[0].clone()),
         Cracks {
             stages,
@@ -108,19 +109,22 @@ fn spawn_cracks(
 
 /// Puts the overlay on the block being mined, at its stage, or hides it.
 fn show_cracks(
+    mut commands: Commands,
     content: Res<Content>,
     miners: Query<&Mining>,
     voxels: Voxels,
     mut meshes: ResMut<Assets<Mesh>>,
     overlay: Single<(
+        Entity,
         &mut Cracks,
         &mut Transform,
         &mut Visibility,
-        &Mesh3d,
+        Option<&Mesh3d>,
         &mut MeshMaterial3d<StandardMaterial>,
     )>,
 ) {
-    let (mut cracks, mut transform, mut visibility, mesh, mut material) = overlay.into_inner();
+    let (entity, mut cracks, mut transform, mut visibility, mesh, mut material) =
+        overlay.into_inner();
     let Some((mining, (pos, state))) = miners
         .iter()
         .find_map(|mining| Some((mining, mining.target?)))
@@ -129,22 +133,28 @@ fn show_cracks(
         return;
     };
     let hidden = Direction::ALL
-        .iter()
-        .enumerate()
-        .filter(|&(_, &side)| {
+        .into_iter()
+        .filter(|&side| {
             let neighbour = voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR);
-            content.state(neighbour).occludes(side.opposite())
+            content.covers(neighbour, side)
         })
-        .fold(0u8, |bits, (i, _)| bits | 1 << i);
+        .fold(0, |bits, side| bits | side.bit());
     if cracks.drawn != Some((state, hidden)) {
         cracks.drawn = Some((state, hidden));
-        let shown = |side: Direction| {
-            let i = Direction::ALL.iter().position(|&d| d == side).unwrap();
-            hidden & 1 << i == 0
-        };
-        if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
-            *mesh = crack_mesh(&content, state, shown);
+        // A block with every face covered keeps its last mesh, hidden.
+        let built = crack_mesh(&content, state, |side| hidden & side.bit() == 0);
+        cracks.empty = built.is_none();
+        if let Some(built) = built {
+            if let Some(mut mesh) = mesh.and_then(|mesh| meshes.get_mut(&mesh.0)) {
+                *mesh = built;
+            } else {
+                commands.entity(entity).insert(Mesh3d(meshes.add(built)));
+            }
         }
+    }
+    if cracks.empty {
+        visibility.set_if_neq(Visibility::Hidden);
+        return;
     }
     cracks.stage = stage(mining.progress);
     let wanted = cracks.stages[cracks.stage].clone();
@@ -155,27 +165,20 @@ fn show_cracks(
     visibility.set_if_neq(Visibility::Inherited);
 }
 
-fn empty_mesh() -> Mesh {
-    Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new())
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new())
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new())
-    .with_inserted_indices(Indices::U32(Vec::new()))
-}
-
 /// The faces of `state`, in its block's coordinates, lifted off them by
 /// [`LIFT`], keeping faces that can be hidden only on sides `shown`
-/// allows.
-pub fn crack_mesh(content: &Content, state: BlockState, shown: impl Fn(Direction) -> bool) -> Mesh {
+/// allows, or `None` if that leaves no faces.
+pub fn crack_mesh(
+    content: &Content,
+    state: BlockState,
+    shown: impl Fn(Direction) -> bool,
+) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut indices = Vec::new();
     for face in &content.state(state).faces {
-        if face.cull.is_some_and(|side| !shown(side)) {
+        if face.hidden_by(|side| !shown(side)) {
             continue;
         }
         let base = positions.len() as u32;
@@ -184,23 +187,20 @@ pub fn crack_mesh(content: &Content, state: BlockState, shown: impl Fn(Direction
             normals.push(face.normal.to_array());
             uvs.push(vertex.uv.to_array());
         }
-        // A triangle, or a quad as two counter-clockwise triangles, as the
-        // chunk mesh has them.
-        let order: &[u32] = if face.vertices.len() == 3 {
-            &[0, 1, 2]
-        } else {
-            &[0, 1, 2, 0, 2, 3]
-        };
-        indices.extend(order.iter().map(|i| base + i));
+        indices.extend(face.indices().iter().map(|i| base + i));
     }
-    Mesh::new(
+    if positions.is_empty() {
+        return None;
+    }
+    let mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-    .with_inserted_indices(Indices::U32(indices))
+    .with_inserted_indices(Indices::U32(indices));
+    Some(mesh)
 }
 
 #[cfg(test)]
@@ -273,8 +273,8 @@ mod tests {
     #[test]
     fn the_mesh_fits_the_shape_of_the_block() {
         let content = base();
-        let full = positions(&crack_mesh(content, block("stone"), |_| true));
-        let slab = positions(&crack_mesh(content, block("stone_slab"), |_| true));
+        let full = positions(&crack_mesh(content, block("stone"), |_| true).unwrap());
+        let slab = positions(&crack_mesh(content, block("stone_slab"), |_| true).unwrap());
         assert_eq!(full.len(), 6 * 4);
         assert_eq!(slab.len(), 6 * 4);
         let top = |points: &[Vec3]| points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
@@ -295,11 +295,11 @@ mod tests {
         let content = base();
         let only_up = |side| side == Direction::Up;
         assert_eq!(
-            positions(&crack_mesh(content, block("stone"), only_up)).len(),
+            positions(&crack_mesh(content, block("stone"), only_up).unwrap()).len(),
             4
         );
         assert_eq!(
-            positions(&crack_mesh(content, block("stone_slab"), |_| false)).len(),
+            positions(&crack_mesh(content, block("stone_slab"), |_| false).unwrap()).len(),
             4
         );
     }
@@ -341,16 +341,18 @@ mod tests {
             &Cracks,
             &Transform,
             &Visibility,
-            &Mesh3d,
+            Option<&Mesh3d>,
             &MeshMaterial3d<StandardMaterial>,
         )>();
         let (cracks, transform, visibility, mesh, material) = query.single(app.world()).unwrap();
-        let mesh = app.world().resource::<Assets<Mesh>>().get(&mesh.0).unwrap();
+        let points = mesh.map_or(Vec::new(), |mesh| {
+            positions(app.world().resource::<Assets<Mesh>>().get(&mesh.0).unwrap())
+        });
         (
             cracks.stage,
             transform.translation,
             *visibility,
-            positions(mesh),
+            points,
             material.0 == cracks.stages[cracks.stage],
         )
     }
@@ -359,7 +361,10 @@ mod tests {
     fn the_overlay_follows_the_block_being_mined() {
         let mut app = app();
         mine(&mut app, None, 0.0);
-        assert_eq!(overlay(&mut app).2, Visibility::Hidden);
+        let (_, _, visibility, points, _) = overlay(&mut app);
+        assert_eq!(visibility, Visibility::Hidden);
+        // No mesh until there's something to crack.
+        assert!(points.is_empty());
 
         let slab = IVec3::new(5, 1, 5);
         mine(&mut app, Some((slab, block("stone_slab"))), 0.55);
@@ -389,5 +394,53 @@ mod tests {
         );
         assert_eq!(points.len(), 5 * 4);
         assert!(points.iter().all(|p| p.y <= 1.0));
+    }
+
+    /// The mesh is rebuilt when a neighbour changes under the same target:
+    /// taking the slab off the stone uncovers its top.
+    #[test]
+    fn uncovering_a_side_adds_its_face() {
+        let mut app = app();
+        let stone = IVec3::new(5, 0, 5);
+        mine(&mut app, Some((stone, block("stone"))), 0.3);
+        assert_eq!(overlay(&mut app).3.len(), 5 * 4);
+
+        let mut chunks = app.world_mut().query::<&mut Chunk>();
+        chunks
+            .single_mut(app.world_mut())
+            .unwrap()
+            .set(5, 1, 5, BlockState::AIR);
+        mine(&mut app, Some((stone, block("stone"))), 0.3);
+        let points = overlay(&mut app).3;
+        assert_eq!(points.len(), 6 * 4);
+        let top = points
+            .iter()
+            .filter(|p| (p.y - (1.0 + LIFT)).abs() < 1e-6)
+            .count();
+        assert_eq!(top, 4);
+    }
+
+    /// Through the real game and input pipeline: holding left click on a
+    /// block cracks it, and letting go takes the cracks away.
+    #[test]
+    fn holding_left_click_cracks_the_block_in_the_game() {
+        use crate::headless::{Script, run_more, settle, test_game};
+
+        // A stone in the air, the camera two blocks over it looking down.
+        let script = Script::parse("camera 40.5 123 40.5 0 -90\nwait 2").unwrap();
+        let mut app = test_game(script);
+        settle(&mut app);
+        run_more(&mut app, "fill 40 120 40 40 120 40 stone\nwait 2");
+        run_more(&mut app, "hold MouseLeft 1  # lock the cursor\nwait 1");
+        // About half way through breaking the stone.
+        run_more(&mut app, "press MouseLeft\nwait 30");
+        let (stage, at, visibility, points, _) = overlay(&mut app);
+        assert_eq!(at, Vec3::new(40.0, 120.0, 40.0));
+        assert_eq!(visibility, Visibility::Inherited);
+        assert!(stage > 0, "stage {stage}");
+        assert_eq!(points.len(), 6 * 4);
+
+        run_more(&mut app, "release MouseLeft\nwait 2");
+        assert_eq!(overlay(&mut app).2, Visibility::Hidden);
     }
 }

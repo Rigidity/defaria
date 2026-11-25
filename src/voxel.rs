@@ -317,11 +317,8 @@ impl Neighborhood {
             let state = content.state(voxel);
             let glows = state.emits_light();
             for face in &state.faces {
-                if let Some(side) = face.cull {
-                    let neighbour = self.block(pos + side.normal());
-                    if content.state(neighbour).occludes(side.opposite()) {
-                        continue;
-                    }
+                if face.hidden_by(|side| content.covers(self.block(pos + side.normal()), side)) {
+                    continue;
                 }
                 let shading = self.shade_face(pos, face, glows, &opaque_at);
                 let base = positions.len() as u32;
@@ -337,13 +334,7 @@ impl Neighborhood {
                     lights.push(shading.light);
                     faces.push([face.layer, shading.occlusion]);
                 }
-                // A triangle, or a quad as two counter-clockwise triangles.
-                let order: &[u32] = if triangle {
-                    &[0, 1, 2]
-                } else {
-                    &[0, 1, 2, 0, 2, 3]
-                };
-                indices.extend(order.iter().map(|i| base + i));
+                indices.extend(face.indices().iter().map(|i| base + i));
             }
         }
 
