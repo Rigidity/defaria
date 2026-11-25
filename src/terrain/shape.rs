@@ -41,8 +41,9 @@ pub const FULL_RADIUS: f32 = 500.0;
 /// The land at and above this height (from the base height) is bare rock.
 pub const ROCK_LINE: i32 = 100;
 /// Ground this steep, in blocks up per block across, is a cliff, with no soil
-/// on it. Measured across each column, from its neighbours either side,
-/// so it changes smoothly and cliffs aren't speckled with grass. The plain
+/// on it. Measured across each column, from its neighbours' unrounded
+/// heights either side, so it changes smoothly and the edges of cliffs
+/// aren't speckled. The plain
 /// hills step at most 3 a block each way, at most 4.24 diagonally, so
 /// they're never cliffs.
 pub const CLIFF: f32 = 4.5;
@@ -111,8 +112,16 @@ impl TerrainShape {
     }
 
     /// The height of the ground in the column at `(x, z)`: its top solid
-    /// voxel is at `y = height - 1`.
+    /// voxel is at `y = height - 1`. Chunks round [`Self::surface`]
+    /// themselves, since they also need it unrounded.
+    #[cfg(test)]
     pub fn height(&self, x: i32, z: i32) -> i32 {
+        self.surface(x, z).round() as i32
+    }
+
+    /// The ground's height at `(x, z)` before it's rounded to whole blocks,
+    /// for measuring slopes smoothly.
+    pub fn surface(&self, x: i32, z: i32) -> f32 {
         let s = &self.settings;
         // Sample at voxel centers so lattice points (where noise is 0) don't
         // line up with voxel edges.
@@ -129,16 +138,15 @@ impl TerrainShape {
             * self.mountainous.at(continents).clamp(0.0, 1.0);
         let shaped = self.continental_height.at(continents) + rugged * self.peak_height.at(ridges);
         let calm = smoothstep(CALM_RADIUS, FULL_RADIUS, x.hypot(z));
-        let height = s.base_height + calm * shaped + hills * s.amplitude;
-        height.round() as i32
+        s.base_height + calm * shaped + hills * s.amplitude
     }
 
     /// Whether a column `height` tall is bare rock: high up, or a cliff.
-    /// `neighbours` are the heights of the columns next to it, in
-    /// [`NEIGHBOURS`] order.
-    pub fn is_rock(&self, height: i32, neighbours: [i32; 4]) -> bool {
+    /// `neighbours` are the unrounded heights ([`Self::surface`]) of the
+    /// columns next to it, in [`NEIGHBOURS`] order.
+    pub fn is_rock(&self, height: i32, neighbours: [f32; 4]) -> bool {
         let [east, west, south, north] = neighbours;
-        let slope = ((east - west) as f32).hypot((south - north) as f32) / 2.0;
+        let slope = (east - west).hypot(south - north) / 2.0;
         height >= self.settings.base_height as i32 + ROCK_LINE || slope >= CLIFF
     }
 }
@@ -226,17 +234,18 @@ mod tests {
     fn peaks_and_cliffs_are_bare_rock() {
         let shape = shape();
         let base = TerrainSettings::default().base_height as i32;
-        let flat = |h: i32| [h; 4];
+        let b = base as f32;
+        let flat = |h: i32| [h as f32; 4];
         assert!(!shape.is_rock(base, flat(base)));
         assert!(shape.is_rock(base + ROCK_LINE, flat(base + ROCK_LINE)));
         assert!(!shape.is_rock(base + ROCK_LINE - 1, flat(base + ROCK_LINE - 1)));
-        // East to west across the column: 9 blocks over 2 is a cliff, 8
+        // East to west across the column: 9 blocks over 2 is a cliff, 8.9
         // isn't; and the plain hills' steepest, 3 a block each way, isn't.
-        assert!(shape.is_rock(base, [base + 5, base - 4, base, base]));
-        assert!(!shape.is_rock(base, [base + 4, base - 4, base, base]));
-        assert!(!shape.is_rock(base, [base + 3, base - 3, base + 3, base - 3]));
-        // Diagonal: 7 a block both ways.
-        assert!(shape.is_rock(base, [base + 7, base, base + 7, base]));
+        assert!(shape.is_rock(base, [b + 5.0, b - 4.0, b, b]));
+        assert!(!shape.is_rock(base, [b + 4.9, b - 4.0, b, b]));
+        assert!(!shape.is_rock(base, [b + 3.0, b - 3.0, b + 3.0, b - 3.0]));
+        // Diagonal: 3.5 a block both ways, about 4.95.
+        assert!(shape.is_rock(base, [b + 7.0, b, b + 7.0, b]));
     }
 
     /// The land eases from the plain hills into the shaped terrain: walking

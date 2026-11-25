@@ -283,6 +283,7 @@ impl Terrain {
 
     /// The height of the ground in the column at `(x, z)`: its top solid
     /// voxel is at `y = height - 1`.
+    #[cfg(test)]
     pub fn height(&self, x: i32, z: i32) -> i32 {
         self.shape.height(x, z)
     }
@@ -290,7 +291,7 @@ impl Terrain {
     /// Whether the column at `(x, z)` is bare rock, without soil.
     #[cfg(test)]
     pub fn is_rock(&self, x: i32, z: i32) -> bool {
-        let neighbours = NEIGHBOURS.map(|(dx, dz)| self.height(x + dx, z + dz));
+        let neighbours = NEIGHBOURS.map(|(dx, dz)| self.shape.surface(x + dx, z + dz));
         self.shape.is_rock(self.height(x, z), neighbours)
     }
 
@@ -307,10 +308,14 @@ impl Terrain {
         // One noise lookup per column, not per voxel, with a column more on
         // each side for telling cliffs.
         let padded = size + 2;
-        let heights: Vec<i32> = (0..padded * padded)
-            .map(|i| self.height(origin.x + i % padded - 1, origin.z + i / padded - 1))
+        let surfaces: Vec<f32> = (0..padded * padded)
+            .map(|i| {
+                self.shape
+                    .surface(origin.x + i % padded - 1, origin.z + i / padded - 1)
+            })
             .collect();
-        let at = |x: i32, z: i32| heights[((z + 1) * padded + x + 1) as usize];
+        let surface = |x: i32, z: i32| surfaces[((z + 1) * padded + x + 1) as usize];
+        let at = |x: i32, z: i32| surface(x, z).round() as i32;
         let columns = || (0..size * size).map(|i| (i % size, i / size));
         let (lowest, highest) = columns().fold((i32::MAX, i32::MIN), |(low, high), (x, z)| {
             (low.min(at(x, z)), high.max(at(x, z)))
@@ -327,7 +332,7 @@ impl Terrain {
             let height = at(x, z);
             let rock = self
                 .shape
-                .is_rock(height, NEIGHBOURS.map(|(dx, dz)| at(x + dx, z + dz)));
+                .is_rock(height, NEIGHBOURS.map(|(dx, dz)| surface(x + dx, z + dz)));
             let (x, z) = (x as usize, z as usize);
             for y in 0..CHUNK_SIZE {
                 chunk.set(

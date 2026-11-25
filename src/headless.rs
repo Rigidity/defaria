@@ -166,6 +166,7 @@ impl Plugin for HeadlessPlugin {
             .insert_resource(ScriptRunner {
                 commands: self.script.commands.clone().into(),
                 settling: Some(0),
+                settle_timeout: SETTLE_TIMEOUT_FRAMES,
                 rendering: self.rendering,
                 ..default()
             })
@@ -389,6 +390,9 @@ struct ScriptRunner {
     pending_captures: usize,
     /// Frames since the last command ran, once there are none left.
     frames_after_end: u32,
+    /// Give up on a `settle` after this many frames:
+    /// [`SETTLE_TIMEOUT_FRAMES`], but tests can wait less.
+    settle_timeout: u32,
     rendering: bool,
 }
 
@@ -455,7 +459,7 @@ fn run_script(
             status.is_none_or(|status| status.settled) && fog.is_none_or(|fog| fog.settled());
         if frames >= 2 && settled {
             runner.settling = None;
-        } else if frames >= SETTLE_TIMEOUT_FRAMES {
+        } else if frames >= runner.settle_timeout {
             error!("the world didn't finish loading in {frames} frames; giving up");
             exit.write(AppExit::error());
             runner.settling = None;
@@ -1199,7 +1203,11 @@ mod tests {
             max_loading: 0,
             ..default()
         });
-        for _ in 0..SETTLE_TIMEOUT_FRAMES + 10 {
+        // Not the real limit, which would take most of a minute in CI.
+        app.world_mut()
+            .resource_mut::<ScriptRunner>()
+            .settle_timeout = 100;
+        for _ in 0..110 {
             app.update();
             if let Some(exit) = app.should_exit() {
                 assert!(exit.is_error());
