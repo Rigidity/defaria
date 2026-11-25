@@ -180,6 +180,14 @@ pub struct Meshed;
 #[derive(Component)]
 pub struct MeshTask(Task<Mesh>);
 
+impl MeshTask {
+    /// The mesh is built and waiting to be shown.
+    #[cfg(test)]
+    pub fn is_finished(&self) -> bool {
+        self.0.is_finished()
+    }
+}
+
 /// Reads and writes voxels by world position, across every chunk.
 #[derive(SystemParam)]
 pub struct Voxels<'w, 's> {
