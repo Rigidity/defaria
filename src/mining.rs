@@ -23,7 +23,7 @@ use bevy::{
 };
 
 use crate::{
-    block_edit::{BlockEditSystems, crosshair_target},
+    block_edit::{BlockEditSystems, BlockOutlineSystems, crosshair_target},
     content::{BlockState, Content},
     fly_camera::{FlyCamera, FlyCameraSystems},
     terrain::{RemeshChunks, Voxels},
@@ -36,6 +36,11 @@ pub const SECONDS_PER_HARDNESS: f32 = 0.75;
 
 /// How long after a block breaks holding on starts on the next one.
 pub const BREAK_DELAY: Duration = Duration::from_millis(250);
+
+/// How close to a break time or the end of [`BREAK_DELAY`] counts as
+/// there, so frame times that don't add up exactly (1/60 s truncated to
+/// whole nanoseconds) don't cost a whole extra frame.
+const TOLERANCE: Duration = Duration::from_micros(1);
 
 /// How long a block of this hardness takes to break, in seconds.
 pub fn break_time(hardness: f32) -> f32 {
@@ -55,13 +60,16 @@ impl Plugin for MiningPlugin {
                     // cursor finds it still unlocked and arms nothing.
                     arm.before(FlyCameraSystems),
                     // After the camera turns, so the block mined is the one
-                    // outlined on the frame being drawn. After placing, so
-                    // the two edits on one frame always land in the same
-                    // order. Before remeshing, so a break shows this frame.
+                    // under the crosshair on the frame being drawn. After
+                    // placing, so the two edits on one frame always land in
+                    // the same order. Before the outline, so it's drawn
+                    // around the next block, not one that just broke. Before
+                    // remeshing, so a break shows this frame.
                     mine.in_set(MiningSystems)
                         .after(arm)
                         .after(FlyCameraSystems)
                         .after(BlockEditSystems)
+                        .before(BlockOutlineSystems)
                         .before(RemeshChunks),
                 ),
             );
@@ -131,9 +139,10 @@ fn mine(
     }
     if !mining.delay.is_zero() {
         mining.delay = mining.delay.saturating_sub(time.delta());
-        if !mining.delay.is_zero() {
+        if mining.delay > TOLERANCE {
             return;
         }
+        mining.delay = Duration::ZERO;
     }
     let Some(hit) = crosshair_target(transform, &content, &voxels) else {
         mining.target = None;
@@ -151,7 +160,7 @@ fn mine(
         mining.elapsed = Duration::ZERO;
     }
     let needed = Duration::from_secs_f32(seconds);
-    if mining.elapsed >= needed {
+    if mining.elapsed + TOLERANCE >= needed {
         voxels.set(hit.block, BlockState::AIR);
         *mining = Mining {
             armed: true,
@@ -159,7 +168,7 @@ fn mine(
             ..default()
         };
     } else {
-        mining.progress = mining.elapsed.as_secs_f32() / seconds;
+        mining.progress = (mining.elapsed.as_secs_f32() / seconds).min(1.0);
     }
 }
 
@@ -414,21 +423,31 @@ mod tests {
         assert_eq!(at(&mut app, second), BlockState::AIR);
     }
 
-    /// At 60 frames a second, a block that takes 0.75 s breaks on the 45th
-    /// frame after the press, not a frame late from rounding.
+    /// At the headless runner's frame time (1/60 s, truncated to whole
+    /// nanoseconds), a block that takes 0.75 s breaks on the 45th frame
+    /// after the press, and the next starts 15 frames (0.25 s) later, not
+    /// a frame late from rounding.
     #[test]
     fn breaks_on_the_frame_its_time_is_up() {
         let mut content = base().clone();
         content.states[block("stone").0 as usize].hardness = 1.0;
-        let mut app = app_with(content, Duration::from_secs_f64(1.0 / 60.0));
-        let stone = IVec3::new(5, 1, 5);
+        let mut app = app_with(content, crate::headless::FRAME_TIME);
+        let (stone, next) = (IVec3::new(5, 1, 5), IVec3::new(6, 1, 5));
+        set(&mut app, next, block("stone"));
         frame(&mut app, true);
         for i in 1..45 {
             frame(&mut app, false);
             assert_eq!(at(&mut app, stone), block("stone"), "broke at frame {i}");
+            assert!(mining(&mut app).progress < 1.0);
         }
         frame(&mut app, false);
         assert_eq!(at(&mut app, stone), BlockState::AIR);
+        for i in 1..15 {
+            frame(&mut app, false);
+            assert_eq!(mining(&mut app).target, None, "started at frame {i}");
+        }
+        frame(&mut app, false);
+        assert_eq!(mining(&mut app).target, Some((next, block("stone"))));
     }
 
     /// A press made while the cursor is free (the click that locks it)

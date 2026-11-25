@@ -56,7 +56,9 @@ impl Plugin for BlockEditPlugin {
                         .before(RemeshChunks),
                     // After the camera moves, so the outline matches the
                     // frame being drawn.
-                    outline_target.after(FlyCameraSystems),
+                    outline_target
+                        .in_set(BlockOutlineSystems)
+                        .after(FlyCameraSystems),
                 ),
             );
     }
@@ -65,6 +67,12 @@ impl Plugin for BlockEditPlugin {
 /// Where blocks are placed.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockEditSystems;
+
+/// Where the block under the crosshair is outlined. Systems that change
+/// blocks run before it, so the outline never surrounds a block removed
+/// on the frame being drawn.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BlockOutlineSystems;
 
 /// A block a ray ran into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
