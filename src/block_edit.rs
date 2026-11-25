@@ -787,7 +787,8 @@ mod tests {
         while app.should_exit().is_none() {
             app.update();
             frames += 1;
-            assert!(frames < 200, "script never finished");
+            // The script starts once the fog has opened up: a few seconds.
+            assert!(frames < 600, "script never finished");
         }
         // Grass broken once, not twice, and stone placed in its place.
         assert_eq!(world_voxel(&mut app, top), block("stone"));

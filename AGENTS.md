@@ -95,8 +95,8 @@ changes.
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
-   `settle` (wait for the world around the camera to load, after a `camera`
-   jump somewhere new). The full format is documented at the top of
+   `settle` (wait for the world around the camera to load and clear of fog,
+   after a `camera` jump somewhere new). The full format is documented at the top of
    `src/headless.rs`. The world loads around the camera in the background;
    the script starts once the first view has loaded. Headless runs play a
    world kept in memory, so every run starts the same; add `--world <folder>`
@@ -211,6 +211,7 @@ documented in `docs/modding.md`; keep that file, the serde types in
   physics body at the camera.
 - `src/streaming.rs`: loading, unloading and saving chunks around the
   camera. The world has no edges, up and down included.
+- `src/fog.rs`: distance fog that follows the edge of the drawn world.
 - `src/light.rs` (and `src/light/`): block and sky light. `src/light/sky.rs`
   decides where sky light comes in above the loaded chunks; see
   `docs/decisions.md`.

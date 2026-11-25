@@ -27,7 +27,7 @@
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
-//! | `settle` | Wait until the world around the camera has loaded and been meshed. |
+//! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
 //!
 //! Buttons are Bevy [`KeyCode`] names (`KeyW`, `Space`, `ShiftLeft`,
 //! `Escape`, …) or `MouseLeft`, `MouseRight`, `MouseMiddle`. Components are
@@ -36,7 +36,7 @@
 //!
 //! The world loads around the camera in the background, so the script
 //! starts only once the world around the starting position has loaded and
-//! been meshed (as if it began with `settle`). After a `camera` jump to
+//! been meshed, and the fog has opened up (as if it began with `settle`). After a `camera` jump to
 //! somewhere that isn't loaded yet, `settle` waits for it the same way. A
 //! run fails if the world doesn't settle within [`SETTLE_TIMEOUT_FRAMES`].
 //! Headless runs play a world kept in memory, so every run starts from the
@@ -102,6 +102,7 @@ use bevy::{
 use crate::{
     content::{BlockState, Content},
     fly_camera::{FlyCamera, MAX_PITCH},
+    fog::ChunkFog,
     physics::Body,
     player::{EYE_HEIGHT, Player},
     streaming::StreamingStatus,
@@ -431,6 +432,7 @@ fn render_to_image(add: On<Add<Camera>>, target: Res<HeadlessTarget>, mut comman
 fn run_script(
     mut runner: ResMut<ScriptRunner>,
     status: Option<Res<StreamingStatus>>,
+    fog: Option<Res<ChunkFog>>,
     mut window: Option<Single<(Entity, &mut Window), With<PrimaryWindow>>>,
     mut keys: MessageWriter<KeyboardInput>,
     mut mouse_buttons: MessageWriter<MouseButtonInput>,
@@ -444,7 +446,11 @@ fn run_script(
         // frame's, and a camera moved on the frame of the `settle` only
         // reaches the loading that frame's end (with its global
         // transform), so the first two frames' statuses don't count.
-        if frames >= 2 && status.is_none_or(|status| status.settled) {
+        // Screenshots taken then should show the world as it stays, so the
+        // fog has to have opened up too.
+        let settled =
+            status.is_none_or(|status| status.settled) && fog.is_none_or(|fog| fog.settled());
+        if frames >= 2 && settled {
             runner.settling = None;
         } else if frames >= SETTLE_TIMEOUT_FRAMES {
             error!("the world didn't finish loading in {frames} frames; giving up");
@@ -955,7 +961,9 @@ pub fn run_more(app: &mut App, script: &str) {
     panic!("the script never finished");
 }
 
-/// Updates `app` until the world around its camera has loaded.
+/// Updates `app` until the world around its camera has loaded. Unlike the
+/// script's `settle`, it doesn't wait for the fog to open, which tests that
+/// look at the world rather than the view don't need.
 #[cfg(test)]
 pub fn settle(app: &mut App) {
     // A camera moved this frame reaches the loading a frame late.
@@ -1116,6 +1124,67 @@ mod tests {
             .light;
         let lamp = light_at(&mut app, IVec3::new(5000, -1000, 5000));
         assert_eq!(lamp.block()[0], red[0], "the lamp was placed and lit");
+    }
+
+    /// `settle`, and the start of a script, wait for the fog to open all the
+    /// way, so screenshots show the view as it stays.
+    #[test]
+    fn settle_waits_for_the_fog() {
+        let fog = |app: &App| *app.world().resource::<ChunkFog>();
+        let (app, exit) = run_game("wait 1\n");
+        assert_eq!(exit, AppExit::Success);
+        assert_eq!(fog(&app).scale, 1.0, "open when the script starts");
+        assert!(fog(&app).settled());
+
+        let (app, exit) = run_game(
+            "camera 5000.5 70.5 5000.5 0 0\n\
+             settle\n\
+             wait 1\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        assert_eq!(fog(&app).scale, 1.0, "open after the jump");
+        assert!(fog(&app).settled());
+    }
+
+    /// Flying straight up across chunk levels, and sprinting sideways
+    /// across chunks, the fog stays all the way open: the chunks that start
+    /// loading as the camera moves on are outside it.
+    #[test]
+    fn moving_on_doesnt_bring_the_fog_in() {
+        let mut app = test_game(Script::parse("wait 1\n").unwrap());
+        // Big enough that the fog has a chunk to spare all round (at a
+        // radius of 4 it's held at its one-chunk minimum, which doesn't
+        // quite fit), and no more levels than that needs, so loading keeps
+        // up on a slow machine whatever the game's defaults are.
+        app.insert_resource(crate::streaming::StreamingSettings {
+            radius: 6,
+            above: 4,
+            below: 4,
+            ..default()
+        });
+        run_more(&mut app, "camera 8.5 40 8.5 0 0\nsettle\n");
+        for moves in ["hold Space 300\n", "press ControlLeft\nhold KeyW 300\n"] {
+            let script = Script::parse(moves).unwrap();
+            app.world_mut()
+                .resource_mut::<ScriptRunner>()
+                .commands
+                .extend(script.commands);
+            let mut frames = 0;
+            while !app.world().resource::<ScriptRunner>().finished() {
+                app.update();
+                // Loading runs on other threads; give it a moment, as a
+                // frame would.
+                std::thread::sleep(Duration::from_millis(1));
+                let fog = *app.world().resource::<ChunkFog>();
+                assert_eq!(fog.scale, 1.0, "{moves:?}, frame {frames}");
+                frames += 1;
+                assert!(frames < 400, "the script never finished");
+            }
+        }
+        // It really did climb, then fly on: more than two chunks each way.
+        let camera = camera(&mut app).1.translation;
+        assert!(camera.y > 40.0 + 32.0, "{camera}");
+        assert!(camera.z < 8.5 - 32.0, "{camera}");
     }
 
     /// A world that never finishes loading fails the run rather than

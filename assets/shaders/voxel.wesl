@@ -8,6 +8,11 @@
 // can blend the corners bilinearly. Letting the GPU interpolate per vertex
 // instead would blend across each of the quad's two triangles separately,
 // which shows the diagonal as bands and creases.
+//
+// Distance fog comes from the camera's `DistanceFog` (see src/fog.rs), in the
+// view's bindings, when it has one. It's a cylinder around the camera, like
+// the loaded world: `be` holds how far it reaches sideways, up and down, and
+// `bi.x` where it starts thickening, as a fraction of that.
 
 import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world};
 import bevy_pbr::render::view_transformations::position_world_to_clip;
@@ -148,6 +153,24 @@ fn pixel_art_uv(uv: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
     return (edge + offset) / size;
 }
 
+// Fades `color` into the fog with distance from the camera.
+@if(DISTANCE_FOG)
+fn fogged(color: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
+    let fog = bevy_pbr::render::mesh_view_bindings::fog;
+    let offset = position - bevy_pbr::render::mesh_view_bindings::view.world_position;
+    // How far through the cylinder: 1 on its surface.
+    let depth = max(
+        length(offset.xz) / fog.be.x,
+        max(offset.y / fog.be.y, -offset.y / fog.be.z),
+    );
+    let amount = smoothstep(fog.bi.x, 1.0, depth);
+    return mix(color, fog.base_color.rgb, amount);
+}
+@else
+fn fogged(color: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
+    return color;
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(blocks));
@@ -170,5 +193,5 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let sky = lighting.sky.rgb * brightness(vec3<f32>(baked.x));
     let light = max(max(sky, brightness(block)), vec3<f32>(AMBIENT));
     let ao = mix(OCCLUDED, 1.0, occlusion(in.face.y, in.corner) / 3.0);
-    return vec4<f32>(texel.rgb * light * ao, 1.0);
+    return vec4<f32>(fogged(texel.rgb * light * ao, in.world_position), 1.0);
 }
