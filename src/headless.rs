@@ -111,7 +111,7 @@ use crate::{
 };
 
 /// Fixed time step for every headless frame.
-const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);
+pub(crate) const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);
 /// Size of the offscreen image the camera renders into.
 const RESOLUTION: UVec2 = UVec2::new(1280, 720);
 /// Give up if captures are still pending or pipelines still compiling this

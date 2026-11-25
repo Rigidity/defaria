@@ -1,10 +1,11 @@
-//! Breaking and placing blocks.
+//! The crosshair, its target, and placing blocks. Breaking them is in
+//! `mining`.
 //!
-//! - While the cursor is locked, left click breaks the block under the
-//!   crosshair and right click places the active block against the face
-//!   you're looking at. The click that locks the cursor doesn't break
-//!   anything. The active block is the active hotbar slot's (see `hotbar`); an item
-//!   that places no block places nothing.
+//! - While the cursor is locked, holding left click breaks the block under
+//!   the crosshair (see `mining`) and right click places the active block
+//!   against the face you're looking at. The click that locks the cursor
+//!   doesn't edit anything. The active block is the active hotbar slot's
+//!   (see `hotbar`); an item that places no block places nothing.
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
@@ -48,17 +49,30 @@ impl Plugin for BlockEditPlugin {
                     // finds it still unlocked and edits nothing. After the
                     // hotbar, so a slot picked this frame is the one placed.
                     edit_blocks
+                        .in_set(BlockEditSystems)
                         .run_if(playing)
                         .after(HotbarInput)
                         .before(FlyCameraSystems)
                         .before(RemeshChunks),
                     // After the camera moves, so the outline matches the
                     // frame being drawn.
-                    outline_target.after(FlyCameraSystems),
+                    outline_target
+                        .in_set(BlockOutlineSystems)
+                        .after(FlyCameraSystems),
                 ),
             );
     }
 }
+
+/// Where blocks are placed.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BlockEditSystems;
+
+/// Where the block under the crosshair is outlined. Systems that change
+/// blocks run before it, so the outline never surrounds a block removed
+/// on the frame being drawn.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BlockOutlineSystems;
 
 /// A block a ray ran into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +199,14 @@ fn camera_ray(transform: &Transform) -> Ray3d {
     Ray3d::new(transform.translation, transform.forward())
 }
 
+/// The block under the crosshair of a camera at `transform`, within
+/// [`REACH`].
+pub fn crosshair_target(transform: &Transform, content: &Content, voxels: &Voxels) -> Option<Hit> {
+    raycast(camera_ray(transform), REACH, |pos| {
+        target_shape(content, voxels.get(pos).unwrap_or(BlockState::AIR))
+    })
+}
+
 fn edit_blocks(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
@@ -198,23 +220,12 @@ fn edit_blocks(
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
-    let (breaking, placing) = (
-        mouse.just_pressed(MouseButton::Left),
-        mouse.just_pressed(MouseButton::Right),
-    );
-    if !breaking && !placing {
+    if !mouse.just_pressed(MouseButton::Right) {
         return;
     }
-    let ray = camera_ray(&camera);
-    let Some(hit) = raycast(ray, REACH, |pos| {
-        target_shape(&content, voxels.get(pos).unwrap_or(BlockState::AIR))
-    }) else {
+    let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
         return;
     };
-    if breaking {
-        voxels.set(hit.block, BlockState::AIR);
-        return;
-    }
     let Some(block) = hotbar.active_block(*active, &content) else {
         return;
     };
@@ -227,7 +238,9 @@ fn edit_blocks(
         let b = Aabb::of_block(pos, b);
         bodies.iter().any(|body| body.aabb().intersects(&b))
     });
-    if pos == ray.origin.floor().as_ivec3() || voxels.get(pos) != Some(BlockState::AIR) || overlaps
+    if pos == camera.translation.floor().as_ivec3()
+        || voxels.get(pos) != Some(BlockState::AIR)
+        || overlaps
     {
         return;
     }
@@ -245,11 +258,11 @@ fn outline_target(
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
-    let shape = |pos| target_shape(&content, voxels.get(pos).unwrap_or(BlockState::AIR));
-    let Some(hit) = raycast(camera_ray(&camera), REACH, shape) else {
+    let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
         return;
     };
-    for b in shape(hit.block) {
+    let state = voxels.get(hit.block).unwrap_or(BlockState::AIR);
+    for b in target_shape(&content, state) {
         // A little bigger than the box, so it isn't hidden in its faces.
         let center = hit.block.as_vec3() + (b.min + b.max) / 2.0;
         let size = b.max - b.min + Vec3::splat(0.004);
@@ -316,6 +329,7 @@ mod tests {
         content::{base, block, test_mod},
         headless::{Script, settle, test_game},
         hotbar::select_with_keys,
+        mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{
             ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, apply_finished_meshes,
@@ -324,7 +338,8 @@ mod tests {
         voxel::Chunk,
         voxel_material::BlockMaterial,
     };
-    use bevy::math::DVec3;
+    use bevy::{math::DVec3, time::TimeUpdateStrategy};
+    use std::time::Duration;
 
     fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> &'static [BlockBox] + '_ {
         move |pos| {
@@ -482,10 +497,13 @@ mod tests {
     }
 
     /// Two chunks side by side along X, a camera locked in front of them,
-    /// and the edit and remesh systems; no rendering.
+    /// and the edit, mining and remesh systems; no rendering.
     fn app() -> (App, Entity, Entity) {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), MiningPlugin))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                50,
+            )))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial {
                 material: Handle::default(),
@@ -577,6 +595,32 @@ mod tests {
         mouse.clear();
     }
 
+    /// Holds left click until the targeted block breaks.
+    fn mine_target(app: &mut App) {
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.release_all();
+        mouse.clear();
+        mouse.press(MouseButton::Left);
+        let mut target = None;
+        for _ in 0..200 {
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear();
+            let mut miners = app.world_mut().query::<&Mining>();
+            let mining = miners.single(app.world()).unwrap();
+            target = mining.target.map(|(pos, _)| pos).or(target);
+            if target.is_some_and(|pos| world_voxel(app, pos).is_air()) {
+                break;
+            }
+        }
+        assert!(target.is_some(), "nothing to mine");
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+    }
+
     fn press_key(app: &mut App, key: KeyCode) {
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.press(key);
@@ -587,32 +631,16 @@ mod tests {
     }
 
     #[test]
-    fn left_click_breaks_the_targeted_block_and_remeshes() {
+    fn mining_breaks_the_targeted_block_and_remeshes() {
         let (mut app, left, _) = app();
         let before = mesh(&app, left);
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, left, 14, 1, 5), BlockState::AIR);
         assert_eq!(voxel(&app, left, 15, 1, 5), block("stone"));
         assert_ne!(mesh(&app, left), before);
         // Again: the next block along is now the target.
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, left, 15, 1, 5), BlockState::AIR);
-    }
-
-    #[test]
-    fn holding_the_button_breaks_only_one_block() {
-        let (mut app, left, _) = app();
-        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
-        mouse.press(MouseButton::Left);
-        for _ in 0..3 {
-            app.update();
-            // The next frame of holding: still pressed, no longer new.
-            app.world_mut()
-                .resource_mut::<ButtonInput<MouseButton>>()
-                .clear();
-        }
-        assert_eq!(voxel(&app, left, 14, 1, 5), BlockState::AIR);
-        assert_eq!(voxel(&app, left, 15, 1, 5), block("stone"));
     }
 
     #[test]
@@ -685,9 +713,9 @@ mod tests {
         // The right chunk's lone block has its -X face against the left
         // chunk's wall, so it starts with 5 faces.
         assert_eq!(vertices(&app, right), 5 * 4);
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         // Breaking (15, 1, 5) uncovers that face.
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, left, 15, 1, 5), BlockState::AIR);
         assert_eq!(vertices(&app, right), 6 * 4);
     }
@@ -699,7 +727,7 @@ mod tests {
         let (mut app, left, right) = app();
         let before = vertices(&app, left);
         look_at(&mut app, Vec3::new(19.5, 1.5, 5.5), Vec3::NEG_X);
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, right, 0, 1, 5), BlockState::AIR);
         assert_eq!(mesh(&app, right), None);
         // The wall's block at (15, 1, 5) shows its +X face now.
@@ -752,23 +780,22 @@ mod tests {
             .map_or(BlockState::AIR, |(_, chunk)| chunk.at(local))
     }
 
-    /// Through the real game and input pipeline: the click that locks the
-    /// cursor edits nothing, the next one breaks the block under the
-    /// crosshair, and a right click puts the active block (stone) back.
-    #[test]
-    fn locking_click_edits_nothing_then_clicks_break_and_place() {
+    /// Frames, at the headless runner's 60 per second, that holding left
+    /// click on grass takes to break it.
+    fn grass_frames() -> u32 {
+        let seconds = crate::mining::break_time(base().state(block("grass")).hardness);
+        (seconds * 60.0).ceil() as u32
+    }
+
+    /// Runs `script` (after a `camera` line three blocks above the grass
+    /// at (40, 40), looking straight down) through the real game and input
+    /// pipeline, and returns the game, the grass's position and what was
+    /// under it before.
+    fn run_over_grass(script: &str) -> (App, IVec3, BlockState) {
         let (x, z) = (40, 40);
         let height = Terrain::new(default(), TerrainBlocks::from_content(base())).height(x, z);
-        // Three blocks above the top, looking straight down.
         let script = Script::parse(&format!(
-            "camera {} {} {} 0 -90\n\
-             wait 2\n\
-             hold MouseLeft 1  # lock the cursor\n\
-             wait 1\n\
-             hold MouseLeft 1  # break\n\
-             wait 1\n\
-             hold MouseRight 1  # place\n\
-             wait 2\n",
+            "camera {} {} {} 0 -90\n{script}",
             x as f32 + 0.5,
             height as f32 + 3.5,
             z as f32 + 0.5,
@@ -790,8 +817,42 @@ mod tests {
             // The script starts once the fog has opened up: a few seconds.
             assert!(frames < 600, "script never finished");
         }
+        (app, top, below_before)
+    }
+
+    /// Through the real game: the click that locks the cursor mines
+    /// nothing, even held for longer than the grass takes to break.
+    #[test]
+    fn holding_the_locking_click_mines_nothing() {
+        let hold = grass_frames() * 2;
+        let (mut app, top, _) = run_over_grass(&format!(
+            "wait 2\n\
+             hold MouseLeft {hold}  # lock the cursor, and keep holding\n\
+             wait 2\n"
+        ));
+        assert_eq!(world_voxel(&mut app, top), block("grass"));
+        let mut miners = app.world_mut().query::<&Mining>();
+        assert_eq!(miners.single(app.world()).unwrap().target, None);
+    }
+
+    /// Through the real game: the click that locks the cursor edits
+    /// nothing, holding the next one breaks the block under the crosshair,
+    /// and a right click puts the active block (stone) back.
+    #[test]
+    fn locking_click_edits_nothing_then_clicks_break_and_place() {
+        // Long enough to break the grass, but not the block under it too.
+        let hold = grass_frames() + 2;
+        let (mut app, top, below_before) = run_over_grass(&format!(
+            "wait 2\n\
+             hold MouseLeft 1  # lock the cursor\n\
+             wait 1\n\
+             hold MouseLeft {hold} # break\n\
+             wait 1\n\
+             hold MouseRight 1  # place\n\
+             wait 2\n"
+        ));
         // Grass broken once, not twice, and stone placed in its place.
         assert_eq!(world_voxel(&mut app, top), block("stone"));
-        assert_eq!(world_voxel(&mut app, below), below_before);
+        assert_eq!(world_voxel(&mut app, top - IVec3::Y), below_before);
     }
 }

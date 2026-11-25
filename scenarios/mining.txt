@@ -1,0 +1,51 @@
+# Mining: hold left click on a stone block and then a stone slab, on a
+# platform built in the air, until each breaks. `inspect Mining` shows the
+# target and how far along it is on the way; releasing in between starts
+# over. Stone takes about a second (its hardness times 0.75 s).
+# Run: cargo headless scenarios/mining.txt
+wait 5
+fill 20 45 20 30 45 30 planks       # the platform
+fill 24 46 24 24 46 24 stone        # a block to mine
+fill 26 46 24 26 46 24 stone_slab   # and a slab
+camera 24.5 48.5 26.8 0 -35         # over the block, looking down at it
+wait 2
+hold MouseLeft 1                    # lock the cursor; this click mines nothing
+wait 1
+press MouseLeft                     # start mining the block
+wait 10
+inspect Mining
+screenshot target/scenarios/mining/0-block-early.png
+wait 15
+inspect Mining
+screenshot target/scenarios/mining/1-block-half.png
+wait 15
+inspect Mining
+screenshot target/scenarios/mining/2-block-late.png
+wait 35
+release MouseLeft
+inspect Mining                      # broken: nothing targeted
+wait 1
+screenshot target/scenarios/mining/3-block-broken.png
+wait 1
+camera 26.5 47.8 26.6 0 -30         # over the slab
+wait 2
+press MouseLeft
+wait 10
+release MouseLeft                   # let go early: it starts over
+inspect Mining
+wait 2
+press MouseLeft
+wait 10
+inspect Mining
+screenshot target/scenarios/mining/4-slab-early.png
+wait 15
+inspect Mining
+screenshot target/scenarios/mining/5-slab-half.png
+wait 15
+inspect Mining
+screenshot target/scenarios/mining/6-slab-late.png
+wait 35
+release MouseLeft
+wait 1
+inspect Mining
+screenshot target/scenarios/mining/7-slab-broken.png
