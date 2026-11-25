@@ -180,6 +180,12 @@ mod tests {
         assert!((left.abs() - roll).abs() < 1e-5, "{left}");
         assert!((right_side.abs() - roll).abs() < 1e-5, "{right_side}");
         assert!(left * right_side < 0.0, "{left} {right_side}");
+        // It rolls with the sideways sway: both come from the same swing,
+        // so the camera's sideways shift and its tilt share a sign.
+        for walked in [0.5, 1.5] {
+            let shift = sway(walked, amount).translation.x;
+            assert!(shift * right(walked).y > 0.0, "{walked}");
+        }
         let nod = (0.5 * 0.2_f32.cos()).to_radians().sin();
         for walked in [0.0, 1.0, 2.0] {
             let down = forward(walked).y;
