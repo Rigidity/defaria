@@ -237,7 +237,7 @@ fn edit_blocks(
         return;
     };
     // Properties such as a log's axis follow the face clicked or the view.
-    let block = content.placed(block, face, *ray.direction);
+    let block = content.placed(block, face, *camera.forward());
     // Not into the camera, outside the world, over another block, or where
     // it would overlap someone.
     let overlaps = content.state(block).collision.iter().any(|b| {
