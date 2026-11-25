@@ -15,6 +15,7 @@ pub mod headless;
 mod hotbar;
 mod inventory;
 mod light;
+mod mining;
 mod perlin;
 mod physics;
 mod player;
@@ -55,6 +56,6 @@ impl Plugin for GamePlugin {
             streaming::StreamingPlugin,
         ))
         // Bevy takes at most 15 plugins in one tuple.
-        .add_plugins((fog::FogPlugin, fov::FovPlugin));
+        .add_plugins((fog::FogPlugin, fov::FovPlugin, mining::MiningPlugin));
     }
 }

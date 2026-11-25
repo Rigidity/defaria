@@ -224,6 +224,9 @@ documented in `docs/modding.md`; keep that file, the serde types in
   condition gameplay input runs under), pointer hover and clicks, scrolling,
   item icons, item slots and tooltips. Build new UI from these, in the
   feature's own module.
+- `src/block_edit.rs`: the crosshair, its target and placing blocks.
+  `src/mining.rs`: breaking blocks by holding left click, for a time set
+  by their hardness (`Mining`, on the camera, has the target and progress).
 - `src/hotbar.rs`: the nine-slot hotbar. `src/inventory.rs`: the inventory
   screen (E).
 - `src/physics.rs`: boxes colliding with block shapes (swept, sliding,

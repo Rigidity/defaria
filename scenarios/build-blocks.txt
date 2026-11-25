@@ -12,7 +12,7 @@ screenshot target/scenarios/build-blocks/0-aim.png
 inspect FlyCamera
 inspect Body
 wait 1
-hold MouseLeft 1   # break the grass block straight down
+hold MouseLeft 50  # mine the grass block straight down
 wait 1
 screenshot target/scenarios/build-blocks/1-dug.png
 wait 1

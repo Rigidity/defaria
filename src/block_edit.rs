@@ -1,10 +1,10 @@
 //! Breaking and placing blocks.
 //!
-//! - While the cursor is locked, left click breaks the block under the
-//!   crosshair and right click places the active block against the face
-//!   you're looking at. The click that locks the cursor doesn't break
-//!   anything. The active block is the active hotbar slot's (see `hotbar`); an item
-//!   that places no block places nothing.
+//! - While the cursor is locked, holding left click breaks the block under
+//!   the crosshair (see `mining`) and right click places the active block
+//!   against the face you're looking at. The click that locks the cursor
+//!   doesn't edit anything. The active block is the active hotbar slot's
+//!   (see `hotbar`); an item that places no block places nothing.
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
@@ -181,7 +181,7 @@ pub fn target_shape(content: &Content, state: BlockState) -> &[BlockBox] {
 }
 
 /// The ray from the camera through the crosshair.
-fn camera_ray(transform: &Transform) -> Ray3d {
+pub fn camera_ray(transform: &Transform) -> Ray3d {
     Ray3d::new(transform.translation, transform.forward())
 }
 
@@ -198,11 +198,7 @@ fn edit_blocks(
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
-    let (breaking, placing) = (
-        mouse.just_pressed(MouseButton::Left),
-        mouse.just_pressed(MouseButton::Right),
-    );
-    if !breaking && !placing {
+    if !mouse.just_pressed(MouseButton::Right) {
         return;
     }
     let ray = camera_ray(&camera);
@@ -211,10 +207,6 @@ fn edit_blocks(
     }) else {
         return;
     };
-    if breaking {
-        voxels.set(hit.block, BlockState::AIR);
-        return;
-    }
     let Some(block) = hotbar.active_block(*active, &content) else {
         return;
     };
@@ -316,6 +308,7 @@ mod tests {
         content::{base, block, test_mod},
         headless::{Script, settle, test_game},
         hotbar::select_with_keys,
+        mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{
             ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, apply_finished_meshes,
@@ -324,7 +317,8 @@ mod tests {
         voxel::Chunk,
         voxel_material::BlockMaterial,
     };
-    use bevy::math::DVec3;
+    use bevy::{math::DVec3, time::TimeUpdateStrategy};
+    use std::time::Duration;
 
     fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> &'static [BlockBox] + '_ {
         move |pos| {
@@ -482,10 +476,13 @@ mod tests {
     }
 
     /// Two chunks side by side along X, a camera locked in front of them,
-    /// and the edit and remesh systems; no rendering.
+    /// and the edit, mining and remesh systems; no rendering.
     fn app() -> (App, Entity, Entity) {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), MiningPlugin))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                50,
+            )))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial {
                 material: Handle::default(),
@@ -577,6 +574,32 @@ mod tests {
         mouse.clear();
     }
 
+    /// Holds left click until the targeted block breaks.
+    fn mine_target(app: &mut App) {
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.release_all();
+        mouse.clear();
+        mouse.press(MouseButton::Left);
+        let mut target = None;
+        for _ in 0..200 {
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear();
+            let mut miners = app.world_mut().query::<&Mining>();
+            let mining = miners.single(app.world()).unwrap();
+            target = mining.target.map(|(pos, _)| pos).or(target);
+            if target.is_some_and(|pos| world_voxel(app, pos).is_air()) {
+                break;
+            }
+        }
+        assert!(target.is_some(), "nothing to mine");
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+    }
+
     fn press_key(app: &mut App, key: KeyCode) {
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.press(key);
@@ -587,32 +610,16 @@ mod tests {
     }
 
     #[test]
-    fn left_click_breaks_the_targeted_block_and_remeshes() {
+    fn mining_breaks_the_targeted_block_and_remeshes() {
         let (mut app, left, _) = app();
         let before = mesh(&app, left);
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, left, 14, 1, 5), BlockState::AIR);
         assert_eq!(voxel(&app, left, 15, 1, 5), block("stone"));
         assert_ne!(mesh(&app, left), before);
         // Again: the next block along is now the target.
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, left, 15, 1, 5), BlockState::AIR);
-    }
-
-    #[test]
-    fn holding_the_button_breaks_only_one_block() {
-        let (mut app, left, _) = app();
-        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
-        mouse.press(MouseButton::Left);
-        for _ in 0..3 {
-            app.update();
-            // The next frame of holding: still pressed, no longer new.
-            app.world_mut()
-                .resource_mut::<ButtonInput<MouseButton>>()
-                .clear();
-        }
-        assert_eq!(voxel(&app, left, 14, 1, 5), BlockState::AIR);
-        assert_eq!(voxel(&app, left, 15, 1, 5), block("stone"));
     }
 
     #[test]
@@ -685,9 +692,9 @@ mod tests {
         // The right chunk's lone block has its -X face against the left
         // chunk's wall, so it starts with 5 faces.
         assert_eq!(vertices(&app, right), 5 * 4);
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         // Breaking (15, 1, 5) uncovers that face.
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, left, 15, 1, 5), BlockState::AIR);
         assert_eq!(vertices(&app, right), 6 * 4);
     }
@@ -699,7 +706,7 @@ mod tests {
         let (mut app, left, right) = app();
         let before = vertices(&app, left);
         look_at(&mut app, Vec3::new(19.5, 1.5, 5.5), Vec3::NEG_X);
-        click(&mut app, MouseButton::Left);
+        mine_target(&mut app);
         assert_eq!(voxel(&app, right, 0, 1, 5), BlockState::AIR);
         assert_eq!(mesh(&app, right), None);
         // The wall's block at (15, 1, 5) shows its +X face now.
@@ -753,25 +760,29 @@ mod tests {
     }
 
     /// Through the real game and input pipeline: the click that locks the
-    /// cursor edits nothing, the next one breaks the block under the
+    /// cursor edits nothing, holding the next one breaks the block under the
     /// crosshair, and a right click puts the active block (stone) back.
     #[test]
     fn locking_click_edits_nothing_then_clicks_break_and_place() {
         let (x, z) = (40, 40);
         let height = Terrain::new(default(), TerrainBlocks::from_content(base())).height(x, z);
+        // Long enough to break the grass, but not the block under it too.
+        let seconds = crate::mining::break_time(base().state(block("grass")).hardness);
+        let hold = (seconds * 60.0).ceil() as u32 + 2;
         // Three blocks above the top, looking straight down.
         let script = Script::parse(&format!(
             "camera {} {} {} 0 -90\n\
              wait 2\n\
              hold MouseLeft 1  # lock the cursor\n\
              wait 1\n\
-             hold MouseLeft 1  # break\n\
+             hold MouseLeft {} # break\n\
              wait 1\n\
              hold MouseRight 1  # place\n\
              wait 2\n",
             x as f32 + 0.5,
             height as f32 + 3.5,
             z as f32 + 0.5,
+            hold,
         ))
         .unwrap();
         let mut app = test_game(script);
