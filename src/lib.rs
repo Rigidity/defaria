@@ -9,6 +9,7 @@ pub mod content;
 mod devtools;
 mod dynamic_light;
 mod fly_camera;
+mod fog;
 pub mod headless;
 mod hotbar;
 mod inventory;
@@ -50,6 +51,8 @@ impl Plugin for GamePlugin {
             light::LightPlugin,
             dynamic_light::DynamicLightPlugin,
             streaming::StreamingPlugin,
-        ));
+        ))
+        // Bevy takes at most 15 plugins in one tuple.
+        .add_plugins(fog::FogPlugin);
     }
 }

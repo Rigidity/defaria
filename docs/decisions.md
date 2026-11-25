@@ -3,6 +3,30 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## The fog is the sky's colour everywhere (2026-11-24)
+
+**Context.** Distance fog (`src/fog.rs`) hides the edge of the drawn
+world: a cylinder around the camera, sized to fit inside what's loaded,
+that shrinks while chunks inside it are missing. It fades into the sky
+colour (`ClearColor`).
+
+**Decision.** One fog colour, the sky's, wherever the camera is.
+
+**What's wrong with it.** Underground, far cave walls fade to bright sky
+blue rather than darkness, and a day-night cycle would leave the fog
+behind. The cylinder's bottom is only 96 blocks below the camera (six
+chunks: the world loads eight down, less one that's never drawn and one
+to spare), so flying higher than that over the ground fogs it out
+entirely.
+
+**What should replace it.** Fog coloured by the sky light where the camera
+is (dark in caves), following the sky colour once it changes over the
+day.
+
+**When to revisit.** With a day-night cycle, when caves get big enough
+to see far across, or if flying high should keep the ground in view
+(load further down, `StreamingSettings::below`).
+
 ## Walking is smoothed, not stepped per tick (2026-11-24)
 
 **Context.** Walking's top speed (4.317 blocks a second) and how quickly

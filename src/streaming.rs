@@ -138,6 +138,18 @@ impl StreamingSettings {
         x * x + z * z <= radius * radius
             && (-self.below - extra..=self.above + extra).contains(&offset.y)
     }
+
+    /// Whether a chunk `offset` from a loader's chunk can be drawn: it's
+    /// loaded, and so are all its neighbours (see [`AwaitingNeighbours`]),
+    /// so that's one chunk in from the edge of what's loaded.
+    pub fn drawn(&self, offset: IVec3) -> bool {
+        self.reaches(offset, -1)
+    }
+
+    /// The levels, relative to a loader's chunk, that can be drawn.
+    pub fn drawn_levels(&self) -> std::ops::RangeInclusive<i32> {
+        1 - self.below..=self.above - 1
+    }
 }
 
 /// Loads the world around itself, using its [`GlobalTransform`].
