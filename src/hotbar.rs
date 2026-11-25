@@ -13,6 +13,7 @@
 use bevy::{
     input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
+    window::PrimaryWindow,
 };
 
 use crate::{
@@ -47,7 +48,8 @@ pub const HOTBAR_KEYS: [KeyCode; HOTBAR_SLOTS] = [
     KeyCode::Digit9,
 ];
 
-/// Wheel movement in pixels (from a touchpad) that counts as one notch.
+/// Wheel movement in logical pixels (from a touchpad) that counts as one
+/// notch.
 const PIXELS_PER_STEP: f32 = 40.0;
 /// How long the item name shows after switching, in seconds, and how much
 /// of the end of that it spends fading out.
@@ -62,6 +64,7 @@ impl Plugin for HotbarPlugin {
             .init_resource::<ActiveSlot>()
             .register_type::<Hotbar>()
             .register_type::<ActiveSlot>()
+            .add_observer(click_slot)
             .add_systems(Startup, spawn_hotbar)
             .add_systems(
                 Update,
@@ -127,6 +130,7 @@ pub fn step_slot(slot: usize, steps: i32) -> usize {
 
 fn cycle_with_wheel(
     wheel: Res<AccumulatedMouseScroll>,
+    window: Option<Single<&Window, With<PrimaryWindow>>>,
     mut active: ResMut<ActiveSlot>,
     // Wheel movement not yet a whole step, in steps.
     mut partial: Local<f32>,
@@ -136,7 +140,11 @@ fn cycle_with_wheel(
     }
     let notches = match wheel.unit {
         MouseScrollUnit::Line => wheel.delta.y,
-        MouseScrollUnit::Pixel => wheel.delta.y / PIXELS_PER_STEP,
+        // Touchpads report physical pixels.
+        MouseScrollUnit::Pixel => {
+            let scale = window.map_or(1.0, |window| window.scale_factor());
+            wheel.delta.y / scale / PIXELS_PER_STEP
+        }
     };
     *partial += notches;
     let whole = partial.trunc();
@@ -189,8 +197,7 @@ fn spawn_hotbar(mut commands: Commands, theme: Res<UiTheme>) {
             ))
             .with_children(|bar| {
                 for index in 0..HOTBAR_SLOTS {
-                    bar.spawn((HotbarSlot(index), item_slot(&theme, ItemSlot::default())))
-                        .observe(click_slot);
+                    bar.spawn((HotbarSlot(index), item_slot(&theme, ItemSlot::default())));
                 }
             });
         });
@@ -206,14 +213,11 @@ fn click_slot(
     let Ok(&HotbarSlot(index)) = slots.get(click.entity) else {
         return;
     };
-    match click.button {
-        MouseButton::Left => active.set_if_neq(ActiveSlot(index)),
-        MouseButton::Right => {
-            hotbar.0[index] = None;
-            true
-        }
-        _ => false,
-    };
+    if click.button == MouseButton::Left {
+        active.set_if_neq(ActiveSlot(index));
+    } else if click.button == MouseButton::Right {
+        hotbar.0[index] = None;
+    }
 }
 
 fn show_hotbar(
@@ -242,7 +246,8 @@ fn show_active_name(
     theme: Res<UiTheme>,
     mut names: Query<(&mut ActiveItemName, &mut Text, &mut TextColor)>,
 ) {
-    let switched = active.is_changed() || hotbar.is_changed();
+    // Not for the starting slot, only when it changes after.
+    let switched = (active.is_changed() || hotbar.is_changed()) && !active.is_added();
     for (mut left, mut text, mut color) in &mut names {
         if switched {
             let name = hotbar
@@ -389,11 +394,53 @@ mod tests {
         let (text, color, _) = names.single(app.world()).unwrap();
         assert_eq!(text.0, "Log");
         assert_eq!(color.0.alpha(), 1.0);
-        for _ in 0..(NAME_TIME * 10.0) as usize + 1 {
+        // 0.1 s a frame: 1.6 s on, 0.4 s are left, partway through the fade.
+        for _ in 0..16 {
+            app.update();
+        }
+        let (_, color, _) = names.single(app.world()).unwrap();
+        assert!(
+            (color.0.alpha() - 0.4 / NAME_FADE).abs() < 1e-3,
+            "{}",
+            color.0.alpha()
+        );
+        for _ in 0..5 {
             app.update();
         }
         let (_, color, _) = names.single(app.world()).unwrap();
         assert_eq!(color.0.alpha(), 0.0);
+    }
+
+    /// The starting slot's name doesn't show at startup.
+    #[test]
+    fn no_name_shows_before_switching() {
+        let mut app = app();
+        app.update();
+        let mut names = app
+            .world_mut()
+            .query::<(&Text, &TextColor, &ActiveItemName)>();
+        let (text, color, _) = names.single(app.world()).unwrap();
+        assert_eq!((text.0.as_str(), color.0.alpha()), ("", 0.0));
+    }
+
+    /// Touchpad pixels are physical: on a window at scale 2, a step takes
+    /// twice as many of them.
+    #[test]
+    fn touchpad_steps_are_in_logical_pixels() {
+        let mut app = app();
+        let mut resolution = bevy::window::WindowResolution::default();
+        resolution.set_scale_factor_override(Some(2.0));
+        app.world_mut().spawn((
+            Window {
+                resolution,
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        turn(&mut app, MouseScrollUnit::Pixel, -PIXELS_PER_STEP);
+        assert_eq!(active(&app), 0);
+        turn(&mut app, MouseScrollUnit::Pixel, -PIXELS_PER_STEP);
+        assert_eq!(active(&app), 1);
     }
 
     #[test]

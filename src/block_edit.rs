@@ -5,8 +5,8 @@
 //!   you're looking at. The click that locks the cursor doesn't break
 //!   anything. The active block is the active hotbar slot's (see `hotbar`); an item
 //!   that places no block places nothing.
-//! - A crosshair marks the middle of the screen, and an outline shows the
-//!   targeted block.
+//! - A crosshair marks the middle of the screen (hidden while a screen is
+//!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
 //!
 //! Edits go through [`Voxels`], and the terrain remeshes the changed chunks
@@ -23,7 +23,7 @@ use crate::{
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     physics::{Aabb, Body},
     terrain::{RemeshChunks, Voxels},
-    ui::playing,
+    ui::{UiScreen, playing},
 };
 
 /// How far away, in blocks, you can break or place.
@@ -47,6 +47,7 @@ impl Plugin for BlockEditPlugin {
                 // After the camera moves, so the outline matches the
                 // frame being drawn.
                 outline_target.after(FlyCameraSystems),
+                show_crosshair,
             ),
         );
     }
@@ -252,6 +253,26 @@ fn outline_target(
     }
 }
 
+/// The crosshair's root node.
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
+struct Crosshair;
+
+/// Shows the crosshair only while playing.
+fn show_crosshair(
+    screens: Query<(), With<UiScreen>>,
+    mut crosshairs: Query<&mut Visibility, With<Crosshair>>,
+) {
+    let wanted = if playing(screens) {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut crosshairs {
+        visibility.set_if_neq(wanted);
+    }
+}
+
 fn spawn_crosshair(mut commands: Commands) {
     // Two thin bars crossing at the middle of the screen.
     let bar = |width: f32, height: f32| {
@@ -267,6 +288,7 @@ fn spawn_crosshair(mut commands: Commands) {
     };
     commands.spawn((
         Name::new("Crosshair"),
+        Crosshair,
         Node {
             width: percent(100),
             height: percent(100),

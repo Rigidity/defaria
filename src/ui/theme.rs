@@ -8,12 +8,14 @@ use bevy::prelude::*;
 pub struct UiTheme {
     /// Width and height of an item slot, border included, in logical pixels.
     pub slot_size: f32,
-    /// The item icon inside a slot.
+    /// The item icon inside a slot. A multiple of 16, so flat 16-pixel
+    /// item icons scale up by a whole number.
     pub icon_size: f32,
     pub slot_border: f32,
     /// Space between neighbouring slots.
     pub slot_gap: f32,
     pub panel_padding: f32,
+    pub scrollbar_width: f32,
     pub font_size: f32,
     pub title_font_size: f32,
 
@@ -35,11 +37,12 @@ pub struct UiTheme {
 impl Default for UiTheme {
     fn default() -> Self {
         Self {
-            slot_size: 52.0,
-            icon_size: 40.0,
+            slot_size: 56.0,
+            icon_size: 48.0,
             slot_border: 2.0,
             slot_gap: 4.0,
             panel_padding: 14.0,
+            scrollbar_width: 6.0,
             font_size: 16.0,
             title_font_size: 20.0,
 

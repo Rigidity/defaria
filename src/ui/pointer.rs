@@ -21,7 +21,7 @@ use bevy::{
     window::PrimaryWindow,
 };
 
-use super::screen::playing;
+use super::screen::{UiScreen, playing};
 
 pub struct PointerPlugin;
 
@@ -56,6 +56,21 @@ pub struct UiPointer {
 }
 
 impl UiPointer {
+    /// The visible node on top under the pointer, of those `nodes` (a
+    /// query of [`HitTestData`]) holds.
+    pub fn topmost<F: bevy::ecs::query::QueryFilter>(
+        &self,
+        nodes: &Query<HitTestData, F>,
+    ) -> Option<Entity> {
+        nodes
+            .iter()
+            .filter(|(_, node, transform, visible, clip, _)| {
+                visible.get() && self.is_over(node, transform, *clip)
+            })
+            .max_by_key(|(.., stack)| stack.0)
+            .map(|(entity, ..)| entity)
+    }
+
     /// Whether the pointer is over `node`, inside whatever clips it.
     pub fn is_over(
         &self,
@@ -87,25 +102,25 @@ pub struct Clicked {
     pub button: MouseButton,
 }
 
+/// What hit testing reads from a node: [`UiPointer::topmost`] takes these.
+pub type HitTestData = (
+    Entity,
+    &'static ComputedNode,
+    &'static UiGlobalTransform,
+    &'static InheritedVisibility,
+    Option<&'static CalculatedClip>,
+    &'static ComputedStackIndex,
+);
+
 fn track_pointer(
     mut commands: Commands,
     mut pointer: ResMut<UiPointer>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
-    screen: Option<Res<State<super::UiScreen>>>,
-    nodes: Query<
-        (
-            Entity,
-            &ComputedNode,
-            &UiGlobalTransform,
-            &InheritedVisibility,
-            Option<&CalculatedClip>,
-            &ComputedStackIndex,
-        ),
-        With<Hoverable>,
-    >,
+    screens: Query<(), With<UiScreen>>,
+    nodes: Query<HitTestData, With<Hoverable>>,
     hovered: Query<Entity, With<Hovered>>,
 ) {
-    let position = if playing(screen) {
+    let position = if playing(screens) {
         None
     } else {
         window.and_then(|window| window.physical_cursor_position())
@@ -114,13 +129,7 @@ fn track_pointer(
         position,
         hovered: None,
     };
-    next.hovered = nodes
-        .iter()
-        .filter(|(_, node, transform, visible, clip, _)| {
-            visible.get() && next.is_over(node, transform, *clip)
-        })
-        .max_by_key(|(.., stack)| stack.0)
-        .map(|(entity, ..)| entity);
+    next.hovered = next.topmost(&nodes);
     for entity in &hovered {
         if Some(entity) != next.hovered {
             commands.entity(entity).remove::<Hovered>();
@@ -146,13 +155,10 @@ fn click(mut commands: Commands, pointer: Res<UiPointer>, mouse: Res<ButtonInput
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::ui::UiScreen;
-    use bevy::state::app::StatesPlugin;
 
     pub fn app() -> App {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, StatesPlugin, PointerPlugin))
-            .init_state::<UiScreen>()
+        app.add_plugins((MinimalPlugins, PointerPlugin))
             .init_resource::<ButtonInput<MouseButton>>();
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         app
@@ -183,10 +189,7 @@ pub(crate) mod tests {
     }
 
     pub fn open_screen(app: &mut App) {
-        app.world_mut()
-            .resource_mut::<NextState<UiScreen>>()
-            .set(UiScreen::Inventory);
-        app.update();
+        app.world_mut().spawn(UiScreen);
     }
 
     #[derive(Resource, Default)]
@@ -257,5 +260,26 @@ pub(crate) mod tests {
             app.update();
             assert_eq!(app.world().resource::<UiPointer>().hovered, None);
         }
+    }
+
+    /// A node partly scrolled out of its parent is clipped by a rectangle:
+    /// only the part inside it can be hovered.
+    #[test]
+    fn only_the_unclipped_part_of_a_node_is_hovered() {
+        let mut app = app();
+        open_screen(&mut app);
+        // The node spans 30..70 both ways; the clip keeps y 30..50.
+        let node = node(&mut app, Vec2::new(50.0, 50.0), 40.0, 1);
+        let clip = CalculatedClip::default().with_rect(
+            Rect::new(30.0, 30.0, 70.0, 50.0),
+            &UiGlobalTransform::default(),
+        );
+        app.world_mut().entity_mut(node).insert(clip);
+        move_to(&mut app, Vec2::new(50.0, 40.0));
+        app.update();
+        assert_eq!(app.world().resource::<UiPointer>().hovered, Some(node));
+        move_to(&mut app, Vec2::new(50.0, 60.0));
+        app.update();
+        assert_eq!(app.world().resource::<UiPointer>().hovered, None);
     }
 }

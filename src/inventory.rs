@@ -1,6 +1,7 @@
 //! The inventory screen: every item the mods define, in a scrolling grid.
 //!
-//! - E opens and closes it; Escape closes it too (see [`crate::ui::screen`]).
+//! - E opens and closes it, while no other screen is open; Escape closes it
+//!   too (see [`crate::ui::screen`]).
 //! - Clicking an item puts it in the active hotbar slot. The number keys
 //!   and clicks on the hotbar pick which slot that is, so filling the
 //!   hotbar is: pick a slot, click an item.
@@ -30,8 +31,10 @@ pub struct InventoryPlugin;
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<CatalogSlot>()
-            .add_systems(Update, (toggle_inventory, frame_active_item))
-            .add_systems(OnEnter(UiScreen::Inventory), spawn_inventory);
+            .register_type::<InventoryScreen>()
+            .register_type::<InventoryGrid>()
+            .add_observer(pick_item)
+            .add_systems(Update, (toggle_inventory, frame_active_item));
     }
 }
 
@@ -40,26 +43,37 @@ impl Plugin for InventoryPlugin {
 #[reflect(Component)]
 pub struct CatalogSlot(pub ItemId);
 
+/// The inventory screen's root; despawning it closes the inventory.
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
+#[require(UiScreen)]
+pub struct InventoryScreen;
+
 /// The scrolling grid of slots.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
 #[reflect(Component)]
 pub struct InventoryGrid;
 
 fn toggle_inventory(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    screen: Res<State<UiScreen>>,
-    mut next: ResMut<NextState<UiScreen>>,
+    inventories: Query<Entity, With<InventoryScreen>>,
+    screens: Query<(), With<UiScreen>>,
+    theme: Res<UiTheme>,
+    content: Res<Content>,
 ) {
     if !keys.just_pressed(KeyCode::KeyE) {
         return;
     }
-    match screen.get() {
-        UiScreen::Closed => next.set(UiScreen::Inventory),
-        UiScreen::Inventory => next.set(UiScreen::Closed),
+    if let Some(inventory) = inventories.iter().next() {
+        // Escape may close it this frame too.
+        commands.entity(inventory).try_despawn();
+    } else if screens.is_empty() {
+        spawn_inventory(&mut commands, &theme, &content);
     }
 }
 
-fn spawn_inventory(mut commands: Commands, theme: Res<UiTheme>, content: Res<Content>) {
+fn spawn_inventory(commands: &mut Commands, theme: &UiTheme, content: &Content) {
     let slot = theme.slot_size;
     let gap = theme.slot_gap;
     let width = COLUMNS as f32 * slot + (COLUMNS - 1) as f32 * gap;
@@ -69,7 +83,7 @@ fn spawn_inventory(mut commands: Commands, theme: Res<UiTheme>, content: Res<Con
     commands
         .spawn((
             Name::new("Inventory"),
-            DespawnOnExit(UiScreen::Inventory),
+            InventoryScreen,
             Node {
                 position_type: PositionType::Absolute,
                 width: percent(100),
@@ -99,9 +113,9 @@ fn spawn_inventory(mut commands: Commands, theme: Res<UiTheme>, content: Res<Con
                     TextFont::from_font_size(theme.title_font_size),
                     TextColor(theme.text),
                 ));
-                let (_, grid) = scroll_panel(
+                scroll_panel(
                     panel,
-                    &theme,
+                    theme,
                     Node {
                         width: px(width),
                         height: px(height),
@@ -113,23 +127,22 @@ fn spawn_inventory(mut commands: Commands, theme: Res<UiTheme>, content: Res<Con
                     },
                     slot + gap,
                     (InventoryGrid, Name::new("Inventory grid")),
+                    |grid| {
+                        for index in 0..content.items.len() {
+                            let item = ItemId(index);
+                            grid.spawn((
+                                CatalogSlot(item),
+                                item_slot(
+                                    theme,
+                                    ItemSlot {
+                                        item: Some(item),
+                                        selected: false,
+                                    },
+                                ),
+                            ));
+                        }
+                    },
                 );
-                panel.commands().entity(grid).with_children(|grid| {
-                    for index in 0..content.items.len() {
-                        let item = ItemId(index);
-                        grid.spawn((
-                            CatalogSlot(item),
-                            item_slot(
-                                &theme,
-                                ItemSlot {
-                                    item: Some(item),
-                                    selected: false,
-                                },
-                            ),
-                        ))
-                        .observe(pick_item);
-                    }
-                });
                 panel.spawn((
                     Text::new("Click an item to put it in the selected hotbar slot"),
                     TextFont::from_font_size(theme.font_size - 2.0),
@@ -179,14 +192,18 @@ mod tests {
     use crate::{
         fly_camera::FlyCamera,
         headless::{Script, run_more, settle, test_game},
+        hotbar::HotbarSlot,
+        player::Player,
     };
     use bevy::{
         ui::UiGlobalTransform,
+        ui_widgets::Scrollbar,
         window::{CursorGrabMode, CursorOptions},
     };
 
-    fn screen(app: &App) -> UiScreen {
-        *app.world().resource::<State<UiScreen>>().get()
+    fn is_open(app: &mut App) -> bool {
+        let mut screens = app.world_mut().query::<&InventoryScreen>();
+        screens.iter(app.world()).count() > 0
     }
 
     fn cursor(app: &mut App) -> CursorGrabMode {
@@ -195,16 +212,39 @@ mod tests {
     }
 
     /// Where on screen the grid slot showing `item` is, in the script's
-    /// pixels. The layout is a frame old, so update first.
+    /// pixels (the first, if several show it).
     fn slot_at(app: &mut App, item: ItemId) -> Vec2 {
         let mut slots = app
             .world_mut()
             .query::<(&CatalogSlot, &UiGlobalTransform)>();
-        let (_, transform) = slots
+        slots
             .iter(app.world())
             .find(|(slot, _)| slot.0 == item)
-            .expect("no slot for the item");
-        transform.translation
+            .expect("no slot for the item")
+            .1
+            .translation
+    }
+
+    fn hotbar_slot_at(app: &mut App, index: usize) -> Vec2 {
+        let mut slots = app.world_mut().query::<(&HotbarSlot, &UiGlobalTransform)>();
+        slots
+            .iter(app.world())
+            .find(|(slot, _)| slot.0 == index)
+            .unwrap()
+            .1
+            .translation
+    }
+
+    /// The grid slots framed as the active hotbar slot's item.
+    fn framed(app: &mut App) -> Vec<ItemId> {
+        let mut slots = app.world_mut().query::<(&CatalogSlot, &ItemSlot)>();
+        let mut framed: Vec<ItemId> = slots
+            .iter(app.world())
+            .filter(|(_, slot)| slot.selected)
+            .map(|(catalog, _)| catalog.0)
+            .collect();
+        framed.dedup();
+        framed
     }
 
     fn scrolled(app: &mut App) -> f32 {
@@ -214,11 +254,29 @@ mod tests {
         grids.single(app.world()).unwrap().y
     }
 
+    fn scrollbar_shown(app: &mut App) -> bool {
+        let mut bars = app.world_mut().query_filtered::<&Node, With<Scrollbar>>();
+        bars.single(app.world()).unwrap().display != Display::None
+    }
+
     fn camera(app: &mut App) -> Vec3 {
         let mut cameras = app
             .world_mut()
             .query_filtered::<&Transform, With<FlyCamera>>();
         cameras.single(app.world()).unwrap().translation
+    }
+
+    fn theme_half_slot(app: &App) -> f32 {
+        app.world().resource::<UiTheme>().slot_size / 2.0
+    }
+
+    fn flying(app: &mut App) -> bool {
+        let mut players = app.world_mut().query::<&Player>();
+        players.single(app.world()).unwrap().flying
+    }
+
+    fn click(button: &str, at: Vec2) -> String {
+        format!("cursor {} {}\nwait 1\nhold {button} 1\nwait 1", at.x, at.y)
     }
 
     /// Through the real game and input: E opens the inventory and frees the
@@ -229,75 +287,102 @@ mod tests {
         let mut app = test_game(Script::parse("camera 64.5 70 92.5 0 0\nwait 2").unwrap());
         // Plenty of items, so the grid scrolls: the base game's, then
         // copies of planks.
-        let planks = {
+        let (planks, stone) = {
             let mut content = app.world_mut().resource_mut::<Content>();
             let planks = content.item_id("defaria:planks").unwrap();
             let copy = content.items[planks.0].clone();
             content.items.extend(std::iter::repeat_n(copy, 100));
-            planks
+            (planks, content.item_id("defaria:stone").unwrap())
         };
         settle(&mut app);
         run_more(&mut app, "hold MouseLeft 1\nwait 1");
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
+        assert!(flying(&mut app));
 
         run_more(&mut app, "hold KeyE 1\nwait 3");
-        assert_eq!(screen(&app), UiScreen::Inventory);
+        assert!(is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::None);
+        // Slot 1 holds stone, so stone is framed in the grid.
+        assert_eq!(framed(&mut app), [stone]);
+        assert!(scrollbar_shown(&mut app));
 
-        // Walking keys do nothing now.
+        // Walking keys and double-tapping Space do nothing now.
         let before = camera(&mut app);
-        run_more(&mut app, "hold KeyW 20\nwait 1");
-        assert_eq!(camera(&mut app), before);
-
-        // Slot 3, then click planks: it goes in slot 3.
-        let at = slot_at(&mut app, planks);
         run_more(
             &mut app,
-            &format!(
-                "hold Digit3 1\ncursor {} {}\nwait 1\nhold MouseLeft 1\nwait 1",
-                at.x, at.y
-            ),
+            "hold KeyW 20\nhold Space 2\nwait 2\nhold Space 2\nwait 2",
         );
-        let hotbar = app.world().resource::<Hotbar>();
-        assert_eq!(hotbar.0[2], Some(planks));
+        assert_eq!(camera(&mut app), before);
+        assert!(flying(&mut app));
+
+        // Slot 3, then right click planks: nothing. Left click: it goes in
+        // slot 3, and the frame moves to it.
+        let at = slot_at(&mut app, planks);
+        run_more(&mut app, "hold Digit3 1\nwait 1");
+        run_more(&mut app, &click("MouseRight", at));
+        assert_ne!(app.world().resource::<Hotbar>().0[2], Some(planks));
+        run_more(&mut app, &click("MouseLeft", at));
+        assert_eq!(app.world().resource::<Hotbar>().0[2], Some(planks));
         assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(2));
+        assert_eq!(framed(&mut app), [planks]);
         // Clicking in the inventory didn't lock the cursor.
         assert_eq!(cursor(&mut app), CursorGrabMode::None);
 
+        // Clicking a hotbar slot makes it active; right clicking empties it.
+        let slot_5 = hotbar_slot_at(&mut app, 4);
+        run_more(&mut app, &click("MouseLeft", slot_5));
+        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(4));
+        run_more(&mut app, &click("MouseRight", slot_5));
+        assert_eq!(app.world().resource::<Hotbar>().0[4], None);
+        assert_eq!(framed(&mut app), []);
+
         // The wheel over the grid scrolls it, and the slots move with it.
-        run_more(&mut app, "scroll -2\nwait 2");
-        let rows = scrolled(&mut app);
-        let line = app.world().resource::<UiTheme>();
-        assert_eq!(rows, 2.0 * (line.slot_size + line.slot_gap));
-        assert!(slot_at(&mut app, planks).y < at.y);
-        // The last item (a copy) comes into view at the bottom.
-        let last = ItemId(app.world().resource::<Content>().items.len() - 1);
-        run_more(&mut app, "scroll -100\nwait 2");
-        let bottom = slot_at(&mut app, last);
         run_more(
             &mut app,
-            &format!(
-                "cursor {} {}\nwait 1\nhold MouseLeft 1\nwait 1",
-                bottom.x, bottom.y
-            ),
+            &format!("cursor {} {}\nscroll -2\nwait 2", at.x, at.y),
         );
-        assert_eq!(app.world().resource::<Hotbar>().0[2], Some(last));
+        let theme = app.world().resource::<UiTheme>();
+        let row = theme.slot_size + theme.slot_gap;
+        assert_eq!(scrolled(&mut app), 2.0 * row);
+        assert!(slot_at(&mut app, planks).y < at.y);
+        // The wheel over the grid leaves the hotbar slot alone.
+        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(4));
+
+        // At the bottom: the row just above the view is scrolled out of
+        // it, behind the panel's title. Clicking there does nothing; the
+        // last item (a copy) can be clicked.
+        let last = ItemId(app.world().resource::<Content>().items.len() - 1);
+        run_more(&mut app, "scroll -100\nwait 2");
+        let rows_scrolled = (scrolled(&mut app) / row).round() as usize;
+        let hidden = slot_at(&mut app, ItemId((rows_scrolled - 1) * COLUMNS));
+        let grid_top = slot_at(&mut app, ItemId(rows_scrolled * COLUMNS)).y - theme_half_slot(&app);
+        assert!(
+            hidden.y > 0.0 && hidden.y < grid_top,
+            "{hidden} above {grid_top}"
+        );
+        run_more(&mut app, &click("MouseLeft", hidden));
+        assert_eq!(app.world().resource::<Hotbar>().0[4], None);
+        let bottom = slot_at(&mut app, last);
+        run_more(&mut app, &click("MouseLeft", bottom));
+        assert_eq!(app.world().resource::<Hotbar>().0[4], Some(last));
 
         run_more(&mut app, "hold KeyE 1\nwait 3");
-        assert_eq!(screen(&app), UiScreen::Closed);
+        assert!(!is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
         let mut grids = app.world_mut().query::<&InventoryGrid>();
         assert_eq!(grids.iter(app.world()).count(), 0);
     }
 
-    /// Escape closes it too.
+    /// Escape closes it too, and with the base game's few items there's
+    /// no scrollbar.
     #[test]
     fn escape_closes_the_inventory() {
         let mut app = test_game(Script::parse("wait 1").unwrap());
         settle(&mut app);
         run_more(&mut app, "hold KeyE 1\nwait 2");
-        assert_eq!(screen(&app), UiScreen::Inventory);
+        assert!(is_open(&mut app));
+        assert!(!scrollbar_shown(&mut app));
         run_more(&mut app, "hold Escape 1\nwait 2");
-        assert_eq!(screen(&app), UiScreen::Closed);
+        assert!(!is_open(&mut app));
     }
 }

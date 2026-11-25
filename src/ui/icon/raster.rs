@@ -18,8 +18,9 @@ use crate::{
     content::{BakedFace, Content, Item},
 };
 
-/// Width and height of a block icon, in pixels.
-pub const BLOCK_ICON_SIZE: u32 = 64;
+/// Width and height of a block icon, in pixels: at least the icon's size
+/// on a scale-2 (retina) window, so it's only ever scaled down.
+pub const BLOCK_ICON_SIZE: u32 = 128;
 /// Samples per pixel along each axis, averaged, to smooth the edges.
 const SUPERSAMPLE: u32 = 2;
 /// The share of the icon's height the whole cube takes up.
@@ -321,6 +322,35 @@ mod tests {
             slab_h < cube_h * 0.8 && slab_h > cube_h * 0.5,
             "{slab_h} of {cube_h}"
         );
+    }
+
+    /// Where faces overlap, the nearer one shows, whichever is drawn first.
+    #[test]
+    fn nearer_faces_hide_farther_ones() {
+        use crate::content::Vertex;
+        // Two upward quads, one above the other, each its own tile.
+        let quad = |y: f32, layer: u32| BakedFace {
+            vertices: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
+                .iter()
+                .map(|&[x, z]| Vertex {
+                    pos: Vec3::new(x, y, z),
+                    uv: Vec2::new(x, z),
+                })
+                .collect(),
+            normal: Vec3::Y,
+            layer,
+            cull: None,
+        };
+        let tiles = vec![
+            [255, 0, 0, 255].repeat((TILE_SIZE * TILE_SIZE) as usize),
+            [0, 0, 255, 255].repeat((TILE_SIZE * TILE_SIZE) as usize),
+        ];
+        let s = BLOCK_ICON_SIZE;
+        for faces in [[quad(0.2, 0), quad(0.8, 1)], [quad(0.8, 1), quad(0.2, 0)]] {
+            let icon = block_icon(&faces, &tiles, s);
+            // The middle of the icon is covered by both; blue is nearer.
+            assert_eq!(pixel(&icon, s, s / 2, s / 2)[..3], [0, 0, 255]);
+        }
     }
 
     #[test]

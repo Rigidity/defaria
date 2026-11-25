@@ -1,16 +1,22 @@
 //! Scrolling: the mouse wheel over a [`Scrollable`] node scrolls it, and a
-//! [`ScrollbarThumb`] shows how far.
+//! scrollbar beside it shows how far.
 //!
-//! A scrollable node needs `overflow: Overflow::scroll_y()` in its [`Node`];
-//! [`scroll_panel`] gives it that. Only vertical scrolling for now.
+//! [`scroll_panel`] spawns both. The scrollbar is Bevy's
+//! (`bevy::ui_widgets::Scrollbar`), which sizes and places its thumb from
+//! the scrolled node; it's left out while everything fits. Only vertical
+//! scrolling for now.
 
 use bevy::{
     input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
-    ui::{CalculatedClip, UiGlobalTransform, UiSystems},
+    ui::UiSystems,
+    ui_widgets::{ControlOrientation, Scrollbar, ScrollbarThumb},
 };
 
-use super::{UiTheme, pointer::UiPointer};
+use super::{
+    UiTheme,
+    pointer::{HitTestData, UiPointer},
+};
 
 pub struct ScrollPlugin;
 
@@ -20,9 +26,7 @@ impl Plugin for ScrollPlugin {
             .add_systems(Update, scroll_with_wheel)
             .add_systems(
                 PostUpdate,
-                (keep_scroll_in_range, move_thumbs)
-                    .chain()
-                    .after(UiSystems::Layout),
+                (keep_scroll_in_range, hide_idle_scrollbars).after(UiSystems::Layout),
             );
     }
 }
@@ -36,64 +40,57 @@ pub struct Scrollable {
     pub line: f32,
 }
 
-/// The thumb of a scrollbar: sized and placed within its parent (the track)
-/// to show which part of `target`'s content is in view. The track is
-/// hidden when it all fits.
-#[derive(Component, Reflect, Debug, Clone, Copy)]
-#[reflect(Component)]
-pub struct ScrollbarThumb {
-    pub target: Entity,
-}
-
 /// A scrollable node laid out as `node` (its `height` is the view's), with
-/// a scrollbar beside it, spawned under `commands`. `line` is how far a
-/// notch of the wheel scrolls. Spawn the content as children of the
-/// scrolled node. Returns (the row holding both, the scrolled node).
+/// a scrollbar beside it, spawned under `parent`. `line` is how far a notch
+/// of the wheel scrolls; `extra` is added to the scrolled node, and
+/// `content` spawns its children. Returns the scrolled node.
 pub fn scroll_panel(
-    commands: &mut ChildSpawnerCommands,
+    parent: &mut ChildSpawnerCommands,
     theme: &UiTheme,
     node: Node,
     line: f32,
     extra: impl Bundle,
-) -> (Entity, Entity) {
+    content: impl FnOnce(&mut ChildSpawnerCommands),
+) -> Entity {
     let height = node.height;
-    let mut row = commands.spawn(Node {
-        column_gap: px(6),
-        ..default()
-    });
-    let row_id = row.id();
     let mut scrolled = Entity::PLACEHOLDER;
-    row.with_children(|row| {
-        scrolled = row
-            .spawn((
-                Scrollable { line },
+    parent
+        .spawn(Node {
+            column_gap: px(theme.slot_gap),
+            ..default()
+        })
+        .with_children(|row| {
+            scrolled = row
+                .spawn((
+                    Scrollable { line },
+                    Node {
+                        overflow: Overflow::scroll_y(),
+                        ..node
+                    },
+                    extra,
+                ))
+                .with_children(content)
+                .id();
+            row.spawn((
+                Name::new("Scrollbar"),
+                Scrollbar::new(
+                    scrolled,
+                    ControlOrientation::Vertical,
+                    theme.slot_size / 2.0,
+                ),
                 Node {
-                    overflow: Overflow::scroll_y(),
-                    ..node
-                },
-                extra,
-            ))
-            .id();
-        row.spawn((
-            Name::new("Scrollbar"),
-            Node {
-                width: px(6),
-                height,
-                ..default()
-            },
-            BackgroundColor(theme.scrollbar_track),
-            children![(
-                ScrollbarThumb { target: scrolled },
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: percent(100),
+                    width: px(theme.scrollbar_width),
+                    height,
                     ..default()
                 },
-                BackgroundColor(theme.scrollbar_thumb),
-            )],
-        ));
-    });
-    (row_id, scrolled)
+                BackgroundColor(theme.scrollbar_track),
+                children![(
+                    ScrollbarThumb::default(),
+                    BackgroundColor(theme.scrollbar_thumb),
+                )],
+            ));
+        });
+    scrolled
 }
 
 /// How far down a scroll position can go, in logical pixels: the content
@@ -107,27 +104,21 @@ pub fn max_scroll(node: &ComputedNode) -> f32 {
 fn scroll_with_wheel(
     wheel: Res<AccumulatedMouseScroll>,
     pointer: Res<UiPointer>,
-    mut nodes: Query<(
-        &Scrollable,
-        &mut ScrollPosition,
-        &ComputedNode,
-        &UiGlobalTransform,
-        Option<&CalculatedClip>,
-        &bevy::ui::ComputedStackIndex,
-    )>,
+    targets: Query<HitTestData, With<Scrollable>>,
+    mut nodes: Query<(&Scrollable, &mut ScrollPosition, &ComputedNode)>,
 ) {
     if wheel.delta.y == 0.0 {
         return;
     }
-    let Some((scrollable, mut position, node, ..)) = nodes
-        .iter_mut()
-        .filter(|(_, _, node, transform, clip, _)| pointer.is_over(node, transform, *clip))
-        .max_by_key(|(.., stack)| stack.0)
+    let Some((scrollable, mut position, node)) = pointer
+        .topmost(&targets)
+        .and_then(|entity| nodes.get_mut(entity).ok())
     else {
         return;
     };
     let pixels = match wheel.unit {
         MouseScrollUnit::Line => wheel.delta.y * scrollable.line,
+        // Physical pixels, from a touchpad.
         MouseScrollUnit::Pixel => wheel.delta.y * node.inverse_scale_factor,
     };
     // The wheel turned toward you (negative) scrolls down.
@@ -146,37 +137,23 @@ fn keep_scroll_in_range(mut nodes: Query<(&mut ScrollPosition, &ComputedNode), W
     }
 }
 
-fn move_thumbs(
-    mut thumbs: Query<(&ScrollbarThumb, &ChildOf, &mut Node)>,
-    mut tracks: Query<&mut Visibility>,
-    targets: Query<(&ScrollPosition, &ComputedNode)>,
+/// Takes a scrollbar out of the layout while everything it scrolls fits
+/// in view.
+fn hide_idle_scrollbars(
+    mut bars: Query<(&Scrollbar, &mut Node)>,
+    targets: Query<&ComputedNode, With<Scrollable>>,
 ) {
-    for (thumb, track, mut style) in &mut thumbs {
-        let Ok((position, node)) = targets.get(thumb.target) else {
+    for (bar, mut style) in &mut bars {
+        let Ok(node) = targets.get(bar.target) else {
             continue;
         };
-        let Ok(mut visibility) = tracks.get_mut(track.parent()) else {
-            continue;
-        };
-        let (view, content) = (node.size.y, node.content_size.y);
-        let fits = content <= view + 0.5 || view <= 0.0;
-        let wanted = if fits {
-            Visibility::Hidden
+        let wanted = if max_scroll(node) > 0.0 {
+            Display::Flex
         } else {
-            Visibility::Inherited
+            Display::None
         };
-        visibility.set_if_neq(wanted);
-        if fits {
-            continue;
-        }
-        let scrolled = position.y / node.inverse_scale_factor;
-        let (top, height) = (
-            percent(100.0 * scrolled / content),
-            percent(100.0 * view / content),
-        );
-        if style.top != top || style.height != height {
-            style.top = top;
-            style.height = height;
+        if style.display != wanted {
+            style.display = wanted;
         }
     }
 }
@@ -236,6 +213,55 @@ mod tests {
         assert_eq!(scrolled(&app, list), 75.0);
         turn(&mut app, MouseScrollUnit::Line, 100.0);
         assert_eq!(scrolled(&app, list), 0.0);
+    }
+
+    #[test]
+    fn a_hidden_scrollable_doesnt_take_the_wheel() {
+        let (mut app, list) = app();
+        app.world_mut()
+            .entity_mut(list)
+            .insert(InheritedVisibility::HIDDEN);
+        pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
+        turn(&mut app, MouseScrollUnit::Line, -2.0);
+        assert_eq!(scrolled(&app, list), 0.0);
+    }
+
+    /// When the content shrinks, the position comes back in range.
+    #[test]
+    fn the_position_is_clamped_when_the_content_shrinks() {
+        let (mut app, list) = app();
+        pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
+        turn(&mut app, MouseScrollUnit::Line, -10.0);
+        assert_eq!(scrolled(&app, list), 75.0);
+        app.world_mut()
+            .get_mut::<ComputedNode>(list)
+            .unwrap()
+            .content_size
+            .y = 140.0;
+        app.update();
+        assert_eq!(scrolled(&app, list), 20.0);
+    }
+
+    #[test]
+    fn the_scrollbar_is_left_out_while_everything_fits() {
+        let (mut app, list) = app();
+        let bar = app
+            .world_mut()
+            .spawn((
+                Scrollbar::new(list, ControlOrientation::Vertical, 10.0),
+                Node::default(),
+            ))
+            .id();
+        let display = |app: &App| app.world().get::<Node>(bar).unwrap().display;
+        app.update();
+        assert_eq!(display(&app), Display::Flex);
+        app.world_mut()
+            .get_mut::<ComputedNode>(list)
+            .unwrap()
+            .content_size
+            .y = 80.0;
+        app.update();
+        assert_eq!(display(&app), Display::None);
     }
 
     #[test]

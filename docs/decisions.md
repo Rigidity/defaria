@@ -107,8 +107,8 @@ when the block texture is rebuilt.
 **What's wrong with it.** Icons don't go through the world's shader, so
 they don't match its lighting exactly, and lamps don't glow. Anything the
 shader learns later (animated or emissive textures, tinting) won't show in
-icons. The block icons are drawn at 64 pixels and scaled down to the slot,
-which softens them slightly.
+icons. The block icons are drawn at 128 pixels (enough for a scale-2
+window) and scaled down to the slot, which softens them slightly.
 
 **What should replace it.** Rendering icons on the GPU with the voxel
 material: an offscreen camera drawing each block's mesh into an atlas,
