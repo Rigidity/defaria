@@ -7,13 +7,13 @@ screenshot target/scenarios/terrain/0-start.png
 inspect FlyCamera
 
 hold MouseLeft 1   # lock the cursor so the mouse turns the camera
-hold KeyW 180      # fly forward over the middle
+hold KeyW 113      # fly forward over the middle
 mouse 0 -100       # look up toward the horizon
 wait 1
 screenshot target/scenarios/terrain/1-ahead.png
 inspect FlyCamera
 
-hold ShiftLeft 120  # sink toward the hilltops
+hold ShiftLeft 90  # sink toward the hilltops
 mouse 0 200        # look down at the ground
 wait 1
 screenshot target/scenarios/terrain/2-closeup.png

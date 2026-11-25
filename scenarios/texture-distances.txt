@@ -11,7 +11,7 @@ wait 1             # a screenshot captures the end of its frame, so move on firs
 
 hold MouseLeft 1   # lock the cursor so the mouse turns the camera
 mouse 0 200        # look nearly straight down
-hold ShiftLeft 100  # sink until the ground is a few blocks away
+hold ShiftLeft 75  # sink until the ground is a few blocks away
 wait 1
 screenshot target/scenarios/texture-distances/1-close.png
 wait 1
@@ -22,7 +22,7 @@ screenshot target/scenarios/texture-distances/2-grazing.png
 grain
 wait 1
 
-hold Space 560     # climb high above the world
+hold Space 420     # climb high above the world
 mouse 0 330        # look down at it from far away
 wait 1
 screenshot target/scenarios/texture-distances/3-far.png

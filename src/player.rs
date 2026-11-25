@@ -16,9 +16,9 @@
 //! [`FixedUpdate`]; the camera is placed between the last two steps every
 //! frame, so it moves smoothly at any frame rate.
 //!
-//! The numbers are Minecraft's, per 20 Hz tick ([`Rule`]), turned into
-//! rates that give the same top speeds and how quickly they're reached at
-//! any step rate. Velocities change exactly as they would continuously
+//! Moving is a top speed and how quickly it's reached ([`Rule`]): faster
+//! and snappier than Minecraft's, which felt slow. Gravity and the jump are
+//! Minecraft's. Velocities change exactly as they would continuously
 //! between steps, so the step rate barely matters.
 
 use bevy::{
@@ -41,16 +41,19 @@ pub const STEP_HEIGHT: f64 = 0.6;
 /// Two presses of Space within this many seconds start or stop flying.
 pub const DOUBLE_TAP: f32 = 0.35;
 
-/// Minecraft's tick, which [`Rule`]s are written per.
+/// Minecraft's tick, which its gravity and jump are written per.
 const TICK: f64 = 0.05;
 
-/// One of Minecraft's movement rules, per tick: each tick the velocity
-/// gains `accel` in the direction you're going, moves, then is multiplied
-/// by `friction`.
+/// How the player moves in one situation: the speed it settles at with a
+/// key held, and how quickly it gets there or stops. Velocity closes
+/// `1 − 1/e` (63%) of the gap to its target every `response` seconds, so
+/// it's 95% of the way after three.
 #[derive(Debug, Clone, Copy)]
 struct Rule {
-    accel: f64,
-    friction: f64,
+    /// Blocks per second.
+    speed: f64,
+    /// Seconds.
+    response: f64,
 }
 
 /// How quickly velocity decays, per second, with `friction` a tick.
@@ -61,47 +64,40 @@ fn decay(friction: f64) -> f64 {
 impl Rule {
     /// How quickly velocity decays, per second.
     fn decay(self) -> f64 {
-        decay(self.friction)
-    }
-
-    /// The top speed, in blocks per second: what Minecraft moves per tick
-    /// once its velocity has settled.
-    fn top_speed(self) -> f64 {
-        self.accel / (1.0 - self.friction) / TICK
+        1.0 / self.response
     }
 
     /// The acceleration, in blocks per second per second, that settles at
-    /// the same top speed with [`Rule::decay`].
+    /// [`Rule::speed`].
     fn accel(self) -> f64 {
-        self.top_speed() * self.decay()
+        self.speed / self.response
     }
 }
 
-/// Minecraft scales movement input by this.
-const INPUT: f64 = 0.98;
-/// On the ground: block slipperiness 0.6 times air friction 0.91.
+/// On the ground: quick to start and stop (Minecraft's 4.3 blocks a second
+/// felt slow).
 const WALK: Rule = Rule {
-    accel: 0.1 * INPUT,
-    friction: 0.6 * 0.91,
+    speed: 5.5,
+    response: 0.05,
 };
+/// In the air, steering is looser, but the top speed is the same, so a
+/// running jump keeps its speed.
 const AIR: Rule = Rule {
-    accel: 0.02 * INPUT,
-    friction: 0.91,
+    speed: 5.5,
+    response: 0.25,
 };
 const FLY: Rule = Rule {
-    accel: 0.05 * INPUT,
-    friction: 0.91,
+    speed: 16.0,
+    response: 0.12,
 };
-/// Up and down, flying: 3 times the fly speed, with heavy friction so it
-/// stops quickly.
+/// Up and down, flying.
 const FLY_VERTICAL: Rule = Rule {
-    accel: 0.15,
-    friction: 0.6,
+    speed: 10.0,
+    response: 0.06,
 };
-/// Sprinting multiplies walking and air acceleration by this, and doubles
-/// flying.
+/// Sprinting multiplies walking and air speed by this, and doubles flying.
 const SPRINT: f64 = 1.3;
-/// Sneaking multiplies walking input by this.
+/// Sneaking multiplies walking speed by this.
 const SNEAK: f64 = 0.3;
 /// Falling: 0.08 a tick of gravity with friction 0.98 settles at 3.92
 /// blocks a tick.
@@ -409,14 +405,13 @@ mod tests {
         assert!((eye.y - (4.0 + EYE_HEIGHT as f32)).abs() < 1e-4, "{eye}");
     }
 
-    /// Walking settles at Minecraft's 4.317 blocks a second, sprinting at
-    /// 5.612 and sneaking at 1.295.
+    /// Walking, sprinting and sneaking settle at their speeds.
     #[test]
     fn walking_sprinting_and_sneaking_speeds() {
         for (keys, speed) in [
-            (&[KeyCode::KeyW][..], 4.317),
-            (&[KeyCode::KeyW, KeyCode::ControlLeft], 5.612),
-            (&[KeyCode::KeyW, KeyCode::ShiftLeft], 4.317 * SNEAK),
+            (&[KeyCode::KeyW][..], WALK.speed),
+            (&[KeyCode::KeyW, KeyCode::ControlLeft], WALK.speed * SPRINT),
+            (&[KeyCode::KeyW, KeyCode::ShiftLeft], WALK.speed * SNEAK),
         ] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
             let player = spawn(&mut app, DVec3::new(8.5, 4.0, 15.0));
@@ -431,14 +426,13 @@ mod tests {
         }
     }
 
-    /// Flying settles at Minecraft's 10.9 blocks a second, and twice that
-    /// sprinting. Ctrl with S isn't sprinting.
+    /// Flying settles at its speed, and twice that sprinting. Ctrl with S isn't sprinting.
     #[test]
     fn flying_and_backwards_speeds() {
         for (flying, keys, speed) in [
-            (true, &[KeyCode::KeyW][..], -10.89),
-            (true, &[KeyCode::KeyW, KeyCode::ControlLeft], -21.78),
-            (false, &[KeyCode::KeyS, KeyCode::ControlLeft], 4.317),
+            (true, &[KeyCode::KeyW][..], -FLY.speed),
+            (true, &[KeyCode::KeyW, KeyCode::ControlLeft], -FLY.speed * 2.0),
+            (false, &[KeyCode::KeyS, KeyCode::ControlLeft], WALK.speed),
         ] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
             let player = spawn(
@@ -467,6 +461,27 @@ mod tests {
         }
     }
 
+    /// Letting go stops the player quickly: within a tenth of a block
+    /// walking and under two blocks flying.
+    #[test]
+    fn letting_go_stops_quickly() {
+        for (flying, limit) in [(false, 0.3), (true, 2.0)] {
+            let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+            let player = spawn(&mut app, DVec3::new(8.5, if flying { 10.0 } else { 4.0 }, 15.0));
+            app.world_mut().get_mut::<Player>(player).unwrap().flying = flying;
+            run(&mut app, 0.1);
+            hold(&mut app, &[KeyCode::KeyW]);
+            run(&mut app, 0.6);
+            hold(&mut app, &[]);
+            let from = body(&app, player).position;
+            run(&mut app, 0.5);
+            let after = body(&app, player);
+            let slid = from.z - after.position.z;
+            assert!(slid < limit, "flying {flying}: slid {slid}");
+            assert!(after.velocity.length() < 0.5, "flying {flying}: {}", after.velocity);
+        }
+    }
+
     /// In the air, the player steers far less than on the ground.
     #[test]
     fn air_control_is_weak() {
@@ -479,8 +494,8 @@ mod tests {
         run(&mut app, 0.25);
         let body = body(&app, player);
         assert!(!body.on_ground);
-        // Air: 4.36 × (1 − e^(−1.886 × 0.25)) ≈ 1.6; the ground would be 4.1.
-        assert!((1.4..1.9).contains(&-body.velocity.z), "{}", body.velocity);
+        // Air: 5.5 × (1 − e^(−0.25 / 0.25)) ≈ 3.5; the ground would be 5.46.
+        assert!((3.2..3.8).contains(&-body.velocity.z), "{}", body.velocity);
     }
 
     /// Sprint-jumping gets a push forward, so it's faster than sprinting.

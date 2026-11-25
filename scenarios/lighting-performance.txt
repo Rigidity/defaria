@@ -8,7 +8,7 @@ camera 64 56 92 0 -37.9            # the start's view, flying (the player starts
 wait 5
 timing                             # startup
 hold MouseLeft 1
-hold KeyW 240                      # fly for four seconds
+hold KeyW 150                      # fly for two and a half seconds
 timing
 fill 64 32 64 64 32 64 lamp
 wait 2

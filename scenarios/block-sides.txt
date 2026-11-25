@@ -6,7 +6,7 @@ camera 64 56 92 0 -37.9            # the start's view, flying (the player starts
 wait 5
 hold MouseLeft 1   # lock the cursor so the mouse turns the camera
 mouse 0 -250       # level the view out, just below the horizon
-hold ShiftLeft 147 # sink toward the hilltops
+hold ShiftLeft 110 # sink toward the hilltops
 hold KeyW 60       # move up to the nearest terraces
 wait 1
 screenshot target/scenarios/block-sides/low.png

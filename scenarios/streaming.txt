@@ -13,7 +13,7 @@ screenshot target/scenarios/streaming/0-tower.png
 wait 1
 hold MouseLeft 1                   # lock the cursor
 timing
-hold KeyW 600                      # ten seconds' flight north
+hold KeyW 375                      # six seconds' flight north
 timing                             # flying: a row of chunks now and then
 camera 6000 70 -4000 0 -15         # far away: everything loads at once
 settle
