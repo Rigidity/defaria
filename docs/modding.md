@@ -278,7 +278,11 @@ corners of the faces next to it (ambient occlusion).
   so a wall of glass or a pond of water looks like one body.
 
 Light passes through every side of a cut-out or translucent block, and
-they cast no ambient occlusion. Variants can set `render`; a later one
+they cast no ambient occlusion.
+
+`double_sided: true` draws each face from behind as well, lit as its front
+is: the far side of a glass block shows through the near side, and
+water's surface shows from underneath. Variants can set `render`; a later one
 replaces an earlier one's.
 
 ### Fluids
@@ -294,6 +298,7 @@ through it. Fluids don't flow yet.
   name: "Water",
   model: "fluid",
   render: "translucent",
+  double_sided: true,
   fluid: true,
   textures: { all: "water" },
 }

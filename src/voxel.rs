@@ -317,7 +317,10 @@ impl Neighborhood {
                     continue;
                 }
                 let shading = self.shade_face(pos, face, glows, &opaque_at);
-                builder.push(pos.as_vec3(), face, shading);
+                builder.push(pos.as_vec3(), face, &shading, false);
+                if state.double_sided {
+                    builder.push(pos.as_vec3(), face, &shading, true);
+                }
             }
         }
         let [opaque, cutout, translucent] = builders;
@@ -509,23 +512,33 @@ struct MeshBuilder {
 }
 
 impl MeshBuilder {
-    /// Adds a face of the block at `origin`.
-    fn push(&mut self, origin: Vec3, face: &BakedFace, shading: FaceShading) {
+    /// Adds a face of the block at `origin`, or its back: the same face
+    /// facing the other way, with the front's light and shading.
+    fn push(&mut self, origin: Vec3, face: &BakedFace, shading: &FaceShading, back: bool) {
         let base = self.positions.len() as u32;
-        let triangle = face.vertices.len() == 3;
+        let count = face.vertices.len();
+        let triangle = count == 3;
+        let (normal, light, occlusion) = if back {
+            (-face.normal, shading.back_light(), shading.back_occlusion())
+        } else {
+            (face.normal, shading.light, shading.occlusion)
+        };
         let mut center = Vec3::ZERO;
-        for (i, vertex) in face.vertices.iter().enumerate() {
+        for i in 0..count {
+            // The back runs the other way round: the first vertex, then the
+            // rest in reverse, which swaps the second and fourth corners.
+            let vertex = &face.vertices[if back && i > 0 { count - i } else { i }];
             let pos = origin + vertex.pos;
             center += pos;
             self.positions.push(pos.to_array());
-            self.normals.push(face.normal.to_array());
+            self.normals.push(normal.to_array());
             self.uvs.push(vertex.uv.to_array());
             // A triangle's third vertex is the fourth corner; the third is
             // made up so the blend is flat across it.
             let corner = if triangle && i == 2 { 3 } else { i };
             self.corners.push(CORNERS[corner]);
-            self.lights.push(shading.light);
-            self.faces.push([face.layer, shading.occlusion]);
+            self.lights.push(light);
+            self.faces.push([face.layer, occlusion]);
         }
         self.indices.extend(face.indices().iter().map(|i| base + i));
         self.sort_faces.push(SortFace {
@@ -562,6 +575,21 @@ const LEVEL_STEP: f32 = u8::MAX as f32 / MAX_LIGHT as f32;
 struct FaceShading {
     light: [u32; 4],
     occlusion: u32,
+}
+
+impl FaceShading {
+    /// The light for the face's back, whose second and fourth corners are
+    /// swapped (see [`MeshBuilder::push`]). The made-up third corner of a
+    /// triangle is the same either way round.
+    fn back_light(&self) -> [u32; 4] {
+        let [a, b, c, d] = self.light;
+        [a, d, c, b]
+    }
+
+    fn back_occlusion(&self) -> u32 {
+        let [a, b, c, d] = self.occlusion.to_le_bytes();
+        u32::from_le_bytes([a, d, c, b])
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1195,13 +1223,14 @@ mod tests {
     const A: IVec3 = IVec3::new(5, 5, 5);
     const B: IVec3 = IVec3::new(6, 5, 5);
 
-    /// Each block's faces go in the mesh for how it's drawn.
+    /// Each block's faces go in the mesh for how it's drawn. Glass and
+    /// water are double-sided: each face twice, front and back.
     #[test]
     fn faces_go_in_the_mesh_for_their_render() {
         assert_eq!(split(&[(A, "stone")]), [6, 0, 0]);
         assert_eq!(split(&[(A, "leaves")]), [0, 6, 0]);
-        assert_eq!(split(&[(A, "glass")]), [0, 0, 6]);
-        assert_eq!(split(&[(A, "water")]), [0, 0, 6]);
+        assert_eq!(split(&[(A, "glass")]), [0, 0, 12]);
+        assert_eq!(split(&[(A, "water")]), [0, 0, 12]);
         // Lava glows, but it's opaque.
         assert_eq!(split(&[(A, "lava")]), [6, 0, 0]);
     }
@@ -1220,11 +1249,12 @@ mod tests {
     /// both faces show.
     #[test]
     fn faces_between_the_same_translucent_block_are_culled() {
-        assert_eq!(split(&[(A, "glass"), (B, "glass")]), [0, 0, 10]);
-        assert_eq!(split(&[(A, "water"), (B, "water")]), [0, 0, 10]);
-        assert_eq!(split(&[(A, "glass"), (B, "water")]), [0, 0, 12]);
-        assert_eq!(split(&[(A, "stone"), (B, "glass")]), [6, 0, 5]);
-        assert_eq!(split(&[(A, "leaves"), (B, "glass")]), [0, 6, 6]);
+        // Double-sided, so two faces each.
+        assert_eq!(split(&[(A, "glass"), (B, "glass")]), [0, 0, 20]);
+        assert_eq!(split(&[(A, "water"), (B, "water")]), [0, 0, 20]);
+        assert_eq!(split(&[(A, "glass"), (B, "water")]), [0, 0, 24]);
+        assert_eq!(split(&[(A, "stone"), (B, "glass")]), [6, 0, 10]);
+        assert_eq!(split(&[(A, "leaves"), (B, "glass")]), [0, 6, 12]);
     }
 
     /// A plant is four faces inside its block, lit by its own voxel, and
@@ -1250,6 +1280,49 @@ mod tests {
         }
     }
 
+    /// A double-sided block's back faces are its front faces turned round:
+    /// the same corners, wound the other way, facing the other way, each
+    /// corner with the front's light and occlusion. So the underside of
+    /// water's surface is lit as its top is.
+    #[test]
+    fn back_faces_mirror_the_front() {
+        let blocks = [(A, block("water")), (A - IVec3::X, block("stone"))];
+        let light = |p: IVec3| Light::new((p.x + 2 * p.z + 3 * p.y) as u8 % 16, [0; 3]);
+        let meshes = neighborhood(&blocks, light).meshes(base());
+        let mesh = &meshes.translucent;
+        let positions = vec3s(mesh, Mesh::ATTRIBUTE_POSITION);
+        let normals = vec3s(mesh, Mesh::ATTRIBUTE_NORMAL);
+        let corners = vec2s(mesh, ATTRIBUTE_CORNER);
+        let Some(VertexAttributeValues::Uint32x4(lights)) = mesh.attribute(ATTRIBUTE_LIGHT) else {
+            panic!("no light attribute");
+        };
+        let faces = faces_of(mesh);
+        // The light and occlusion each vertex gets, blended to its corner.
+        let at = |i: usize| {
+            let corner = CORNERS
+                .iter()
+                .position(|c| Vec2::from(*c) == corners[i])
+                .unwrap();
+            let occlusion = faces[i][1].to_le_bytes()[corner];
+            (lights[i][corner], occlusion)
+        };
+        assert_eq!(positions.len(), 10 * 4, "five faces, front and back");
+        for face in positions.chunks(8).enumerate().map(|(n, _)| n * 8) {
+            let (front, back) = (face, face + 4);
+            assert_eq!(normals[back], -normals[front]);
+            let wound =
+                |i: usize| (positions[i + 1] - positions[i]).cross(positions[i + 2] - positions[i]);
+            assert!(wound(back).dot(normals[back]) > 0.0, "counter-clockwise");
+            for i in 0..4 {
+                let twin = (0..4)
+                    .map(|j| back + j)
+                    .find(|&j| positions[j] == positions[front + i])
+                    .expect("the back has the front's corners");
+                assert_eq!(at(twin), at(front + i));
+            }
+        }
+    }
+
     /// Translucent faces sort farthest first from the eye, as whole faces.
     #[test]
     fn translucent_faces_sort_back_to_front() {
@@ -1268,7 +1341,7 @@ mod tests {
             Vec3::splat(6.0),
         ] {
             let indices = meshes.translucent_faces.indices_from(eye);
-            assert_eq!(indices.len(), 12 * 6);
+            assert_eq!(indices.len(), 2 * 12 * 6);
             let distances: Vec<f32> = indices
                 .chunks(6)
                 .map(|quad| {

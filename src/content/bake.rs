@@ -1036,7 +1036,7 @@ fn add_block(
                     name,
                     attributes,
                     &def.namespace,
-                    (index, block.fluid),
+                    (index, block.fluid, block.double_sided),
                     content,
                     textures,
                 )
@@ -1135,7 +1135,7 @@ fn bake_state(
     name: String,
     (hardness, weight): (f32, f32),
     namespace: &str,
-    (block, fluid): (usize, bool),
+    (block, fluid, double_sided): (usize, bool, bool),
     content: &mut Content,
     textures: &Textures,
 ) -> Result<State, String> {
@@ -1208,6 +1208,7 @@ fn bake_state(
         light,
         render: look.render.unwrap_or_default(),
         fluid,
+        double_sided,
         hardness,
         weight,
     })

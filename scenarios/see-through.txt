@@ -1,8 +1,9 @@
 # See-through blocks on a grass platform built in the air: a tree with
 # cut-out leaves, glass in front of glass in front of planks, a pond of
 # translucent water, a pool of lava and a patch of grass tufts. Seen from
-# above, then close up on each, then from far away, where the leaves and
-# tufts mustn't fade or shimmer away.
+# above, then close up on each, from inside the pond (its surface shows from
+# below), then from far away, where the leaves and tufts mustn't fade or
+# shimmer away.
 # Run: cargo headless scenarios/see-through.txt
 wait 5
 fill 20 45 20 44 45 44 grass
@@ -47,6 +48,10 @@ wait 1
 camera 39.5 48.5 34 0 -40      # the pond and the lava pool
 wait 2
 screenshot target/scenarios/see-through/4-water-and-lava.png
+wait 1
+camera 39.5 44.5 30.4 0 40     # in the pond, looking up through its surface
+wait 2
+screenshot target/scenarios/see-through/6-underwater.png
 wait 1
 camera 32 70 140 0 -12         # far away: leaves and tufts still show
 wait 2

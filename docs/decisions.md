@@ -39,13 +39,12 @@ the camera has moved a block (near chunks) or a chunk (far ones).
 an approximation: big faces at grazing angles, and translucent faces in
 neighbouring chunks that overlap on screen, can blend in the wrong order.
 Each re-sort uploads the chunk's mesh again, which adds up over a sea.
-The water's surface is one face, facing up, so it can't be seen from
-underneath, and there's no tint or fog underwater.
+Glass and water are double-sided, so a glass wall tints what's behind it
+twice (its near and far faces), and there's no tint or fog underwater.
 
 **What should replace it.** Order-independent transparency (Bevy has an
-OIT pass), or sorting only the index buffer on the GPU. For water, draw
-the surface from both sides and add an underwater view when fluids get
-physics.
+OIT pass), or sorting only the index buffer on the GPU. For water, add an
+underwater view when fluids get physics (#63).
 
 ## Every material combination is its own tile and state (2026-11-25)
 

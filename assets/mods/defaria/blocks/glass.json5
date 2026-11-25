@@ -1,9 +1,11 @@
 // Translucent: blends with what's behind it. The faces between two glass
-// blocks are hidden, so a wall of it looks like one pane.
+// blocks are hidden, so a wall of it looks like one pane. Double-sided, so
+// the far side of the glass shows through the near side.
 {
   name: "Glass",
   model: "cube",
   render: "translucent",
+  double_sided: true,
   textures: { all: "glass" },
   hardness: 0.3,
   weight: 2500,

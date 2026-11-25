@@ -1300,7 +1300,8 @@ mod tests {
         };
         assert_eq!(faces(see_through), 6);
         assert_eq!(faces(parts.cutout), 6);
-        assert_eq!(faces(parts.translucent), 12);
+        // Two panes of glass, double-sided.
+        assert_eq!(faces(parts.translucent), 24);
         assert_eq!(material(see_through), materials.material);
         assert_eq!(material(parts.cutout), materials.cutout);
         assert_eq!(material(parts.translucent), materials.translucent);

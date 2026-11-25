@@ -261,6 +261,9 @@ pub struct BlockDef {
     /// replaces it.
     #[serde(default)]
     pub fluid: bool,
+    /// Its faces show from behind as well as in front.
+    #[serde(default)]
+    pub double_sided: bool,
     /// How hard each state is to break. Left out, 0.
     #[serde(default)]
     pub hardness: Option<Attribute>,

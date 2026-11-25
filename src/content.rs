@@ -367,6 +367,9 @@ pub struct State {
     /// Whether it's a fluid: the crosshair passes through it, and placing
     /// a block replaces it.
     pub fluid: bool,
+    /// Whether its faces show from behind too: from inside a glass block
+    /// or under water.
+    pub double_sided: bool,
     /// How hard it is to break, unitless: dirt is about 0.5 and stone
     /// about 1.5. Air's is 0.
     pub hardness: f32,
