@@ -84,7 +84,9 @@ pub struct FogShape {
 
 impl FogShape {
     /// The biggest cylinder that stays inside what `settings` draw wherever
-    /// the camera is in its chunk, with a chunk to spare all round.
+    /// the camera is in its chunk, with a chunk to spare all round. It's
+    /// never less than a chunk each way, so with tiny settings (a radius of
+    /// 4 or less, or 2 or fewer levels up or down) it doesn't quite fit.
     ///
     /// Drawn chunks are those within `radius - 1` chunks of the camera's
     /// chunk sideways (see [`StreamingSettings::drawn`]). A point within
@@ -527,5 +529,46 @@ mod tests {
         app.insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)));
         app.update();
         assert_eq!(view_fog(&app, view).0, Color::srgb(0.5, 0.5, 0.5));
+    }
+
+    /// Opens the fog all the way around a camera in chunk (0, 0, 0).
+    fn opened(settings: &StreamingSettings) -> (App, Entity) {
+        let (mut app, view) = fog_app(settings.clone());
+        draw(&mut app, everything(settings, IVec3::ZERO));
+        for _ in 0..600 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<ChunkFog>().scale, 1.0);
+        (app, view)
+    }
+
+    /// Moving on faster than the world loads: three chunks east, nothing
+    /// there is drawn, and the fog closes in.
+    #[test]
+    fn the_fog_looks_again_when_the_camera_changes_chunk() {
+        let (mut app, _) = opened(&settings());
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<FlyCamera>>();
+        camera.single_mut(app.world_mut()).unwrap().translation.x += 48.0;
+        app.update();
+        let fog = *app.world().resource::<ChunkFog>();
+        assert!(fog.target < 1.0, "{fog:?}");
+    }
+
+    /// Loading further sends the fog further, once that's drawn.
+    #[test]
+    fn the_fog_follows_the_settings() {
+        let settings = settings();
+        let (mut app, _) = opened(&settings);
+        let further = StreamingSettings {
+            radius: settings.radius + 2,
+            ..settings
+        };
+        app.insert_resource(further.clone());
+        app.update();
+        let fog = *app.world().resource::<ChunkFog>();
+        assert_eq!(fog.shape, FogShape::new(&further));
+        assert!(fog.target < 1.0, "the new ring isn't drawn yet: {fog:?}");
     }
 }
