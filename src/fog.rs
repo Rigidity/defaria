@@ -212,8 +212,9 @@ pub fn drawn_reach(
 /// Moves [`ChunkFog`] toward the edge of the drawn world.
 ///
 /// Once the fog is fully open it stays open until the camera moves into
-/// another chunk or a chunk goes (chunks are only ever drawn more, never
-/// less, while they're loaded), so the scan is skipped until then.
+/// another chunk, a chunk goes or the streaming settings change (chunks
+/// are only ever drawn more, never less, while they're loaded), so the scan
+/// is skipped until then.
 fn follow_the_drawn_world(
     camera: Query<&GlobalTransform, With<FlyCamera>>,
     settings: Res<StreamingSettings>,
