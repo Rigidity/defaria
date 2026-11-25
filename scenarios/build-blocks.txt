@@ -17,7 +17,7 @@ wait 1
 screenshot target/scenarios/build-blocks/1-dug.png
 wait 1
 hold MouseRight 1  # fill the hole with stone, the default block
-press Digit4       # then a tower of sand, gravel, planks and a log
+press Digit4       # then a tower of sand, a stone slab, planks and a log
 wait 1
 release Digit4
 hold MouseRight 1

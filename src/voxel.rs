@@ -563,6 +563,27 @@ mod tests {
         assert_eq!(faces(&mesh(&chunk, air)), 10);
     }
 
+    /// A slab on a block hides the block's top and its own bottom; a block
+    /// beside it keeps its face against the slab, whose upper half shows,
+    /// and the slab's side against the block is hidden.
+    #[test]
+    fn slabs_hide_only_what_they_cover() {
+        let mut chunk = Chunk::default();
+        chunk.set(5, 5, 5, block("stone"));
+        chunk.set(5, 6, 5, block("stone_slab"));
+        assert_eq!(faces(&mesh(&chunk, air)), 5 + 5);
+        chunk.set(6, 6, 5, block("stone"));
+        // The new block: all 6 faces; the slab loses its east side.
+        assert_eq!(faces(&mesh(&chunk, air)), 5 + 4 + 6);
+
+        let mesh = mesh(&chunk, air);
+        let positions = vec3s(&mesh, Mesh::ATTRIBUTE_POSITION);
+        let top = positions
+            .chunks(4)
+            .find(|quad| quad.iter().all(|p| p.y == 6.5));
+        assert!(top.is_some(), "the slab's top is at half height");
+    }
+
     #[test]
     fn filled_chunk_shows_only_its_surface() {
         let side = CHUNK_SIZE * CHUNK_SIZE;

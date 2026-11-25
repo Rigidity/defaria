@@ -72,7 +72,7 @@ impl TestWorld {
             chunk.set_at(local, fill(coord * CHUNK_SIZE as i32 + local));
         }
         queue.chunk_loaded(coord, &chunk, &Self::table(), &*self.sky, |c| {
-            self.chunks.get(&c).map(|(_, light)| light)
+            self.chunks.get(&c).map(|(chunk, light)| (chunk, light))
         });
         self.chunks.insert(coord, (chunk, ChunkLight::default()));
     }
@@ -93,8 +93,8 @@ impl TestWorld {
         let light = light_alone(&[(coord, &chunk)], &Self::table(), &*self.sky)
             .pop()
             .unwrap();
-        queue.lit_chunk_loaded(coord, &light, &*self.sky, |c| {
-            self.chunks.get(&c).map(|(_, light)| light)
+        queue.lit_chunk_loaded(coord, &chunk, &light, &Self::table(), &*self.sky, |c| {
+            self.chunks.get(&c).map(|(chunk, light)| (chunk, light))
         });
         self.chunks.insert(coord, (chunk, light));
     }
@@ -161,7 +161,7 @@ impl TestWorld {
                     && local.y == size - 1
                     && !self.chunks.contains_key(&(coord + IVec3::Y))
                     && self.sky.shines_into(coord, local.x, local.z)
-                    && !table.opaque(state);
+                    && !table.closed(state, UP);
                 let source = if sky { MAX_LIGHT } else { emitted };
                 if source > 0 && level(&mut light, pos, source) {
                     buckets[source as usize].push(pos);
@@ -179,7 +179,10 @@ impl TestWorld {
                             value - 1
                         };
                         let n = pos + direction;
-                        let open = self.block(n).is_some_and(|state| !table.opaque(state));
+                        let from = self.block(pos).unwrap();
+                        let open = self
+                            .block(n)
+                            .is_some_and(|to| table.passes(from, to, i, channel));
                         if next > 0 && open && level(&mut light, n, next) {
                             buckets[next as usize].push(n);
                         }
@@ -238,6 +241,7 @@ fn random_block(seed: u64) -> impl Fn(IVec3) -> BlockState {
             3..=5 => block("red_lamp"),
             6..=8 => block("blue_lamp"),
             9..=11 => block("green_lamp"),
+            12..=40 => block("stone_slab"),
             n if n < 400 => block("stone"),
             _ => BlockState::AIR,
         }
@@ -255,6 +259,9 @@ fn coords(size: IVec3) -> Vec<IVec3> {
     }
     coords
 }
+
+/// The [`DIRECTIONS`] index of up.
+const UP: usize = 2;
 
 /// Stone at and below `y = 3`, air above.
 fn flat(pos: IVec3) -> BlockState {
@@ -307,6 +314,93 @@ fn sky_light_spreads_in_under_a_roof() {
         "on the roof"
     );
     world.assert_matches_reference();
+}
+
+/// A slab covers only its bottom: sky light comes into it from above and
+/// the sides, but not through it to what's below, so a slab roof shades
+/// like a full one, and the slab's own voxel (which lights its top) is lit.
+#[test]
+fn slabs_stop_light_only_at_their_bottom() {
+    let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, |pos| {
+        if pos.y <= 3 {
+            block("stone")
+        } else if pos.y == 10 && pos.x < 8 {
+            block("stone_slab")
+        } else {
+            BlockState::AIR
+        }
+    });
+    world.run(&mut queue);
+    // In the slabs: full sky, straight down from above.
+    assert_eq!(world.light(IVec3::new(3, 10, 4)).sky(), MAX_LIGHT);
+    // Under them, as under a full roof: in from the open side.
+    for x in 0..8 {
+        let expected = MAX_LIGHT - (8 - x) as u8;
+        assert_eq!(world.light(IVec3::new(x, 5, 4)).sky(), expected, "x {x}");
+    }
+    world.assert_matches_reference();
+
+    // Light from below doesn't come up through a slab's bottom either.
+    let lamp = IVec3::new(3, 9, 4);
+    world.set(&mut queue, lamp, block("lamp"));
+    world.run(&mut queue);
+    assert_eq!(world.light(IVec3::new(3, 8, 4)).block()[0], 14);
+    // Only the long way round, out from under the roof at x = 8 and back
+    // along the slabs: 11 blocks, not 1.
+    assert_eq!(world.light(IVec3::new(3, 10, 4)).block()[0], 4);
+    world.assert_matches_reference();
+
+    // Taking a slab away lets the sky straight down again.
+    world.set(&mut queue, IVec3::new(5, 10, 4), BlockState::AIR);
+    world.run(&mut queue);
+    assert_eq!(world.light(IVec3::new(5, 5, 4)).sky(), MAX_LIGHT);
+    world.assert_matches_reference();
+}
+
+/// A side that's covered stops light across chunk borders too, and the
+/// sky from outside the loaded chunks stops at a covered top.
+#[test]
+fn covered_sides_stop_light_across_chunk_borders() {
+    let content = crate::content::test_mod(&[(
+        "blocks/lid.json5",
+        r#"{ model: "quad", textures: { all: "a" } }"#,
+    )]);
+    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let table = LightTable::new(&content);
+    let lid = content.default_state("test:lid").unwrap();
+    // Covers its top only.
+    assert!(table.closed(lid, UP) && !table.closed(lid, DOWN));
+    assert!(table.passes(BlockState::AIR, lid, DOWN + 1, SKY));
+    assert!(!table.passes(BlockState::AIR, lid, DOWN, SKY));
+    assert!(!table.passes(lid, BlockState::AIR, UP, SKY));
+
+    let mut store = TestWorld::new(1);
+    let mut queue = LightQueue::default();
+    for coord in [IVec3::ZERO, IVec3::Y] {
+        let mut chunk = Chunk::default();
+        // A lid at the top of each chunk: under the outside sky at x = 0,
+        // and under the chunk above's bottom layer at x = 1.
+        if coord == IVec3::Y {
+            chunk.set_at(IVec3::new(0, 15, 0), lid);
+        } else {
+            chunk.set_at(IVec3::new(1, 15, 0), lid);
+        }
+        queue.chunk_loaded(coord, &chunk, &table, &*store.sky, |c| {
+            store.chunks.get(&c).map(|(chunk, light)| (chunk, light))
+        });
+        store.chunks.insert(coord, (chunk, ChunkLight::default()));
+    }
+    queue.run(&mut store, &table);
+    let sky = |pos: IVec3| store.light(pos).sky();
+    // The covered top keeps the outside sky out of its voxel...
+    assert!(sky(IVec3::new(0, 31, 0)) < MAX_LIGHT);
+    // ...but it isn't a full block: light comes in at the sides.
+    assert_eq!(sky(IVec3::new(0, 31, 0)), MAX_LIGHT - 1);
+    // The full sky coming down the column stops at the lid over the
+    // border, which is lit from the sides instead.
+    assert_eq!(sky(IVec3::new(1, 16, 0)), MAX_LIGHT);
+    assert_eq!(sky(IVec3::new(1, 15, 0)), MAX_LIGHT - 1);
 }
 
 /// A lamp in the dark: each channel drops a level per block walked, around
@@ -449,6 +543,7 @@ fn edits_keep_the_light_right() {
         BlockState::AIR,
         BlockState::AIR,
         block("stone"),
+        block("stone_slab"),
         block("lamp"),
         block("red_lamp"),
         block("blue_lamp"),
@@ -571,6 +666,7 @@ fn random_loads_and_edits_keep_the_light_right() {
         BlockState::AIR,
         block("stone"),
         block("stone"),
+        block("stone_slab"),
         block("lamp"),
         block("red_lamp"),
         block("blue_lamp"),
@@ -668,8 +764,9 @@ fn chunks_lit_alone_join_the_world_right() {
         }
         let all = world.chunks.clone();
         for coord in coords {
-            queue.lit_chunk_loaded(coord, &all[&coord].1, &SkyFrom(1), |c| {
-                all.get(&c).map(|(_, light)| light)
+            let (chunk, light) = &all[&coord];
+            queue.lit_chunk_loaded(coord, chunk, light, &table, &SkyFrom(1), |c| {
+                all.get(&c).map(|(chunk, light)| (chunk, light))
             });
         }
         world.run(&mut queue);

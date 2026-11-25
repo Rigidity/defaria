@@ -40,7 +40,7 @@ use bevy::{
 
 use super::{CHANNELS, ChunkLight, Light, MAX_LIGHT, SKY, sky::OutsideSky};
 use crate::{
-    content::{BlockState, Content},
+    content::{BlockState, Content, Direction},
     terrain::ChunkCoord,
     voxel::{CHUNK_SIZE, CHUNK_VOLUME, Chunk, axis_of, touching_offsets},
 };
@@ -58,7 +58,9 @@ pub trait ChunkStore {
 /// What each block state does to light, looked up once from [`Content`].
 #[derive(Resource, Debug, Clone)]
 pub struct LightTable {
-    opaque: Vec<bool>,
+    /// Per state, a bit per [`DIRECTIONS`] entry: the sides it covers
+    /// completely, which light can't pass through in either direction.
+    closed: Vec<u8>,
     /// The sky channel is always 0: blocks don't give off sky light.
     emits: Vec<Light>,
 }
@@ -66,7 +68,19 @@ pub struct LightTable {
 impl LightTable {
     pub fn new(content: &Content) -> Self {
         Self {
-            opaque: content.states.iter().map(|s| s.is_opaque()).collect(),
+            closed: content
+                .states
+                .iter()
+                .map(|state| {
+                    DIRECTIONS
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &d)| {
+                            Direction::from_normal(d).is_some_and(|side| state.occludes(side))
+                        })
+                        .fold(0, |bits, (i, _)| bits | 1 << i)
+                })
+                .collect(),
             emits: content
                 .states
                 .iter()
@@ -75,8 +89,30 @@ impl LightTable {
         }
     }
 
-    fn opaque(&self, state: BlockState) -> bool {
-        self.opaque.get(state.0 as usize).copied().unwrap_or(false)
+    /// Whether light can't leave `state` through its side toward
+    /// `DIRECTIONS[direction]` (or come in through it).
+    fn closed(&self, state: BlockState, direction: usize) -> bool {
+        self.closed
+            .get(state.0 as usize)
+            .is_some_and(|&bits| bits & 1 << direction != 0)
+    }
+
+    /// Whether light can't come into `state` through all of its sides.
+    fn closed_all(&self, state: BlockState) -> bool {
+        self.closed.get(state.0 as usize) == Some(&ALL_DIRECTIONS)
+    }
+
+    /// Whether `channel`'s light leaves a voxel of `state` toward
+    /// `DIRECTIONS[direction]`: the side isn't covered, or the block gives
+    /// off that colour, which shines out of every side.
+    fn leaves(&self, state: BlockState, direction: usize, channel: usize) -> bool {
+        !self.closed(state, direction) || self.emits(state, channel) > 0
+    }
+
+    /// Whether `channel`'s light passes from a voxel of `from` into its
+    /// neighbour of `to` toward `DIRECTIONS[direction]`.
+    fn passes(&self, from: BlockState, to: BlockState, direction: usize, channel: usize) -> bool {
+        self.leaves(from, direction, channel) && !self.closed(to, opposite(direction))
     }
 
     fn emits(&self, state: BlockState, channel: usize) -> u8 {
@@ -84,6 +120,14 @@ impl LightTable {
             .get(state.0 as usize)
             .map_or(0, |light| light.get(channel))
     }
+}
+
+/// [`LightTable::closed`] bits for every side.
+const ALL_DIRECTIONS: u8 = (1 << DIRECTIONS.len()) - 1;
+
+/// The index in [`DIRECTIONS`] of the opposite direction.
+const fn opposite(direction: usize) -> usize {
+    direction ^ 1
 }
 
 /// Lights chunks by themselves, as if nothing else were loaded: their own
@@ -152,8 +196,23 @@ const CHANGED: u8 = 4;
 /// before that chunk loaded, it's out of date (and the chunk loading took
 /// the outside sky away).
 const OUTSIDE: u8 = 8;
+/// An addition's top bits: 1 + the [`DIRECTIONS`] index it's travelling
+/// in, for light stepping in from a neighbour (or the sky outside), which
+/// the voxel's side facing back may stop. 0 for light that starts here.
+const HEADING_SHIFT: u8 = 4;
 
-/// The six neighbour directions. [`DOWN`] indexes the one below.
+/// The flags for an addition heading in `DIRECTIONS[direction]`.
+const fn heading(direction: usize) -> u8 {
+    (direction as u8 + 1) << HEADING_SHIFT
+}
+
+/// The direction an addition's flags say it's heading in, if any.
+fn heading_of(flags: u8) -> Option<usize> {
+    (flags >> HEADING_SHIFT).checked_sub(1).map(usize::from)
+}
+
+/// The six neighbour directions, each next to its opposite. [`DOWN`]
+/// indexes the one below.
 const DIRECTIONS: [IVec3; 6] = [
     IVec3::X,
     IVec3::NEG_X,
@@ -179,22 +238,22 @@ impl LightQueue {
     /// Queues the light for a chunk that just loaded, dark: its own light
     /// sources, sky light from outside if the chunk above isn't loaded, and
     /// the light of each loaded neighbour spreading in. `neighbour` gives a
-    /// loaded chunk's light by coordinate, and `None` for one that isn't
-    /// loaded.
+    /// loaded chunk's blocks and light by coordinate, and `None` for one
+    /// that isn't loaded.
     pub fn chunk_loaded<'a>(
         &mut self,
         coord: IVec3,
         chunk: &Chunk,
         table: &LightTable,
         sky: &dyn OutsideSky,
-        neighbour: impl Fn(IVec3) -> Option<&'a ChunkLight>,
+        neighbour: impl Fn(IVec3) -> Option<(&'a Chunk, &'a ChunkLight)>,
     ) {
         self.sources(coord, chunk, table);
         if neighbour(coord + IVec3::Y).is_none() {
             self.outside_sky(coord, sky);
         }
         self.borders(coord, |c| neighbour(c).is_some(), false);
-        self.cover_below(coord, None, sky, &neighbour);
+        self.cover_below(coord, None, sky, table, &neighbour);
     }
 
     /// Queues the light for a chunk that loaded already lit by
@@ -209,15 +268,17 @@ impl LightQueue {
     pub fn lit_chunk_loaded<'a>(
         &mut self,
         coord: IVec3,
+        chunk: &Chunk,
         light: &ChunkLight,
+        table: &LightTable,
         sky: &dyn OutsideSky,
-        neighbour: impl Fn(IVec3) -> Option<&'a ChunkLight>,
+        neighbour: impl Fn(IVec3) -> Option<(&'a Chunk, &'a ChunkLight)>,
     ) {
         self.borders(coord, |c| neighbour(c).is_some(), true);
         if let Some(above) = neighbour(coord + IVec3::Y) {
-            self.cover(coord, Some(above), sky);
+            self.cover(coord, Some(above), sky, table);
         }
-        self.cover_below(coord, Some(light), sky, &neighbour);
+        self.cover_below(coord, Some((chunk, light)), sky, table, &neighbour);
     }
 
     /// Queues the light for a chunk that's been unloaded, whose light was
@@ -294,7 +355,7 @@ impl LightQueue {
         for (x, z) in square() {
             if sky.shines_into(coord, x, z) {
                 let index = Chunk::index_of(IVec3::new(x, last, z));
-                self.add(SKY, coord, index, MAX_LIGHT, OUTSIDE);
+                self.add(SKY, coord, index, MAX_LIGHT, OUTSIDE | heading(DOWN));
             }
         }
     }
@@ -303,15 +364,24 @@ impl LightQueue {
     /// outside no longer shines into its top layer: takes it away from
     /// every top voxel it shone into, except where the chunk above passes
     /// full sky light straight down anyway (by its bottom layer in
-    /// `above`'s light, if known), since nothing would change there.
-    fn cover(&mut self, coord: IVec3, above: Option<&ChunkLight>, sky: &dyn OutsideSky) {
+    /// `above`'s blocks and light, if known), since nothing would change
+    /// there.
+    fn cover(
+        &mut self,
+        coord: IVec3,
+        above: Option<(&Chunk, &ChunkLight)>,
+        sky: &dyn OutsideSky,
+        table: &LightTable,
+    ) {
         let last = CHUNK_SIZE as i32 - 1;
         for (x, z) in square() {
             if !sky.shines_into(coord, x, z) {
                 continue;
             }
-            let passes =
-                above.is_some_and(|above| above.at(IVec3::new(x, 0, z)).get(SKY) == MAX_LIGHT);
+            let passes = above.is_some_and(|(blocks, light)| {
+                let bottom = IVec3::new(x, 0, z);
+                light.at(bottom).get(SKY) == MAX_LIGHT && table.leaves(blocks.at(bottom), DOWN, SKY)
+            });
             if !passes {
                 let index = Chunk::index_of(IVec3::new(x, last, z));
                 self.removals[SKY].entry(coord).or_default().push(Node {
@@ -323,18 +393,19 @@ impl LightQueue {
         }
     }
 
-    /// Covers the loaded chunk below a chunk that just loaded with `light`
-    /// (`None` if it's still dark).
+    /// Covers the loaded chunk below a chunk that just loaded with these
+    /// blocks and light (`None` if it's still dark).
     fn cover_below<'a>(
         &mut self,
         coord: IVec3,
-        light: Option<&ChunkLight>,
+        chunk: Option<(&Chunk, &ChunkLight)>,
         sky: &dyn OutsideSky,
-        neighbour: &impl Fn(IVec3) -> Option<&'a ChunkLight>,
+        table: &LightTable,
+        neighbour: &impl Fn(IVec3) -> Option<(&'a Chunk, &'a ChunkLight)>,
     ) {
         let below = coord - IVec3::Y;
         if neighbour(below).is_some() {
-            self.cover(below, light, sky);
+            self.cover(below, chunk, sky, table);
         }
     }
 
@@ -387,7 +458,7 @@ impl LightQueue {
         // The sky shines into the top layer from outside, so no neighbour
         // spreads it back: offer it again, as on loading.
         if outside_sky {
-            self.add(SKY, coord, index, MAX_LIGHT, OUTSIDE);
+            self.add(SKY, coord, index, MAX_LIGHT, OUTSIDE | heading(DOWN));
         }
     }
 
@@ -529,8 +600,15 @@ impl<'a> Fill<'a> {
                     // Something brighter got here first and spreads itself.
                     continue;
                 }
+                let state = chunk.get_index(index);
                 if current < level {
-                    if node.flags & SOURCE == 0 && self.table.opaque(chunk.get_index(index)) {
+                    // Light from outside the voxel stops at a side it
+                    // covers; a source shines even from inside a solid one.
+                    let stopped = match heading_of(node.flags) {
+                        Some(direction) => self.table.closed(state, opposite(direction)),
+                        None => node.flags & SOURCE == 0 && self.table.closed_all(state),
+                    };
+                    if stopped {
                         continue;
                     }
                     self.set(light, index, level);
@@ -542,17 +620,19 @@ impl<'a> Fill<'a> {
                     } else {
                         level - 1
                     };
-                    if next == 0 {
+                    if next == 0 || !self.table.leaves(state, i, self.channel) {
                         continue;
                     }
                     let (coord, neighbour) = self.step(pos + direction);
                     if coord != self.coord {
-                        self.queue_addition(coord, neighbour, next, 0);
+                        self.queue_addition(coord, neighbour, next, heading(i));
                         continue;
                     }
                     let n = neighbour as usize;
                     if light.get(n).get(self.channel) < next
-                        && !self.table.opaque(chunk.get_index(n))
+                        && self
+                            .table
+                            .passes(state, chunk.get_index(n), i, self.channel)
                     {
                         self.set(light, n, next);
                         buckets[next as usize].push(Node {

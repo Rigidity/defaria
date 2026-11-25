@@ -65,7 +65,19 @@ pub struct ModelDef {
     /// Sides of the block the model covers completely.
     #[serde(default)]
     pub occludes: Vec<Direction>,
+    /// The boxes things bump into, within the block. Left out, it's the box
+    /// around every face; `[]` is a block you walk through.
+    #[serde(default)]
+    pub collision: Option<Vec<BoxDef>>,
     pub faces: Vec<FaceDef>,
+}
+
+/// A box inside a block, from one corner to the opposite one.
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct BoxDef {
+    pub from: [f32; 3],
+    pub to: [f32; 3],
 }
 
 #[derive(Deserialize, Debug, Clone)]

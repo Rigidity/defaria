@@ -19,7 +19,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockState, Content},
+    content::{BlockBox, BlockState, Content},
     fly_camera::{FlyCamera, FlyCameraSystems},
     terrain::{RemeshChunks, Voxels},
 };
@@ -33,7 +33,7 @@ pub const HOTBAR: [&str; 10] = [
     "defaria:dirt",
     "defaria:grass",
     "defaria:sand",
-    "defaria:gravel",
+    "defaria:stone_slab",
     "defaria:log",
     "defaria:planks",
     "defaria:lamp",
@@ -138,17 +138,27 @@ impl Hit {
     }
 }
 
-/// The first block within `reach` along `ray` for which `solid` is true.
+/// The first block within `reach` along `ray` whose shape the ray hits,
+/// where `shape` gives each block's boxes (empty for nothing to hit).
 /// Steps through every block the ray touches, in order (Amanatides & Woo),
-/// so it can't skip through corners.
-pub fn raycast(ray: Ray3d, reach: f32, solid: impl Fn(IVec3) -> bool) -> Option<Hit> {
+/// so it can't skip through corners, and tries the ray against the boxes
+/// of each, so it passes over a slab's top half to the block behind it.
+pub fn raycast<'a>(ray: Ray3d, reach: f32, shape: impl Fn(IVec3) -> &'a [BlockBox]) -> Option<Hit> {
     let (origin, dir) = (ray.origin, *ray.direction);
     let mut block = origin.floor().as_ivec3();
-    if solid(block) {
-        return Some(Hit {
-            block,
-            normal: IVec3::ZERO,
-        });
+    // Boxes lie inside their block, so the first block the ray hits a box
+    // in holds the nearest hit.
+    let hit_in = |block: IVec3| {
+        let local = origin - block.as_vec3();
+        shape(block)
+            .iter()
+            .filter_map(|b| ray_box(local, dir, b))
+            .filter(|&(t, _)| t <= reach)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, normal)| Hit { block, normal })
+    };
+    if let Some(hit) = hit_in(block) {
+        return Some(hit);
     }
     // An axis the ray doesn't move along is never stepped: its `next` is
     // infinite.
@@ -179,11 +189,55 @@ pub fn raycast(ray: Ray3d, reach: f32, solid: impl Fn(IVec3) -> bool) -> Option<
         }
         block[axis] += step[axis];
         next[axis] += delta[axis];
-        if solid(block) {
-            let mut normal = IVec3::ZERO;
-            normal[axis] = -step[axis];
-            return Some(Hit { block, normal });
+        if let Some(hit) = hit_in(block) {
+            return Some(hit);
         }
+    }
+}
+
+/// Where a ray from `origin` along `dir` first meets a box, as the
+/// distance along it and the normal of the face it goes in through (zero
+/// if it starts inside). Both in the box's block's coordinates.
+fn ray_box(origin: Vec3, dir: Vec3, b: &BlockBox) -> Option<(f32, IVec3)> {
+    let (mut enter, mut exit) = (f32::NEG_INFINITY, f32::INFINITY);
+    let mut normal = IVec3::ZERO;
+    for axis in 0..3 {
+        let (o, d) = (origin[axis], dir[axis]);
+        if d == 0.0 {
+            if o < b.min[axis] || o > b.max[axis] {
+                return None;
+            }
+            continue;
+        }
+        let (t0, t1) = ((b.min[axis] - o) / d, (b.max[axis] - o) / d);
+        let (near, far) = (t0.min(t1), t0.max(t1));
+        if near > enter {
+            enter = near;
+            normal = IVec3::ZERO;
+            normal[axis] = -(d.signum() as i32);
+        }
+        exit = exit.min(far);
+    }
+    if enter > exit || exit < 0.0 {
+        return None;
+    }
+    if enter < 0.0 {
+        return Some((0.0, IVec3::ZERO));
+    }
+    Some((enter, normal))
+}
+
+/// What the crosshair picks in a block: its collision boxes, or the whole
+/// block for one you walk through. Nothing for air.
+pub fn target_shape(content: &Content, state: BlockState) -> &[BlockBox] {
+    if state.is_air() {
+        return &[];
+    }
+    let boxes = &content.state(state).collision;
+    if boxes.is_empty() {
+        std::slice::from_ref(&BlockBox::FULL)
+    } else {
+        boxes
     }
 }
 
@@ -204,6 +258,7 @@ fn edit_blocks(
     camera: Single<&Transform, With<FlyCamera>>,
     active: Res<ActiveBlock>,
     hotbar: Res<Hotbar>,
+    content: Res<Content>,
     mut voxels: Voxels,
 ) {
     if cursor.grab_mode == CursorGrabMode::None {
@@ -218,7 +273,7 @@ fn edit_blocks(
     }
     let ray = camera_ray(&camera);
     let Some(hit) = raycast(ray, REACH, |pos| {
-        voxels.get(pos).is_some_and(|state| !state.is_air())
+        target_shape(&content, voxels.get(pos).unwrap_or(BlockState::AIR))
     }) else {
         return;
     };
@@ -244,18 +299,22 @@ fn outline_target(
     mut gizmos: Gizmos,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
+    content: Res<Content>,
     voxels: Voxels,
 ) {
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
-    let hit = raycast(camera_ray(&camera), REACH, |pos| {
-        voxels.get(pos).is_some_and(|state| !state.is_air())
-    });
-    if let Some(hit) = hit {
-        let center = hit.block.as_vec3() + Vec3::splat(0.5);
+    let shape = |pos| target_shape(&content, voxels.get(pos).unwrap_or(BlockState::AIR));
+    let Some(hit) = raycast(camera_ray(&camera), REACH, shape) else {
+        return;
+    };
+    for b in shape(hit.block) {
+        // A little bigger than the box, so it isn't hidden in its faces.
+        let center = hit.block.as_vec3() + (b.min + b.max) / 2.0;
+        let size = b.max - b.min + Vec3::splat(0.004);
         gizmos.cube(
-            Transform::from_translation(center).with_scale(Vec3::splat(1.004)),
+            Transform::from_translation(center).with_scale(size),
             Color::srgba(0.05, 0.05, 0.05, 0.8),
         );
     }
@@ -371,8 +430,14 @@ mod tests {
         voxel_material::BlockMaterial,
     };
 
-    fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> bool + '_ {
-        move |pos| blocks.contains(&pos)
+    fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> &'static [BlockBox] + '_ {
+        move |pos| {
+            if blocks.contains(&pos) {
+                std::slice::from_ref(&BlockBox::FULL)
+            } else {
+                &[]
+            }
+        }
     }
 
     fn ray(origin: Vec3, dir: Vec3) -> Ray3d {
@@ -439,7 +504,7 @@ mod tests {
             3.0,
             |pos| {
                 visited.borrow_mut().push(pos);
-                false
+                &[]
             },
         );
         let visited = visited.into_inner();
@@ -448,6 +513,41 @@ mod tests {
             assert_eq!(step.x + step.y + step.z, 1, "{pair:?}");
         }
         assert!(visited.len() >= 4);
+    }
+
+    /// A ray passes over a slab's empty top half to the block behind, and
+    /// hits its top face from above, at y = 0.5.
+    #[test]
+    fn rays_hit_the_shape_of_the_block() {
+        let content = base();
+        let slab = block("stone_slab");
+        let stone = block("stone");
+        let at = |pos: IVec3| match pos.to_array() {
+            [2, 0, 0] => slab,
+            [4, 0, 0] => stone,
+            _ => BlockState::AIR,
+        };
+        let shape = |pos| target_shape(content, at(pos));
+        // Over the slab, at y = 0.75.
+        let hit = raycast(ray(Vec3::new(0.5, 0.75, 0.5), Vec3::X), 8.0, shape).unwrap();
+        assert_eq!(hit.block, IVec3::new(4, 0, 0));
+        // Into its side, at y = 0.25.
+        let hit = raycast(ray(Vec3::new(0.5, 0.25, 0.5), Vec3::X), 8.0, shape).unwrap();
+        assert_eq!((hit.block, hit.normal), (IVec3::new(2, 0, 0), IVec3::NEG_X));
+        // Straight down onto its top, which places on the block above.
+        let hit = raycast(ray(Vec3::new(2.5, 3.0, 0.5), Vec3::NEG_Y), 8.0, shape).unwrap();
+        assert_eq!((hit.block, hit.normal), (IVec3::new(2, 0, 0), IVec3::Y));
+        assert_eq!(hit.place_at(), Some(IVec3::new(2, 1, 0)));
+        // The top is 2.5 below, so a reach of 2.4 doesn't get there, though
+        // the slab's block starts 2 below.
+        assert_eq!(
+            raycast(ray(Vec3::new(2.5, 3.0, 0.5), Vec3::NEG_Y), 2.4, shape),
+            None
+        );
+        // From inside the slab's empty half, the ray still finds the slab
+        // below it.
+        let hit = raycast(ray(Vec3::new(2.5, 0.75, 0.5), Vec3::NEG_Y), 8.0, shape).unwrap();
+        assert_eq!((hit.block, hit.normal), (IVec3::new(2, 0, 0), IVec3::Y));
     }
 
     #[test]
@@ -635,7 +735,7 @@ mod tests {
                 "Dirt",
                 "Grass",
                 "Sand",
-                "Gravel",
+                "Stone Slab",
                 "Log",
                 "Planks",
                 "Lamp",
