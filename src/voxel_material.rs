@@ -46,9 +46,18 @@ impl Plugin for VoxelMaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .init_resource::<BlockMaterial>()
+            .init_resource::<BlockTiles>()
             .add_systems(Update, build_block_texture);
     }
 }
+
+/// The block texture's tiles as last built, kept on the CPU for whatever
+/// else draws with them (item icons): tile `i` is [`Content`] texture `i`,
+/// [`block_texture::TILE_SIZE`]-square sRGB RGBA8 pixels. Empty until the
+/// layers have loaded, and replaced on every rebuild, so `is_changed` means
+/// the tiles changed.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct BlockTiles(pub Vec<Vec<u8>>);
 
 /// The chunk material: samples the block texture (an array with one layer
 /// per [`Content`] texture) and lights it. Bindings must match
@@ -215,6 +224,7 @@ fn build_block_texture(
     mut failed: Local<HashSet<AssetId<Image>>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
+    mut tiles: ResMut<BlockTiles>,
 ) {
     let mut changed = false;
     // Read every event, not just up to the first match: unread events stay
@@ -243,7 +253,7 @@ fn build_block_texture(
     if !changed || !ready {
         return;
     }
-    let (texture, errors) = block_texture::build(&content.textures, |path| {
+    let (texture, built, errors) = block_texture::build(&content.textures, |path| {
         let layer = block.layers.get(path)?;
         if failed.contains(&layer.id()) {
             return None;
@@ -254,6 +264,7 @@ fn build_block_texture(
         error!("can't build texture {error}; showing a placeholder");
     }
     let texture = images.add(texture);
+    tiles.0 = built;
     // Assigning through `get_mut` marks the material modified, so its bind
     // group is rebuilt with the new texture. The old texture is dropped.
     if let Some(mut material) = materials.get_mut(&block.material) {
@@ -298,6 +309,7 @@ mod tests {
                 bevy::image::CompressedImageFormats::NONE,
             ))
             .init_resource::<BlockMaterial>()
+            .init_resource::<BlockTiles>()
             .add_systems(Update, build_block_texture);
         app
     }
@@ -384,6 +396,11 @@ mod tests {
         let size = texture.texture_descriptor.size;
         assert_eq!(size.depth_or_array_layers, base().textures.len() as u32);
         assert_eq!(texture.texture_descriptor.mip_level_count, 5);
+        // The same tiles are kept for the CPU.
+        let tiles = &app.world().resource::<BlockTiles>().0;
+        assert_eq!(tiles.len(), base().textures.len());
+        let size = (TILE_SIZE * TILE_SIZE * 4) as usize;
+        assert!(tiles.iter().all(|tile| tile.len() == size));
     }
 
     /// Changing a layer (as hot reload does) builds a fresh texture asset,

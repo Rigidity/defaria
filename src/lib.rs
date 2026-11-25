@@ -10,6 +10,8 @@ mod devtools;
 mod dynamic_light;
 mod fly_camera;
 pub mod headless;
+mod hotbar;
+mod inventory;
 mod light;
 mod perlin;
 mod physics;
@@ -17,6 +19,7 @@ mod player;
 pub mod save;
 mod streaming;
 mod terrain;
+pub mod ui;
 mod voxel;
 mod voxel_material;
 
@@ -32,6 +35,9 @@ impl Plugin for GamePlugin {
         app.add_plugins((
             // First: the others read the content as they start.
             content::ContentPlugin,
+            ui::UiPlugin,
+            hotbar::HotbarPlugin,
+            inventory::InventoryPlugin,
             fly_camera::FlyCameraPlugin,
             physics::PhysicsPlugin,
             player::PlayerPlugin,

@@ -275,12 +275,17 @@ out comes from the block.
 }
 ```
 
+The icon (in the hotbar and the inventory) is the `texture` tile, drawn
+flat and scaled up. An item with no `texture` that places a block shows
+that block instead, drawn in 3D from its model in its default state, seen
+from above with its top, south and east faces showing. Icons redraw when
+the textures hot reload. Every item shows in the inventory.
+
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
 - Placement rules (such as setting a log's `axis` from the face you click)
   aren't data yet, so placed blocks are always in their default state.
-- Item icons aren't drawn anywhere yet.
 - Models are block-only so far: no bones or animation for entities.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.

@@ -19,6 +19,8 @@
 //! | `press <button>` / `release <button>` | Press or release a key or mouse button. |
 //! | `hold <button> <frames>` | `press`, `wait <frames>`, `release`. |
 //! | `mouse <dx> <dy>` | Move the mouse by that many pixels this frame. |
+//! | `cursor <x> <y>` | Put the cursor at that pixel of the frame (0 0 is the top left), for pointing at UI. |
+//! | `scroll <lines>` | Turn the mouse wheel that many notches this frame: positive away from you (up), negative toward you. |
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
 //! | `grain` | Print a texture-noise number for this frame (see below). |
 //! | `inspect <Component>` | Print that component on every entity that has it. |
@@ -80,7 +82,8 @@ use bevy::{
     input::{
         ButtonState, InputSystems,
         keyboard::{Key, KeyboardInput, NativeKey},
-        mouse::{MouseButtonInput, MouseMotion},
+        mouse::{MouseButtonInput, MouseMotion, MouseScrollUnit, MouseWheel},
+        touch::TouchPhase,
     },
     prelude::*,
     reflect::enums::{DynamicEnum, DynamicVariant},
@@ -92,7 +95,7 @@ use bevy::{
     },
     shader::ShaderCacheError,
     time::TimeUpdateStrategy,
-    window::{ExitCondition, PrimaryWindow, WindowResolution},
+    window::{CursorMoved, ExitCondition, PrimaryWindow, WindowResolution},
     winit::WinitPlugin,
 };
 
@@ -188,6 +191,8 @@ pub enum Command {
     Press(Button),
     Release(Button),
     MoveMouse(Vec2),
+    Cursor(Vec2),
+    Scroll(f32),
     Screenshot(PathBuf),
     Grain,
     Inspect(String),
@@ -272,6 +277,17 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
                 parse_number(args[0])?,
                 parse_number(args[1])?,
             )));
+        }
+        "cursor" => {
+            expect(2)?;
+            commands.push(Command::Cursor(Vec2::new(
+                parse_number(args[0])?,
+                parse_number(args[1])?,
+            )));
+        }
+        "scroll" => {
+            expect(1)?;
+            commands.push(Command::Scroll(parse_number(args[0])?));
         }
         "screenshot" => {
             expect(1)?;
@@ -414,10 +430,12 @@ fn render_to_image(add: On<Add<Camera>>, target: Res<HeadlessTarget>, mut comman
 fn run_script(
     mut runner: ResMut<ScriptRunner>,
     status: Option<Res<StreamingStatus>>,
-    window: Option<Single<Entity, With<PrimaryWindow>>>,
+    mut window: Option<Single<(Entity, &mut Window), With<PrimaryWindow>>>,
     mut keys: MessageWriter<KeyboardInput>,
     mut mouse_buttons: MessageWriter<MouseButtonInput>,
     mut mouse_motion: MessageWriter<MouseMotion>,
+    mut mouse_wheel: MessageWriter<MouseWheel>,
+    mut cursor_moved: MessageWriter<CursorMoved>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if let Some(frames) = runner.settling {
@@ -444,7 +462,9 @@ fn run_script(
             return;
         }
     }
-    let window = window.map_or(Entity::PLACEHOLDER, |window| *window);
+    let window_entity = window
+        .as_ref()
+        .map_or(Entity::PLACEHOLDER, |window| window.0);
     while let Some(command) = runner.commands.pop_front() {
         match command {
             Command::Wait(frames) => {
@@ -467,20 +487,42 @@ fn run_script(
                             state,
                             text: None,
                             repeat: false,
-                            window,
+                            window: window_entity,
                         });
                     }
                     Button::Mouse(button) => {
                         mouse_buttons.write(MouseButtonInput {
                             button,
                             state,
-                            window,
+                            window: window_entity,
                         });
                     }
                 }
             }
             Command::MoveMouse(delta) => {
                 mouse_motion.write(MouseMotion { delta });
+            }
+            Command::Cursor(position) => {
+                // No OS window keeps the cursor, so set it on the window
+                // the way winit would. The frame is the window's size at
+                // a scale factor of 1, so its pixels are logical pixels.
+                if let Some((_, window)) = window.as_deref_mut() {
+                    window.set_cursor_position(Some(position));
+                }
+                cursor_moved.write(CursorMoved {
+                    window: window_entity,
+                    position,
+                    delta: None,
+                });
+            }
+            Command::Scroll(lines) => {
+                mouse_wheel.write(MouseWheel {
+                    unit: MouseScrollUnit::Line,
+                    x: 0.0,
+                    y: lines,
+                    window: window_entity,
+                    phase: TouchPhase::Moved,
+                });
             }
             Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
             Command::Grain => runner.captures.push(Capture::Grain),
@@ -890,6 +932,25 @@ pub fn test_game(script: Script) -> App {
     app
 }
 
+/// Runs `script` on a [`test_game`] app that has already finished its own,
+/// updating it until this one has finished too, so a test can look at the
+/// game between steps.
+#[cfg(test)]
+pub fn run_more(app: &mut App, script: &str) {
+    let script = Script::parse(script).unwrap();
+    app.world_mut()
+        .resource_mut::<ScriptRunner>()
+        .commands
+        .extend(script.commands);
+    for _ in 0..SETTLE_TIMEOUT_FRAMES {
+        app.update();
+        if app.world().resource::<ScriptRunner>().finished() {
+            return;
+        }
+    }
+    panic!("the script never finished");
+}
+
 /// Updates `app` until the world around its camera has loaded.
 #[cfg(test)]
 pub fn settle(app: &mut App) {
@@ -924,6 +985,8 @@ mod tests {
              release Space\n\
              hold MouseLeft 3\n\
              mouse 10 -5.5\n\
+             cursor 640 360.5\n\
+             scroll -2\n\
              \n\
              screenshot target/a.png\n\
              grain\n\
@@ -944,6 +1007,8 @@ mod tests {
                 Command::Wait(3),
                 Command::Release(Button::Mouse(MouseButton::Left)),
                 Command::MoveMouse(Vec2::new(10.0, -5.5)),
+                Command::Cursor(Vec2::new(640.0, 360.5)),
+                Command::Scroll(-2.0),
                 Command::Screenshot(PathBuf::from("target/a.png")),
                 Command::Grain,
                 Command::Inspect("Transform".into()),
@@ -976,6 +1041,8 @@ mod tests {
         assert!(Script::parse("camera 1 2 3 4").is_err());
         assert!(Script::parse("timing now").is_err());
         assert!(Script::parse("settle 5").is_err());
+        assert!(Script::parse("cursor 4").is_err());
+        assert!(Script::parse("scroll").is_err());
     }
 
     /// Runs the whole game with no GPU until the script ends, and returns
@@ -1094,6 +1161,21 @@ mod tests {
     fn filling_with_an_unknown_block_fails_the_run() {
         let (_, exit) = run_game("wait 2\nfill 1 1 1 2 2 2 nonsense\nwait 1\n");
         assert!(exit.is_error());
+    }
+
+    /// `cursor` puts the window's cursor where it says, and `scroll` turns
+    /// the wheel, which while playing steps through the hotbar.
+    #[test]
+    fn script_points_the_cursor_and_turns_the_wheel() {
+        let mut app = test_game(Script::parse("wait 1").unwrap());
+        settle(&mut app);
+        run_more(&mut app, "cursor 100 200.5\nscroll -3\nwait 2");
+        let mut windows = app
+            .world_mut()
+            .query_filtered::<&Window, With<PrimaryWindow>>();
+        let window = windows.single(app.world()).unwrap();
+        assert_eq!(window.cursor_position(), Some(Vec2::new(100.0, 200.5)));
+        assert_eq!(app.world().resource::<crate::hotbar::ActiveSlot>().0, 3);
     }
 
     /// End to end: the whole game, no GPU, driven by a script.
