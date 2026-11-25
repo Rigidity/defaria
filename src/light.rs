@@ -15,8 +15,9 @@
 //! - **Sky light** comes down at full strength into the top of each chunk
 //!   with no loaded chunk above it (where [`sky::OutsideSky`] says so; for
 //!   now, everywhere), and stays at full strength straight down until it
-//!   hits an opaque block or a covered side. From every voxel it reaches it spreads sideways
-//!   and into caves like block light, dropping by one per block. The world
+//!   hits an opaque block or a covered side. From every voxel it reaches it
+//!   spreads sideways and into caves like block light, dropping by one per
+//!   block. The world
 //!   has no top, so what's above the loaded chunks is the one thing the
 //!   light can't see; `sky` is where that's decided, and
 //!   `docs/decisions.md` says why it's done the way it is.

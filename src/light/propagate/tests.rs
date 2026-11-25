@@ -394,9 +394,8 @@ fn covered_sides_stop_light_across_chunk_borders() {
     }
     queue.run(&mut store, &table);
     let sky = |pos: IVec3| store.light(pos).sky();
-    // The covered top keeps the outside sky out of its voxel...
-    assert!(sky(IVec3::new(0, 31, 0)) < MAX_LIGHT);
-    // ...but it isn't a full block: light comes in at the sides.
+    // The covered top keeps the outside sky out of its voxel, but it
+    // isn't a full block: light comes in at the sides.
     assert_eq!(sky(IVec3::new(0, 31, 0)), MAX_LIGHT - 1);
     // The full sky coming down the column stops at the lid over the
     // border, which is lit from the sides instead.

@@ -1,7 +1,8 @@
 # Slabs: half-height blocks on a flat stone platform built in the air.
-# A staircase of slabs and blocks, a slab on top of a planks block,
-# slabs against a wall (the wall's face shows above them), a slab roof on pillars (which shades the floor like a full roof),
-# and a lamp under a slab, which lights round it but not up through it.
+# A staircase of slabs and blocks, a slab on top of a planks block, slabs
+# against a wall (the wall's face shows above them), a slab roof on pillars
+# (which shades the floor like a full roof), and a lamp under a slab, which
+# lights round it but not up through it.
 # The last view aims the crosshair just over a slab, so the outline should
 # be on the wall block behind it, not the slab.
 # Run: cargo headless scenarios/slabs.txt
