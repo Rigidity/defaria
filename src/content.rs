@@ -193,13 +193,11 @@ pub struct Material {
     pub palette: Palette,
     /// Palettes for particular uses, by role.
     pub palettes: BTreeMap<String, Palette>,
-    /// How hard it is to break; see [`State::hardness`]. `None` if the
-    /// material doesn't say, which is fine until something made of it
-    /// counts it.
-    pub hardness: Option<f32>,
+    /// How hard it is to break; see [`State::hardness`].
+    pub hardness: f32,
     /// What a whole block of it weighs, in kilograms: its density in
     /// kg/m³, a block being a metre on each side.
-    pub weight: Option<f32>,
+    pub weight: f32,
 }
 
 impl Material {
@@ -667,7 +665,7 @@ pub fn test_mod(files: &[(&str, &str)]) -> Content {
         ("images/a.png", ""),
         (
             "materials/grey.json5",
-            r##"{ palette: ["#000000", "#ffffff"] }"##,
+            r##"{ palette: ["#000000", "#ffffff"], hardness: 1, weight: 1000 }"##,
         ),
         (
             "textures/a.json5",

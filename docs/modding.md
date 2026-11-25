@@ -90,8 +90,8 @@ log, and a mod adding a wood gets its logs, planks and tool handles too.
   palettes: {
     bark: ["#2e2014", "#483422", "#5e462e", "#74583a"],
   },
-  hardness: 1,                     // optional: how hard it is to break
-  weight: 750,                     // optional: kg per block of it
+  hardness: 1,                     // required: how hard it is to break
+  weight: 750,                     // required: kg per block of it
 }
 ```
 
@@ -99,9 +99,8 @@ log, and a mod adding a wood gets its logs, planks and tool handles too.
 count toward their own (see [Hardness and weight](#hardness-and-weight)).
 Hardness has no unit: dirt is about 0.5, stone 1.5 and iron 3. Weight is in
 kilograms for a whole block of the material, a cube a metre on each side,
-so it's the material's density in kg/m³: oak 750, stone 2600, iron 7870. A
-material may leave either out; a block or item that counts it then fails
-to load.
+so it's the material's density in kg/m³: oak 750, stone 2600, iron 7870.
+Every material needs both.
 
 Each palette is 2 to 8 hex colors, darkest first. They're spread evenly over
 the 8 gray levels and blended in between (in Oklab, so the steps look
@@ -278,8 +277,7 @@ weight: { base: 0.5, materials: { rock: 1 } },
 - **`base`** multiplies the average; it defaults to 1. A material's weight
   is per whole block, so a slab's base is 0.5, and a tool's is its volume
   in cubic metres (a 0.7-litre pickaxe is `0.0007`).
-- Left out, a block's hardness and weight are 0. Every material a state
-  counts must have the value, or the block fails to load.
+- Left out, a block's hardness and weight are 0.
 
 Each state's values are worked out once, at load.
 

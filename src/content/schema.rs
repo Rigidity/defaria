@@ -52,12 +52,10 @@ pub struct MaterialDef {
     #[serde(default)]
     pub palettes: BTreeMap<String, Vec<String>>,
     /// How hard it is to break, unitless: dirt is about 0.5, stone 1.5.
-    #[serde(default)]
-    pub hardness: Option<f32>,
+    pub hardness: f32,
     /// What a whole block of it weighs, in kilograms (its density in
     /// kg/m³).
-    #[serde(default)]
-    pub weight: Option<f32>,
+    pub weight: f32,
 }
 
 /// `textures/<name>.json5`.
@@ -357,6 +355,17 @@ trait Forms: Sized {
     fn from_f64<E: de::Error>(value: f64) -> Result<Self, E> {
         Err(E::invalid_type(Unexpected::Float(value), &Self::EXPECTING))
     }
+
+    fn from_i64<E: de::Error>(value: i64) -> Result<Self, E> {
+        Err(E::invalid_type(Unexpected::Signed(value), &Self::EXPECTING))
+    }
+
+    fn from_u64<E: de::Error>(value: u64) -> Result<Self, E> {
+        Err(E::invalid_type(
+            Unexpected::Unsigned(value),
+            &Self::EXPECTING,
+        ))
+    }
 }
 
 struct FormsVisitor<T>(PhantomData<T>);
@@ -377,11 +386,11 @@ impl<'de, T: Forms> Visitor<'de> for FormsVisitor<T> {
     }
 
     fn visit_i64<E: de::Error>(self, value: i64) -> Result<T, E> {
-        T::from_f64(value as f64)
+        T::from_i64(value)
     }
 
     fn visit_u64<E: de::Error>(self, value: u64) -> Result<T, E> {
-        T::from_f64(value as f64)
+        T::from_u64(value)
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<T, A::Error> {
@@ -469,6 +478,14 @@ impl Forms for Attribute {
     const EXPECTING: &'static str = "a number, or `{ base, materials }`";
 
     fn from_f64<E: de::Error>(value: f64) -> Result<Self, E> {
+        Ok(Attribute::Fixed(value as f32))
+    }
+
+    fn from_i64<E: de::Error>(value: i64) -> Result<Self, E> {
+        Ok(Attribute::Fixed(value as f32))
+    }
+
+    fn from_u64<E: de::Error>(value: u64) -> Result<Self, E> {
         Ok(Attribute::Fixed(value as f32))
     }
 
