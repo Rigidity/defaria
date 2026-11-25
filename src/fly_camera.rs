@@ -11,8 +11,6 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use bevy::camera::{PerspectiveProjection, Projection};
-
 use bevy::{
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     input::mouse::AccumulatedMouseMotion,

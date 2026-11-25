@@ -68,6 +68,12 @@ struct Rule {
     response: f64,
 }
 
+/// How much of the way to a target a value moves in `dt` seconds, when it
+/// moves `fraction` of the way each tick.
+pub fn per_tick(fraction: f64, dt: f64) -> f64 {
+    1.0 - (1.0 - fraction).powf(dt / TICK)
+}
+
 /// How quickly velocity decays, per second, with `friction` a tick.
 fn decay(friction: f64) -> f64 {
     -friction.ln() / TICK
@@ -323,7 +329,7 @@ fn move_player(
 /// Moves the eyes part of the way to where they should be: lower when
 /// sneaking. [`EYE_EASING`] is per tick, so it's spread over the steps.
 fn ease_eye_height(time: Res<Time>, mut players: Query<&mut Player>) {
-    let ease = 1.0 - (1.0 - EYE_EASING).powf(time.delta_secs_f64() / TICK);
+    let ease = per_tick(EYE_EASING, time.delta_secs_f64());
     for mut player in &mut players {
         let target = if player.sneaking {
             SNEAK_EYE_HEIGHT
@@ -824,6 +830,31 @@ pub(crate) mod tests {
         );
         assert!(
             fractions.iter().all(|f| (-0.01..=1.01).contains(f)),
+            "{fractions:?}"
+        );
+    }
+
+    /// Between physics steps, the eyes are drawn part of the way from the
+    /// last step's height to the new one's as they lower for sneaking.
+    #[test]
+    fn the_eye_height_is_drawn_between_steps() {
+        let mut app = app(IVec3::new(8, 8, 8), STEP / 2, floor(4));
+        let entity = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        run(&mut app, 0.1);
+        hold(&mut app, &[KeyCode::ShiftLeft]);
+        run(&mut app, STEP.as_secs_f64());
+        let mut fractions = Vec::new();
+        for _ in 0..4 {
+            run(&mut app, STEP.as_secs_f64() / 2.0);
+            let player = player(&app, entity);
+            let (from, to) = (player.previous_eye_height, player.eye_height);
+            assert!(to < from, "lowering");
+            let eye = app.world().get::<Transform>(entity).unwrap();
+            fractions.push((eye.translation.y as f64 - 4.0 - from) / (to - from));
+        }
+        // Every other frame has no step, so it's drawn half way.
+        assert!(
+            fractions.iter().filter(|f| (*f - 0.5).abs() < 0.01).count() == 2,
             "{fractions:?}"
         );
     }
