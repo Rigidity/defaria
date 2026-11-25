@@ -4,10 +4,14 @@
 //! - While locked, the mouse turns the camera (yaw) and looks up/down (pitch).
 //!   Pitch is clamped just short of straight up/down so the view never flips.
 //!
-//! The camera is the player's eyes: `player` moves it (walking, jumping and
-//! flying) and keeps it at the player's body.
+//! The [`FlyCamera`] is the player's eyes: `player` moves it (walking,
+//! jumping and flying) and keeps it at the player's body. What's drawn is
+//! seen through its child, the [`EyeView`], which `view_bob` sways as the
+//! player walks, so the swaying never moves what the player aims at.
 
 use std::f32::consts::FRAC_PI_2;
+
+use bevy::camera::{PerspectiveProjection, Projection};
 
 use bevy::{
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
@@ -25,6 +29,8 @@ pub const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
 pub const START_POSITION: Vec3 = Vec3::new(64.0, 56.0, 92.0);
 /// The point the camera looks at when it spawns.
 pub const START_TARGET: Vec3 = Vec3::new(64.0, 28.0, 56.0);
+/// The vertical field of view, in degrees.
+pub const FOV: f32 = 70.0;
 
 pub struct FlyCameraPlugin;
 
@@ -45,7 +51,6 @@ pub struct FlyCameraSystems;
 
 #[derive(Component, Reflect, Debug, Clone)]
 #[reflect(Component)]
-#[require(Camera3d)]
 pub struct FlyCamera {
     /// Radians turned per pixel of mouse motion.
     pub sensitivity: f32,
@@ -72,6 +77,13 @@ impl FlyCamera {
     }
 }
 
+/// The camera that draws the view: a child of the [`FlyCamera`], at the
+/// eyes but for view bobbing.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+#[require(Camera3d)]
+pub struct EyeView;
+
 fn spawn_camera(mut commands: Commands) {
     let (position, target) = (START_POSITION, START_TARGET);
     let (yaw, pitch, _) = Transform::from_translation(position)
@@ -86,12 +98,21 @@ fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Name::new("Fly Camera"),
         Transform::from_translation(position).with_rotation(camera.rotation()),
-        // Show the shader's colors as they are: Bevy's default tonemapping
-        // shifts hues and contrast, and dithering adds noise, both of which
-        // fight hand-picked pixel art colors.
-        Tonemapping::None,
-        DebandDither::Disabled,
+        Visibility::default(),
         camera,
+        children![(
+            Name::new("Eye View"),
+            EyeView,
+            Projection::Perspective(PerspectiveProjection {
+                fov: FOV.to_radians(),
+                ..default()
+            }),
+            // Show the shader's colors as they are: Bevy's default
+            // tonemapping shifts hues and contrast, and dithering adds
+            // noise, both of which fight hand-picked pixel art colors.
+            Tonemapping::None,
+            DebandDither::Disabled,
+        )],
     ));
 }
 

@@ -1,5 +1,5 @@
 //! The player: a body that walks, jumps, sneaks, sprints and flies through
-//! the world with Minecraft's movement.
+//! the world.
 //!
 //! - **WASD** moves relative to where you face; looking up or down doesn't
 //!   change the direction.
@@ -16,10 +16,13 @@
 //! [`FixedUpdate`]; the camera is placed between the last two steps every
 //! frame, so it moves smoothly at any frame rate.
 //!
-//! Moving is a top speed and how quickly it's reached ([`Rule`]): faster
-//! and snappier than Minecraft's, which felt slow. Gravity and the jump are
-//! Minecraft's. Velocities change exactly as they would continuously
-//! between steps, so the step rate barely matters.
+//! Moving is a top speed and how quickly it's reached ([`Rule`]).
+//! Velocities change exactly as they would continuously between steps, so
+//! the step rate barely matters.
+//!
+//! Walking, sneaking, sprinting, gravity, the jump and the eye heights are
+//! tuned to Minecraft's: its values are written per 50 ms [`TICK`] and
+//! converted here, so the constants below say where they came from.
 
 use bevy::{
     math::{DQuat, DVec3},
@@ -35,14 +38,23 @@ use crate::{
 pub const SIZE: DVec3 = DVec3::new(0.6, 1.8, 0.6);
 /// How high the eyes (the camera) are above the feet.
 pub const EYE_HEIGHT: f64 = 1.62;
+/// How high they are while sneaking.
+pub const SNEAK_EYE_HEIGHT: f64 = 1.27;
+/// How much of the way the eyes move to their new height each tick, when
+/// the player starts or stops sneaking.
+const EYE_EASING: f64 = 0.5;
 /// The tallest step the player walks up without jumping: a slab, not a
 /// block.
 pub const STEP_HEIGHT: f64 = 0.6;
 /// Two presses of Space within this many seconds start or stop flying.
 pub const DOUBLE_TAP: f32 = 0.35;
 
-/// Minecraft's tick, which its gravity and jump are written per.
-const TICK: f64 = 0.05;
+/// The tick the reference values are written per.
+pub const TICK: f64 = 0.05;
+/// Friction on the ground, a tick: a block's slipperiness, 0.6, times 0.91.
+pub const GROUND_FRICTION: f64 = 0.6 * 0.91;
+/// The walking push, a tick: 0.1, times 0.98 for the input.
+const WALK_PUSH: f64 = 0.1 * 0.98;
 
 /// How the player moves in one situation: the speed it settles at with a
 /// key held, and how quickly it gets there or stops. Velocity closes
@@ -74,16 +86,17 @@ impl Rule {
     }
 }
 
-/// On the ground: quick to start and stop (Minecraft's 4.3 blocks a second
-/// felt slow).
+/// On the ground: the push and friction settle at 4.317 blocks a second,
+/// and friction closes 1 − 0.546 of the gap each tick, which is a response
+/// of −[`TICK`] / ln 0.546 (checked in a test).
 const WALK: Rule = Rule {
-    speed: 5.5,
-    response: 0.05,
+    speed: WALK_PUSH / (1.0 - GROUND_FRICTION) / TICK,
+    response: 0.082_626_012_904_068_79,
 };
 /// In the air, steering is looser, but the top speed is the same, so a
 /// running jump keeps its speed.
 const AIR: Rule = Rule {
-    speed: 5.5,
+    speed: WALK.speed,
     response: 0.25,
 };
 const FLY: Rule = Rule {
@@ -104,8 +117,8 @@ const SNEAK: f64 = 0.3;
 const TERMINAL_SPEED: f64 = 3.92 / TICK;
 const FALL_FRICTION: f64 = 0.98;
 /// The jump's speed straight up, in blocks per second: with
-/// [`TERMINAL_SPEED`]'s gravity it peaks 1.2522 blocks up, as Minecraft's
-/// 0.42 a tick does. Enough for a block, not a block and a half.
+/// [`TERMINAL_SPEED`]'s gravity it peaks 1.2522 blocks up, as 0.42 a tick
+/// does. Enough for a block, not a block and a half.
 pub const JUMP_SPEED: f64 = 9.2474;
 /// A sprinting jump's push forward: 0.2 a tick.
 const SPRINT_JUMP_BOOST: f64 = 0.2 / TICK;
@@ -116,7 +129,12 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(give_the_camera_a_body)
             .add_systems(Update, toggle_flying.run_if(crate::ui::playing))
-            .add_systems(FixedUpdate, move_player)
+            .add_systems(
+                FixedUpdate,
+                (move_player, ease_eye_height)
+                    .chain()
+                    .in_set(PlayerMovement),
+            )
             .add_systems(
                 RunFixedMainLoop,
                 place_the_camera.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
@@ -124,14 +142,37 @@ impl Plugin for PlayerPlugin {
     }
 }
 
+/// The player's physics step, in [`FixedUpdate`]. Whatever follows how the
+/// player moved runs after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlayerMovement;
+
 /// The player's movement state. Its [`Body`] is on the same entity, the
 /// [`FlyCamera`].
-#[derive(Component, Reflect, Debug, Clone, Default)]
+#[derive(Component, Reflect, Debug, Clone)]
 #[reflect(Component)]
 pub struct Player {
     pub flying: bool,
     pub sneaking: bool,
     pub sprinting: bool,
+    /// How high the eyes are above the feet: [`EYE_HEIGHT`], or
+    /// [`SNEAK_EYE_HEIGHT`] sneaking, easing between the two.
+    pub eye_height: f64,
+    /// [`Player::eye_height`] before the last physics step, for drawing it
+    /// smoothly between steps.
+    pub previous_eye_height: f64,
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            flying: false,
+            sneaking: false,
+            sprinting: false,
+            eye_height: EYE_HEIGHT,
+            previous_eye_height: EYE_HEIGHT,
+        }
+    }
 }
 
 impl Player {
@@ -279,21 +320,35 @@ fn move_player(
     }
 }
 
+/// Moves the eyes part of the way to where they should be: lower when
+/// sneaking. [`EYE_EASING`] is per tick, so it's spread over the steps.
+fn ease_eye_height(time: Res<Time>, mut players: Query<&mut Player>) {
+    let ease = 1.0 - (1.0 - EYE_EASING).powf(time.delta_secs_f64() / TICK);
+    for mut player in &mut players {
+        let target = if player.sneaking {
+            SNEAK_EYE_HEIGHT
+        } else {
+            EYE_HEIGHT
+        };
+        player.previous_eye_height = player.eye_height;
+        player.eye_height += (target - player.eye_height) * ease;
+    }
+}
+
 /// Puts the camera at the player's eyes, between the last two physics
 /// steps, so it moves smoothly whatever the frame rate.
-fn place_the_camera(
-    time: Res<Time<Fixed>>,
-    mut players: Query<(&Body, &mut Transform), With<Player>>,
-) {
+fn place_the_camera(time: Res<Time<Fixed>>, mut players: Query<(&Body, &Player, &mut Transform)>) {
     let fraction = time.overstep_fraction_f64();
-    for (body, mut transform) in &mut players {
-        let eye = body.interpolated(fraction) + DVec3::Y * EYE_HEIGHT;
+    for (body, player, mut transform) in &mut players {
+        let height = player.previous_eye_height
+            + (player.eye_height - player.previous_eye_height) * fraction;
+        let eye = body.interpolated(fraction) + DVec3::Y * height;
         transform.translation = eye.as_vec3();
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use bevy::time::TimeUpdateStrategy;
@@ -308,7 +363,7 @@ mod tests {
 
     /// The player and its systems in a world of the chunks around
     /// `around` (3×3×3 of them), filled by `fill`, with frames of `frame`.
-    fn app(around: IVec3, frame: Duration, fill: impl Fn(IVec3) -> BlockState) -> App {
+    pub(crate) fn app(around: IVec3, frame: Duration, fill: impl Fn(IVec3) -> BlockState) -> App {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, PhysicsPlugin, PlayerPlugin))
             .insert_resource(TimeUpdateStrategy::ManualDuration(frame))
@@ -336,7 +391,7 @@ mod tests {
     }
 
     /// A flat stone floor whose top is at `y = top`.
-    fn floor(top: i32) -> impl Fn(IVec3) -> BlockState {
+    pub(crate) fn floor(top: i32) -> impl Fn(IVec3) -> BlockState {
         move |pos| {
             if pos.y < top {
                 block("stone")
@@ -346,10 +401,10 @@ mod tests {
         }
     }
 
-    const FRAME: Duration = STEP;
+    pub(crate) const FRAME: Duration = STEP;
 
     /// Spawns the player with its feet at `feet`, facing north (−Z).
-    fn spawn(app: &mut App, feet: DVec3) -> Entity {
+    pub(crate) fn spawn(app: &mut App, feet: DVec3) -> Entity {
         let eye = (feet + DVec3::Y * EYE_HEIGHT).as_vec3();
         let entity = app
             .world_mut()
@@ -371,7 +426,7 @@ mod tests {
         app.world().get::<Player>(entity).unwrap().clone()
     }
 
-    fn hold(app: &mut App, keys: &[KeyCode]) {
+    pub(crate) fn hold(app: &mut App, keys: &[KeyCode]) {
         let mut input = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         input.release_all();
         input.clear();
@@ -380,7 +435,7 @@ mod tests {
         }
     }
 
-    fn run(app: &mut App, seconds: f64) {
+    pub(crate) fn run(app: &mut App, seconds: f64) {
         let frame = match app.world().resource::<TimeUpdateStrategy>() {
             TimeUpdateStrategy::ManualDuration(frame) => frame.as_secs_f64(),
             _ => unreachable!(),
@@ -469,11 +524,43 @@ mod tests {
         }
     }
 
-    /// Letting go stops the player quickly: within a third of a block
+    /// Walking settles at the push and friction's top speed, with the
+    /// response that friction gives.
+    #[test]
+    fn walking_matches_its_push_and_friction() {
+        assert!((WALK.speed - 4.317).abs() < 1e-3, "{}", WALK.speed);
+        let response = -TICK / GROUND_FRICTION.ln();
+        assert!((WALK.response - response).abs() < 1e-12, "{response}");
+    }
+
+    /// Sneaking lowers the eyes, easing down over a few ticks rather than
+    /// at once, and standing up raises them again.
+    #[test]
+    fn sneaking_lowers_the_eyes() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        run(&mut app, 0.1);
+        let eye = |app: &App| app.world().get::<Transform>(player).unwrap().translation.y;
+        assert!((eye(&app) - (4.0 + EYE_HEIGHT as f32)).abs() < 1e-4);
+        hold(&mut app, &[KeyCode::ShiftLeft]);
+        run(&mut app, TICK);
+        let partway = eye(&app);
+        assert!(
+            partway < 4.0 + EYE_HEIGHT as f32 && partway > 4.0 + SNEAK_EYE_HEIGHT as f32 + 0.1,
+            "{partway}"
+        );
+        run(&mut app, 0.5);
+        assert!((eye(&app) - (4.0 + SNEAK_EYE_HEIGHT as f32)).abs() < 1e-3);
+        hold(&mut app, &[]);
+        run(&mut app, 0.5);
+        assert!((eye(&app) - (4.0 + EYE_HEIGHT as f32)).abs() < 1e-3);
+    }
+
+    /// Letting go stops the player quickly: within two fifths of a block
     /// walking and a block flying.
     #[test]
     fn letting_go_stops_quickly() {
-        for (flying, limit) in [(false, 0.3), (true, 1.0)] {
+        for (flying, limit) in [(false, 0.4), (true, 1.0)] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
             let player = spawn(
                 &mut app,
@@ -509,8 +596,9 @@ mod tests {
         run(&mut app, 0.25);
         let body = body(&app, player);
         assert!(!body.on_ground);
-        // Air: 5.5 × (1 − e^(−0.25 / 0.25)) ≈ 3.5; the ground would be 5.46.
-        assert!((3.2..3.8).contains(&-body.velocity.z), "{}", body.velocity);
+        // Air: 4.317 × (1 − e^(−0.25 / 0.25)) ≈ 2.73; the ground would be
+        // 4.317 × (1 − e^(−0.25 / 0.0826)) ≈ 4.10.
+        assert!((2.5..3.0).contains(&-body.velocity.z), "{}", body.velocity);
     }
 
     /// Sprint-jumping gets a push forward, so it's faster than sprinting.
@@ -557,7 +645,7 @@ mod tests {
         assert!(body(&app, player).on_ground, "back down within 0.2 s");
     }
 
-    /// A jump peaks at Minecraft's 1.25 blocks: onto a block, not two.
+    /// A jump peaks at 1.25 blocks: onto a block, not two.
     #[test]
     fn jumps_are_a_block_and_a_quarter_high() {
         let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));

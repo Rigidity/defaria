@@ -608,6 +608,8 @@ fn place_camera(
     // The player's eyes go there, flying, so the view stays put.
     if let Some((mut player, mut body)) = player {
         player.flying = true;
+        player.eye_height = EYE_HEIGHT;
+        player.previous_eye_height = EYE_HEIGHT;
         body.teleport(position.as_dvec3() - bevy::math::DVec3::Y * EYE_HEIGHT);
     }
     Ok(())

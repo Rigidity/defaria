@@ -20,6 +20,7 @@ pub mod save;
 mod streaming;
 mod terrain;
 pub mod ui;
+mod view_bob;
 mod voxel;
 mod voxel_material;
 
@@ -41,6 +42,7 @@ impl Plugin for GamePlugin {
             fly_camera::FlyCameraPlugin,
             physics::PhysicsPlugin,
             player::PlayerPlugin,
+            view_bob::ViewBobPlugin,
             voxel::VoxelPlugin,
             voxel_material::VoxelMaterialPlugin,
             terrain::TerrainPlugin,
