@@ -61,7 +61,16 @@ pub struct PhysicsPlugin;
 
 impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Time::<Fixed>::from_duration(STEP));
+        app.insert_resource(Time::<Fixed>::from_duration(STEP))
+            .add_systems(FixedFirst, remember_positions);
+    }
+}
+
+/// Keeps where each body was before this step, for drawing it between
+/// steps.
+fn remember_positions(mut bodies: Query<&mut Body>) {
+    for mut body in &mut bodies {
+        body.previous = body.position;
     }
 }
 
@@ -75,6 +84,12 @@ pub struct Aabb {
 impl Aabb {
     pub fn new(min: DVec3, max: DVec3) -> Self {
         Self { min, max }
+    }
+
+    /// A block's box `b`, for the block at `block`.
+    pub fn of_block(block: IVec3, b: &BlockBox) -> Self {
+        let origin = block.as_dvec3();
+        Self::new(origin + b.min.as_dvec3(), origin + b.max.as_dvec3())
     }
 
     /// The box `size` across, with the middle of its bottom at `feet`.
@@ -132,7 +147,7 @@ pub struct Body {
     /// The middle of the bottom of its box.
     pub position: DVec3,
     /// [`Body::position`] before the last physics step, for drawing it
-    /// smoothly between steps.
+    /// smoothly between steps. Kept up to date in [`FixedFirst`].
     pub previous: DVec3,
     /// Blocks per second.
     pub velocity: DVec3,
@@ -170,6 +185,23 @@ impl Body {
         self.on_ground = false;
     }
 
+    /// Moves it through the world by `motion` for this step, stopping and
+    /// sliding as [`move_box`] does, and sets its velocity to `velocity`
+    /// except on the axes something stopped it on.
+    pub fn advance(&mut self, motion: DVec3, velocity: DVec3, shapes: &impl Shapes) -> Moved {
+        let moved = move_box(
+            self.aabb(),
+            motion,
+            self.step_height,
+            self.on_ground,
+            shapes,
+        );
+        self.position += moved.offset;
+        self.velocity = DVec3::select(moved.blocked, DVec3::ZERO, velocity);
+        self.on_ground = moved.landed;
+        moved
+    }
+
     /// Where to draw it, `fraction` of the way through the step after the
     /// last one.
     pub fn interpolated(&self, fraction: f64) -> DVec3 {
@@ -192,14 +224,6 @@ pub struct WorldShapes<'w, 's> {
     content: Res<'w, Content>,
 }
 
-impl WorldShapes<'_, '_> {
-    /// Whether the chunk holding `block` is loaded.
-    pub fn is_loaded(&self, block: IVec3) -> bool {
-        let (coord, _) = ChunkCoord::split(block);
-        self.map.get(coord).is_some()
-    }
-}
-
 impl Shapes for WorldShapes<'_, '_> {
     fn shape(&self, block: IVec3) -> Option<&[BlockBox]> {
         let (coord, local) = ChunkCoord::split(block);
@@ -211,31 +235,29 @@ impl Shapes for WorldShapes<'_, '_> {
 /// The whole block, for the unloaded world.
 const FULL: &[BlockBox] = &[BlockBox::FULL];
 
-/// The world boxes that overlap `region` or touch it, appended to `out`.
-fn boxes_in(region: Aabb, shapes: &impl Shapes, out: &mut Vec<Aabb>) {
+/// Calls `f` with each world box in the blocks `region` overlaps or
+/// touches, until it returns true. Returns whether it did.
+fn any_box_in(region: Aabb, shapes: &impl Shapes, mut f: impl FnMut(Aabb) -> bool) -> bool {
     let min = region.min.floor().as_ivec3();
     let max = region.max.floor().as_ivec3();
     for x in min.x..=max.x {
         for y in min.y..=max.y {
             for z in min.z..=max.z {
                 let block = IVec3::new(x, y, z);
-                let origin = block.as_dvec3();
                 for b in shapes.shape(block).unwrap_or(FULL) {
-                    out.push(Aabb::new(
-                        origin + b.min.as_dvec3(),
-                        origin + b.max.as_dvec3(),
-                    ));
+                    if f(Aabb::of_block(block, b)) {
+                        return true;
+                    }
                 }
             }
         }
     }
+    false
 }
 
 /// Whether any world box overlaps `aabb`.
 pub fn collides(aabb: Aabb, shapes: &impl Shapes) -> bool {
-    let mut boxes = Vec::new();
-    boxes_in(aabb, shapes, &mut boxes);
-    boxes.iter().any(|b| b.intersects(&aabb))
+    any_box_in(aabb, shapes, |b| b.intersects(&aabb))
 }
 
 /// What happened when a box moved.
@@ -311,7 +333,10 @@ fn step_once(
     // included.
     boxes.clear();
     let climb = DVec3::new(motion.x, step_height, motion.z);
-    boxes_in(aabb.stretch(motion).stretch(climb), shapes, boxes);
+    any_box_in(aabb.stretch(motion).stretch(climb), shapes, |b| {
+        boxes.push(b);
+        false
+    });
 
     let (offset, blocked) = sweep(aabb, motion, boxes);
     let landed = motion.y < 0.0 && blocked.y;
@@ -319,18 +344,26 @@ fn step_once(
     // Not while going up: a jump into a slab's edge stays a jump.
     let can_step = step_height > 0.0 && motion.y <= 0.0 && (grounded || landed);
     if can_step && (blocked.x || blocked.z) {
-        // Try going up first, then across, then back down onto whatever
-        // is there (and on down as far as it was falling).
-        let (up, _) = sweep(aabb, DVec3::Y * step_height, boxes);
-        let raised = aabb.offset(up);
+        // Step from where it stands: where it was, on the ground already,
+        // or where it just landed. Go up first, then across, then back down
+        // onto whatever is there (and on down as far as it was falling).
+        let (base, fall) = if grounded {
+            (DVec3::ZERO, motion.y)
+        } else {
+            (DVec3::Y * offset.y, 0.0)
+        };
+        let start = aabb.offset(base);
+        let (up, _) = sweep(start, DVec3::Y * step_height, boxes);
+        let raised = start.offset(up);
         let (across, stopped) = sweep(raised, DVec3::new(motion.x, 0.0, motion.z), boxes);
-        let (down, rests) = sweep(raised.offset(across), DVec3::Y * (motion.y - up.y), boxes);
-        let stepped = up + across + down;
+        let (down, rests) = sweep(raised.offset(across), DVec3::Y * (fall - up.y), boxes);
+        let stepped = base + up + across + down;
         if flat(stepped) > flat(offset) + EPSILON {
+            let landed = rests.y || !grounded;
             return Moved {
                 offset: stepped,
-                blocked: BVec3::new(stopped.x, rests.y && motion.y < 0.0, stopped.z),
-                landed: rests.y,
+                blocked: BVec3::new(stopped.x, landed && motion.y < 0.0, stopped.z),
+                landed,
             };
         }
     }
@@ -585,6 +618,93 @@ mod tests {
         assert!(moved.blocked.x && moved.offset.y == 0.0, "{moved:?}");
     }
 
+    /// Landing beside a block while moving into it climbs no higher than
+    /// the step height above where it lands, not above where it was.
+    #[test]
+    fn landing_beside_a_block_doesnt_climb_it() {
+        let world = TestShapes::default()
+            .floor(0, -1, 0, 3)
+            .solid(IVec3::new(1, 0, 0));
+        for feet in [0.4, 0.45, 0.1] {
+            let moved = move_box(
+                player_at(DVec3::new(0.5, feet, 0.5)),
+                DVec3::new(0.3, -0.45, 0.0),
+                STEP_UP,
+                false,
+                &world,
+            );
+            // Down to the floor and stopped at the block. (From 0.45 it
+            // reaches the floor without being stopped, so it hasn't landed
+            // yet.)
+            assert!(
+                (moved.offset.y + feet).abs() < 1e-9,
+                "from {feet}: {moved:?}"
+            );
+            assert!(moved.blocked.x, "from {feet}: {moved:?}");
+        }
+        // But landing beside a slab steps onto it.
+        let world = TestShapes::default()
+            .floor(0, -1, 0, 3)
+            .with(IVec3::new(1, 0, 0), SLAB);
+        let moved = move_box(
+            player_at(DVec3::new(0.5, 0.4, 0.5)),
+            DVec3::new(0.3, -0.45, 0.0),
+            STEP_UP,
+            false,
+            &world,
+        );
+        assert!((moved.offset.y - 0.1).abs() < 1e-9, "{moved:?}");
+        assert!(!moved.blocked.x && moved.landed, "{moved:?}");
+    }
+
+    /// Moving up into a ceiling stops there, and isn't landing.
+    #[test]
+    fn ceilings_stop_rising_bodies() {
+        let world = TestShapes::default().solid(IVec3::new(0, 2, 0));
+        let moved = move_box(
+            player_at(DVec3::new(0.5, 0.0, 0.5)),
+            DVec3::Y * 0.5,
+            STEP_UP,
+            true,
+            &world,
+        );
+        assert!((moved.offset.y - 0.2).abs() < 1e-9, "{moved:?}");
+        assert!(moved.blocked.y && !moved.landed);
+    }
+
+    /// Jumping into a slab's edge stays a jump: no stepping while going up.
+    #[test]
+    fn rising_bodies_dont_step_up() {
+        let world = TestShapes::default()
+            .floor(0, -1, 0, 3)
+            .with(IVec3::new(1, 0, 0), SLAB);
+        let moved = move_box(
+            player_at(DVec3::new(0.5, 0.0, 0.5)),
+            DVec3::new(0.3, 0.2, 0.0),
+            STEP_UP,
+            true,
+            &world,
+        );
+        assert_eq!(moved.offset.y, 0.2);
+        assert!(moved.blocked.x, "{moved:?}");
+    }
+
+    /// The horizontal axis with more motion goes first: past a block on
+    /// the diagonal, that decides which way the body slides.
+    #[test]
+    fn the_larger_horizontal_axis_moves_first() {
+        let world = TestShapes::default().solid(IVec3::new(1, 0, 1));
+        let start = player_at(DVec3::new(0.5, 0.0, 0.5));
+        // Mostly along z: all of z, then x stops at the block's side.
+        let moved = move_box(start, DVec3::new(0.3, 0.0, 0.45), 0.0, false, &world);
+        assert!((moved.offset.x - 0.2).abs() < 1e-9, "{moved:?}");
+        assert_eq!(moved.offset.z, 0.45);
+        // Mostly along x: the other way round.
+        let moved = move_box(start, DVec3::new(0.45, 0.0, 0.3), 0.0, false, &world);
+        assert_eq!(moved.offset.x, 0.45);
+        assert!((moved.offset.z - 0.2).abs() < 1e-9, "{moved:?}");
+    }
+
     /// The unloaded world is solid: nothing falls into it.
     #[test]
     fn unloaded_blocks_are_solid() {
@@ -634,6 +754,16 @@ mod tests {
         // Along the edge, it's free.
         let motion = guard_edges(aabb, DVec3::new(0.0, 0.0, 1.0), STEP_UP, &world);
         assert_eq!(motion.z, 1.0);
+        // At an outside corner, where each axis alone would stay over the
+        // platform but both together wouldn't, it still stops.
+        let corner = TestShapes::default()
+            .solid(IVec3::new(0, -1, 0))
+            .solid(IVec3::new(1, -1, 0))
+            .solid(IVec3::new(0, -1, 1));
+        let motion = guard_edges(aabb, DVec3::new(1.0, 0.0, 1.0), STEP_UP, &corner);
+        let moved = aabb.offset(DVec3::new(motion.x, -STEP_UP, motion.z));
+        assert!(collides(moved, &corner), "{motion}");
+        assert!(motion.x > 0.0 && motion.z > 0.0, "{motion}");
         // A slab's drop is within the step height, so it's allowed.
         let world = world.with(IVec3::new(1, -1, 0), SLAB);
         let motion = guard_edges(aabb, DVec3::new(0.5, 0.0, 0.0), STEP_UP, &world);

@@ -69,8 +69,9 @@ changes.
 1. **Logic:** write headless tests. Build an `App` with `MinimalPlugins`, add
    only the systems under test, step time with
    `TimeUpdateStrategy::ManualDuration`, and call `app.update()`. See the tests
-   in `src/fly_camera.rs`, and `src/player.rs` for systems in `FixedUpdate`. `Time<Virtual>` clamps each step to 250ms, so keep
-   manual steps below that.
+   in `src/fly_camera.rs`, and in `src/player.rs` for systems in
+   `FixedUpdate`. `Time<Virtual>` clamps each step to 250ms, so keep manual
+   steps below that.
 2. **Gameplay and visuals:** write a scenario script and run
    `cargo headless <script>`. It runs the whole game with no window, rendering
    offscreen, feeds it the script's input at a fixed 60 fps, and exits when the

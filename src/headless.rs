@@ -100,7 +100,7 @@ use crate::{
     content::{BlockState, Content},
     fly_camera::{FlyCamera, MAX_PITCH},
     physics::Body,
-    player::Player,
+    player::{EYE_HEIGHT, Player},
     streaming::StreamingStatus,
     terrain::Voxels,
 };
@@ -566,7 +566,7 @@ fn place_camera(
     // The player's eyes go there, flying, so the view stays put.
     if let Some((mut player, mut body)) = player {
         player.flying = true;
-        body.teleport(Player::body(position).position);
+        body.teleport(position.as_dvec3() - bevy::math::DVec3::Y * EYE_HEIGHT);
     }
     Ok(())
 }

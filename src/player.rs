@@ -28,7 +28,7 @@ use bevy::{
 
 use crate::{
     fly_camera::FlyCamera,
-    physics::{Body, WorldShapes, guard_edges, move_box},
+    physics::{Body, Shapes, WorldShapes, guard_edges},
 };
 
 /// Width, height and depth.
@@ -53,10 +53,15 @@ struct Rule {
     friction: f64,
 }
 
+/// How quickly velocity decays, per second, with `friction` a tick.
+fn decay(friction: f64) -> f64 {
+    -friction.ln() / TICK
+}
+
 impl Rule {
     /// How quickly velocity decays, per second.
     fn decay(self) -> f64 {
-        -self.friction.ln() / TICK
+        decay(self.friction)
     }
 
     /// The top speed, in blocks per second: what Minecraft moves per tick
@@ -206,12 +211,11 @@ fn move_player(
     let ctrl = held(KeyCode::ControlLeft) || held(KeyCode::ControlRight);
 
     for (camera, mut player, mut body) in &mut players {
-        body.previous = body.position;
         if dt == 0.0 {
             continue;
         }
         // In the unloaded world, wait for it to load.
-        if !shapes.is_loaded(body.position.floor().as_ivec3()) {
+        if shapes.shape(body.position.floor().as_ivec3()).is_none() {
             body.velocity = DVec3::ZERO;
             continue;
         }
@@ -254,13 +258,13 @@ fn move_player(
             let rule = FLY_VERTICAL;
             drift(velocity.y, rule.accel() * rise, rule.decay(), dt)
         } else {
-            let decay = -FALL_FRICTION.ln() / TICK;
+            let decay = decay(FALL_FRICTION);
             drift(velocity.y, -TERMINAL_SPEED * decay, decay, dt)
         };
 
-        let aabb = body.aabb();
-        if player.sneaking && body.on_ground {
-            let guarded = guard_edges(aabb, motion, body.step_height, &shapes);
+        // Not when jumping: a sneaking jump off an edge carries on over it.
+        if player.sneaking && body.on_ground && motion.y <= 0.0 {
+            let guarded = guard_edges(body.aabb(), motion, body.step_height, &shapes);
             for axis in [0, 2] {
                 if guarded[axis] != motion[axis] {
                     velocity[axis] = 0.0;
@@ -268,10 +272,7 @@ fn move_player(
             }
             motion = guarded;
         }
-        let moved = move_box(aabb, motion, body.step_height, body.on_ground, &shapes);
-        body.position += moved.offset;
-        body.velocity = DVec3::select(moved.blocked, DVec3::ZERO, velocity);
-        body.on_ground = moved.landed;
+        body.advance(motion, velocity, &shapes);
         if player.flying && body.on_ground {
             player.flying = false;
         }
@@ -430,6 +431,102 @@ mod tests {
         }
     }
 
+    /// Flying settles at Minecraft's 10.9 blocks a second, and twice that
+    /// sprinting. Ctrl with S isn't sprinting.
+    #[test]
+    fn flying_and_backwards_speeds() {
+        for (flying, keys, speed) in [
+            (true, &[KeyCode::KeyW][..], -10.89),
+            (true, &[KeyCode::KeyW, KeyCode::ControlLeft], -21.78),
+            (false, &[KeyCode::KeyS, KeyCode::ControlLeft], 4.317),
+        ] {
+            let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+            let player = spawn(
+                &mut app,
+                DVec3::new(8.5, if flying { 10.0 } else { 4.0 }, 8.5),
+            );
+            app.world_mut().get_mut::<Player>(player).unwrap().flying = flying;
+            run(&mut app, 0.1);
+            hold(&mut app, keys);
+            run(&mut app, 0.4);
+            // Back to where it started now and then, so it doesn't run out
+            // of loaded world: speeds don't depend on where.
+            for _ in 0..6 {
+                app.world_mut().get_mut::<Body>(player).unwrap().position.z = 8.5;
+                run(&mut app, 0.5);
+            }
+            app.world_mut().get_mut::<Body>(player).unwrap().position.z = 8.5;
+            let start = self::body(&app, player).position;
+            run(&mut app, 0.25);
+            let moved = self::body(&app, player).position - start;
+            assert!(
+                (moved.z / 0.25 - speed).abs() < 0.02 * speed.abs(),
+                "{keys:?}: {moved}"
+            );
+            assert!(!self::player(&app, player).sprinting || flying);
+        }
+    }
+
+    /// In the air, the player steers far less than on the ground.
+    #[test]
+    fn air_control_is_weak() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        run(&mut app, 0.1);
+        hold(&mut app, &[KeyCode::Space]);
+        run(&mut app, STEP.as_secs_f64());
+        hold(&mut app, &[KeyCode::KeyW]);
+        run(&mut app, 0.25);
+        let body = body(&app, player);
+        assert!(!body.on_ground);
+        // Air: 4.36 × (1 − e^(−1.886 × 0.25)) ≈ 1.6; the ground would be 4.1.
+        assert!((1.4..1.9).contains(&-body.velocity.z), "{}", body.velocity);
+    }
+
+    /// Sprint-jumping gets a push forward, so it's faster than sprinting.
+    #[test]
+    fn sprint_jumping_beats_sprinting() {
+        let distance = |keys: &[KeyCode]| {
+            let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+            let player = spawn(&mut app, DVec3::new(8.5, 4.0, 23.0));
+            run(&mut app, 0.1);
+            hold(&mut app, keys);
+            run(&mut app, 1.5);
+            8.5 - body(&app, player).position.z
+        };
+        let sprint = distance(&[KeyCode::KeyW, KeyCode::ControlLeft]);
+        let jump = distance(&[KeyCode::KeyW, KeyCode::ControlLeft, KeyCode::Space]);
+        assert!(jump > sprint + 0.5, "{jump} vs {sprint}");
+    }
+
+    /// Jumping under a low ceiling bumps the head and comes straight back
+    /// down, rather than sticking to it.
+    #[test]
+    fn ceilings_stop_jumps() {
+        // Floor top at 4, ceiling from 6: 0.2 above the head.
+        let world = |pos: IVec3| match pos.y {
+            ..4 | 6 => block("stone"),
+            _ => BlockState::AIR,
+        };
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, world);
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        run(&mut app, 0.1);
+        hold(&mut app, &[KeyCode::Space]);
+        run(&mut app, STEP.as_secs_f64());
+        hold(&mut app, &[]);
+        let mut peak: f64 = 0.0;
+        for _ in 0..12 {
+            run(&mut app, STEP.as_secs_f64());
+            let body = body(&app, player);
+            peak = peak.max(body.position.y);
+            if body.position.y > 4.2 - 1e-9 {
+                assert!(body.velocity.y <= 0.0, "{}", body.velocity);
+            }
+        }
+        assert!((peak - 4.2).abs() < 1e-9, "{peak}");
+        assert!(body(&app, player).on_ground, "back down within 0.2 s");
+    }
+
     /// A jump peaks at Minecraft's 1.25 blocks: onto a block, not two.
     #[test]
     fn jumps_are_a_block_and_a_quarter_high() {
@@ -500,9 +597,32 @@ mod tests {
         assert!(sneaking.on_ground);
         assert_eq!(sneaking.position.y, 4.0);
         assert!(sneaking.position.z + 0.3 > 6.0, "{}", sneaking.position);
-        // Without sneaking, off it goes.
+        // A sneaking jump carries on over the edge.
+        hold(
+            &mut app,
+            &[KeyCode::KeyW, KeyCode::ShiftLeft, KeyCode::Space],
+        );
+        run(&mut app, 0.3);
+        // All of the body past the edge at z = 6.
+        let past = body(&app, player).position;
+        assert!(past.z + 0.3 < 6.0, "{past}");
+    }
+
+    /// Without sneaking, the player walks off.
+    #[test]
+    fn walking_goes_off_edges() {
+        let world = |pos: IVec3| {
+            if pos.y < 4 && pos.z >= 6 || pos.y < 0 {
+                block("stone")
+            } else {
+                BlockState::AIR
+            }
+        };
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, world);
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        run(&mut app, 0.1);
         hold(&mut app, &[KeyCode::KeyW]);
-        run(&mut app, 1.0);
+        run(&mut app, 1.5);
         assert!(body(&app, player).position.y < 4.0);
     }
 
@@ -534,6 +654,50 @@ mod tests {
         run(&mut app, 3.0);
         assert!(!self::player(&app, player).flying);
         assert_eq!(body(&app, player).position.y, 4.0);
+    }
+
+    /// Two taps further apart than [`DOUBLE_TAP`] are two jumps, not a flight.
+    #[test]
+    fn slow_taps_dont_fly() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        run(&mut app, 0.1);
+        for _ in 0..2 {
+            hold(&mut app, &[KeyCode::Space]);
+            run(&mut app, 0.05);
+            hold(&mut app, &[]);
+            run(&mut app, DOUBLE_TAP as f64 + 0.1);
+        }
+        assert!(!self::player(&app, player).flying);
+    }
+
+    /// Between physics steps, the camera is drawn part of the way from the
+    /// last position to the new one.
+    #[test]
+    fn the_camera_is_drawn_between_steps() {
+        let mut app = app(IVec3::new(8, 8, 8), STEP / 2, floor(4));
+        let player = spawn(&mut app, DVec3::new(8.5, 10.0, 8.5));
+        app.world_mut().get_mut::<Player>(player).unwrap().flying = true;
+        hold(&mut app, &[KeyCode::KeyW]);
+        run(&mut app, 0.5);
+        let mut fractions = Vec::new();
+        for _ in 0..4 {
+            run(&mut app, STEP.as_secs_f64() / 2.0);
+            let body = body(&app, player);
+            let eye = app.world().get::<Transform>(player).unwrap().translation;
+            let (from, to) = (body.previous.z, body.position.z);
+            assert!(to < from, "moving north");
+            fractions.push((eye.z as f64 - from) / (to - from));
+        }
+        // Every other frame has no step, so it's drawn half way.
+        assert!(
+            fractions.iter().any(|f| (f - 0.5).abs() < 0.01),
+            "{fractions:?}"
+        );
+        assert!(
+            fractions.iter().all(|f| (-0.01..=1.01).contains(f)),
+            "{fractions:?}"
+        );
     }
 
     /// The fixed step makes the path the same at any frame rate, including
