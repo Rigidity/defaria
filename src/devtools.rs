@@ -2,6 +2,8 @@
 //!
 //! - Screenshot mode (`--screenshot <path> [--frames N]`): render N frames,
 //!   save a PNG, exit. Works in every build.
+//! - `--no-vsync`: uncapped frame rate in the window, for measuring
+//!   performance. Without it the window draws once per display refresh.
 //! - Bevy Remote Protocol (BRP), `dev` feature only: JSON-RPC over HTTP on
 //!   127.0.0.1:15702 (override with `BRP_PORT`) to query/edit the live ECS.
 
@@ -72,6 +74,9 @@ pub struct Cli {
     /// plays the default world in the data folder, and headless runs play
     /// a world kept in memory.
     pub world: Option<PathBuf>,
+    /// `--no-vsync`: draw frames as fast as possible instead of once per
+    /// display refresh. For measuring performance; it tears and judders.
+    pub no_vsync: bool,
 }
 
 impl Cli {
@@ -82,6 +87,7 @@ impl Cli {
         let mut headless = None;
         let mut no_render = false;
         let mut world = None;
+        let mut no_vsync = false;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -102,6 +108,7 @@ impl Cli {
                     ));
                 }
                 "--no-render" => no_render = true,
+                "--no-vsync" => no_vsync = true,
                 "--world" => {
                     world = Some(PathBuf::from(args.next().expect("--world needs a folder")));
                 }
@@ -116,11 +123,16 @@ impl Cli {
             !no_render || headless.is_some(),
             "--no-render only works with --headless"
         );
+        assert!(
+            !no_vsync || headless.is_none(),
+            "--no-vsync only works with a window; headless runs are never synced"
+        );
         Self {
             screenshot: path.map(|path| ScreenshotMode { path, frames }),
             headless,
             no_render,
             world,
+            no_vsync,
         }
     }
 }
@@ -197,6 +209,18 @@ mod tests {
         let cli = Cli::from_args(args(&["--headless", "a.txt", "--world", "saves/test"]));
         assert_eq!(cli.world, Some(PathBuf::from("saves/test")));
         assert_eq!(Cli::from_args(args(&[])).world, None);
+    }
+
+    #[test]
+    fn vsync_is_on_unless_turned_off() {
+        assert!(!Cli::from_args(args(&[])).no_vsync);
+        assert!(Cli::from_args(args(&["--no-vsync"])).no_vsync);
+    }
+
+    #[test]
+    #[should_panic(expected = "--no-vsync only works with a window")]
+    fn no_vsync_needs_a_window() {
+        Cli::from_args(args(&["--headless", "a.txt", "--no-vsync"]));
     }
 
     #[test]

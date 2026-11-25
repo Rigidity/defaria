@@ -41,9 +41,14 @@ fn main() -> AppExit {
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Defaria".into(),
-                // Uncapped frame rate: Immediate, then Mailbox, falling back
-                // to Fifo (vsync) only where neither is supported.
-                present_mode: PresentMode::AutoNoVsync,
+                // One frame per display refresh, so motion advances evenly
+                // and nothing tears (an uncapped frame rate did both, and
+                // felt unsmooth). `--no-vsync` uncaps it to measure speed.
+                present_mode: if cli.no_vsync {
+                    PresentMode::AutoNoVsync
+                } else {
+                    PresentMode::AutoVsync
+                },
                 ..default()
             }),
             ..default()

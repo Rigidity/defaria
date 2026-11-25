@@ -3,6 +3,32 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Walking is smoothed, not stepped per tick (2026-11-24)
+
+**Context.** Walking's top speed (4.317 blocks a second) and how quickly
+it's reached and lost come from a per-tick model, Minecraft's: each 50 ms
+tick adds a fixed push, moves, then applies ground friction of 0.546.
+`WALK` in `src/player.rs` turns that into a smooth response time, so it
+works the same at any physics step rate.
+
+**Decision.** Keep the smooth version.
+
+**What's wrong with it.** The smooth curve trails the per-tick one: after
+100 ms the per-tick model has walked 0.25 blocks to our 0.18, and it stays
+about 0.1 blocks ahead. Letting go, ours slides 0.36 blocks to its 0.26,
+so stopping is a little looser than the numbers suggest. Jumps have the
+same kind of gap: the right height, but about 6% quicker. Sneaking also
+only lowers the eyes (to 1.27); the box stays 1.8 tall, so the player
+can't sneak under a gap a block and a half high.
+
+**What should replace it.** If starts and stops should feel tighter: step
+horizontal movement per 50 ms tick (every third 60 Hz step) in
+push-move-friction order, and draw between ticks as now. Shrink the
+player's box while sneaking, when there's room to stand back up.
+
+**When to revisit.** If walking or stopping still feels loose, or when
+sneaking under low gaps matters.
+
 ## Physics is precise far away, but drawing isn't (2026-11-24)
 
 **Context.** The player is a box that collides with block shapes

@@ -106,6 +106,7 @@ use crate::{
     player::{EYE_HEIGHT, Player},
     streaming::StreamingStatus,
     terrain::Voxels,
+    view_bob::ViewBob,
 };
 
 /// Fixed time step for every headless frame.
@@ -596,7 +597,7 @@ fn place_camera(
     mut cameras: Query<(
         &mut FlyCamera,
         &mut Transform,
-        Option<(&mut Player, &mut Body)>,
+        Option<(&mut Player, &mut Body, &mut ViewBob)>,
     )>,
 ) -> Result<(), String> {
     let (mut camera, mut transform, player) = cameras
@@ -606,8 +607,11 @@ fn place_camera(
     camera.pitch = pitch.to_radians().clamp(-MAX_PITCH, MAX_PITCH);
     *transform = Transform::from_translation(position).with_rotation(camera.rotation());
     // The player's eyes go there, flying, so the view stays put.
-    if let Some((mut player, mut body)) = player {
+    if let Some((mut player, mut body, mut bob)) = player {
         player.flying = true;
+        player.eye_height = EYE_HEIGHT;
+        player.previous_eye_height = EYE_HEIGHT;
+        bob.settle();
         body.teleport(position.as_dvec3() - bevy::math::DVec3::Y * EYE_HEIGHT);
     }
     Ok(())
@@ -1216,6 +1220,75 @@ mod tests {
             (turned + 100.0 * end_camera.sensitivity).abs() < 1e-5,
             "{turned}"
         );
+    }
+
+    /// Runs `script` in the test game until it ends.
+    fn play(script: &str) -> App {
+        let mut app = test_game(Script::parse(script).unwrap());
+        let mut frames = 0;
+        let exit = loop {
+            app.update();
+            frames += 1;
+            if let Some(exit) = app.should_exit() {
+                break exit;
+            }
+            assert!(frames < SETTLE_TIMEOUT_FRAMES, "script never finished");
+        };
+        assert_eq!(exit, AppExit::Success);
+        app
+    }
+
+    /// The game draws through one camera, the eye view: a child of the
+    /// eyes, with a 70° field of view and the colours left alone.
+    #[test]
+    fn the_game_draws_through_one_eye_view() {
+        use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
+
+        use crate::fly_camera::{EyeView, FOV};
+
+        let mut app = play("wait 1\n");
+        let world = app.world_mut();
+        let cameras: Vec<_> = world
+            .query_filtered::<Entity, With<Camera>>()
+            .iter(world)
+            .collect();
+        assert_eq!(cameras.len(), 1, "{cameras:?}");
+        let view = world.entity(cameras[0]);
+        assert!(view.contains::<EyeView>());
+        let parent = view.get::<ChildOf>().expect("a child").parent();
+        assert!(world.entity(parent).contains::<FlyCamera>());
+        let Some(Projection::Perspective(projection)) = view.get::<Projection>() else {
+            panic!("not a perspective projection");
+        };
+        assert!((projection.fov - FOV.to_radians()).abs() < 1e-6);
+        assert_eq!(FOV, 70.0);
+        assert_eq!(view.get::<Tonemapping>(), Some(&Tonemapping::None));
+        assert_eq!(view.get::<DebandDither>(), Some(&DebandDither::Disabled));
+    }
+
+    /// `camera` puts the eyes exactly where it says, level, even straight
+    /// after sneaking along the ground (lower eyes, a swaying view).
+    #[test]
+    fn camera_resets_sneaking_eyes_and_the_sway() {
+        use crate::view_bob::ViewBob;
+
+        let mut app = play(
+            "fill 56 50 84 72 50 100 stone\n\
+             camera 64.5 52.7 92.5 0 0\n\
+             press ShiftLeft  # down onto the stone, then sneak north\n\
+             wait 40\n\
+             press KeyW\n\
+             wait 40\n\
+             camera 64.5 70 92.5 0 0\n\
+             release ShiftLeft\n\
+             release KeyW\n\
+             wait 1\n",
+        );
+        let (_, eyes) = camera(&mut app);
+        assert!((eyes.translation.y - 70.0).abs() < 1e-4, "{eyes:?}");
+        let world = app.world_mut();
+        let bob = *world.query::<&ViewBob>().single(world).unwrap();
+        assert_eq!(bob.amount, 0.0, "{bob:?}");
     }
 
     /// An image whose pixel (x, y) is `paint(x, y)`.
