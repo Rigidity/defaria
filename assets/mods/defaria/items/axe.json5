@@ -1,5 +1,10 @@
+// A metal head on a wooden handle; each pair is its own item.
 {
-  name: "Axe",
-  texture: "axe",
+  name: "{head} Axe ({handle})",
+  properties: {
+    head: { materials: ["iron", "#metal"] },
+    handle: { materials: ["oak", "#wood"] },
+  },
+  texture: { texture: "axe", materials: { head: "{head}", handle: "{handle}" } },
   max_stack: 1,
 }

@@ -240,7 +240,7 @@ mod tests {
 
     /// The array layer of base game texture `defaria:<name>`.
     fn tile(name: &str) -> u32 {
-        base().texture(&format!("defaria:{name}")).unwrap()
+        crate::content::base_texture(name)
     }
 
     /// The asset path of base game image `<name>`.
@@ -249,7 +249,12 @@ mod tests {
     }
 
     fn material(name: &str) -> Palette {
-        base().materials[&format!("defaria:{name}")]
+        base().materials[&format!("defaria:{name}")].palette
+    }
+
+    /// Oak's palette for `role`, which the default log and planks use.
+    fn wood_palette(role: &str) -> Palette {
+        base().materials["defaria:oak"].palette_for(Some(role))
     }
 
     /// A layer image as the game loads it: decoded by Bevy's PNG loader.
@@ -379,11 +384,11 @@ mod tests {
         };
         assert_eq!(
             pixel(&image, tile("log_top"), 0, 0, 0),
-            color(material("bark"), bark[corner])
+            color(wood_palette("bark"), bark[corner])
         );
         assert_eq!(
             pixel(&image, tile("log_top"), 0, 8, 8),
-            color(material("log_end"), rings[middle])
+            color(wood_palette("heartwood"), rings[middle])
         );
     }
 
@@ -458,16 +463,25 @@ mod tests {
         };
         for (layers, message) in [(&bad, "not gray"), (&missing, "isn't loaded")] {
             let (image, _, errors) = build(&base().textures, |path| layers.get(path));
-            assert_eq!(errors.len(), 1, "{errors:?}");
-            assert!(
-                errors[0].contains("defaria:stone")
-                    && errors[0].contains(&stone)
-                    && errors[0].contains(message),
-                "{errors:?}"
-            );
+            // One error per tile that uses the stone image: every rock,
+            // with and without ore.
+            let using: Vec<&str> = base()
+                .textures
+                .iter()
+                .filter(|t| t.layers.iter().any(|l| l.image == stone))
+                .map(|t| t.id.as_str())
+                .collect();
+            assert!(using.len() > 1, "{using:?}");
+            assert_eq!(errors.len(), using.len(), "{errors:?}");
+            for (error, id) in errors.iter().zip(&using) {
+                assert!(
+                    error.contains(id) && error.contains(&stone) && error.contains(message),
+                    "{errors:?}"
+                );
+            }
             for (layer, texture) in base().textures.iter().enumerate() {
                 let layer = layer as u32;
-                let wanted = if texture.id == "defaria:stone" {
+                let wanted = if using.contains(&texture.id.as_str()) {
                     placeholder()
                 } else {
                     tile_pixels(&expected, layer)

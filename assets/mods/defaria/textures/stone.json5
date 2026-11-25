@@ -1,5 +1,6 @@
+// Any rock: `$rock` is the material.
 {
   layers: [
-    { image: "stone", material: "stone" },
+    { image: "stone", material: "$rock" },
   ],
 }

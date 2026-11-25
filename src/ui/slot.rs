@@ -8,7 +8,7 @@
 use bevy::prelude::*;
 
 use super::{Hoverable, Hovered, ItemIcon, Tooltip, UiTheme, UiWidgetSystems, icon::show_icons};
-use crate::content::{Content, ItemId};
+use crate::content::{Content, ItemState};
 
 pub struct SlotPlugin;
 
@@ -28,7 +28,7 @@ impl Plugin for SlotPlugin {
 #[reflect(Component)]
 #[require(Hoverable, Tooltip)]
 pub struct ItemSlot {
-    pub item: Option<ItemId>,
+    pub item: Option<ItemState>,
     pub selected: bool,
 }
 
@@ -109,7 +109,7 @@ mod tests {
             .init_resource::<UiTheme>()
             .add_plugins(SlotPlugin);
         let theme = UiTheme::default();
-        let stone = base().item_id("defaria:stone");
+        let stone = base().default_item("defaria:stone");
         let slot = app
             .world_mut()
             .spawn(item_slot(&theme, ItemSlot::default()))

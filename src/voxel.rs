@@ -719,7 +719,12 @@ mod tests {
                 let id = &content.textures[face.layer as usize].id;
                 (
                     face.normal.as_ivec3(),
-                    id.trim_start_matches("defaria:").to_owned(),
+                    // Without the materials of a texture with inputs.
+                    id.trim_start_matches("defaria:")
+                        .split('(')
+                        .next()
+                        .unwrap()
+                        .to_owned(),
                 )
             })
             .collect();

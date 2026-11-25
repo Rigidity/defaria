@@ -1,5 +1,17 @@
+// Any rock, with or without ore in it. Each rock and ore is its own item.
 {
-  name: "Stone",
+  name: "{rock}",
+  properties: {
+    rock: { materials: ["stone", "#rock"] },
+    ore: { materials: "#ore", optional: true },
+  },
   model: "cube",
-  textures: { all: "stone" },
+  textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
+  variants: [
+    {
+      when: { ore: { not: "none" } },
+      name: "{rock} {ore} Ore",
+      textures: { all: { texture: "ore", materials: { rock: "{rock}", ore: "{ore}" } } },
+    },
+  ],
 }

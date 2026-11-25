@@ -15,7 +15,7 @@ use bevy::prelude::*;
 
 use crate::{
     block_texture::TILE_SIZE,
-    content::{BakedFace, Content, Item},
+    content::{BakedFace, Content, ItemLook},
 };
 
 /// Width and height of a block icon, in pixels: at least the icon's size
@@ -40,7 +40,7 @@ pub struct IconPixels {
 /// The icon for `item`. An item with a texture of its own shows that tile;
 /// one that places a block shows the block; anything else (or a tile
 /// that isn't there) is fully transparent.
-pub fn item_icon(content: &Content, item: &Item, tiles: &[Vec<u8>]) -> IconPixels {
+pub fn item_icon(content: &Content, item: &ItemLook, tiles: &[Vec<u8>]) -> IconPixels {
     if let Some(layer) = item.texture {
         if let Some(tile) = tiles.get(layer as usize) {
             return IconPixels {
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn items_with_a_texture_show_their_tile_flat() {
         let content = base();
-        let pickaxe = content.item("defaria:pickaxe").unwrap();
+        let pickaxe = content.default_item_look("defaria:pickaxe").unwrap();
         let layer = pickaxe.texture.unwrap() as usize;
         let tiles = solid_tiles(|i| [i as u8, 1, 2, 255]);
         let icon = item_icon(content, pickaxe, &tiles);
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(icon.size, TILE_SIZE);
         assert_eq!(icon.data, tiles[layer]);
 
-        let stone = content.item("defaria:stone").unwrap();
+        let stone = content.default_item_look("defaria:stone").unwrap();
         let icon = item_icon(content, stone, &tiles);
         assert!(!icon.flat);
         assert_eq!(icon.size, BLOCK_ICON_SIZE);
@@ -375,9 +375,9 @@ mod tests {
     #[test]
     fn missing_tiles_draw_nothing() {
         let content = base();
-        for item in &content.items {
+        for item in &content.item_states {
             let icon = item_icon(content, item, &[]);
-            assert!(icon.data.chunks(4).all(|p| p[3] == 0), "{}", item.id);
+            assert!(icon.data.chunks(4).all(|p| p[3] == 0), "{}", item.name);
         }
     }
 }

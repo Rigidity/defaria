@@ -422,8 +422,8 @@ mod tests {
         assert_ne!(new.id(), old.id(), "rebuilt texture must be a new asset");
         let texture = app.world().resource::<Assets<Image>>().get(&new).unwrap();
         // The stone tile's first pixel is the darkest stone color now.
-        let darkest = base().materials["defaria:stone"].color(0);
-        let tile = base().texture("defaria:stone").unwrap() as usize;
+        let darkest = base().materials["defaria:stone"].palette.color(0);
+        let tile = base().texture("defaria:stone(rock=defaria:stone)").unwrap() as usize;
         let per_layer: u32 = (0..mip_levels(TILE_SIZE))
             .map(|mip| (TILE_SIZE >> mip).pow(2) * 4)
             .sum();
@@ -458,7 +458,7 @@ mod tests {
             .resource::<Assets<Image>>()
             .get(texture)
             .unwrap();
-        let layer = base().texture(&format!("defaria:{name}")).unwrap() as usize;
+        let layer = crate::content::base_texture(name) as usize;
         let size = |mip: u32| ((TILE_SIZE >> mip).pow(2) * 4) as usize;
         let per_layer: usize = (0..mip_levels(TILE_SIZE)).map(size).sum();
         let at = layer * per_layer;

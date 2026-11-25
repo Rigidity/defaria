@@ -1,6 +1,6 @@
 {
   layers: [
-    { image: "items/axe_handle", material: "planks" },
-    { image: "items/axe_head", material: "iron" },
+    { image: "items/axe_handle", material: "$handle" },
+    { image: "items/axe_head", material: "$head" },
   ],
 }

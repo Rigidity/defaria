@@ -1,7 +1,7 @@
 // The cut end: growth rings, framed by bark cut from the side.
 {
   layers: [
-    { image: "log_top", material: "log_end" },
-    { image: "log_top_bark", material: "bark" },
+    { image: "log_top", material: "$wood", role: "heartwood" },
+    { image: "log_top_bark", material: "$wood", role: "bark" },
   ],
 }

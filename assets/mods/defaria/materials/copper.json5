@@ -1,0 +1,9 @@
+// Bright orange metal; ore streaked with green.
+{
+  name: "Copper",
+  tags: ["metal", "ore"],
+  palette: ["#5a2a14", "#a04e26", "#d87a3e", "#f6b07a"],
+  palettes: {
+    ore: ["#1e5a48", "#3a8a64", "#d87a3e", "#f6b07a"],
+  },
+}

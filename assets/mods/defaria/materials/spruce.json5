@@ -1,0 +1,10 @@
+// Dark reddish-brown wood under near-black bark.
+{
+  name: "Spruce",
+  tags: ["wood"],
+  palette: ["#3a2416", "#5c3a22", "#744c2e", "#86603c"],
+  palettes: {
+    bark: ["#1c1410", "#2c2018", "#3c2c20", "#4c3a2a"],
+    heartwood: ["#6a4426", "#8a5e36", "#a47448", "#b88a5a"],
+  },
+}

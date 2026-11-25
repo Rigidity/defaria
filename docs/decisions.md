@@ -3,6 +3,34 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Every material combination is its own tile and state (2026-11-25)
+
+**Context.** Blocks and items can be made of materials
+(`docs/modding.md`): a log of any wood, stone with any ore. A material is a
+property value like any other, so every combination is its own block or
+item state, and every combination of materials a texture is used with is
+baked on the CPU into its own layer of the block texture array.
+
+**Decision.** Keep expanding combinations up front. The base game has 41
+block states, 80 item states and 78 tiles.
+
+**What's wrong with it.** It multiplies. A block's states are the product
+of its properties' values (4096 at most per block, 65536 block states in
+all), and the tiles are the product of the materials each texture is used
+with. Metal allows 2048 array layers; a few mods adding woods, rocks and
+ores, with stairs, walls and tools for each, would get there. Item states
+only carry values from fixed lists, so nothing like durability yet.
+
+**What should replace it.** Color in the shader: keep one gray layer per
+image and give each face the palettes to color it with (an index into a
+palette buffer per layer), so tiles stop multiplying with materials. If
+block states run short, store materials beside the state (a per-chunk
+palette of material ids) instead of in it. Items get a data field next to
+their state for values that aren't a fixed list.
+
+**When to revisit.** When the tile count nears the GPU's array layer limit,
+or block states near the 16-bit limit, or items need open-ended data.
+
 ## The fog's cylinder rides in Bevy's atmospheric fog (2026-11-24)
 
 **Context.** The fog (`src/fog.rs`) is a cylinder: how far it reaches

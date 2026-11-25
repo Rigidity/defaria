@@ -1,0 +1,6 @@
+// Near-black lumps with a glossy highlight, so they show on dark rock.
+{
+  name: "Coal",
+  tags: ["ore"],
+  palette: ["#000000", "#0e0e12", "#1c1c22", "#9a9aa8"],
+}

@@ -1,0 +1,6 @@
+// Rich yellow, the same as metal and as ore.
+{
+  name: "Gold",
+  tags: ["metal", "ore"],
+  palette: ["#6a4a0a", "#b08a1a", "#e8c43a", "#fff294"],
+}

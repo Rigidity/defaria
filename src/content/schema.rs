@@ -31,8 +31,20 @@ pub struct Manifest {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct MaterialDef {
+    /// Shown in names that use the material, such as "{wood} Log".
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Groups the material belongs to, which properties choose from
+    /// (`"#wood"`).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Two to eight colors, darkest first, spread over the gray levels.
     pub palette: Vec<String>,
+    /// Other palettes for particular uses, by role: a layer with
+    /// `role: "leaves"` takes the material's `leaves` palette, or its main
+    /// one if it has none.
+    #[serde(default)]
+    pub palettes: BTreeMap<String, Vec<String>>,
 }
 
 /// `textures/<name>.json5`.
@@ -44,15 +56,78 @@ pub struct TextureDef {
 }
 
 /// One grayscale image and what colors it: a material, or a palette given
-/// right here.
+/// right here. A material written `$name` is one of the texture's inputs,
+/// which whoever uses the texture fills in.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LayerDef {
     pub image: String,
     #[serde(default)]
     pub material: Option<String>,
+    /// Which of the material's `palettes` to use, falling back to its main
+    /// one.
+    #[serde(default)]
+    pub role: Option<String>,
     #[serde(default)]
     pub palette: Option<Vec<String>>,
+}
+
+/// A texture as blocks and items name it: its id, or its id with materials
+/// for its `$inputs`.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum TextureRef {
+    Id(String),
+    Bound(BoundTexture),
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct BoundTexture {
+    pub texture: String,
+    /// Input name to material. `{property}` works here as in the id.
+    #[serde(default)]
+    pub materials: BTreeMap<String, String>,
+}
+
+/// A block or item property: a list of values, the first the default, or
+/// the materials it can be.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum PropertyDef {
+    Values(Vec<String>),
+    Full(PropertySpec),
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PropertySpec {
+    /// Plain values, as in the short form.
+    #[serde(default)]
+    pub values: Option<Vec<String>>,
+    /// Materials, each a material or `#tag` for every material with that
+    /// tag, in load order. A material listed again is skipped, so
+    /// `["stone", "#rock"]` puts stone first.
+    #[serde(default)]
+    pub materials: Option<OneOrMany>,
+    /// Adds the value `none` before the materials, as the default.
+    #[serde(default)]
+    pub optional: bool,
+    /// Whether the property is part of the block's item, so each of its
+    /// values is a different item. On by default for materials, off for
+    /// plain values. Only for blocks.
+    #[serde(default)]
+    pub item: Option<bool>,
+}
+
+/// What a variant's `when` asks of one property: a value, any of several,
+/// or none of them. A value may be `#tag`, matching every material with
+/// that tag.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum Condition {
+    Is(OneOrMany),
+    Not { not: OneOrMany },
 }
 
 /// `models/<name>.json5`.
@@ -115,16 +190,17 @@ pub enum Direction {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct BlockDef {
+    /// `{property}` is replaced by its value, or its material's name.
     #[serde(default)]
     pub name: Option<String>,
     /// Each property's values; the first is the default.
     #[serde(default)]
-    pub properties: BTreeMap<String, Vec<String>>,
+    pub properties: BTreeMap<String, PropertyDef>,
     #[serde(default)]
     pub model: Option<String>,
     /// Slot to texture. Variants merge into this rather than replace it.
     #[serde(default)]
-    pub textures: BTreeMap<String, String>,
+    pub textures: BTreeMap<String, TextureRef>,
     /// Degrees about X, then Y, then Z; multiples of 90.
     #[serde(default)]
     pub rotate: Option<[i32; 3]>,
@@ -147,14 +223,16 @@ fn default_true() -> bool {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct VariantDef {
-    /// Property to the value, or any of the values, it must have.
+    /// What each property must be for the variant to apply.
     #[serde(default)]
-    pub when: BTreeMap<String, OneOrMany>,
+    pub when: BTreeMap<String, Condition>,
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     /// Slot to texture. Variants merge into this rather than replace it.
     #[serde(default)]
-    pub textures: BTreeMap<String, String>,
+    pub textures: BTreeMap<String, TextureRef>,
     /// Degrees about X, then Y, then Z; multiples of 90.
     #[serde(default)]
     pub rotate: Option<[i32; 3]>,
@@ -184,12 +262,18 @@ impl OneOrMany {
 #[derive(Deserialize, Debug, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ItemDef {
+    /// `{property}` is replaced by its value, or its material's name.
     #[serde(default)]
     pub name: Option<String>,
+    /// Each property's values; the first is the default. Not for a block's
+    /// own item, which has the block's.
+    #[serde(default)]
+    pub properties: BTreeMap<String, PropertyDef>,
     /// The icon.
     #[serde(default)]
-    pub texture: Option<String>,
-    /// The block it places, in its default state.
+    pub texture: Option<TextureRef>,
+    /// The block it places: its default state, with any properties it
+    /// shares with the item set to the item's values.
     #[serde(default)]
     pub block: Option<String>,
     #[serde(default)]

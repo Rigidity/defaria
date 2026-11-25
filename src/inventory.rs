@@ -14,7 +14,7 @@
 use bevy::prelude::*;
 
 use crate::{
-    content::{Content, ItemId},
+    content::{Content, ItemState},
     hotbar::{ActiveSlot, Hotbar, hotbar_height},
     ui::{Clicked, ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel},
 };
@@ -41,7 +41,7 @@ impl Plugin for InventoryPlugin {
 /// A slot of the inventory grid, showing its item.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
 #[reflect(Component)]
-pub struct CatalogSlot(pub ItemId);
+pub struct CatalogSlot(pub ItemState);
 
 /// The inventory screen's root; despawning it closes the inventory.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
@@ -81,13 +81,17 @@ fn spawn_inventory(
     commands: &mut Commands,
     theme: &UiTheme,
     content: &Content,
-    framed: Option<ItemId>,
+    framed: Option<ItemState>,
 ) {
     let slot = theme.slot_size;
     let gap = theme.slot_gap;
     let width = COLUMNS as f32 * slot + (COLUMNS - 1) as f32 * gap;
     // As many rows as there are items for, up to the most that show.
-    let rows = content.items.len().div_ceil(COLUMNS).clamp(1, VISIBLE_ROWS);
+    let rows = content
+        .item_states
+        .len()
+        .div_ceil(COLUMNS)
+        .clamp(1, VISIBLE_ROWS);
     let height = rows as f32 * slot + (rows - 1) as f32 * gap;
     commands
         .spawn((
@@ -137,8 +141,8 @@ fn spawn_inventory(
                     slot + gap,
                     (InventoryGrid, Name::new("Inventory grid")),
                     |grid| {
-                        for index in 0..content.items.len() {
-                            let item = ItemId(index);
+                        for index in 0..content.item_states.len() {
+                            let item = ItemState(index as u32);
                             grid.spawn((
                                 CatalogSlot(item),
                                 item_slot(
@@ -221,7 +225,7 @@ mod tests {
 
     /// Where on screen the grid slot showing `item` is, in the script's
     /// pixels (the first, if several show it).
-    fn slot_at(app: &mut App, item: ItemId) -> Vec2 {
+    fn slot_at(app: &mut App, item: ItemState) -> Vec2 {
         let mut slots = app
             .world_mut()
             .query::<(&CatalogSlot, &UiGlobalTransform)>();
@@ -244,9 +248,9 @@ mod tests {
     }
 
     /// The grid slots framed as the active hotbar slot's item.
-    fn framed(app: &mut App) -> Vec<ItemId> {
+    fn framed(app: &mut App) -> Vec<ItemState> {
         let mut slots = app.world_mut().query::<(&CatalogSlot, &ItemSlot)>();
-        let mut framed: Vec<ItemId> = slots
+        let mut framed: Vec<ItemState> = slots
             .iter(app.world())
             .filter(|(_, slot)| slot.selected)
             .map(|(catalog, _)| catalog.0)
@@ -297,10 +301,10 @@ mod tests {
         // copies of planks.
         let (planks, stone) = {
             let mut content = app.world_mut().resource_mut::<Content>();
-            let planks = content.item_id("defaria:planks").unwrap();
-            let copy = content.items[planks.0].clone();
-            content.items.extend(std::iter::repeat_n(copy, 100));
-            (planks, content.item_id("defaria:stone").unwrap())
+            let planks = content.default_item("defaria:planks").unwrap();
+            let copy = content.item_state(planks).unwrap().clone();
+            content.item_states.extend(std::iter::repeat_n(copy, 100));
+            (planks, content.default_item("defaria:stone").unwrap())
         };
         settle(&mut app);
         run_more(&mut app, "hold MouseLeft 1\nwait 1");
@@ -359,11 +363,12 @@ mod tests {
         // At the bottom: the row just above the view is scrolled out of
         // it, behind the panel's title. Clicking there does nothing; the
         // last item (a copy) can be clicked.
-        let last = ItemId(app.world().resource::<Content>().items.len() - 1);
+        let last = ItemState(app.world().resource::<Content>().item_states.len() as u32 - 1);
         run_more(&mut app, "scroll -100\nwait 2");
         let rows_scrolled = (scrolled(&mut app) / row).round() as usize;
-        let hidden = slot_at(&mut app, ItemId((rows_scrolled - 1) * COLUMNS));
-        let grid_top = slot_at(&mut app, ItemId(rows_scrolled * COLUMNS)).y - theme_half_slot(&app);
+        let hidden = slot_at(&mut app, ItemState(((rows_scrolled - 1) * COLUMNS) as u32));
+        let grid_top = slot_at(&mut app, ItemState((rows_scrolled * COLUMNS) as u32)).y
+            - theme_half_slot(&app);
         assert!(
             hidden.y > 0.0 && hidden.y < grid_top,
             "{hidden} above {grid_top}"
@@ -381,15 +386,13 @@ mod tests {
         assert_eq!(grids.iter(app.world()).count(), 0);
     }
 
-    /// Escape closes it too and locks the cursor again, and with the base
-    /// game's few items there's no scrollbar.
+    /// Escape closes it too and locks the cursor again.
     #[test]
     fn escape_closes_the_inventory() {
         let mut app = test_game(Script::parse("wait 1").unwrap());
         settle(&mut app);
         run_more(&mut app, "hold MouseLeft 1\nwait 1\nhold KeyE 1\nwait 2");
         assert!(is_open(&mut app));
-        assert!(!scrollbar_shown(&mut app));
         run_more(&mut app, "hold Escape 1\nwait 2");
         assert!(!is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);

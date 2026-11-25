@@ -1,5 +1,10 @@
+// A metal head on a wooden handle; each pair is its own item.
 {
-  name: "Pickaxe",
-  texture: "pickaxe",
+  name: "{head} Pickaxe ({handle})",
+  properties: {
+    head: { materials: ["iron", "#metal"] },
+    handle: { materials: ["oak", "#wood"] },
+  },
+  texture: { texture: "pickaxe", materials: { head: "{head}", handle: "{handle}" } },
   max_stack: 1,
 }

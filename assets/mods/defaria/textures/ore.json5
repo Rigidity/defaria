@@ -1,0 +1,7 @@
+// Nuggets of `$ore` (its `ore` palette) in `$rock`.
+{
+  layers: [
+    { image: "stone", material: "$rock" },
+    { image: "ore", material: "$ore", role: "ore" },
+  ],
+}

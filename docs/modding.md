@@ -75,15 +75,25 @@ magenta and black checkerboard until it's fixed.
 
 ## Materials
 
-`materials/<name>.json5`: a palette, which colors a grayscale image.
+`materials/<name>.json5`: what things are made of. A material colors
+grayscale images with its palette, and blocks and items can be made of
+any material with a tag: one log file gives an oak, a birch and a spruce
+log, and a mod adding a wood gets its logs, planks and tool handles too.
 
 ```json5
 {
-  palette: ["#33353d", "#52535a", "#6f6f74", "#95938f"],
+  name: "Oak",                     // defaults to the id, e.g. "Oak"
+  tags: ["wood"],                  // groups that properties choose from
+  palette: ["#5a3e22", "#8a643a", "#a87e4c", "#be945e"],
+  // Other palettes for particular uses, by role. A layer with
+  // `role: "bark"` uses this one; materials without it use `palette`.
+  palettes: {
+    bark: ["#2e2014", "#483422", "#5e462e", "#74583a"],
+  },
 }
 ```
 
-`palette` is 2 to 8 hex colors, darkest first. They're spread evenly over
+Each palette is 2 to 8 hex colors, darkest first. They're spread evenly over
 the 8 gray levels and blended in between (in Oklab, so the steps look
 even). With exactly 8 colors, each level gets its own color as given. Few
 steps between the darkest and lightest colors give a calm texture; many
@@ -108,6 +118,22 @@ Each layer has an `image` and either a `material` or a `palette` of its own
 (the same format as a material's). Transparent pixels show the layers
 below. Block faces should end up fully opaque; item icons may be
 transparent.
+
+A layer's `material` can be an **input**, `$name`, which whoever uses the
+texture fills in. `role` picks one of the material's `palettes` (its main
+one if it has none by that name):
+
+```json5
+// textures/log_side.json5: bark of any wood.
+{
+  layers: [{ image: "log_side", material: "$wood", role: "bark" }],
+}
+```
+
+A block or item names a texture with inputs together with its materials:
+`{ texture: "log_side", materials: { wood: "birch" } }`. Every input needs
+a material, and only inputs can be given. Each combination in use becomes
+its own tile, made once.
 
 ## Models
 
@@ -182,7 +208,8 @@ fills.
 ```
 
 `textures` fills the model's slots; each slot it leaves empty falls back as
-the model says. A face whose slot ends up with no texture is an error.
+the model says. A texture is its id, or its id with materials for its
+inputs (see [Textures](#textures)). A face whose slot ends up with no texture is an error.
 Textures for slots a state's model doesn't have are ignored for that state,
 so a block can set textures for several models and switch between them in
 variants; naming a slot that none of the block's models has is an error.
@@ -216,7 +243,8 @@ corners of the faces next to it (ambient occlusion).
 
 A block can have **properties**, each with a list of values; the first is
 the default. Every combination of values is a separate block state, which
-can look different.
+can look different. Chunks store block states, so a block carries its
+property values wherever it is.
 
 ```json5
 // A log: `axis` is the direction the trunk runs.
@@ -242,8 +270,8 @@ no `when` always applies.
 - **`rotate`** turns the model about its center: `[x, y, z]` degrees, in
   multiples of 90, applied about X first, then Y, then Z. Faces, their
   `cull` sides and `occludes` all turn with it.
-- **`{property}`** in a model or texture name is replaced by the state's
-  value. One line can cover every color:
+- **`{property}`** in a model or texture name (or a texture's materials)
+  is replaced by the state's value. One line can cover every color:
 
   ```json5
   {
@@ -253,14 +281,68 @@ no `when` always applies.
   }
   ```
 
+A variant can also set `name`, which replaces the block's.
+
 A block may have up to 4096 states.
+
+### Material properties
+
+A property can be a material instead of a list of words:
+
+```json5
+// blocks/stone.json5: any rock, with or without ore in it.
+{
+  name: "{rock}",
+  properties: {
+    rock: { materials: ["stone", "#rock"] },
+    ore: { materials: "#ore", optional: true },
+  },
+  model: "cube",
+  textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
+  variants: [
+    {
+      when: { ore: { not: "none" } },
+      name: "{rock} {ore} Ore",
+      textures: { all: { texture: "ore", materials: { rock: "{rock}", ore: "{ore}" } } },
+    },
+  ],
+}
+```
+
+- **`materials`** is a material, `#tag` for every material with that tag
+  (in order of id), or a list of them. A material that comes up again is
+  skipped, so `["stone", "#rock"]` makes stone the default.
+- **`optional: true`** adds the value `none`, first, for no material.
+- The values are the materials' ids (`defaria:granite`), and that's what
+  `{rock}` gives in texture and model names and in `materials`.
+- **Names.** In `name`, `{property}` gives the material's name
+  ("Granite"), nothing for `none` (spaces left over are dropped), or a
+  plain property's value as it's written.
+
+The long form works for plain values too: `{ values: ["y", "x", "z"] }`.
+
+### Conditions
+
+A `when` gives each property it cares about one of:
+
+- a value, or a list of values any of which match: `"x"`, `["x", "z"]`;
+- for a material property, a material (`"granite"`), `"#tag"` for any
+  material with that tag, or `"none"`;
+- `{ not: … }` with any of those, for every other value.
+
+Each value must match something the property can be.
 
 ### The block's item
 
-Every block gets an item with the same id, which places the block in its
-default state. Set `item: false` to opt out. To change the item (its name,
-icon or stack size), add an item file with the same name: what it leaves
-out comes from the block.
+Every block gets an item with the same id. The item has the block's
+material properties (and any property with `item: true`), and places the
+block with those values and the rest at their defaults: there's an Oak
+Log and a Birch Log item, but no item per axis. Set `item: false` on a
+property to leave it out, or on the block to have no item at all.
+
+To change the item (its name, icon or stack size), add an item file with
+the same name: what it leaves out comes from the block. It can't add
+properties or a `block`.
 
 ## Items
 
@@ -268,24 +350,39 @@ out comes from the block.
 
 ```json5
 {
-  name: "Pickaxe",       // defaults to the id, e.g. "Pickaxe"
-  texture: "pickaxe",    // the icon
+  name: "{head} Pickaxe ({handle})",   // defaults to the id, e.g. "Pickaxe"
+  properties: {
+    head: { materials: ["iron", "#metal"] },
+    handle: { materials: ["oak", "#wood"] },
+  },
+  // The icon.
+  texture: { texture: "pickaxe", materials: { head: "{head}", handle: "{handle}" } },
   max_stack: 1,          // default 64
   block: "stone",        // optional: the block it places
 }
 ```
 
+Items have properties as blocks do, plain or material, and every
+combination is a separate item state: an item carries its property values
+in the hotbar and the inventory. `{property}` works in the name and the
+texture as it does for blocks. An item that places a block passes on the
+values of the properties the block has too (by name), and leaves the rest
+at their defaults.
+
 The icon (in the hotbar and the inventory) is the `texture` tile, drawn
 flat and scaled up. An item with no `texture` that places a block shows
 that block instead, drawn in 3D from its model in its default state, seen
 from above with its top, south and east faces showing. Icons redraw when
-the textures hot reload. Every item shows in the inventory.
+the textures hot reload. Every item state shows in the inventory.
 
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
 - Placement rules (such as setting a log's `axis` from the face you click)
-  aren't data yet, so placed blocks are always in their default state.
+  aren't data yet, so placed blocks are in their item's state.
+- Material attributes (hardness, weight) and other item data that isn't a
+  fixed list of values, such as durability.
+- Cut-out textures (leaves with holes): block faces are drawn opaque.
 - Models are block-only so far: no bones or animation for entities.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.
