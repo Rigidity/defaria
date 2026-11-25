@@ -77,6 +77,10 @@ pub struct Cli {
     /// `--no-vsync`: draw frames as fast as possible instead of once per
     /// display refresh. For measuring performance; it tears and judders.
     pub no_vsync: bool,
+    /// `--radius <chunks>`: load the world this many chunks around the
+    /// player instead of the default. CI runs scenarios with a small one,
+    /// so they don't spend most of their time loading the world.
+    pub radius: Option<i32>,
 }
 
 impl Cli {
@@ -88,6 +92,7 @@ impl Cli {
         let mut no_render = false;
         let mut world = None;
         let mut no_vsync = false;
+        let mut radius = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -112,6 +117,14 @@ impl Cli {
                 "--world" => {
                     world = Some(PathBuf::from(args.next().expect("--world needs a folder")));
                 }
+                "--radius" => {
+                    radius = Some(
+                        args.next()
+                            .and_then(|n| n.parse().ok())
+                            .filter(|&n: &i32| n > 0)
+                            .expect("--radius needs a positive number of chunks"),
+                    );
+                }
                 other => panic!("unknown argument: {other}"),
             }
         }
@@ -133,6 +146,7 @@ impl Cli {
             no_render,
             world,
             no_vsync,
+            radius,
         }
     }
 }
@@ -202,6 +216,19 @@ mod tests {
 
         let cli = Cli::from_args(args(&["--headless", "scenarios/fly.txt", "--no-render"]));
         assert!(cli.no_render);
+    }
+
+    #[test]
+    fn parses_radius() {
+        assert_eq!(Cli::from_args(args(&[])).radius, None);
+        let cli = Cli::from_args(args(&["--headless", "a.txt", "--radius", "4"]));
+        assert_eq!(cli.radius, Some(4));
+    }
+
+    #[test]
+    #[should_panic(expected = "--radius needs a positive number of chunks")]
+    fn radius_must_be_positive() {
+        Cli::from_args(args(&["--radius", "0"]));
     }
 
     #[test]

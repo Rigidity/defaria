@@ -5,6 +5,7 @@ use defaria::{
     Cli, DevToolsPlugin, GamePlugin,
     headless::{self, HeadlessPlugin, Script},
     save::{self, WorldFolder},
+    streaming::StreamingSettings,
 };
 
 fn main() -> AppExit {
@@ -59,6 +60,13 @@ fn main() -> AppExit {
                 screenshot: cli.screenshot,
             },
         ));
+    }
+
+    if let Some(radius) = cli.radius {
+        app.insert_resource(StreamingSettings {
+            radius,
+            ..default()
+        });
     }
 
     app.run()

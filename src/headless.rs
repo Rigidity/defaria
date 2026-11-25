@@ -6,8 +6,9 @@
 //! advances a fixed 1/60 s per frame, so runs are deterministic.
 //!
 //! Add `--no-render` to run without a GPU at all: everything works except
-//! `screenshot` and `grain`, which are skipped. CI runs every scenario this
-//! way.
+//! `screenshot` and `grain`, which are skipped. `--radius <chunks>` loads
+//! a smaller world than the default, so the script starts sooner. CI runs
+//! every scenario with both (`--no-render --radius 4`).
 //!
 //! # Script format
 //!

@@ -22,7 +22,7 @@ mod physics;
 mod player;
 pub mod save;
 mod spline;
-mod streaming;
+pub mod streaming;
 mod terrain;
 pub mod ui;
 mod view_bob;
