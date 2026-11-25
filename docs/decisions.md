@@ -11,8 +11,15 @@ property value like any other, so every combination is its own block or
 item state, and every combination of materials a texture is used with is
 baked on the CPU into its own layer of the block texture array.
 
-**Decision.** Keep expanding combinations up front. The base game has 41
-block states, 80 item states and 78 tiles.
+**Decision.** Keep expanding combinations up front, and keep baking each
+texture's combinations into finished tiles. The base game has 41 block
+states, 80 item states and 78 tiles. Baking stays even when tiles run
+short: coloring in the shader instead (gray layers plus a palette per
+face) doesn't fit layered textures. Each face would need a variable-length
+list of layers to color and blend per pixel, and filtering breaks: mips
+and linear filtering average gray levels and alpha before the palette
+lookup, giving the wrong colors at a distance, where the baked tiles' mips
+are averaged in linear color (`src/block_texture.rs`).
 
 **What's wrong with it.** It multiplies. A block's states are the product
 of its properties' values (4096 at most per block, 65536 block states in
@@ -21,10 +28,17 @@ with. Metal allows 2048 array layers; a few mods adding woods, rocks and
 ores, with stairs, walls and tools for each, would get there. Item states
 only carry values from fixed lists, so nothing like durability yet.
 
-**What should replace it.** Color in the shader: keep one gray layer per
-image and give each face the palettes to color it with (an index into a
-palette buffer per layer), so tiles stop multiplying with materials. If
-block states run short, store materials beside the state (a per-chunk
+**What should replace it.** Room for more baked tiles, by either:
+
+- **Several texture arrays.** Bind more than one 2048-layer array (or a
+  binding array of them) and give each face an array index beside its
+  layer. Filtering and mips stay exactly as they are.
+- **Atlases.** Pack tiles into one or more large 2D textures. Far more
+  tiles per texture, but smaller mips blend neighbouring tiles, so each
+  tile needs padding (or a mip chain cut short) and the shader has to
+  clamp and wrap within its tile.
+
+If block states run short, store materials beside the state (a per-chunk
 palette of material ids) instead of in it. Items get a data field next to
 their state for values that aren't a fixed list.
 
