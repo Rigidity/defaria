@@ -90,6 +90,20 @@ check)
             | "Order \(.[0].order) is shared by "
                 + (map("#\(.content.number)") | join(", ")))
     ')
+    # Open epics whose work is all done should be closed; the
+    # close-finished-epics workflow normally does it.
+    for epic in $(printf '%s' "$issues" |
+        jq -r '.[] | select(any(.labels[]; .name == "epic")) | .number'); do
+        open=$(gh api --paginate \
+            "repos/$owner/defaria/issues/$epic/sub_issues?per_page=100" \
+            --jq '.[] | select(.state == "open") | .number' | wc -l)
+        total=$(gh api "repos/$owner/defaria/issues/$epic" \
+            --jq .sub_issues_summary.total)
+        if [ "$open" -eq 0 ] && [ "$total" -gt 0 ]; then
+            problems="$problems${problems:+
+}#$epic is an epic with every sub-issue closed; close it"
+        fi
+    done
     if [ -n "$problems" ]; then
         echo "$problems" >&2
         exit 1

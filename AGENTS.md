@@ -179,15 +179,19 @@ step with the work, using `scripts/roadmap.sh` (needs the `project` scope:
   `gh label create <name> --color <hex> --description <what it's for>`
   rather than leaving the issue without one.
 - **Checking:** `scripts/roadmap.sh check` lists open issues missing from
-  the project, items with no Order, epics in the project and Orders that
-  two items share, and fails if there are any. Run it after filing, closing
+  the project, items with no Order, epics in the project, Orders that two
+  items share and open epics with every sub-issue closed, and fails if
+  there are any. Run it after filing, closing
   or reordering issues, and fix what it reports.
 - **Starting work on an issue:** `scripts/roadmap.sh status <issue> doing`.
 - **Finishing:** say `Closes #<issue>` in the PR description, so merging
   closes the issue, and the project marks it Done on its own. Work that
   ends without a merged PR: close the issue, or set it back with
-  `status <issue> todo` if it's left unfinished. Close an epic once all its
-  sub-issues are done.
+  `status <issue> todo` if it's left unfinished.
+- **Epics close on their own:** when an issue closes and every sub-issue of
+  its epic is closed, `.github/workflows/close-finished-epics.yml` closes
+  the epic (`scripts/close-finished-epics.sh`). Adding work to a closed
+  epic: reopen it with `gh issue reopen <epic>`.
 - **Changing the plan:** when priorities change, or an issue turns out to
   depend on another, move it with `scripts/roadmap.sh order <issue> <order>`.
 

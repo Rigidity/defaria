@@ -1,0 +1,23 @@
+name: Close finished epics
+
+# When an issue closes, close its epic if every sub-issue is now closed
+# (see "Issues and the roadmap" in AGENTS.md).
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - run: scripts/close-finished-epics.sh "$ISSUE"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
