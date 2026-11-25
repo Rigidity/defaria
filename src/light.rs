@@ -8,12 +8,16 @@
 //! - **Block light** starts at blocks that give off light (their `light` in
 //!   the mod files) and drops by one level per block it travels, around
 //!   corners but not through opaque blocks, so a level-15 lamp lights blocks
-//!   up to 14 away.
+//!   up to 14 away. Nor does it pass through a side a block covers (its
+//!   model's `occludes`), in or out, so a slab lets light in from above and
+//!   the sides but not through its bottom. Light sources shine out of every
+//!   side.
 //! - **Sky light** comes down at full strength into the top of each chunk
 //!   with no loaded chunk above it (where [`sky::OutsideSky`] says so; for
 //!   now, everywhere), and stays at full strength straight down until it
-//!   hits an opaque block. From every voxel it reaches it spreads sideways
-//!   and into caves like block light, dropping by one per block. The world
+//!   hits an opaque block or a covered side. From every voxel it reaches it
+//!   spreads sideways and into caves like block light, dropping by one per
+//!   block. The world
 //!   has no top, so what's above the loaded chunks is the one thing the
 //!   light can't see; `sky` is where that's decided, and
 //!   `docs/decisions.md` says why it's done the way it is.
@@ -173,7 +177,7 @@ pub struct Prelit;
 /// for [`Prelit`] chunks only the light across their borders.
 fn queue_loaded_chunks(
     chunks: Query<(&ChunkCoord, &Chunk, &ChunkLight, Has<Prelit>), Added<Chunk>>,
-    lights: Query<&ChunkLight>,
+    lights: Query<(&Chunk, &ChunkLight)>,
     map: Res<ChunkMap>,
     table: Res<LightTable>,
     sky: Res<Sky>,
@@ -182,7 +186,7 @@ fn queue_loaded_chunks(
     for (coord, chunk, light, prelit) in &chunks {
         let neighbour = |c| lights.get(map.get(ChunkCoord(c))?).ok();
         if prelit {
-            queue.lit_chunk_loaded(coord.0, light, &**sky, neighbour);
+            queue.lit_chunk_loaded(coord.0, chunk, light, &table, &**sky, neighbour);
         } else {
             queue.chunk_loaded(coord.0, chunk, &table, &**sky, neighbour);
         }

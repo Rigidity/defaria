@@ -141,7 +141,24 @@ pub struct Model {
     /// Each slot and the slot it falls back to.
     pub slots: BTreeMap<String, Option<String>>,
     pub occludes: Vec<Direction>,
+    /// What things bump into, in the block's own coordinates.
+    pub collision: Vec<BlockBox>,
     pub faces: Vec<ModelFace>,
+}
+
+/// A box inside a block, in the block's own coordinates: a full block runs
+/// from `(0, 0, 0)` to `(1, 1, 1)`. Always within that, and never empty.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlockBox {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl BlockBox {
+    pub const FULL: Self = Self {
+        min: Vec3::ZERO,
+        max: Vec3::ONE,
+    };
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +225,9 @@ pub struct State {
     /// Property name and value, in the block's property order.
     pub values: Vec<(String, String)>,
     pub faces: Vec<BakedFace>,
+    /// The boxes things bump into and the crosshair picks, rotated with the
+    /// model. Empty for air and anything you walk through.
+    pub collision: Vec<BlockBox>,
     /// Bit per [`Direction`]: sides this state covers completely.
     occludes: u8,
     /// The light it gives off: red, green and blue levels, up to

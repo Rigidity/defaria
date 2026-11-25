@@ -10,8 +10,8 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use serde::de::DeserializeOwned;
 
 use super::{
-    AIR, BakedFace, Block, Content, Direction, Item, MAX_LIGHT, ModInfo, Model, ModelFace, State,
-    Texture, TextureLayer, Vertex, load::LoadedMod, qualify, schema::*,
+    AIR, BakedFace, Block, BlockBox, Content, Direction, Item, MAX_LIGHT, ModInfo, Model,
+    ModelFace, State, Texture, TextureLayer, Vertex, load::LoadedMod, qualify, schema::*,
 };
 use crate::block_texture::Palette;
 
@@ -320,13 +320,52 @@ fn model(def: &Def<ModelDef>) -> Result<Model, String> {
                 normal,
             })
         })
-        .collect::<Result<_, String>>()?;
+        .collect::<Result<Vec<ModelFace>, String>>()?;
+    let collision = match &model.collision {
+        Some(boxes) => boxes
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                block_box(Vec3::from(b.from), Vec3::from(b.to))
+                    .map_err(|error| format!("collision box {}: {error}", i + 1))
+            })
+            .collect::<Result<_, String>>()?,
+        None => around_faces(&faces).into_iter().collect(),
+    };
     Ok(Model {
         id: def.id.clone(),
         slots: model.slots.clone(),
         occludes: model.occludes.clone(),
+        collision,
         faces,
     })
+}
+
+/// The box between two opposite corners, which must be inside the block
+/// and apart on every axis.
+fn block_box(from: Vec3, to: Vec3) -> Result<BlockBox, String> {
+    let (min, max) = (from.min(to), from.max(to));
+    if !(min.is_finite() && max.is_finite()) {
+        return Err("a corner has a number that isn't finite".into());
+    }
+    if min.cmplt(Vec3::ZERO).any() || max.cmpgt(Vec3::ONE).any() {
+        return Err("it must be inside the block, from [0, 0, 0] to [1, 1, 1]".into());
+    }
+    if min.cmpge(max).any() {
+        return Err("it's flat: its corners must differ on every axis".into());
+    }
+    Ok(BlockBox { min, max })
+}
+
+/// The box around every face, if they have one that isn't flat and is
+/// inside the block, for a model that doesn't give its `collision`.
+fn around_faces(faces: &[ModelFace]) -> Option<BlockBox> {
+    let mut points = faces
+        .iter()
+        .flat_map(|face| face.vertices.iter().map(|v| v.pos));
+    let first = points.next()?;
+    let (min, max) = points.fold((first, first), |(min, max), p| (min.min(p), max.max(p)));
+    block_box(min.max(Vec3::ZERO), max.min(Vec3::ONE)).ok()
 }
 
 /// Checks a face and returns its normal: the face of a triangle, or of a
@@ -550,6 +589,8 @@ fn bake_state(
             "light level {level} is too bright; the most is {MAX_LIGHT}"
         ));
     }
+    // Turns a point in the block about the block's center.
+    let turn = |p: Vec3| rotation * (p - Vec3::splat(0.5)) + Vec3::splat(0.5);
     let rotate_direction = |d: Direction| {
         Direction::from_normal((rotation * d.normal().as_vec3()).round().as_ivec3()).unwrap()
     };
@@ -575,7 +616,7 @@ fn bake_state(
                 .vertices
                 .iter()
                 .map(|v| Vertex {
-                    pos: rotation * (v.pos - Vec3::splat(0.5)) + Vec3::splat(0.5),
+                    pos: turn(v.pos),
                     uv: v.uv,
                 })
                 .collect();
@@ -592,10 +633,22 @@ fn bake_state(
         .occludes
         .iter()
         .fold(0, |bits, &d| bits | rotate_direction(d).bit());
+    let collision = model
+        .collision
+        .iter()
+        .map(|b| {
+            let [a, c] = [b.min, b.max].map(turn);
+            BlockBox {
+                min: a.min(c),
+                max: a.max(c),
+            }
+        })
+        .collect();
     Ok(State {
         block,
         values: values.to_vec(),
         faces,
+        collision,
         occludes,
         light,
     })
@@ -964,6 +1017,61 @@ mod tests {
         assert!(content.block("test:x").is_some());
     }
 
+    /// A model's collision is the box around its faces unless it gives its
+    /// own boxes, and it turns with the block.
+    #[test]
+    fn collision_is_the_box_around_the_faces_or_given() {
+        let content = content(&[
+            // QUAD is flat, so there's nothing to bump into by default.
+            (
+                "blocks/flat.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "models/post.json5",
+                r#"{ collision: [{ from: [0.75, 0, 0.25], to: [0.25, 1, 0.75] }], faces: [] }"#,
+            ),
+            ("models/ghost.json5", r#"{ collision: [], faces: [] }"#),
+            ("blocks/post.json5", r#"{ model: "post" }"#),
+            (
+                "blocks/lying_post.json5",
+                r#"{ model: "post", rotate: [0, 0, 90] }"#,
+            ),
+            ("blocks/ghost.json5", r#"{ model: "ghost" }"#),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let collision = |id: &str| {
+            let state = content.default_state(&format!("test:{id}")).unwrap();
+            content.state(state).collision.clone()
+        };
+        assert_eq!(collision("flat"), []);
+        assert_eq!(collision("ghost"), []);
+        // Corners in either order.
+        let post = BlockBox {
+            min: Vec3::new(0.25, 0.0, 0.25),
+            max: Vec3::new(0.75, 1.0, 0.75),
+        };
+        assert_eq!(collision("post"), [post]);
+        assert_eq!(
+            collision("lying_post"),
+            [BlockBox {
+                min: Vec3::new(0.0, 0.25, 0.25),
+                max: Vec3::new(1.0, 0.75, 0.75),
+            }]
+        );
+        let base = crate::content::base();
+        let slab = base.default_state("defaria:stone_slab").unwrap();
+        assert_eq!(
+            base.state(slab).collision,
+            [BlockBox {
+                min: Vec3::ZERO,
+                max: Vec3::new(1.0, 0.5, 1.0),
+            }]
+        );
+        let stone = base.default_state("defaria:stone").unwrap();
+        assert_eq!(base.state(stone).collision, [BlockBox::FULL]);
+    }
+
     /// A broken texture leaves out the block that uses it, and that block's
     /// item: each is reported against its own file.
     #[test]
@@ -1175,6 +1283,16 @@ mod tests {
                 "blocks/x.json5",
                 r#"{ properties: { p: [] }, model: "quad", textures: { all: "a" } }"#,
                 "`p` has no values",
+            ),
+            (
+                "models/x.json5",
+                r#"{ collision: [{ from: [0, 0, 0], to: [1, 1.5, 1] }], faces: [] }"#,
+                "collision box 1: it must be inside the block",
+            ),
+            (
+                "models/x.json5",
+                r#"{ collision: [{ from: [0, 0, 0], to: [1, 1, 1] }, { from: [0, 0.5, 0], to: [1, 0.5, 1] }], faces: [] }"#,
+                "collision box 2: it's flat",
             ),
             (
                 "blocks/x.json5",

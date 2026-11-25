@@ -129,8 +129,11 @@ fills.
     north: "side", south: "side", east: "side", west: "side",
   },
   // Sides of the block this model covers completely. A neighbour's face
-  // against one of these is hidden.
+  // against one of these is hidden, and light doesn't pass through them.
   occludes: ["up", "down", "north", "south", "east", "west"],
+  // The boxes the player bumps into and the crosshair picks. Optional:
+  // left out, it's the box around every face (here the whole block).
+  collision: [{ from: [0, 0, 0], to: [1, 1, 1] }],
   faces: [
     {
       texture: "up",       // the slot whose texture this face shows
@@ -158,6 +161,13 @@ fills.
 - **`cull`** is for faces that lie on the block's boundary: the face is
   hidden when the neighbour on that side `occludes` the side facing it.
   Leave it out for faces that should always draw.
+- **`collision`** is a list of boxes, each from one corner to the
+  opposite one, in the same block coordinates. They must be inside the
+  block and not flat. Left out, it's the one box around all the faces
+  (`models/slab.json5` gets `[0, 0, 0]` to `[1, 0.5, 1]` that way), or
+  nothing if the faces are all in one plane. `collision: []` makes a block
+  you walk through; the crosshair still picks it, as a whole block. Boxes
+  turn with the block's `rotate`.
 
 ## Blocks
 
@@ -194,9 +204,13 @@ block, so a level-15 colour reaches 14 blocks and colours shift as they
 fade. A block that gives off light is drawn fully lit. Variants can set
 `light` too; a later one replaces an earlier one's.
 
-A block whose model covers all six sides (`occludes` every side) is
-opaque: light doesn't pass through it, and it shades the corners of the
-faces next to it (ambient occlusion). Every other block lets light through.
+Light doesn't pass through a side a block covers (its model's
+`occludes`), going in or out, but it passes through every other side. So a
+slab, which covers only its bottom, is lit from above and from the sides,
+and a roof of slabs shades what's under it like a full roof. A block that
+gives off light shines out of every side, covered or not. A block whose
+model covers all six sides is opaque: no light gets in, and it shades the
+corners of the faces next to it (ambient occlusion).
 
 ### States, properties and variants
 
