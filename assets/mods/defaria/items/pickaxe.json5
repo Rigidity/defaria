@@ -1,6 +1,6 @@
 // A metal head on a wooden handle; each pair is its own item.
 {
-  name: "{head} Pickaxe ({handle})",
+  name: "{head} Pickaxe",
   properties: {
     head: { materials: ["iron", "#metal"] },
     handle: { materials: ["oak", "#wood"] },

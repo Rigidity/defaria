@@ -722,7 +722,7 @@ mod tests {
         }
         let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
         assert_eq!(pickaxe.block, None);
-        assert_eq!(pickaxe.name, "Iron Pickaxe (Oak)");
+        assert_eq!(pickaxe.name, "Iron Pickaxe");
         assert_eq!(content.item("defaria:pickaxe").unwrap().max_stack, 1);
         assert_eq!(
             pickaxe.texture,

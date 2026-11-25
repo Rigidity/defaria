@@ -1,6 +1,6 @@
 // A metal head on a wooden handle; each pair is its own item.
 {
-  name: "{head} Knife ({handle})",
+  name: "{head} Knife",
   properties: {
     head: { materials: ["iron", "#metal"] },
     handle: { materials: ["oak", "#wood"] },

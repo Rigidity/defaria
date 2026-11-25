@@ -350,7 +350,7 @@ properties or a `block`.
 
 ```json5
 {
-  name: "{head} Pickaxe ({handle})",   // defaults to the id, e.g. "Pickaxe"
+  name: "{head} Pickaxe",   // defaults to the id, e.g. "Pickaxe"
   properties: {
     head: { materials: ["iron", "#metal"] },
     handle: { materials: ["oak", "#wood"] },
