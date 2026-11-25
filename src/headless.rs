@@ -1179,9 +1179,10 @@ mod tests {
             let mut frames = 0;
             while !app.world().resource::<ScriptRunner>().finished() {
                 app.update();
-                // Loading runs on other threads; give it a moment, as a
-                // frame would.
-                std::thread::sleep(Duration::from_millis(1));
+                // Loading and meshing run on other threads. Let them finish
+                // before the next frame, so this checks the fog against a
+                // world that keeps up, however slow the machine (CI) is.
+                crate::streaming::finish_background_work(app.world_mut());
                 let fog = *app.world().resource::<ChunkFog>();
                 assert_eq!(fog.scale, 1.0, "{moves:?}, frame {frames}");
                 frames += 1;

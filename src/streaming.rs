@@ -572,6 +572,32 @@ fn save_on_exit(
     info!("saved the world ({written} regions written)");
 }
 
+/// Blocks until every chunk load and mesh build started so far has
+/// finished, so the next update picks them all up, as if the background
+/// threads always kept up. For tests whose answer shouldn't depend on how
+/// fast the machine is.
+#[cfg(test)]
+pub fn finish_background_work(world: &mut World) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut meshes = world.query::<&MeshTask>();
+    loop {
+        let loads_done = world
+            .resource::<Chunks>()
+            .loading
+            .values()
+            .all(Task::is_finished);
+        let meshes_done = meshes.iter(world).all(MeshTask::is_finished);
+        if loads_done && meshes_done {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background work never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// Works out [`StreamingStatus`].
 fn update_status(
     chunks: Res<Chunks>,
