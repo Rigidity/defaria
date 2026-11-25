@@ -150,6 +150,27 @@ When a PR changes anything you can see, its description shows it:
 When a later push changes what's visible, upload new screenshots and update
 the section.
 
+## Issues and the roadmap
+
+Planned work is tracked in issues, grouped under epics (an issue labelled
+`epic`, with the work as its sub-issues), and ordered in the roadmap
+project: https://github.com/users/Rigidity/projects/3. Keep the project in
+step with the work, using `scripts/roadmap.sh` (needs the `project` scope:
+`gh auth refresh -h github.com -s project`):
+
+- **Filing an issue:** add it to the project where it belongs in the order,
+  with `scripts/roadmap.sh add <issue> <order>` (`list` shows the order;
+  `7.5` goes between 7 and 8). Put it under its epic if it has one. Epics
+  themselves stay out of the project; each item's Parent issue shows its
+  epic.
+- **Starting work on an issue:** `scripts/roadmap.sh status <issue> doing`.
+- **Finishing:** say `Closes #<issue>` in the PR description, so merging
+  closes the issue, and the project marks it Done on its own. Work that
+  ends without a merged PR: close the issue, or set it back with
+  `status <issue> todo` if it's left unfinished.
+- **Changing the plan:** when priorities change, or an issue turns out to
+  depend on another, move it with `scripts/roadmap.sh order <issue> <order>`.
+
 ## Reviewed PRs
 
 When asked to take work through review ("with reviews", "drive this to
@@ -228,7 +249,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `docs/decisions.md`: deliberate shortcuts to revisit, and what should
   replace them. Add to it when you make one.
 - `scripts/`: helper scripts, such as `pr-screenshots.sh` for PR
-  descriptions and `gray-layer.py` for turning images into texture layers.
+  descriptions, `gray-layer.py` for turning images into texture layers and
+  `roadmap.sh` for keeping the roadmap project in step with the issues.
 
 ## Conventions
 
