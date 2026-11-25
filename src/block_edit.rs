@@ -21,6 +21,7 @@ use bevy::{
 use crate::{
     content::{BlockBox, BlockState, Content},
     fly_camera::{FlyCamera, FlyCameraSystems},
+    physics::{Aabb, Body},
     terrain::{RemeshChunks, Voxels},
 };
 
@@ -259,6 +260,7 @@ fn edit_blocks(
     active: Res<ActiveBlock>,
     hotbar: Res<Hotbar>,
     content: Res<Content>,
+    bodies: Query<&Body>,
     mut voxels: Voxels,
 ) {
     if cursor.grab_mode == CursorGrabMode::None {
@@ -287,8 +289,14 @@ fn edit_blocks(
     let Some(pos) = hit.place_at() else {
         return;
     };
-    // Not into the camera, outside the world, or over another block.
-    if pos == ray.origin.floor().as_ivec3() || voxels.get(pos) != Some(BlockState::AIR) {
+    // Not into the camera, outside the world, over another block, or where
+    // it would overlap someone.
+    let overlaps = content.state(block).collision.iter().any(|b| {
+        let b = Aabb::of_block(pos, b);
+        bodies.iter().any(|body| body.aabb().intersects(&b))
+    });
+    if pos == ray.origin.floor().as_ivec3() || voxels.get(pos) != Some(BlockState::AIR) || overlaps
+    {
         return;
     }
     voxels.set(pos, block);
@@ -422,6 +430,7 @@ mod tests {
     use crate::{
         content::{base, block, test_mod},
         headless::{Script, settle, test_game},
+        player::SIZE,
         terrain::{
             ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, apply_finished_meshes,
             remesh_changed_chunks, testing::finish_meshing,
@@ -429,6 +438,7 @@ mod tests {
         voxel::Chunk,
         voxel_material::BlockMaterial,
     };
+    use bevy::math::DVec3;
 
     fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> &'static [BlockBox] + '_ {
         move |pos| {
@@ -733,6 +743,26 @@ mod tests {
         assert_eq!(voxel(&app, left, 11, 1, 5), BlockState::AIR);
     }
 
+    /// A block isn't placed where it would overlap a body, such as the
+    /// player standing there, but a slab fits under one floating above it.
+    #[test]
+    fn blocks_arent_placed_into_bodies() {
+        let (mut app, left, _) = app();
+        let body = app
+            .world_mut()
+            .spawn(Body::new(DVec3::new(13.5, 1.0, 5.5), SIZE, 0.6))
+            .id();
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+        // Raised half a block, a slab fits under it, but a block doesn't.
+        app.world_mut().get_mut::<Body>(body).unwrap().position.y = 1.5;
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+        press_key(&mut app, KeyCode::Digit5);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("stone_slab"));
+    }
+
     /// An item that places no block (a tool, or a slot whose item didn't
     /// load) does nothing on right click.
     #[test]
@@ -892,33 +922,31 @@ mod tests {
     /// crosshair, and a right click puts the active block (stone) back.
     #[test]
     fn locking_click_edits_nothing_then_clicks_break_and_place() {
-        let script = Script::parse(
-            "wait 2\n\
+        let (x, z) = (40, 40);
+        let height = Terrain::new(default(), TerrainBlocks::from_content(base())).height(x, z);
+        // Three blocks above the top, looking straight down.
+        let script = Script::parse(&format!(
+            "camera {} {} {} 0 -90\n\
+             wait 2\n\
              hold MouseLeft 1  # lock the cursor\n\
              wait 1\n\
              hold MouseLeft 1  # break\n\
              wait 1\n\
              hold MouseRight 1  # place\n\
              wait 2\n",
-        )
+            x as f32 + 0.5,
+            height as f32 + 3.5,
+            z as f32 + 0.5,
+        ))
         .unwrap();
         let mut app = test_game(script);
         settle(&mut app);
 
-        let (x, z) = (40, 40);
-        let height = Terrain::new(default(), TerrainBlocks::from_content(base())).height(x, z);
         let top = IVec3::new(x, height - 1, z);
         let below = top - IVec3::Y;
         assert_eq!(world_voxel(&mut app, top), block("grass"));
         let below_before = world_voxel(&mut app, below);
         assert!(!below_before.is_air());
-        // Three blocks above the top, looking straight down.
-        let mut camera = app
-            .world_mut()
-            .query_filtered::<&mut Transform, With<FlyCamera>>();
-        *camera.single_mut(app.world_mut()).unwrap() =
-            Transform::from_xyz(x as f32 + 0.5, height as f32 + 3.5, z as f32 + 0.5)
-                .looking_to(Vec3::NEG_Y, Vec3::Z);
 
         let mut frames = 1;
         while app.should_exit().is_none() {

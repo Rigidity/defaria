@@ -4,6 +4,7 @@
 # and a room dug a thousand blocks down.
 # Compare the `timing` lines between runs on the same machine.
 # Run: cargo headless scenarios/streaming.txt
+camera 64 56 92 0 -37.9            # the start's view, flying (the player starts on foot)
 timing                             # startup: loading the first view
 fill 60 30 70 62 58 72 planks      # a tower in front of the camera
 fill 60 59 70 62 59 72 lamp
@@ -12,7 +13,7 @@ screenshot target/scenarios/streaming/0-tower.png
 wait 1
 hold MouseLeft 1                   # lock the cursor
 timing
-hold KeyW 600                      # ten seconds' flight north
+hold KeyW 500                      # eight seconds' flight north
 timing                             # flying: a row of chunks now and then
 camera 6000 70 -4000 0 -15         # far away: everything loads at once
 settle

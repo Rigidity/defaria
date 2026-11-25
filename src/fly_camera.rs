@@ -1,11 +1,11 @@
-//! Minecraft-style fly camera.
+//! Minecraft-style first-person camera: where the player looks.
 //!
 //! - Left click locks and hides the cursor; Escape releases it.
 //! - While locked, the mouse turns the camera (yaw) and looks up/down (pitch).
 //!   Pitch is clamped just short of straight up/down so the view never flips.
-//! - WASD moves on the horizontal plane relative to where you face, Space
-//!   flies up and Shift flies down. Looking up or down doesn't change the
-//!   direction WASD moves you.
+//!
+//! The camera is the player's eyes: `player` moves it (walking, jumping and
+//! flying) and keeps it at the player's body.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -30,14 +30,12 @@ pub struct FlyCameraPlugin;
 
 impl Plugin for FlyCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera).add_systems(
-            Update,
-            (grab_cursor, look, fly).chain().in_set(FlyCameraSystems),
-        );
+        app.add_systems(Startup, spawn_camera)
+            .add_systems(Update, (grab_cursor, look).chain().in_set(FlyCameraSystems));
     }
 }
 
-/// The fly camera's input systems: cursor grabbing, looking and flying.
+/// The camera's input systems: cursor grabbing and looking.
 /// Systems that need the cursor's state from before this frame's click
 /// (like block editing) run before them.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,8 +45,6 @@ pub struct FlyCameraSystems;
 #[reflect(Component)]
 #[require(Camera3d)]
 pub struct FlyCamera {
-    /// Movement speed in units per second.
-    pub speed: f32,
     /// Radians turned per pixel of mouse motion.
     pub sensitivity: f32,
     /// Rotation around the world Y axis, in radians.
@@ -60,7 +56,6 @@ pub struct FlyCamera {
 impl Default for FlyCamera {
     fn default() -> Self {
         Self {
-            speed: 10.0,
             sensitivity: 0.002,
             yaw: 0.0,
             pitch: 0.0,
@@ -131,30 +126,6 @@ fn look(
     }
 }
 
-fn fly(
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut cameras: Query<(&FlyCamera, &mut Transform)>,
-) {
-    let axis = |positive: KeyCode, negative: KeyCode| {
-        keys.pressed(positive) as i8 as f32 - keys.pressed(negative) as i8 as f32
-    };
-    let forward_input = axis(KeyCode::KeyW, KeyCode::KeyS);
-    let right_input = axis(KeyCode::KeyD, KeyCode::KeyA);
-    let up_input = keys.pressed(KeyCode::Space) as i8 as f32
-        - (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)) as i8 as f32;
-
-    for (camera, mut transform) in &mut cameras {
-        // Horizontal movement follows yaw only, like Minecraft's creative flight.
-        let yaw = Quat::from_rotation_y(camera.yaw);
-        let forward = yaw * Vec3::NEG_Z;
-        let right = yaw * Vec3::X;
-        let horizontal = (forward * forward_input + right * right_input).normalize_or_zero();
-        let velocity = (horizontal + Vec3::Y * up_input) * camera.speed;
-        transform.translation += velocity * time.delta_secs();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,7 +143,7 @@ mod tests {
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<AccumulatedMouseMotion>()
-            .add_systems(Update, (grab_cursor, look, fly).chain());
+            .add_systems(Update, (grab_cursor, look).chain());
         app.world_mut()
             .spawn((Window::default(), CursorOptions::default(), PrimaryWindow));
         app
@@ -244,57 +215,5 @@ mod tests {
         let forward = app.world().get::<Transform>(entity).unwrap().forward();
         assert!(forward.y > 0.99, "looking almost straight up: {forward:?}");
         assert!(forward.y < 1.0, "but never exactly: {forward:?}");
-    }
-
-    #[test]
-    fn wasd_moves_horizontally_even_when_looking_down() {
-        let mut app = app();
-        let entity = spawn_camera(
-            &mut app,
-            FlyCamera {
-                speed: 20.0,
-                pitch: -1.2,
-                ..default()
-            },
-        );
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyW);
-        // First update has zero delta time; the second moves by 0.1s.
-        // (Time<Virtual> clamps steps to 250ms, so keep them small.)
-        app.update();
-        app.update();
-
-        let position = app.world().get::<Transform>(entity).unwrap().translation;
-        assert!(
-            position.abs_diff_eq(Vec3::new(0.0, 0.0, -2.0), 1e-4),
-            "{position:?}"
-        );
-    }
-
-    #[test]
-    fn space_flies_up_and_shift_flies_down() {
-        let mut app = app();
-        let entity = spawn_camera(
-            &mut app,
-            FlyCamera {
-                speed: 20.0,
-                ..default()
-            },
-        );
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Space);
-        app.update();
-        app.update();
-        let y = app.world().get::<Transform>(entity).unwrap().translation.y;
-        assert!((y - 2.0).abs() < 1e-4, "{y}");
-
-        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-        keys.release(KeyCode::Space);
-        keys.press(KeyCode::ShiftLeft);
-        app.update();
-        let y = app.world().get::<Transform>(entity).unwrap().translation.y;
-        assert!(y.abs() < 1e-4, "{y}");
     }
 }

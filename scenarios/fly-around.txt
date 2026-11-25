@@ -1,11 +1,12 @@
 # Fly forward over the terrain, turn, and look down at it.
 # Run: cargo headless scenarios/fly-around.txt
+camera 64 56 92 0 -37.9            # the start's view, flying (the player starts on foot)
 wait 5
 screenshot target/scenarios/fly-around/0-start.png
 inspect FlyCamera
 
 hold MouseLeft 1   # lock the cursor so the mouse turns the camera
-hold KeyW 60       # one second forward
+hold KeyW 50       # about ten blocks forward
 screenshot target/scenarios/fly-around/1-closer.png
 
 mouse 150 0        # turn right

@@ -69,8 +69,9 @@ changes.
 1. **Logic:** write headless tests. Build an `App` with `MinimalPlugins`, add
    only the systems under test, step time with
    `TimeUpdateStrategy::ManualDuration`, and call `app.update()`. See the tests
-   in `src/fly_camera.rs`. `Time<Virtual>` clamps each step to 250ms, so keep
-   manual steps below that.
+   in `src/fly_camera.rs`, and in `src/player.rs` for systems in
+   `FixedUpdate`. `Time<Virtual>` clamps each step to 250ms, so keep manual
+   steps below that.
 2. **Gameplay and visuals:** write a scenario script and run
    `cargo headless <script>`. It runs the whole game with no window, rendering
    offscreen, feeds it the script's input at a fixed 60 fps, and exits when the
@@ -78,6 +79,7 @@ changes.
    components to stdout. Example (`scenarios/fly-around.txt`):
    ```text
    wait 5
+   camera 64 56 92 0 -37.9  # the player's eyes here, flying
    hold MouseLeft 1      # lock the cursor
    hold KeyW 60          # fly forward for one second
    mouse 150 0           # turn right
@@ -89,7 +91,8 @@ changes.
    `grain` (a texture-noise number for the frame; lower is smoother, and only
    comparable between runs with the same view and art), `inspect`, `fill`
    (set a box of voxels to a block, to build a test scene), `camera` (put the
-   camera at a position and angle) and `timing` (mean and worst wall-clock
+   camera, the player's eyes, at a position and angle; the player stops
+   there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
    `settle` (wait for the world around the camera to load, after a `camera`
    jump somewhere new). The full format is documented at the top of
@@ -194,6 +197,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `src/headless.rs`: headless mode and the scenario script runner.
 - `src/terrain.rs`: terrain generation, the loaded chunks (`ChunkMap`,
   `Voxels`) and chunk meshing.
+- `src/physics.rs`: boxes colliding with block shapes (swept, sliding,
+  stepping up), in `FixedUpdate`. `src/player.rs`: the player's
+  Minecraft-style walking, jumping, sneaking, sprinting and flying, on a
+  physics body at the camera.
 - `src/streaming.rs`: loading, unloading and saving chunks around the
   camera. The world has no edges, up and down included.
 - `src/light.rs` (and `src/light/`): block and sky light. `src/light/sky.rs`
