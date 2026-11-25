@@ -106,8 +106,9 @@ changes.
    fails to compile.
    Keys are `KeyCode` names; mouse buttons are `MouseLeft`/`MouseRight`/
    `MouseMiddle`. Add `--no-render` to run without a GPU (`screenshot` and
-   `grain` are skipped); CI runs every scenario in `scenarios/` that way, so they must keep
-   working. Write screenshots under `target/`. Keep reusable scenarios in
+   `grain` are skipped), and `--radius <chunks>` to load a smaller world
+   (the default is 16); CI runs every scenario in `scenarios/` that way,
+   with `--radius 4`, so they must keep working with a small world. Write screenshots under `target/`. Keep reusable scenarios in
    `scenarios/`; put one-off ones in your scratch directory.
 3. **End-to-end tests:** the same scripts run inside `cargo test` with no GPU
    (screenshots are skipped there). Build the app with
