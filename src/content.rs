@@ -26,6 +26,7 @@
 
 mod bake;
 pub mod load;
+mod place;
 pub mod schema;
 
 use std::{collections::BTreeMap, path::Path};
@@ -33,7 +34,8 @@ use std::{collections::BTreeMap, path::Path};
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
 
 use crate::block_texture::Palette;
-pub use schema::Direction;
+pub use place::Placement;
+pub use schema::{Direction, PlaceFrom};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -229,6 +231,8 @@ pub struct Property {
     /// Whether the block's item carries it, so each value is a different
     /// item. Only for block properties.
     pub item: bool,
+    /// How a placed block picks the value. Only for block properties.
+    pub place: Option<Placement>,
 }
 
 /// The index of the state with these property values, the rest at their

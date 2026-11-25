@@ -1,11 +1,12 @@
 // A tree trunk: bark on the sides, rings on the ends. `axis` is the
 // direction the trunk runs; the cube is turned so its ends face that way.
-// Every wood is its own item; the axis isn't part of the item.
+// A placed log runs along the face it's placed against. Every wood is its
+// own item; the axis isn't part of the item.
 {
   name: "{wood} Log",
   properties: {
     wood: { materials: ["oak", "#wood"] },
-    axis: ["y", "x", "z"],
+    axis: { values: ["y", "x", "z"], place: "face" },
   },
   model: "cube",
   textures: {

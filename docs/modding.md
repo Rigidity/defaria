@@ -366,6 +366,40 @@ A property can be a material instead of a list of words:
 
 The long form works for plain values too: `{ values: ["y", "x", "z"] }`.
 
+### Placement
+
+A plain property can be set as the block is placed, from where you click
+or where you look, with `place`:
+
+```json5
+// A log runs along the face it's placed against.
+properties: {
+  axis: { values: ["y", "x", "z"], place: "face" },
+},
+```
+
+- **`"face"`** uses the side of the block you click: placing on top of a
+  block is `up`, against its east side `east`.
+- **`"look"`** uses the way you look, along its strongest axis: looking
+  down is `down`, looking mostly west is `west`.
+- Either one gives each direction the value named after its axis (`x`,
+  `y` or `z`), or else after itself (`up`, `down`, `north`, `south`,
+  `east`, `west`). A property whose values are neither needs `values`.
+- **`{ from, values }`** says which value each direction gives; `from` is
+  `"face"` or `"look"`. A direction it leaves out keeps the value the
+  block would have had (from its item, or the default):
+
+  ```json5
+  // A slab half: on top of a block it sits low, under one it sits high.
+  half: {
+    values: ["bottom", "top"],
+    place: { from: "face", values: { up: "bottom", down: "top" } },
+  },
+  ```
+
+`place` is for blocks' plain properties only, and not with `item: true`:
+the item doesn't carry a value that placing picks.
+
 ### Conditions
 
 A `when` gives each property it cares about one of:
@@ -433,11 +467,12 @@ the textures hot reload. Every item state shows in the inventory.
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
-- Placement rules (such as setting a log's `axis` from the face you click)
-  aren't data yet, so placed blocks are in their item's state.
+- Placement can't read where on a face you click yet, so a slab placed
+  against the side of a block can't pick its half from the upper or lower
+  part of that side.
 - Item data that isn't a fixed list of values, such as durability.
-- Hardness and weight are worked out but nothing uses them yet. Variants
-  can't change them.
+- Weight is worked out but nothing uses it yet. Variants can't change
+  hardness or weight.
 - Cut-out textures (leaves with holes): block faces are drawn opaque.
 - Models are block-only so far: no bones or animation for entities.
 - A mod can only add definitions in its own namespace, not replace another

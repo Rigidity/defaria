@@ -1,0 +1,42 @@
+# Logs placed against each face of a stone block in the air: on top and
+# underneath they stand upright (axis y), against the east and west faces
+# they lie along X, and against the north and south faces along Z.
+# Run: cargo headless scenarios/log-placement.txt
+wait 5
+fill 26 46 26 34 54 34 air          # clear the air round the block
+fill 30 50 30 30 50 30 stone        # the block to place against
+hold MouseLeft 1                    # lock the cursor; this click edits nothing
+press Digit6                        # the log
+wait 1
+release Digit6
+camera 30.5 55 30.5 0 -90           # above it (clear of the body), looking down
+wait 2
+hold MouseRight 1
+wait 1
+camera 30.5 47.5 30.5 0 90          # below it, looking up at the bottom face
+wait 2
+hold MouseRight 1
+wait 1
+camera 33.5 50.5 30.5 90 0          # east of it, looking west
+wait 2
+hold MouseRight 1
+wait 1
+camera 27.5 50.5 30.5 -90 0         # west of it, looking east
+wait 2
+hold MouseRight 1
+wait 1
+camera 30.5 50.5 27.5 180 0         # north of it, looking south
+wait 2
+hold MouseRight 1
+wait 1
+camera 30.5 50.5 33.5 0 0           # south of it, looking north
+wait 2
+hold MouseRight 1
+wait 1
+camera 35.5 54 35.5 45 -29          # from the south-east, above
+wait 2
+screenshot target/scenarios/log-placement/0-above.png
+wait 1
+camera 25.5 47 25.5 -135 29         # from the north-west, below
+wait 2
+screenshot target/scenarios/log-placement/1-below.png

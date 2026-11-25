@@ -3,9 +3,11 @@
 //!
 //! - While the cursor is locked, holding left click breaks the block under
 //!   the crosshair (see `mining`) and right click places the active block
-//!   against the face you're looking at. The click that locks the cursor
-//!   doesn't edit anything. The active block is the active hotbar slot's
-//!   (see `hotbar`); an item that places no block places nothing.
+//!   against the face you're looking at. A property the block sets on
+//!   placement (a log's axis) comes from that face or your view. The click
+//!   that locks the cursor doesn't edit anything. The active block is the
+//!   active hotbar slot's (see `hotbar`); an item that places no block
+//!   places nothing.
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
@@ -19,7 +21,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockBox, BlockState, Content},
+    content::{BlockBox, BlockState, Content, Direction},
     fly_camera::{FlyCamera, FlyCameraSystems},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     physics::{Aabb, Body},
@@ -88,6 +90,11 @@ impl Hit {
     /// started inside the block, so there's no face to place against.
     pub fn place_at(self) -> Option<IVec3> {
         (self.normal != IVec3::ZERO).then_some(self.block + self.normal)
+    }
+
+    /// The side of the block the ray hit. `None` if it started inside.
+    pub fn face(self) -> Option<Direction> {
+        Direction::from_normal(self.normal)
     }
 }
 
@@ -229,9 +236,11 @@ fn edit_blocks(
     let Some(block) = hotbar.active_block(*active, &content) else {
         return;
     };
-    let Some(pos) = hit.place_at() else {
+    let (Some(pos), Some(face)) = (hit.place_at(), hit.face()) else {
         return;
     };
+    // Properties such as a log's axis follow the face clicked or the view.
+    let block = content.placed(block, face, *ray.direction);
     // Not into the camera, outside the world, over another block, or where
     // it would overlap someone.
     let overlaps = content.state(block).collision.iter().any(|b| {
@@ -648,13 +657,47 @@ mod tests {
         let (mut app, left, _) = app();
         press_key(&mut app, KeyCode::Digit6);
         assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(5));
+        // Against the west face, so the log runs along X.
+        let log = base().block("defaria:log").unwrap();
+        let log = log.state(&[("axis", "x")]).unwrap();
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 13, 1, 5), block("log"));
+        assert_eq!(voxel(&app, left, 13, 1, 5), log);
         // Placing again stacks toward the camera, but never into it.
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 12, 1, 5), block("log"));
+        assert_eq!(voxel(&app, left, 12, 1, 5), log);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 11, 1, 5), BlockState::AIR);
+    }
+
+    /// A log placed against each face of a block runs along that face's
+    /// axis, whichever way you came at it.
+    #[test]
+    fn logs_placed_against_each_face_run_along_it() {
+        let (mut app, left, _) = app();
+        let target = IVec3::new(7, 7, 10);
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(7, 7, 10, block("stone"));
+        press_key(&mut app, KeyCode::Digit6);
+        let log = base().block("defaria:log").unwrap();
+        for face in Direction::ALL {
+            let normal = face.normal();
+            let axis = face.axis_name();
+            // Three blocks out from the face, looking back at it, a little
+            // off center so the view isn't straight along the axis.
+            let from = (target + normal * 3).as_vec3() + Vec3::splat(0.5);
+            let dir = (target.as_vec3() + Vec3::new(0.6, 0.55, 0.45) - from).normalize();
+            let up = if normal.y == 0 { Vec3::Y } else { Vec3::Z };
+            *app.world_mut()
+                .query_filtered::<&mut Transform, With<FlyCamera>>()
+                .single_mut(app.world_mut())
+                .unwrap() = Transform::from_translation(from).looking_to(dir, up);
+            click(&mut app, MouseButton::Right);
+            let pos = (target + normal).as_uvec3();
+            let placed = voxel(&app, left, pos.x as usize, pos.y as usize, pos.z as usize);
+            assert_eq!(placed, log.state(&[("axis", axis)]).unwrap(), "{face:?}");
+        }
     }
 
     /// A block isn't placed where it would overlap a body, such as the
