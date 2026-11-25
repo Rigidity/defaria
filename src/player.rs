@@ -431,7 +431,11 @@ mod tests {
     fn flying_and_backwards_speeds() {
         for (flying, keys, speed) in [
             (true, &[KeyCode::KeyW][..], -FLY.speed),
-            (true, &[KeyCode::KeyW, KeyCode::ControlLeft], -FLY.speed * 2.0),
+            (
+                true,
+                &[KeyCode::KeyW, KeyCode::ControlLeft],
+                -FLY.speed * 2.0,
+            ),
             (false, &[KeyCode::KeyS, KeyCode::ControlLeft], WALK.speed),
         ] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
@@ -467,7 +471,10 @@ mod tests {
     fn letting_go_stops_quickly() {
         for (flying, limit) in [(false, 0.3), (true, 2.0)] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
-            let player = spawn(&mut app, DVec3::new(8.5, if flying { 10.0 } else { 4.0 }, 15.0));
+            let player = spawn(
+                &mut app,
+                DVec3::new(8.5, if flying { 10.0 } else { 4.0 }, 15.0),
+            );
             app.world_mut().get_mut::<Player>(player).unwrap().flying = flying;
             run(&mut app, 0.1);
             hold(&mut app, &[KeyCode::KeyW]);
@@ -478,7 +485,11 @@ mod tests {
             let after = body(&app, player);
             let slid = from.z - after.position.z;
             assert!(slid < limit, "flying {flying}: slid {slid}");
-            assert!(after.velocity.length() < 0.5, "flying {flying}: {}", after.velocity);
+            assert!(
+                after.velocity.length() < 0.5,
+                "flying {flying}: {}",
+                after.velocity
+            );
         }
     }
 
