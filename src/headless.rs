@@ -1196,7 +1196,7 @@ mod tests {
             ..default()
         });
         run_more(&mut app, "camera 8.5 40 8.5 0 0\nsettle\n");
-        for moves in ["hold Space 300\n", "press ControlLeft\nhold KeyW 300\n"] {
+        for moves in ["hold Space 300\n", "press KeyF\nhold KeyW 300\n"] {
             let script = Script::parse(moves).unwrap();
             app.world_mut()
                 .resource_mut::<ScriptRunner>()
