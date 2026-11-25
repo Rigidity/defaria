@@ -1,0 +1,51 @@
+# Walking with physics on a course built in the air: half-block steps of
+# slabs and blocks that the player walks up without jumping, a wall one
+# block higher that needs a jump, a ledge to sneak up to without falling
+# off, then a fall, and flying again with a double tap of Space.
+# Run: cargo headless scenarios/walking.txt
+wait 5
+fill 20 45 20 44 45 44 stone       # the platform, top at y = 46
+fill 30 46 37 34 46 37 stone_slab  # steps north: half a block,
+fill 30 46 36 34 46 36 stone       # one block,
+fill 30 46 35 34 46 35 stone       # one and a half,
+fill 30 47 35 34 47 35 stone_slab
+fill 30 46 34 34 47 34 stone       # two,
+fill 30 46 28 34 48 33 planks      # then a ledge three blocks high
+camera 32.5 49 41.5 0 -15          # south of the steps, flying
+hold ShiftLeft 40                  # down to land, which stops flying
+wait 5
+screenshot target/scenarios/walking/0-start.png
+inspect Body
+wait 1
+hold KeyW 120                      # up the steps, to the foot of the ledge
+wait 5
+screenshot target/scenarios/walking/1-at-the-ledge.png
+inspect Body
+wait 1
+press KeyW                         # jump up onto it
+hold Space 20
+wait 30
+release KeyW
+inspect Body
+press ShiftLeft                    # sneak north to its far edge
+hold KeyW 240
+release ShiftLeft
+hold MouseLeft 1                   # lock the cursor and look down over it
+mouse 0 350
+wait 5
+screenshot target/scenarios/walking/2-at-the-edge.png
+inspect Body
+inspect Player
+wait 1
+hold KeyW 30                       # off the edge
+wait 60
+inspect Body
+hold Space 3                       # double tap: fly
+wait 5
+hold Space 3
+hold Space 60                      # up
+mouse 0 -150
+wait 5
+screenshot target/scenarios/walking/3-flying.png
+inspect Player
+inspect Body

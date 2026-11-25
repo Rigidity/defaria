@@ -1,5 +1,6 @@
 # Fly forward over the terrain, turn, and look down at it.
 # Run: cargo headless scenarios/fly-around.txt
+camera 64 56 92 0 -37.9            # the start's view, flying (the player starts on foot)
 wait 5
 screenshot target/scenarios/fly-around/0-start.png
 inspect FlyCamera

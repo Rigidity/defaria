@@ -4,6 +4,7 @@
 # chunks around the corner). Compare the `timing` lines between runs on the
 # same machine.
 # Run: cargo headless scenarios/lighting-performance.txt
+camera 64 56 92 0 -37.9            # the start's view, flying (the player starts on foot)
 wait 5
 timing                             # startup
 hold MouseLeft 1

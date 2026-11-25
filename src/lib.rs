@@ -12,6 +12,8 @@ mod fly_camera;
 pub mod headless;
 mod light;
 mod perlin;
+mod physics;
+mod player;
 pub mod save;
 mod streaming;
 mod terrain;
@@ -31,6 +33,8 @@ impl Plugin for GamePlugin {
             // First: the others read the content as they start.
             content::ContentPlugin,
             fly_camera::FlyCameraPlugin,
+            physics::PhysicsPlugin,
+            player::PlayerPlugin,
             voxel::VoxelPlugin,
             voxel_material::VoxelMaterialPlugin,
             terrain::TerrainPlugin,

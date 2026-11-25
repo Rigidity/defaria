@@ -3,6 +3,32 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Physics is precise far away, but drawing isn't (2026-11-24)
+
+**Context.** The player is a box that collides with block shapes
+(`src/physics.rs`, `src/player.rs`). Its position is an `f64` and boxes are
+compared with a tolerance, so walking, standing and sliding work the same
+millions of blocks out. The camera's `Transform`, the chunk meshes'
+positions and the shaders are `f32`, as Bevy's are.
+
+**Decision.** Keep drawing in `f32` world coordinates for now; only the
+physics is exact far out.
+
+**What's wrong with it.** `f32` has about 7 significant digits. A few
+hundred thousand blocks out, the camera and the meshes start to visibly
+wobble and the outline drifts off its block; around 16 million blocks out,
+a block is smaller than the gap between two `f32` values. The crosshair's
+raycast is `f32` too.
+
+**What should replace it.** Camera-relative drawing: keep positions in
+`f64` (or chunk plus offset), and each frame move the world, not the
+camera, so the camera stays at the origin and nearby meshes are drawn with
+small coordinates. Bevy's big-space crate does this. The raycast should take
+the `f64` eye position and step in chunk-local coordinates.
+
+**When to revisit.** When anyone plays far out, or before adding anything
+that sends the player a long way (teleports, long travel).
+
 ## Sky light comes in above whatever's loaded (2026-11-24)
 
 **Context.** The world has no top or bottom: chunks are cubes, loaded in a

@@ -4,13 +4,14 @@
 # number for the grazing and far views; compare it before and after texture
 # or shader changes (lower is smoother).
 # Run: cargo headless scenarios/texture-distances.txt
+camera 64 56 92 0 -37.9            # the start's view, flying (the player starts on foot)
 wait 5
 screenshot target/scenarios/texture-distances/0-start.png
 wait 1             # a screenshot captures the end of its frame, so move on first
 
 hold MouseLeft 1   # lock the cursor so the mouse turns the camera
 mouse 0 200        # look nearly straight down
-hold ShiftLeft 75  # sink until the ground is a few blocks away
+hold ShiftLeft 100  # sink until the ground is a few blocks away
 wait 1
 screenshot target/scenarios/texture-distances/1-close.png
 wait 1
@@ -21,7 +22,7 @@ screenshot target/scenarios/texture-distances/2-grazing.png
 grain
 wait 1
 
-hold Space 420     # climb high above the world
+hold Space 560     # climb high above the world
 mouse 0 330        # look down at it from far away
 wait 1
 screenshot target/scenarios/texture-distances/3-far.png

@@ -1,6 +1,7 @@
 # Look over the Perlin-noise terrain from the start position, fly across the
 # middle, then drop down for a close look at the textures.
 # Run: cargo headless scenarios/terrain.txt
+camera 64 56 92 0 -37.9            # the start's view, flying (the player starts on foot)
 wait 5
 screenshot target/scenarios/terrain/0-start.png
 inspect FlyCamera
@@ -12,7 +13,7 @@ wait 1
 screenshot target/scenarios/terrain/1-ahead.png
 inspect FlyCamera
 
-hold ShiftLeft 90  # sink toward the hilltops
+hold ShiftLeft 120  # sink toward the hilltops
 mouse 0 200        # look down at the ground
 wait 1
 screenshot target/scenarios/terrain/2-closeup.png

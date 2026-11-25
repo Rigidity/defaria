@@ -23,7 +23,7 @@
 //! | `grain` | Print a texture-noise number for this frame (see below). |
 //! | `inspect <Component>` | Print that component on every entity that has it. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears). |
-//! | `camera <x> <y> <z> <yaw> <pitch>` | Put the fly camera at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. |
+//! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed. |
 //!
@@ -99,6 +99,8 @@ use bevy::{
 use crate::{
     content::{BlockState, Content},
     fly_camera::{FlyCamera, MAX_PITCH},
+    physics::Body,
+    player::Player,
     streaming::StreamingStatus,
     terrain::Voxels,
 };
@@ -549,14 +551,23 @@ fn fill(
 
 fn place_camera(
     In((position, yaw, pitch)): In<(Vec3, f32, f32)>,
-    mut cameras: Query<(&mut FlyCamera, &mut Transform)>,
+    mut cameras: Query<(
+        &mut FlyCamera,
+        &mut Transform,
+        Option<(&mut Player, &mut Body)>,
+    )>,
 ) -> Result<(), String> {
-    let (mut camera, mut transform) = cameras
+    let (mut camera, mut transform, player) = cameras
         .single_mut()
         .map_err(|error| format!("camera: {error}"))?;
     camera.yaw = yaw.to_radians();
     camera.pitch = pitch.to_radians().clamp(-MAX_PITCH, MAX_PITCH);
     *transform = Transform::from_translation(position).with_rotation(camera.rotation());
+    // The player's eyes go there, flying, so the view stays put.
+    if let Some((mut player, mut body)) = player {
+        player.flying = true;
+        body.teleport(Player::body(position).position);
+    }
     Ok(())
 }
 
@@ -1089,7 +1100,8 @@ mod tests {
     #[test]
     fn script_drives_the_fly_camera() {
         let script = Script::parse(
-            "wait 1\n\
+            "camera 64.5 62 92.5 0 0  # flying, facing north\n\
+             wait 1\n\
              hold MouseLeft 1  # lock the cursor\n\
              hold KeyW 30\n\
              mouse 100 0\n\
@@ -1099,13 +1111,7 @@ mod tests {
         )
         .unwrap();
         let mut app = test_game(script);
-
-        // First frame: Startup spawns the camera; the script is still waiting
-        // for the world to load.
-        app.update();
-        let start = camera(&mut app);
-
-        let mut frames = 1;
+        let mut frames = 0;
         let exit = loop {
             app.update();
             frames += 1;
@@ -1117,19 +1123,15 @@ mod tests {
         assert_eq!(exit, AppExit::Success);
 
         let (end_camera, end_transform) = camera(&mut app);
-        // 30 frames of W at 1/60 s each, at the camera's speed, along where
-        // it faced before turning.
-        let forward = Quat::from_rotation_y(start.0.yaw) * Vec3::NEG_Z;
-        let expected = start.1.translation + forward * start.0.speed * 0.5;
-        assert!(
-            end_transform.translation.abs_diff_eq(expected, 1e-3),
-            "{} vs {expected}",
-            end_transform.translation
-        );
+        // Half a second of W, flying, from a standstill: about 1.9 blocks
+        // north (−Z), level, along where it faced before turning.
+        let moved = end_transform.translation - Vec3::new(64.5, 62.0, 92.5);
+        assert!((-2.2..-1.5).contains(&moved.z), "{moved}");
+        assert!(moved.x.abs() < 1e-3 && moved.y.abs() < 1e-3, "{moved}");
         // Moving the mouse 100px right turns the camera right.
-        let turned = end_camera.yaw - start.0.yaw;
+        let turned = end_camera.yaw;
         assert!(
-            (turned + 100.0 * start.0.sensitivity).abs() < 1e-5,
+            (turned + 100.0 * end_camera.sensitivity).abs() < 1e-5,
             "{turned}"
         );
     }

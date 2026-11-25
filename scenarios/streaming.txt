@@ -4,6 +4,7 @@
 # and a room dug a thousand blocks down.
 # Compare the `timing` lines between runs on the same machine.
 # Run: cargo headless scenarios/streaming.txt
+camera 64 56 92 0 -37.9            # the start's view, flying (the player starts on foot)
 timing                             # startup: loading the first view
 fill 60 30 70 62 58 72 planks      # a tower in front of the camera
 fill 60 59 70 62 59 72 lamp

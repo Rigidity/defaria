@@ -1,16 +1,16 @@
 # Dig into the ground and build a little tower of the new blocks, to check
 # breaking, placing, the hotbar and the target outline.
 # Run: cargo headless scenarios/build-blocks.txt
+camera 64.5 56 92.5 0 -37.9        # by the start, over the middle of a block, flying
 wait 5
 hold MouseLeft 1   # lock the cursor; this click doesn't break anything
 mouse 0 -250       # level the view out
-hold ShiftLeft 215 # sink to about five blocks above the ground
-hold KeyD 3        # center over a block, not on a block edge
-hold KeyS 3
+hold ShiftLeft 283 # sink to about five blocks above the ground
 mouse 0 800        # look straight down at the ground
 wait 2
 screenshot target/scenarios/build-blocks/0-aim.png
 inspect FlyCamera
+inspect Body
 wait 1
 hold MouseLeft 1   # break the grass block straight down
 wait 1
@@ -38,7 +38,8 @@ screenshot target/scenarios/build-blocks/2-placed.png
 wait 1
 mouse 0 -610       # look across at the tower
 wait 1
-hold KeyS 50       # back off to see it
+hold KeyS 75       # back off to see it
 wait 2
 screenshot target/scenarios/build-blocks/3-tower.png
 inspect FlyCamera
+inspect Body
