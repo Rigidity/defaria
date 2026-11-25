@@ -86,15 +86,12 @@ pub struct Hit {
 }
 
 impl Hit {
-    /// Where a block placed against the hit face goes. `None` if the ray
-    /// started inside the block, so there's no face to place against.
-    pub fn place_at(self) -> Option<IVec3> {
-        (self.normal != IVec3::ZERO).then_some(self.block + self.normal)
-    }
-
-    /// The side of the block the ray hit. `None` if it started inside.
-    pub fn face(self) -> Option<Direction> {
-        Direction::from_normal(self.normal)
+    /// Where a block placed against the hit face goes, and which side of
+    /// the hit block that face is. `None` if the ray started inside the
+    /// block, so there's no face to place against.
+    pub fn place_at(self) -> Option<(IVec3, Direction)> {
+        let face = Direction::from_normal(self.normal)?;
+        Some((self.block + self.normal, face))
     }
 }
 
@@ -236,7 +233,7 @@ fn edit_blocks(
     let Some(block) = hotbar.active_block(*active, &content) else {
         return;
     };
-    let (Some(pos), Some(face)) = (hit.place_at(), hit.face()) else {
+    let Some((pos, face)) = hit.place_at() else {
         return;
     };
     // Properties such as a log's axis follow the face clicked or the view.
@@ -375,7 +372,10 @@ mod tests {
                 normal: IVec3::NEG_X,
             })
         );
-        assert_eq!(hit.unwrap().place_at(), Some(IVec3::new(2, 0, 0)));
+        assert_eq!(
+            hit.unwrap().place_at(),
+            Some((IVec3::new(2, 0, 0), Direction::West))
+        );
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hit.normal, IVec3::Y);
-        assert_eq!(hit.place_at(), Some(IVec3::new(2, 2, 2)));
+        assert_eq!(hit.place_at(), Some((IVec3::new(2, 2, 2), Direction::Up)));
     }
 
     /// From x = 0.5, block 8's near face is 7.5 away and block 9's is 8.5.
@@ -457,7 +457,7 @@ mod tests {
         // Straight down onto its top, which places on the block above.
         let hit = raycast(ray(Vec3::new(2.5, 3.0, 0.5), Vec3::NEG_Y), 8.0, shape).unwrap();
         assert_eq!((hit.block, hit.normal), (IVec3::new(2, 0, 0), IVec3::Y));
-        assert_eq!(hit.place_at(), Some(IVec3::new(2, 1, 0)));
+        assert_eq!(hit.place_at(), Some((IVec3::new(2, 1, 0), Direction::Up)));
         // The top is 2.5 below, so a reach of 2.4 doesn't get there, though
         // the slab's block starts 2 below.
         assert_eq!(
@@ -697,6 +697,94 @@ mod tests {
             let pos = (target + normal).as_uvec3();
             let placed = voxel(&app, left, pos.x as usize, pos.y as usize, pos.z as usize);
             assert_eq!(placed, log.state(&[("axis", axis)]).unwrap(), "{face:?}");
+        }
+    }
+
+    /// Placing through a click tells a face from its opposite, and reads
+    /// the view the way the camera looks: a half placed on top of a block
+    /// is its bottom half and one placed underneath its top, and a block
+    /// facing the way you look faces west when you look mostly west.
+    #[test]
+    fn placing_reads_the_clicked_face_and_the_view() {
+        let content = test_mod(&[
+            ("models/m.json5", "{ faces: [] }"),
+            ("blocks/base.json5", r#"{ model: "m" }"#),
+            (
+                "blocks/half.json5",
+                r#"{ model: "m", properties: { half: {
+                    values: ["bottom", "top"],
+                    place: { from: "face", values: { up: "bottom", down: "top" } },
+                } } }"#,
+            ),
+            (
+                "blocks/facing.json5",
+                r#"{ model: "m", properties: { facing: {
+                    values: ["north", "south", "east", "west"], place: "look",
+                } } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let half = content.block("test:half").unwrap();
+        let facing = content.block("test:facing").unwrap();
+        let expect = [
+            // From above, looking down onto its top.
+            (
+                "test:half",
+                Vec3::new(8.5, 10.5, 8.5),
+                Vec3::new(8.6, 9.0, 8.4),
+                IVec3::new(8, 9, 8),
+                half.state(&[("half", "bottom")]).unwrap(),
+            ),
+            // From below, looking up at its underside.
+            (
+                "test:half",
+                Vec3::new(8.5, 6.5, 8.5),
+                Vec3::new(8.4, 8.0, 8.6),
+                IVec3::new(8, 7, 8),
+                half.state(&[("half", "top")]).unwrap(),
+            ),
+            // Onto its top from the east, looking mostly west and down.
+            (
+                "test:facing",
+                Vec3::new(10.5, 9.6, 8.5),
+                Vec3::new(8.5, 9.0, 8.4),
+                IVec3::new(8, 9, 8),
+                facing.state(&[("facing", "west")]).unwrap(),
+            ),
+        ];
+        for (item, from, at, pos, state) in expect {
+            let mut app = App::new();
+            let mut chunk = Chunk::default();
+            chunk.set(8, 8, 8, content.default_state("test:base").unwrap());
+            let mut hotbar = Hotbar([None; crate::hotbar::HOTBAR_SLOTS]);
+            hotbar.0[0] = content.default_item(item);
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(content.clone())
+                .insert_resource(hotbar)
+                .init_resource::<ButtonInput<MouseButton>>()
+                .init_resource::<ActiveSlot>()
+                .init_resource::<ChunkMap>()
+                .add_message::<VoxelChanged>()
+                .add_systems(Update, edit_blocks);
+            app.world_mut().spawn((
+                Window::default(),
+                CursorOptions {
+                    grab_mode: CursorGrabMode::Locked,
+                    ..default()
+                },
+                PrimaryWindow,
+            ));
+            let entity = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), chunk)).id();
+            app.world_mut()
+                .resource_mut::<ChunkMap>()
+                .insert(ChunkCoord(IVec3::ZERO), entity);
+            app.world_mut()
+                .spawn((FlyCamera::default(), Transform::default()));
+            look_at(&mut app, from, (at - from).normalize());
+            click(&mut app, MouseButton::Right);
+            let p = pos.as_uvec3();
+            let placed = voxel(&app, entity, p.x as usize, p.y as usize, p.z as usize);
+            assert_eq!(placed, state, "{item} from {from}");
         }
     }
 
