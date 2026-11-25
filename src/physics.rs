@@ -51,6 +51,10 @@ pub const STEP: Duration = Duration::from_nanos(1_000_000_000 / STEP_HZ);
 /// blocks. Far bigger than `f64`'s rounding error anywhere a player can
 /// reach, far smaller than anything anyone would see.
 pub const EPSILON: f64 = 1e-7;
+/// How far a body may be inside a box and still be pushed back out of it
+/// before it moves, rather than treated as stuck in it: rounding (an `f32`
+/// position, say) leaves it far less than this in.
+pub const MAX_PUSH: f64 = 1e-3;
 /// The most a body moves along any axis in one go; longer moves are split.
 pub const MAX_STEP: f64 = 0.5;
 /// The furthest a body moves in one call, in blocks. Anything faster is
@@ -134,9 +138,19 @@ impl Aabb {
             motion.max((other.max[axis] - self.min[axis]).min(0.0))
         } else {
             // Beside it, or already inside it: a body stuck in a block can
-            // always move out.
+            // always move out. (One only a hair inside is pushed out before
+            // it moves; see `push_out`.)
             motion
         }
+    }
+
+    /// The axis the boxes overlap least along: the way out of each other.
+    fn shallowest_overlap(&self, other: &Aabb) -> usize {
+        let depth =
+            |axis: usize| (self.max[axis] - other.min[axis]).min(other.max[axis] - self.min[axis]);
+        (0..3)
+            .min_by(|&a, &b| depth(a).total_cmp(&depth(b)))
+            .unwrap_or(1)
     }
 }
 
@@ -338,6 +352,43 @@ fn step_once(
         false
     });
 
+    // Out of anything it's a hair inside, so it doesn't catch on the edges
+    // of the blocks next to it.
+    let push = push_out(aabb, boxes);
+    let aabb = aabb.offset(push);
+    let mut moved = climb_or_slide(aabb, motion, step_height, grounded, boxes);
+    moved.offset += push;
+    moved
+}
+
+/// How far to move `aabb` to get it out of each box it's less than
+/// [`MAX_PUSH`] inside, the shortest way.
+fn push_out(aabb: Aabb, boxes: &[Aabb]) -> DVec3 {
+    let mut push = DVec3::ZERO;
+    for b in boxes {
+        let at = aabb.offset(push);
+        if !at.intersects(b) {
+            continue;
+        }
+        let axis = at.shallowest_overlap(b);
+        let (up, down) = (b.max[axis] - at.min[axis], at.max[axis] - b.min[axis]);
+        let out = if up < down { up } else { -down };
+        if out.abs() <= MAX_PUSH {
+            push[axis] += out;
+        }
+    }
+    push
+}
+
+/// [`step_once`] once it's out of anything it was a hair inside: moves,
+/// and climbs what it runs into if it can.
+fn climb_or_slide(
+    aabb: Aabb,
+    motion: DVec3,
+    step_height: f64,
+    grounded: bool,
+    boxes: &[Aabb],
+) -> Moved {
     let (offset, blocked) = sweep(aabb, motion, boxes);
     let landed = motion.y < 0.0 && blocked.y;
     let flat = |v: DVec3| v.x * v.x + v.z * v.z;
@@ -718,6 +769,45 @@ mod tests {
             &world,
         );
         assert_eq!(moved.offset.y, -0.5);
+    }
+
+    /// A body put a hair into the floor (here by rounding through `f32`,
+    /// as the headless `camera` command does) lands on it rather than
+    /// sinking through, and still moves along it and up out of it.
+    #[test]
+    fn a_body_slightly_in_the_floor_doesnt_sink() {
+        let world = TestShapes::default().floor(0, -1, 0, 3);
+        let feet = DVec3::new(0.5, -1.07e-6, 0.5);
+        let moved = move_box(player_at(feet), DVec3::NEG_Y * 0.3, 0.0, false, &world);
+        // Pushed back up onto it, and landed.
+        assert!((moved.offset.y - 1.07e-6).abs() < 1e-12, "{moved:?}");
+        assert!(moved.landed);
+        // Sliding across the floor doesn't catch on the next block's edge.
+        let moved = move_box(
+            player_at(feet),
+            DVec3::new(1.0, 0.0, 0.5),
+            0.0,
+            true,
+            &world,
+        );
+        assert!(moved.blocked == BVec3::FALSE, "{moved:?}");
+        assert!((moved.offset.x - 1.0).abs() < 1e-12);
+        let moved = move_box(player_at(feet), DVec3::Y * 0.5, 0.0, true, &world);
+        assert!((moved.offset.y - 0.5 - 1.07e-6).abs() < 1e-12);
+    }
+
+    /// Deep inside two blocks side by side, a body can move out either way
+    /// along them.
+    #[test]
+    fn a_body_inside_two_blocks_can_move_out_either_way() {
+        let world = TestShapes::default()
+            .solid(IVec3::new(0, 0, 0))
+            .solid(IVec3::new(1, 0, 0));
+        let start = player_at(DVec3::new(0.9, 0.0, 0.5));
+        for x in [2.0, -2.0] {
+            let moved = move_box(start, DVec3::X * x, 0.0, false, &world);
+            assert_eq!(moved.offset.x, x);
+        }
     }
 
     /// Inside a block, a body can still move out of it.

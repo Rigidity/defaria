@@ -292,10 +292,7 @@ fn edit_blocks(
     // Not into the camera, outside the world, over another block, or where
     // it would overlap someone.
     let overlaps = content.state(block).collision.iter().any(|b| {
-        let b = Aabb::new(
-            pos.as_dvec3() + b.min.as_dvec3(),
-            pos.as_dvec3() + b.max.as_dvec3(),
-        );
+        let b = Aabb::of_block(pos, b);
         bodies.iter().any(|body| body.aabb().intersects(&b))
     });
     if pos == ray.origin.floor().as_ivec3() || voxels.get(pos) != Some(BlockState::AIR) || overlaps

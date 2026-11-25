@@ -595,6 +595,8 @@ mod tests {
         run(&mut app, 4.0);
         let sneaking = body(&app, player);
         assert!(sneaking.on_ground);
+        // Held at the edge, it doesn't build up speed to fly off with.
+        assert_eq!(sneaking.velocity.z, 0.0);
         assert_eq!(sneaking.position.y, 4.0);
         assert!(sneaking.position.z + 0.3 > 6.0, "{}", sneaking.position);
         // A sneaking jump carries on over the edge.
@@ -633,13 +635,21 @@ mod tests {
         let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
         run(&mut app, 0.1);
+        let mut tapped = 0.0;
         for _ in 0..2 {
+            tapped = body(&app, player).position.y;
             hold(&mut app, &[KeyCode::Space]);
             run(&mut app, 0.05);
             hold(&mut app, &[]);
             run(&mut app, 0.05);
         }
         assert!(self::player(&app, player).flying);
+        // The first tap's jump stops when flying starts: from the second
+        // tap, it only rises for the three steps Space is held (about 0.4),
+        // not on with the jump's speed too (about a block).
+        run(&mut app, 1.0);
+        let rise = body(&app, player).position.y - tapped;
+        assert!((0.2..0.6).contains(&rise), "{rise}");
         hold(&mut app, &[KeyCode::Space]);
         run(&mut app, 1.0);
         let up = body(&app, player);
@@ -736,13 +746,14 @@ mod tests {
         let mut app = app(IVec3::new(x, 0, x), Duration::from_millis(100), world);
         let feet = DVec3::new(x as f64 + 0.5, 20.0, x as f64 + 0.5);
         let player = spawn(&mut app, feet);
-        // A fast fall, and a sideways run into nothing.
-        app.world_mut().get_mut::<Body>(player).unwrap().velocity = DVec3::new(0.0, -70.0, 0.0);
+        // A fast fall, drifting sideways.
+        app.world_mut().get_mut::<Body>(player).unwrap().velocity = DVec3::new(3.0, -70.0, 0.0);
         run(&mut app, 3.0);
         let landed = body(&app, player);
         assert!(landed.on_ground, "{}", landed.position);
         assert_eq!(landed.position.y, -11.0);
-        assert_eq!(landed.position.x, feet.x);
+        assert!(landed.position.x > feet.x + 0.1, "{}", landed.position);
+        assert_eq!(landed.position.z, feet.z);
     }
 
     /// In the unloaded world, the player waits.
