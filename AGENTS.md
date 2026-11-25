@@ -159,16 +159,28 @@ project: https://github.com/users/Rigidity/projects/3. Keep the project in
 step with the work, using `scripts/roadmap.sh` (needs the `project` scope:
 `gh auth refresh -h github.com -s project`):
 
+- **Every open issue is in the project, in priority order,** except epics,
+  which stay out (each item's Parent issue shows its epic). The Order field
+  is the priority: work goes in increasing order, so an issue goes after the
+  work it needs and before the work that builds on it, and work in progress
+  sits with the rest of its epic.
 - **Filing an issue:** add it to the project where it belongs in the order,
   with `scripts/roadmap.sh add <issue> <order>` (`list` shows the order;
-  `7.5` goes between 7 and 8). Put it under its epic if it has one. Epics
-  themselves stay out of the project; each item's Parent issue shows its
-  epic.
+  `7.5` goes between 7 and 8). Put it under its epic if it has one, or
+  start an epic when it begins a new group of work. In Claude Code, a hook
+  (`.claude/hooks/roadmap-reminder.sh`) reminds you after `gh issue create`.
+  The project's own auto-add workflow can add sub-issues without an Order;
+  give them one.
+- **Checking:** `scripts/roadmap.sh check` lists open issues missing from
+  the project, items with no Order, epics in the project and Orders that
+  two items share, and fails if there are any. Run it after filing, closing
+  or reordering issues, and fix what it reports.
 - **Starting work on an issue:** `scripts/roadmap.sh status <issue> doing`.
 - **Finishing:** say `Closes #<issue>` in the PR description, so merging
   closes the issue, and the project marks it Done on its own. Work that
   ends without a merged PR: close the issue, or set it back with
-  `status <issue> todo` if it's left unfinished.
+  `status <issue> todo` if it's left unfinished. Close an epic once all its
+  sub-issues are done.
 - **Changing the plan:** when priorities change, or an issue turns out to
   depend on another, move it with `scripts/roadmap.sh order <issue> <order>`.
 
