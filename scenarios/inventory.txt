@@ -18,7 +18,7 @@ wait 1
 hold KeyE 1                      # open the inventory
 wait 3
 hold Digit9 1                    # pick the last slot
-cursor 578 331                   # hover the stone slab, second row
+cursor 695 364                   # hover the stone slab, fourth row
 wait 2
 screenshot target/scenarios/inventory/2-open.png
 wait 1
@@ -27,7 +27,9 @@ wait 2
 screenshot target/scenarios/inventory/3-picked.png
 inspect Hotbar
 wait 1
-scroll -3                        # everything fits: nothing scrolls
+scroll -3                        # over the grid: scrolls toward the tools
+wait 2
+screenshot target/scenarios/inventory/3b-scrolled.png
 wait 1
 
 hold KeyE 1                      # close: back to playing

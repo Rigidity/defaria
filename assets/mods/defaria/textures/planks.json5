@@ -1,5 +1,5 @@
 {
   layers: [
-    { image: "planks", material: "planks" },
+    { image: "planks", material: "$wood" },
   ],
 }

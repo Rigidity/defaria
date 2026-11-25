@@ -1,5 +1,6 @@
 {
-  name: "Stone Slab",
+  name: "{rock} Slab",
+  properties: { rock: { materials: ["stone", "#rock"] } },
   model: "slab",
-  textures: { all: "stone" },
+  textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
 }

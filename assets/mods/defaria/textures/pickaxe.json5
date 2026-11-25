@@ -1,6 +1,6 @@
 {
   layers: [
-    { image: "items/pickaxe_handle", material: "planks" },
-    { image: "items/pickaxe_head", material: "iron" },
+    { image: "items/pickaxe_handle", material: "$handle" },
+    { image: "items/pickaxe_head", material: "$head" },
   ],
 }

@@ -1,0 +1,6 @@
+// Dark blue-gray, darker than stone.
+{
+  name: "Slate",
+  tags: ["rock"],
+  palette: ["#1e2228", "#30363e", "#424a54", "#56606a"],
+}

@@ -16,7 +16,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{Content, ItemId},
+    content::{Content, ItemState},
     voxel_material::BlockTiles,
 };
 
@@ -31,20 +31,20 @@ impl Plugin for IconPlugin {
     }
 }
 
-/// Every item's icon image, by [`ItemId`]. Empty images until the block
+/// Every item's icon image, by [`ItemState`]. Empty images until the block
 /// texture's tiles have been built.
 #[derive(Resource, Debug, Clone)]
 pub struct ItemIcons(pub Vec<Handle<Image>>);
 
 impl ItemIcons {
-    pub fn get(&self, item: ItemId) -> Option<&Handle<Image>> {
-        self.0.get(item.0)
+    pub fn get(&self, item: ItemState) -> Option<&Handle<Image>> {
+        self.0.get(item.0 as usize)
     }
 }
 
 impl FromWorld for ItemIcons {
     fn from_world(world: &mut World) -> Self {
-        let count = world.resource::<Content>().items.len();
+        let count = world.resource::<Content>().item_states.len();
         let images = world.resource::<Assets<Image>>();
         Self((0..count).map(|_| images.reserve_handle()).collect())
     }
@@ -55,7 +55,7 @@ impl FromWorld for ItemIcons {
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[reflect(Component)]
 #[require(ImageNode)]
-pub struct ItemIcon(pub Option<ItemId>);
+pub struct ItemIcon(pub Option<ItemState>);
 
 /// Draws every item's icon into its image, whenever the tiles change.
 fn draw_icons(
@@ -67,10 +67,10 @@ fn draw_icons(
     if !tiles.is_changed() || tiles.0.is_empty() {
         return;
     }
-    for (item, handle) in content.items.iter().zip(&icons.0) {
+    for (item, handle) in content.item_states.iter().zip(&icons.0) {
         let pixels = raster::item_icon(&content, item, &tiles.0);
         if let Err(error) = images.insert(handle, icon_image(pixels)) {
-            error!("can't store the icon of {}: {error}", item.id);
+            error!("can't store the icon of {}: {error}", item.name);
         }
     }
 }
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn icons_are_drawn_once_the_tiles_exist_and_shown_by_item_icon() {
         let mut app = app();
-        let stone = base().item_id("defaria:stone").unwrap();
+        let stone = base().default_item("defaria:stone").unwrap();
         let shown = app.world_mut().spawn(ItemIcon(Some(stone))).id();
         let empty = app.world_mut().spawn(ItemIcon(None)).id();
         app.update();
@@ -156,14 +156,18 @@ mod tests {
             Color::NONE
         );
 
-        // The tiles arrive: every icon is drawn.
+        // The tiles arrive: every icon is drawn, one per item state.
         let tile = [200u8, 100, 50, 255].repeat(256);
         app.insert_resource(BlockTiles(vec![tile; base().textures.len()]));
         app.update();
         let images = app.world().resource::<Assets<Image>>();
-        for handle in &app.world().resource::<ItemIcons>().0 {
+        let icons = app.world().resource::<ItemIcons>();
+        assert_eq!(icons.0.len(), base().item_states.len());
+        for handle in &icons.0 {
             assert!(images.get(handle).is_some());
         }
+        let last = ItemState(base().item_states.len() as u32 - 1);
+        assert!(images.get(icons.get(last).unwrap()).is_some());
         let size = images.get(&handle).unwrap().size();
         assert_eq!(size, UVec2::splat(raster::BLOCK_ICON_SIZE));
     }

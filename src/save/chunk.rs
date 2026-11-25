@@ -303,7 +303,7 @@ mod tests {
         for chunk in [Chunk::default(), Chunk::filled(block("stone"))] {
             let blob = encode(&chunk, &names);
             assert!(
-                blob.len() < 32,
+                blob.len() < 64,
                 "{} bytes for a one-block chunk",
                 blob.len()
             );
@@ -329,14 +329,18 @@ mod tests {
     fn states_are_saved_by_name() {
         let names = names();
         assert_eq!(names.name(BlockState::AIR), "air");
-        assert_eq!(names.name(block("stone")), "defaria:stone");
+        assert_eq!(names.name(block("dirt")), "defaria:dirt");
+        assert_eq!(
+            names.name(block("stone")),
+            "defaria:stone[ore=none,rock=defaria:stone]"
+        );
         for i in 0..base().states.len() {
             let state = BlockState(i as u16);
             assert_eq!(names.state(names.name(state)), state);
         }
         let log = base().block("defaria:log").unwrap();
         let x = log.state(&[("axis", "x")]).unwrap();
-        assert_eq!(names.name(x), "defaria:log[axis=x]");
+        assert_eq!(names.name(x), "defaria:log[axis=x,wood=defaria:oak]");
         // Gone, and changed.
         assert_eq!(names.state("othermod:thing"), BlockState::AIR);
         assert_eq!(

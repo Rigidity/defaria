@@ -1,4 +1,9 @@
-// Cool, bright grays for iron tool heads and blades.
+// Cool, bright grays for iron tool heads and blades; rusty tan as ore.
 {
+  name: "Iron",
+  tags: ["metal", "ore"],
   palette: ["#2c3038", "#565d68", "#8e96a2", "#d4dae2"],
+  palettes: {
+    ore: ["#5a3420", "#9a6040", "#c8946a", "#ecc8a4"],
+  },
 }

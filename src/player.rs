@@ -7,8 +7,9 @@
 //!   to start or stop flying. Landing on the ground stops flying too.
 //! - **Shift** sneaks: slower, and you don't walk off edges. Flying, Space
 //!   rises and Shift sinks.
-//! - **Ctrl** with W sprints, a little faster on foot and twice as fast
-//!   flying. A sprinting jump gets a push forward.
+//! - **F** with W sprints, a little faster on foot and twice as fast
+//!   flying. A sprinting jump gets a push forward. Sprinting and flying
+//!   widen the view (see `fov`).
 //!
 //! The camera is the player's eyes. The player is a [`Body`] 0.6 blocks
 //! wide and 1.8 tall that climbs steps up to 0.6 (a slab) and collides
@@ -255,7 +256,7 @@ fn move_player(
     let right_input = axis(KeyCode::KeyD, KeyCode::KeyA);
     let jump = held(KeyCode::Space);
     let shift = held(KeyCode::ShiftLeft) || held(KeyCode::ShiftRight);
-    let ctrl = held(KeyCode::ControlLeft) || held(KeyCode::ControlRight);
+    let sprint = held(KeyCode::KeyF);
 
     for (camera, mut player, mut body) in &mut players {
         if dt == 0.0 {
@@ -267,7 +268,7 @@ fn move_player(
             continue;
         }
         player.sneaking = shift && !player.flying;
-        player.sprinting = ctrl && forward_input > 0.0 && !player.sneaking;
+        player.sprinting = sprint && forward_input > 0.0 && !player.sneaking;
 
         // Horizontal movement follows yaw only.
         let yaw = DQuat::from_rotation_y(camera.yaw as f64);
@@ -475,7 +476,7 @@ pub(crate) mod tests {
     fn walking_sprinting_and_sneaking_speeds() {
         for (keys, speed) in [
             (&[KeyCode::KeyW][..], WALK.speed),
-            (&[KeyCode::KeyW, KeyCode::ControlLeft], WALK.speed * SPRINT),
+            (&[KeyCode::KeyW, KeyCode::KeyF], WALK.speed * SPRINT),
             (&[KeyCode::KeyW, KeyCode::ShiftLeft], WALK.speed * SNEAK),
         ] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
@@ -496,12 +497,8 @@ pub(crate) mod tests {
     fn flying_and_backwards_speeds() {
         for (flying, keys, speed) in [
             (true, &[KeyCode::KeyW][..], -FLY.speed),
-            (
-                true,
-                &[KeyCode::KeyW, KeyCode::ControlLeft],
-                -FLY.speed * 2.0,
-            ),
-            (false, &[KeyCode::KeyS, KeyCode::ControlLeft], WALK.speed),
+            (true, &[KeyCode::KeyW, KeyCode::KeyF], -FLY.speed * 2.0),
+            (false, &[KeyCode::KeyS, KeyCode::KeyF], WALK.speed),
         ] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
             let player = spawn(
@@ -618,8 +615,8 @@ pub(crate) mod tests {
             run(&mut app, 1.5);
             8.5 - body(&app, player).position.z
         };
-        let sprint = distance(&[KeyCode::KeyW, KeyCode::ControlLeft]);
-        let jump = distance(&[KeyCode::KeyW, KeyCode::ControlLeft, KeyCode::Space]);
+        let sprint = distance(&[KeyCode::KeyW, KeyCode::KeyF]);
+        let jump = distance(&[KeyCode::KeyW, KeyCode::KeyF, KeyCode::Space]);
         assert!(jump > sprint + 0.5, "{jump} vs {sprint}");
     }
 

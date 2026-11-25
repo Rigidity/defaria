@@ -3,6 +3,10 @@
 //!
 //! Each definition that fails is reported once, naming its file, and left
 //! out; definitions referring to it then fail with "no such …".
+//!
+//! Textures with `$inputs` are templates: each combination of materials a
+//! block state or item uses is baked into its own tile, once, when the
+//! first user asks for it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,8 +14,9 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use serde::de::DeserializeOwned;
 
 use super::{
-    AIR, BakedFace, Block, BlockBox, Content, Direction, Item, MAX_LIGHT, ModInfo, Model,
-    ModelFace, State, Texture, TextureLayer, Vertex, load::LoadedMod, qualify, schema::*,
+    AIR, BakedFace, Block, BlockBox, BlockState, Content, Direction, Item, ItemStateInfo,
+    MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Property, State, Texture, TextureLayer,
+    Vertex, index_of, load::LoadedMod, qualify, schema::*, state_count,
 };
 use crate::block_texture::Palette;
 
@@ -44,8 +49,8 @@ impl Kind {
         }
     }
 }
-/// Most states one block may have.
-const MAX_STATES_PER_BLOCK: usize = 4096;
+/// Most states one block or item may have.
+const MAX_STATES: usize = 4096;
 /// Item stack size when nothing says otherwise.
 const DEFAULT_MAX_STACK: u32 = 64;
 
@@ -107,13 +112,16 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         models: BTreeMap::new(),
         blocks: vec![Block {
             id: AIR.into(),
-            name: "Air".into(),
             properties: Vec::new(),
             first_state: 0,
             state_count: 1,
         }],
-        states: vec![State::default()],
+        states: vec![State {
+            name: "Air".into(),
+            ..default()
+        }],
         items: Vec::new(),
+        item_states: Vec::new(),
         errors: Vec::new(),
         texture_index: HashMap::new(),
         block_index: HashMap::new(),
@@ -127,19 +135,25 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         }
     };
     for def in &defs.materials {
-        let result = palette(&def.def.palette).map(|palette| {
-            content.materials.insert(def.id.clone(), palette);
+        let result = material(def).map(|material| {
+            content.materials.insert(def.id.clone(), material);
         });
         report(&def.file, result);
     }
+    let mut textures = Textures::default();
     for def in &defs.textures {
-        match texture(def, &content, &images, &dirs) {
-            Ok((texture, problems)) => {
-                let layer = content.textures.len() as u32;
-                content.texture_index.insert(def.id.clone(), layer);
-                content.textures.push(texture);
+        match template(def, &content, &images, &dirs) {
+            Ok((template, problems)) => {
                 for problem in problems {
                     report(&def.file, Err(problem));
+                }
+                // Textures without inputs are baked now, so every one of
+                // them is checked and has a tile, used or not.
+                let plain = template.inputs.is_empty();
+                textures.templates.insert(def.id.clone(), template);
+                if plain {
+                    let result = textures.bake(&def.id, &BTreeMap::new(), &mut content);
+                    report(&def.file, result.map(|_| ()));
                 }
             }
             Err(error) => report(&def.file, Err(error)),
@@ -152,9 +166,9 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         report(&def.file, result);
     }
     for def in &defs.blocks {
-        report(&def.file, add_block(def, &mut content));
+        report(&def.file, add_block(def, &mut content, &textures));
     }
-    add_items(&defs, &mut content, &mut report);
+    add_items(&defs, &mut content, &textures, &mut report);
     content
 }
 
@@ -218,22 +232,64 @@ fn palette(colors: &[String]) -> Result<Palette, String> {
     Ok(Palette::ramp(&stops))
 }
 
-/// A texture, and problems that don't stop it loading: an image file
-/// that isn't there is reported, and the texture shows the placeholder tile
-/// (see `block_texture::build`) until it is.
-fn texture(
+fn material(def: &Def<MaterialDef>) -> Result<Material, String> {
+    let material = &def.def;
+    for tag in &material.tags {
+        super::check_name(tag).map_err(|error| format!("tag {error}"))?;
+    }
+    let palettes = material
+        .palettes
+        .iter()
+        .map(|(role, colors)| {
+            palette(colors)
+                .map(|palette| (role.clone(), palette))
+                .map_err(|error| format!("palette `{role}`: {error}"))
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(Material {
+        id: def.id.clone(),
+        name: material.name.clone().unwrap_or_else(|| title_case(&def.id)),
+        tags: material.tags.clone(),
+        palette: palette(&material.palette)?,
+        palettes,
+    })
+}
+
+/// A texture file, checked, with its inputs still to fill.
+struct Template {
+    layers: Vec<LayerTemplate>,
+    /// The `$inputs` its layers use.
+    inputs: BTreeSet<String>,
+}
+
+struct LayerTemplate {
+    /// The image's asset path, relative to `assets/`.
+    image: String,
+    color: LayerColor,
+}
+
+enum LayerColor {
+    Palette(Palette),
+    Material { id: String, role: Option<String> },
+    Input { name: String, role: Option<String> },
+}
+
+/// A texture file as a template, and problems that don't stop it loading:
+/// an image file that isn't there is reported, and the texture shows the
+/// placeholder tile (see `block_texture::build`) until it is.
+fn template(
     def: &Def<TextureDef>,
     content: &Content,
     images: &BTreeSet<String>,
     dirs: &HashMap<String, String>,
-) -> Result<(Texture, Vec<String>), String> {
+) -> Result<(Template, Vec<String>), String> {
     if def.def.layers.is_empty() {
         return Err("a texture needs at least one layer".into());
     }
     let mut problems = Vec::new();
     let mut layers = Vec::new();
     for (i, layer) in def.def.layers.iter().enumerate() {
-        let layer = texture_layer(layer, &def.namespace, content, dirs)
+        let layer = layer_template(layer, &def.namespace, content, dirs)
             .map_err(|error| format!("layer {}: {error}", i + 1))?;
         if !images.contains(&layer.image) {
             problems.push(format!(
@@ -244,37 +300,151 @@ fn texture(
         }
         layers.push(layer);
     }
-    let texture = Texture {
-        id: def.id.clone(),
-        layers,
-    };
-    Ok((texture, problems))
+    let inputs = layers
+        .iter()
+        .filter_map(|layer| match &layer.color {
+            LayerColor::Input { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    Ok((Template { layers, inputs }, problems))
 }
 
-fn texture_layer(
+fn layer_template(
     layer: &LayerDef,
     namespace: &str,
     content: &Content,
     dirs: &HashMap<String, String>,
-) -> Result<TextureLayer, String> {
+) -> Result<LayerTemplate, String> {
     let image_id = qualify(&layer.image, namespace)?;
     let (image_mod, name) = image_id.split_once(':').unwrap();
     let dir = dirs
         .get(image_mod)
         .ok_or_else(|| format!("image `{image_id}`: no mod `{image_mod}` is loaded"))?;
     let image = format!("{dir}/images/{name}.png");
-    let palette = match (&layer.material, &layer.palette) {
-        (Some(material), None) => {
-            let id = qualify(material, namespace)?;
-            *content
-                .materials
-                .get(&id)
-                .ok_or_else(|| format!("no material `{id}`"))?
-        }
-        (None, Some(colors)) => palette(colors)?,
+    let role = layer.role.clone();
+    let color = match (&layer.material, &layer.palette) {
+        (Some(material), None) => match material.strip_prefix('$') {
+            Some(input) => {
+                super::check_name(input).map_err(|error| format!("input {error}"))?;
+                LayerColor::Input {
+                    name: input.into(),
+                    role,
+                }
+            }
+            None => {
+                let id = qualify(material, namespace)?;
+                if !content.materials.contains_key(&id) {
+                    return Err(format!("no material `{id}`"));
+                }
+                LayerColor::Material { id, role }
+            }
+        },
+        (None, Some(colors)) if role.is_none() => LayerColor::Palette(palette(colors)?),
+        (None, Some(_)) => return Err("`role` is for layers with a `material`".into()),
         _ => return Err("give a layer either a `material` or a `palette`".into()),
     };
-    Ok(TextureLayer { image, palette })
+    Ok(LayerTemplate { image, color })
+}
+
+/// The texture templates, and the tiles baked from them so far (in
+/// [`Content::textures`]).
+#[derive(Default)]
+struct Textures {
+    templates: HashMap<String, Template>,
+}
+
+impl Textures {
+    /// The layer of texture `id` with these materials for its inputs,
+    /// baking it if nothing has used that combination yet.
+    fn bake(
+        &self,
+        id: &str,
+        materials: &BTreeMap<String, String>,
+        content: &mut Content,
+    ) -> Result<u32, String> {
+        let key = texture_key(id, materials);
+        if let Some(layer) = content.texture(&key) {
+            return Ok(layer);
+        }
+        let template = self
+            .templates
+            .get(id)
+            .ok_or_else(|| format!("no texture `{id}`"))?;
+        if let Some(input) = template.inputs.iter().find(|i| !materials.contains_key(*i)) {
+            return Err(format!("texture `{id}` needs a material for `${input}`"));
+        }
+        if let Some(input) = materials.keys().find(|i| !template.inputs.contains(*i)) {
+            return Err(format!("texture `{id}` has no input `${input}`"));
+        }
+        let layers = template
+            .layers
+            .iter()
+            .map(|layer| {
+                let (material, role) = match &layer.color {
+                    LayerColor::Palette(palette) => {
+                        return Ok(TextureLayer {
+                            image: layer.image.clone(),
+                            palette: *palette,
+                        });
+                    }
+                    LayerColor::Material { id, role } => (id, role),
+                    LayerColor::Input { name, role } => (&materials[name], role),
+                };
+                let material = content
+                    .materials
+                    .get(material)
+                    .ok_or_else(|| format!("no material `{material}`"))?;
+                Ok(TextureLayer {
+                    image: layer.image.clone(),
+                    palette: material.palette_for(role.as_deref()),
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        let layer = content.textures.len() as u32;
+        content.textures.push(Texture {
+            id: key.clone(),
+            template: id.into(),
+            layers,
+        });
+        content.texture_index.insert(key, layer);
+        Ok(layer)
+    }
+
+    /// Bakes a reference from a block or item, with `{property}` filled
+    /// in from `values`.
+    fn bake_ref(
+        &self,
+        texture: &TextureRef,
+        values: &[(String, String)],
+        namespace: &str,
+        content: &mut Content,
+    ) -> Result<u32, String> {
+        let (id, materials) = match texture {
+            TextureRef::Id(id) => (id, None),
+            TextureRef::Bound(bound) => (&bound.texture, Some(&bound.materials)),
+        };
+        let id = qualify(&fill(id, values)?, namespace)?;
+        let materials = materials
+            .into_iter()
+            .flatten()
+            .map(|(input, material)| {
+                let material = qualify(&fill(material, values)?, namespace)?;
+                Ok((input.clone(), material))
+            })
+            .collect::<Result<_, String>>()?;
+        self.bake(&id, &materials, content)
+    }
+}
+
+/// A baked texture's id: the texture's, with its inputs' materials, as in
+/// `defaria:log_side(bark=defaria:birch)`.
+fn texture_key(id: &str, materials: &BTreeMap<String, String>) -> String {
+    if materials.is_empty() {
+        return id.into();
+    }
+    let inputs: Vec<String> = materials.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    format!("{id}({})", inputs.join(","))
 }
 
 fn model(def: &Def<ModelDef>) -> Result<Model, String> {
@@ -407,71 +577,246 @@ fn title_case(id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Checks a block, bakes every one of its states, and adds them all, or
-/// nothing if any state fails.
-fn add_block(def: &Def<BlockDef>, content: &mut Content) -> Result<(), String> {
-    let block = &def.def;
-    let properties: Vec<(String, Vec<String>)> = block
-        .properties
-        .iter()
-        .map(|(name, values)| (name.clone(), values.clone()))
-        .collect();
-    let mut count = 1usize;
-    for (name, values) in &properties {
-        if values.is_empty() {
-            return Err(format!("property `{name}` has no values"));
+/// Resolves a block's or item's properties, sorted by name. Materials are
+/// listed by id, `#tag` by every material with the tag, in order of id.
+fn properties(
+    defs: &BTreeMap<String, PropertyDef>,
+    namespace: &str,
+    content: &Content,
+    for_block: bool,
+) -> Result<Vec<Property>, String> {
+    defs.iter()
+        .map(|(name, def)| {
+            property(name, def, namespace, content, for_block)
+                .map_err(|error| format!("property `{name}`: {error}"))
+        })
+        .collect()
+}
+
+fn property(
+    name: &str,
+    def: &PropertyDef,
+    namespace: &str,
+    content: &Content,
+    for_block: bool,
+) -> Result<Property, String> {
+    let spec = match def {
+        PropertyDef::Values(values) => {
+            return plain_property(name, values, false);
         }
-        if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
-            return Err(format!("property `{name}` lists a value twice"));
-        }
-        count = count.saturating_mul(values.len());
+        PropertyDef::Full(spec) => spec,
+    };
+    if spec.item.is_some() && !for_block {
+        return Err("`item` is only for block properties".into());
     }
-    if count > MAX_STATES_PER_BLOCK {
+    match (&spec.values, &spec.materials) {
+        (Some(values), None) if !spec.optional => {
+            plain_property(name, values, spec.item.unwrap_or(false))
+        }
+        (Some(_), None) => Err("`optional` is for material properties".into()),
+        (None, Some(materials)) => {
+            let mut values: Vec<String> = Vec::new();
+            if spec.optional {
+                values.push(NONE.into());
+            }
+            for entry in materials.values() {
+                let found: Vec<String> = match entry.strip_prefix('#') {
+                    Some(tag) => {
+                        let tagged: Vec<String> = content
+                            .materials
+                            .values()
+                            .filter(|m| m.has_tag(tag))
+                            .map(|m| m.id.clone())
+                            .collect();
+                        if tagged.is_empty() {
+                            return Err(format!("no material has tag `{tag}`"));
+                        }
+                        tagged
+                    }
+                    None => {
+                        let id = qualify(entry, namespace)?;
+                        if !content.materials.contains_key(&id) {
+                            return Err(format!("no material `{id}`"));
+                        }
+                        vec![id]
+                    }
+                };
+                for id in found {
+                    if !values.contains(&id) {
+                        values.push(id);
+                    }
+                }
+            }
+            if values.iter().all(|v| v == NONE) {
+                return Err("it lists no materials".into());
+            }
+            Ok(Property {
+                name: name.into(),
+                values,
+                materials: true,
+                item: spec.item.unwrap_or(true),
+            })
+        }
+        _ => Err("give either `values` or `materials`".into()),
+    }
+}
+
+fn plain_property(name: &str, values: &[String], item: bool) -> Result<Property, String> {
+    if values.is_empty() {
+        return Err("it has no values".into());
+    }
+    if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
+        return Err("it lists a value twice".into());
+    }
+    Ok(Property {
+        name: name.into(),
+        values: values.to_vec(),
+        materials: false,
+        item,
+    })
+}
+
+/// Checks the number of states properties make.
+fn check_count(properties: &[Property]) -> Result<usize, String> {
+    let count = state_count(properties);
+    if count > MAX_STATES {
         return Err(format!(
-            "{count} states is too many; a block may have {MAX_STATES_PER_BLOCK}"
+            "{count} states is too many; a block or item may have {MAX_STATES}"
         ));
     }
+    Ok(count)
+}
+
+/// Every combination of the properties' values, in state order (the last
+/// property fastest): each one's value indices, and names and values.
+fn combinations(
+    properties: &[Property],
+) -> impl Iterator<Item = (Vec<usize>, Vec<(String, String)>)> + '_ {
+    (0..state_count(properties)).map(|offset| {
+        let index = index_of(properties, offset);
+        let values = named_values(properties, &index);
+        (index, values)
+    })
+}
+
+/// Each state's property names and values, by value index.
+fn named_values(properties: &[Property], index: &[usize]) -> Vec<(String, String)> {
+    properties
+        .iter()
+        .zip(index)
+        .map(|(p, &i)| (p.name.clone(), p.values[i].clone()))
+        .collect()
+}
+
+/// A variant's `when`, worked out: for each property it names, which of
+/// its values match.
+struct When(Vec<(usize, Vec<bool>)>);
+
+impl When {
+    fn new(
+        when: &BTreeMap<String, Condition>,
+        properties: &[Property],
+        namespace: &str,
+        content: &Content,
+    ) -> Result<Self, String> {
+        let mut out = Vec::new();
+        for (name, condition) in when {
+            let p = properties
+                .iter()
+                .position(|prop| &prop.name == name)
+                .ok_or_else(|| format!("no property `{name}`"))?;
+            let property = &properties[p];
+            let (patterns, negate) = match condition {
+                Condition::Is(values) => (values, false),
+                Condition::Not(not) => (&not.not, true),
+            };
+            if patterns.values().is_empty() {
+                return Err(format!("`{name}` lists no values"));
+            }
+            let mut matches = vec![false; property.values.len()];
+            for pattern in patterns.values() {
+                let hits = pattern_matches(property, pattern, namespace, content)?;
+                if !hits.iter().any(|&hit| hit) {
+                    return Err(format!("`{name}` has no value `{pattern}`"));
+                }
+                for (m, hit) in matches.iter_mut().zip(hits) {
+                    *m |= hit;
+                }
+            }
+            if negate {
+                matches.iter_mut().for_each(|m| *m = !*m);
+            }
+            out.push((p, matches));
+        }
+        Ok(Self(out))
+    }
+
+    fn matches(&self, index: &[usize]) -> bool {
+        self.0.iter().all(|(p, values)| values[index[*p]])
+    }
+}
+
+/// Which of a property's values `pattern` matches: a value, or for a
+/// material property, `none`, a material or `#tag`.
+fn pattern_matches(
+    property: &Property,
+    pattern: &str,
+    namespace: &str,
+    content: &Content,
+) -> Result<Vec<bool>, String> {
+    if !property.materials || pattern == NONE {
+        return Ok(property.values.iter().map(|v| v == pattern).collect());
+    }
+    if let Some(tag) = pattern.strip_prefix('#') {
+        return Ok(property
+            .values
+            .iter()
+            .map(|v| content.materials.get(v).is_some_and(|m| m.has_tag(tag)))
+            .collect());
+    }
+    let id = qualify(pattern, namespace)?;
+    Ok(property.values.iter().map(|v| *v == id).collect())
+}
+
+/// Checks a block, bakes every one of its states, and adds them all, or
+/// nothing if any state fails.
+fn add_block(
+    def: &Def<BlockDef>,
+    content: &mut Content,
+    textures: &Textures,
+) -> Result<(), String> {
+    let block = &def.def;
+    let properties = properties(&block.properties, &def.namespace, content, true)?;
+    let count = check_count(&properties)?;
     if content.states.len() + count > u16::MAX as usize + 1 {
         return Err("out of block states: there are too many blocks".into());
     }
-    for (i, variant) in block.variants.iter().enumerate() {
-        for (name, wanted) in &variant.when {
-            let values = properties
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, values)| values)
-                .ok_or_else(|| format!("variant {}: no property `{name}`", i + 1))?;
-            if let Some(value) = wanted.values().iter().find(|v| !values.contains(v)) {
-                return Err(format!(
-                    "variant {}: `{name}` has no value `{value}`",
-                    i + 1
-                ));
-            }
-        }
-    }
+    let whens = block
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, variant)| {
+            When::new(&variant.when, &properties, &def.namespace, content)
+                .map_err(|error| format!("variant {}: {error}", i + 1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    // Each state's property values, look and model, last property fastest
-    // (undoing `Block::state_offset`).
+    // Each state's property values, look and model, last property fastest.
     let mut looks = Vec::with_capacity(count);
-    for offset in 0..count {
-        let mut rest = offset;
-        let mut values = vec![(String::new(), String::new()); properties.len()];
-        for (p, (name, options)) in properties.iter().enumerate().rev() {
-            values[p] = (name.clone(), options[rest % options.len()].clone());
-            rest /= options.len();
-        }
-        let look = look(block, &values);
+    for (index, values) in combinations(&properties) {
+        let look = look(block, &whens, &index);
         let model = look
             .model(&values, &def.namespace, content)
-            .map_err(|error| in_state(&values, error))?;
-        looks.push((values, look, model));
+            .map_err(|error| in_state(&values, error))?
+            .clone();
+        looks.push((index, values, look, model));
     }
     // A slot is skipped where the state's model doesn't have it, so a
     // variant can switch to a model with other slots; a slot no model has
     // is a mistake.
     let slots: BTreeSet<&str> = looks
         .iter()
-        .flat_map(|(_, _, model)| model.slots.keys().map(String::as_str))
+        .flat_map(|(_, _, _, model)| model.slots.keys().map(String::as_str))
         .collect();
     let named = block
         .textures
@@ -484,17 +829,31 @@ fn add_block(def: &Def<BlockDef>, content: &mut Content) -> Result<(), String> {
         return Err(format!("no model this block uses has a slot `{slot}`"));
     }
     let index = content.blocks.len();
-    let states = looks
-        .iter()
-        .map(|(values, look, model)| {
-            bake_state(look, model, values, &def.namespace, index, content)
-                .map_err(|error| in_state(values, error))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut states = Vec::with_capacity(count);
+    for (value_index, values, look, model) in &looks {
+        let name = match look.name.or(block.name.as_deref()) {
+            Some(name) => fill_name(name, &properties, value_index, content),
+            None => Ok(title_case(&def.id)),
+        };
+        let state = name
+            .and_then(|name| {
+                bake_state(
+                    look,
+                    model,
+                    values,
+                    name,
+                    &def.namespace,
+                    index,
+                    content,
+                    textures,
+                )
+            })
+            .map_err(|error| in_state(values, error))?;
+        states.push(state);
+    }
 
     content.blocks.push(Block {
         id: def.id.clone(),
-        name: block.name.clone().unwrap_or_else(|| title_case(&def.id)),
         properties,
         first_state: content.states.len() as u16,
         state_count: count as u16,
@@ -514,33 +873,31 @@ fn in_state(values: &[(String, String)], error: String) -> String {
 }
 
 /// A block state's look: the block's own, with every matching variant
-/// applied in order. The model and rotation are replaced; textures merge
-/// slot by slot.
+/// applied in order. The name, model and rotation are replaced; textures
+/// merge slot by slot.
 struct Look<'d> {
+    name: Option<&'d str>,
     model: Option<&'d str>,
     rotate: Option<[i32; 3]>,
     light: Option<[u8; 3]>,
-    textures: BTreeMap<&'d str, &'d str>,
+    textures: BTreeMap<&'d str, &'d TextureRef>,
 }
 
-fn look<'d>(block: &'d BlockDef, values: &[(String, String)]) -> Look<'d> {
+fn look<'d>(block: &'d BlockDef, whens: &[When], index: &[usize]) -> Look<'d> {
     let mut look = Look {
+        name: None,
         model: block.model.as_deref(),
         rotate: block.rotate,
         light: block.light,
         textures: block
             .textures
             .iter()
-            .map(|(slot, texture)| (slot.as_str(), texture.as_str()))
+            .map(|(slot, texture)| (slot.as_str(), texture))
             .collect(),
     };
-    for variant in &block.variants {
-        let matches = variant.when.iter().all(|(name, wanted)| {
-            values
-                .iter()
-                .any(|(n, v)| n == name && wanted.values().contains(v))
-        });
-        if matches {
+    for (variant, when) in block.variants.iter().zip(whens) {
+        if when.matches(index) {
+            look.name = variant.name.as_deref().or(look.name);
             look.model = variant.model.as_deref().or(look.model);
             look.rotate = variant.rotate.or(look.rotate);
             look.light = variant.light.or(look.light);
@@ -548,7 +905,7 @@ fn look<'d>(block: &'d BlockDef, values: &[(String, String)]) -> Look<'d> {
                 variant
                     .textures
                     .iter()
-                    .map(|(slot, texture)| (slot.as_str(), texture.as_str())),
+                    .map(|(slot, texture)| (slot.as_str(), texture)),
             );
         }
     }
@@ -572,15 +929,17 @@ impl Look<'_> {
     }
 }
 
-/// Bakes one block state: the model's faces rotated and textured.
-/// Textures for slots the model doesn't have are left out.
+/// Bakes one block state, called `name`: the model's faces rotated and
+/// textured. Textures for slots the model doesn't have are left out.
 fn bake_state(
     look: &Look,
     model: &Model,
     values: &[(String, String)],
+    name: String,
     namespace: &str,
     block: usize,
-    content: &Content,
+    content: &mut Content,
+    textures: &Textures,
 ) -> Result<State, String> {
     let rotation = rotation(look.rotate.unwrap_or([0; 3]))?;
     let light = look.light.unwrap_or_default();
@@ -600,10 +959,7 @@ fn bake_state(
         if !model.slots.contains_key(slot) {
             continue;
         }
-        let id = qualify(&fill(texture, values)?, namespace)?;
-        let layer = content
-            .texture(&id)
-            .ok_or_else(|| format!("no texture `{id}`"))?;
+        let layer = textures.bake_ref(texture, values, namespace, content)?;
         layers.insert(slot, layer);
     }
 
@@ -646,6 +1002,7 @@ fn bake_state(
         .collect();
     Ok(State {
         block,
+        name,
         values: values.to_vec(),
         faces,
         collision,
@@ -669,8 +1026,8 @@ fn slot_texture(slot: &str, model: &Model, textures: &HashMap<&str, u32>) -> Res
     }
 }
 
-/// Fills `{property}` in `text` with the state's value of that property.
-fn fill(text: &str, values: &[(String, String)]) -> Result<String, String> {
+/// Fills `{property}` in `text` with whatever `value` gives for it.
+fn fill_with(text: &str, mut value: impl FnMut(&str) -> Option<String>) -> Result<String, String> {
     let mut out = String::new();
     let mut rest = text;
     while let Some(start) = rest.find('{') {
@@ -679,15 +1036,47 @@ fn fill(text: &str, values: &[(String, String)]) -> Result<String, String> {
             .find('}')
             .ok_or_else(|| format!("`{text}` has a `{{` with no `}}`"))?;
         let name = &rest[start + 1..start + end];
-        let (_, value) = values
-            .iter()
-            .find(|(n, _)| n == name)
+        let filled = value(name)
             .ok_or_else(|| format!("`{text}` uses `{{{name}}}`, which isn't a property"))?;
-        out.push_str(value);
+        out.push_str(&filled);
         rest = &rest[start + end + 1..];
     }
     out.push_str(rest);
     Ok(out)
+}
+
+/// Fills `{property}` in a reference with the state's value of that
+/// property: for a material, its id.
+fn fill(text: &str, values: &[(String, String)]) -> Result<String, String> {
+    fill_with(text, |name| {
+        values
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
+    })
+}
+
+/// Fills `{property}` in a name: a material's name, nothing for `none`, or
+/// the plain value. Spaces left doubled or at the ends by an empty value
+/// are taken out.
+fn fill_name(
+    text: &str,
+    properties: &[Property],
+    index: &[usize],
+    content: &Content,
+) -> Result<String, String> {
+    let name = fill_with(text, |name| {
+        let p = properties.iter().position(|prop| prop.name == name)?;
+        let value = &properties[p].values[index[p]];
+        Some(if !properties[p].materials {
+            value.clone()
+        } else if value == NONE {
+            String::new()
+        } else {
+            content.materials[value].name.clone()
+        })
+    })?;
+    Ok(name.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// A rotation of `degrees` about X, then Y, then Z, each a multiple of 90.
@@ -719,85 +1108,194 @@ fn rotation(degrees: [i32; 3]) -> Result<Mat3, String> {
 fn add_items(
     defs: &Defs,
     content: &mut Content,
+    textures: &Textures,
     report: &mut impl FnMut(&str, Result<(), String>),
 ) {
+    let overrides: HashMap<&str, &Def<ItemDef>> = defs
+        .items
+        .iter()
+        .map(|def| (def.id.as_str(), def))
+        .collect();
     for def in &defs.blocks {
-        let Some(block) = content.block(&def.id) else {
+        if !def.def.item || content.block(&def.id).is_none() {
             continue;
-        };
-        if def.def.item {
-            let item = Item {
-                id: def.id.clone(),
-                name: block.name.clone(),
-                texture: None,
-                block: Some(block.default_state()),
-                max_stack: DEFAULT_MAX_STACK,
-            };
-            content
-                .item_index
-                .insert(item.id.clone(), content.items.len());
-            content.items.push(item);
         }
+        let file = overrides.get(def.id.as_str()).copied();
+        let result = block_item(&def.id, file, content, textures);
+        // A mistake in the item file is that file's.
+        report(file.map_or(&def.file, |file| &file.file), result);
     }
     for def in &defs.items {
-        let result = item(def, content).map(|item| match content.item_index.get(&def.id) {
-            Some(&i) => content.items[i] = item,
-            None => {
-                content
-                    .item_index
-                    .insert(def.id.clone(), content.items.len());
-                content.items.push(item);
-            }
-        });
-        report(&def.file, result);
+        let is_block_item = defs
+            .blocks
+            .iter()
+            .any(|block| block.id == def.id && block.def.item);
+        if !is_block_item {
+            report(&def.file, standalone_item(def, content, textures));
+        } else if content.block(&def.id).is_none() {
+            report(
+                &def.file,
+                Err(format!(
+                    "block `{}` didn't load, so it has no item to change",
+                    def.id
+                )),
+            );
+        }
     }
 }
 
-fn item(def: &Def<ItemDef>, content: &Content) -> Result<Item, String> {
-    // A block's own item, if this file changes one.
-    let base = content.item(&def.id);
-    let texture = match &def.def.texture {
-        Some(texture) => {
-            let id = qualify(texture, &def.namespace)?;
-            Some(
-                content
-                    .texture(&id)
-                    .ok_or_else(|| format!("no texture `{id}`"))?,
-            )
+/// Adds the item that places block `id`: one state per combination of the
+/// block's item properties, each placing the block with those values and
+/// the rest at their defaults. `file` is an item file changing it.
+fn block_item(
+    id: &str,
+    file: Option<&Def<ItemDef>>,
+    content: &mut Content,
+    textures: &Textures,
+) -> Result<(), String> {
+    let block = content.block(id).unwrap().clone();
+    if let Some(file) = file {
+        if !file.def.properties.is_empty() {
+            return Err("a block's item has the block's properties; it can't add its own".into());
         }
-        None => base.and_then(|item| item.texture),
-    };
-    let block = match &def.def.block {
+        if file.def.block.is_some() {
+            return Err("a block's item places that block; leave out `block`".into());
+        }
+    }
+    let properties: Vec<Property> = block
+        .properties
+        .iter()
+        .filter(|p| p.item)
+        .cloned()
+        .collect();
+    let count = check_count(&properties)?;
+    let item = content.items.len();
+    let mut states = Vec::with_capacity(count);
+    for (index, values) in combinations(&properties) {
+        let info = (|| {
+            let state = placed_state(&block, &values)?;
+            let mut info = ItemStateInfo {
+                item,
+                values: values.clone(),
+                name: content.state(state).name.clone(),
+                texture: None,
+                block: Some(state),
+            };
+            if let Some(file) = file {
+                if let Some(name) = &file.def.name {
+                    info.name = fill_name(name, &properties, &index, content)?;
+                }
+                if let Some(texture) = &file.def.texture {
+                    info.texture =
+                        Some(textures.bake_ref(texture, &values, &file.namespace, content)?);
+                }
+            }
+            Ok::<_, String>(info)
+        })()
+        .map_err(|error| in_state(&values, error))?;
+        states.push(info);
+    }
+    let max_stack = max_stack(file.and_then(|file| file.def.max_stack))?;
+    push_item(id, properties, max_stack, states, content);
+    Ok(())
+}
+
+/// Adds an item from its own file.
+fn standalone_item(
+    def: &Def<ItemDef>,
+    content: &mut Content,
+    textures: &Textures,
+) -> Result<(), String> {
+    let item_def = &def.def;
+    let properties = properties(&item_def.properties, &def.namespace, content, false)?;
+    let count = check_count(&properties)?;
+    let block = match &item_def.block {
         Some(block) => {
             let id = qualify(block, &def.namespace)?;
             Some(
                 content
-                    .default_state(&id)
-                    .ok_or_else(|| format!("no block `{id}`"))?,
+                    .block(&id)
+                    .ok_or_else(|| format!("no block `{id}`"))?
+                    .clone(),
             )
         }
-        None => base.and_then(|item| item.block),
+        None => None,
     };
-    let max_stack = def
-        .def
-        .max_stack
-        .or(base.map(|item| item.max_stack))
-        .unwrap_or(DEFAULT_MAX_STACK);
-    if max_stack == 0 {
-        return Err("`max_stack` must be at least 1".into());
+    let item = content.items.len();
+    let mut states = Vec::with_capacity(count);
+    for (index, values) in combinations(&properties) {
+        let info = (|| {
+            let name = match &item_def.name {
+                Some(name) => fill_name(name, &properties, &index, content)?,
+                None => title_case(&def.id),
+            };
+            let texture = match &item_def.texture {
+                Some(texture) => {
+                    Some(textures.bake_ref(texture, &values, &def.namespace, content)?)
+                }
+                None => None,
+            };
+            let block = match &block {
+                Some(block) => Some(placed_state(block, &values)?),
+                None => None,
+            };
+            Ok::<_, String>(ItemStateInfo {
+                item,
+                values: values.clone(),
+                name,
+                texture,
+                block,
+            })
+        })()
+        .map_err(|error| in_state(&values, error))?;
+        states.push(info);
     }
-    Ok(Item {
-        id: def.id.clone(),
-        name: def
-            .def
-            .name
-            .clone()
-            .or(base.map(|item| item.name.clone()))
-            .unwrap_or_else(|| title_case(&def.id)),
-        texture,
-        block,
-        max_stack,
+    let max_stack = max_stack(item_def.max_stack)?;
+    push_item(&def.id, properties, max_stack, states, content);
+    Ok(())
+}
+
+/// The state of `block` an item with these values places: its default,
+/// with each property the item shares set to the item's value.
+fn placed_state(block: &Block, values: &[(String, String)]) -> Result<BlockState, String> {
+    let shared: Vec<(&str, &str)> = values
+        .iter()
+        .filter(|(name, _)| block.properties.iter().any(|p| &p.name == name))
+        .map(|(n, v)| (n.as_str(), v.as_str()))
+        .collect();
+    block.state(&shared).ok_or_else(|| {
+        let (name, value) = shared
+            .iter()
+            .find(|(n, v)| block.state(&[(n, v)]).is_none())
+            .copied()
+            .unwrap_or_default();
+        format!("block `{}` has no `{name}` value `{value}`", block.id)
     })
+}
+
+fn max_stack(max_stack: Option<u32>) -> Result<u32, String> {
+    match max_stack {
+        Some(0) => Err("`max_stack` must be at least 1".into()),
+        other => Ok(other.unwrap_or(DEFAULT_MAX_STACK)),
+    }
+}
+
+fn push_item(
+    id: &str,
+    properties: Vec<Property>,
+    max_stack: u32,
+    states: Vec<ItemStateInfo>,
+    content: &mut Content,
+) {
+    content.item_index.insert(id.into(), content.items.len());
+    content.items.push(Item {
+        id: id.into(),
+        properties,
+        first_state: content.item_states.len() as u32,
+        state_count: states.len() as u32,
+        max_stack,
+    });
+    content.item_states.extend(states);
 }
 
 #[cfg(test)]
@@ -819,16 +1317,20 @@ mod tests {
         )]);
         assert!(content.errors.is_empty(), "{}", errors(&content));
         let block = content.block("test:thing").unwrap();
-        assert_eq!(block.name, "Thing");
+        assert_eq!(content.state(block.default_state()).name, "Thing");
         let state = content.state(block.default_state());
         assert_eq!(state.faces.len(), 1);
         assert_eq!(state.faces[0].layer, content.texture("test:a").unwrap());
         assert_eq!(state.faces[0].normal, Vec3::Y);
         assert!(state.occludes(Direction::Up));
         assert!(!state.occludes(Direction::Down));
-        let item = content.item("test:thing").unwrap();
+        let item = content.default_item_info("test:thing").unwrap();
         assert_eq!(item.block, Some(block.default_state()));
-        assert_eq!(item.max_stack, DEFAULT_MAX_STACK);
+        assert_eq!(item.name, "Thing");
+        assert_eq!(
+            content.item("test:thing").unwrap().max_stack,
+            DEFAULT_MAX_STACK
+        );
     }
 
     /// `light` gives a block's light per colour channel; variants replace
@@ -889,7 +1391,7 @@ mod tests {
         let [a, b] =
             ["test:a", "test:b"].map(|id| &content.textures[content.texture(id).unwrap() as usize]);
         assert_eq!(a.layers[0].image, "mods/test/images/a.png");
-        assert_eq!(a.layers[0].palette, content.materials["test:grey"]);
+        assert_eq!(a.layers[0].palette, content.materials["test:grey"].palette);
         let red = b.layers[0].palette.color(0).to_u8_array();
         assert_eq!(red, [255, 0, 0, 255]);
     }
@@ -1097,6 +1599,50 @@ mod tests {
         assert!(content.block("test:user").is_none());
         assert!(content.item("test:user").is_none());
         assert!(content.block("test:fine").is_some());
+
+        // An item file changing a block that didn't load says so.
+        let content = crate::content::test_mod(&[
+            (
+                "blocks/sun.json5",
+                r#"{ model: "quad", textures: { all: "a" }, light: [16, 0, 0] }"#,
+            ),
+            ("items/sun.json5", r#"{ max_stack: 7 }"#),
+        ]);
+        let all = errors(&content);
+        assert_eq!(content.errors.len(), 2, "{all}");
+        assert!(
+            content.errors[1].contains("items/sun.json5")
+                && content.errors[1].contains("block `test:sun` didn't load"),
+            "{all}"
+        );
+        assert!(content.item("test:sun").is_none());
+    }
+
+    /// `when` can name materials directly (in this mod or not), list them,
+    /// and mix them with tags under `not`.
+    #[test]
+    fn conditions_name_materials_by_id() {
+        let content = materials(&[(
+            "blocks/x.json5",
+            r##"{
+                properties: { ore: { materials: "#ore", optional: true } },
+                model: "quad",
+                textures: { all: "a" },
+                variants: [
+                    { when: { ore: "coal" }, name: "Coal" },
+                    { when: { ore: ["test:iron", "none"] }, light: [1, 1, 1] },
+                    { when: { ore: { not: ["coal", "#metal"] } }, name: "Plain" },
+                ],
+            }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let block = content.block("test:x").unwrap();
+        let state = |ore| content.state(block.state(&[("ore", ore)]).unwrap());
+        assert_eq!(state("test:coal").name, "Coal");
+        assert!(!state("test:coal").emits_light());
+        assert!(state("test:iron").emits_light() && state("none").emits_light());
+        assert_eq!(state("none").name, "Plain");
+        assert_eq!(state("test:iron").name, "X");
     }
 
     #[test]
@@ -1146,16 +1692,17 @@ mod tests {
             ("items/seeds.json5", r#"{ texture: "b", block: "hidden" }"#),
         ]);
         assert!(content.errors.is_empty(), "{}", errors(&content));
-        let thing = content.item("test:thing").unwrap();
+        let thing = content.default_item_info("test:thing").unwrap();
         assert_eq!(thing.name, "Special thing");
-        assert_eq!(thing.max_stack, 16);
+        assert_eq!(content.item("test:thing").unwrap().max_stack, 16);
         assert_eq!(thing.block, content.default_state("test:thing"));
         // What an item file leaves out comes from the block.
-        let plain = content.item("test:plain").unwrap();
-        assert_eq!((plain.name.as_str(), plain.max_stack), ("Plain thing", 8));
+        let plain = content.default_item_info("test:plain").unwrap();
+        assert_eq!(plain.name, "Plain thing");
+        assert_eq!(content.item("test:plain").unwrap().max_stack, 8);
         assert_eq!(plain.block, content.default_state("test:plain"));
         assert!(content.item("test:hidden").is_none());
-        let seeds = content.item("test:seeds").unwrap();
+        let seeds = content.default_item_info("test:seeds").unwrap();
         assert_eq!(seeds.name, "Seeds");
         assert_eq!(seeds.block, content.default_state("test:hidden"));
         assert_eq!(seeds.texture, content.texture("test:b"));
@@ -1282,7 +1829,7 @@ mod tests {
             (
                 "blocks/x.json5",
                 r#"{ properties: { p: [] }, model: "quad", textures: { all: "a" } }"#,
-                "`p` has no values",
+                "property `p`: it has no values",
             ),
             (
                 "models/x.json5",
@@ -1386,6 +1933,383 @@ mod tests {
             "{}",
             errors(&content)
         );
+    }
+
+    /// Materials for the material tests: two woods (one with a `bark`
+    /// palette), a rock and two ores, plus a texture with inputs.
+    fn materials(files: &[(&'static str, &'static str)]) -> Content {
+        let mut all = vec![
+            (
+                "materials/oak.json5",
+                r##"{ name: "Oak", tags: ["wood"], palette: ["#100000", "#200000"],
+                     palettes: { bark: ["#300000", "#400000"] } }"##,
+            ),
+            (
+                "materials/birch.json5",
+                r##"{ tags: ["wood", "pale"], palette: ["#001000", "#002000"] }"##,
+            ),
+            (
+                "materials/rock.json5",
+                r##"{ tags: ["rock"], palette: ["#000010", "#000020"] }"##,
+            ),
+            (
+                "materials/iron.json5",
+                r##"{ tags: ["ore", "metal"], palette: ["#101010", "#202020"] }"##,
+            ),
+            (
+                "materials/coal.json5",
+                r##"{ tags: ["ore"], palette: ["#050505", "#060606"] }"##,
+            ),
+            (
+                "textures/bark.json5",
+                r##"{ layers: [{ image: "a", material: "$wood", role: "bark" }] }"##,
+            ),
+            (
+                "textures/ore.json5",
+                r##"{ layers: [{ image: "a", material: "$rock" }, { image: "a", material: "$ore" }] }"##,
+            ),
+        ];
+        all.extend_from_slice(files);
+        content(&all)
+    }
+
+    /// A material property takes its values from tags and lists, in
+    /// order, without repeats; `{property}` gives the material's id in
+    /// texture bindings and its name in names.
+    #[test]
+    fn material_properties_list_materials_and_name_states() {
+        let content = materials(&[(
+            "blocks/log.json5",
+            r##"{
+                name: "{wood} Log",
+                properties: { wood: { materials: ["oak", "#wood"] } },
+                model: "quad",
+                textures: { all: { texture: "bark", materials: { wood: "{wood}" } } },
+            }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let log = content.block("test:log").unwrap();
+        assert_eq!(log.properties[0].values, ["test:oak", "test:birch"]);
+        assert!(log.properties[0].materials && log.properties[0].item);
+        let birch = log.state(&[("wood", "test:birch")]).unwrap();
+        assert_eq!(content.state(log.default_state()).name, "Oak Log");
+        // A material with no name is named after its id.
+        assert_eq!(content.state(birch).name, "Birch Log");
+        // Each wood bakes its own tile, the oak one in its bark palette and
+        // birch (with no bark palette) in its main one.
+        let tile = |state| &content.textures[content.state(state).faces[0].layer as usize];
+        let oak_tile = tile(log.default_state());
+        assert_eq!(oak_tile.id, "test:bark(wood=test:oak)");
+        assert_eq!(
+            oak_tile.layers[0].palette,
+            content.materials["test:oak"].palettes["bark"]
+        );
+        assert_eq!(
+            tile(birch).layers[0].palette,
+            content.materials["test:birch"].palette
+        );
+        // One item per wood, each placing its own.
+        let item = content.item("test:log").unwrap();
+        assert_eq!(item.state_count, 2);
+        let birch_item = item.state(&[("wood", "test:birch")]).unwrap();
+        let look = content.item_state(birch_item).unwrap();
+        assert_eq!((look.name.as_str(), look.block), ("Birch Log", Some(birch)));
+        assert_eq!(content.item_of(birch_item).unwrap().id, "test:log");
+    }
+
+    /// An optional material adds `none` first; `when` matches it, `#tags`
+    /// and `not`; and plain properties aren't part of the item.
+    #[test]
+    fn optional_materials_and_conditions_pick_variants() {
+        let content = materials(&[(
+            "blocks/stone.json5",
+            r##"{
+                name: "Stone",
+                properties: {
+                    ore: { materials: "#ore", optional: true },
+                    rock: { materials: "#rock" },
+                    lit: ["no", "yes"],
+                },
+                model: "quad",
+                textures: { all: "a" },
+                variants: [
+                    {
+                        when: { ore: { not: "none" } },
+                        name: "{ore} Ore",
+                        textures: { all: { texture: "ore", materials: { rock: "{rock}", ore: "{ore}" } } },
+                    },
+                    { when: { ore: "#metal" }, light: [5, 5, 5] },
+                ],
+            }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let stone = content.block("test:stone").unwrap();
+        assert_eq!(
+            stone.properties[1].values,
+            ["none", "test:coal", "test:iron"]
+        );
+        let state = |ore| content.state(stone.state(&[("ore", ore)]).unwrap());
+        let (plain, coal, iron) = (state("none"), state("test:coal"), state("test:iron"));
+        assert_eq!(plain.name, "Stone");
+        assert_eq!(plain.faces[0].layer, content.texture("test:a").unwrap());
+        assert_eq!(coal.name, "Coal Ore");
+        assert_eq!(
+            content.textures[coal.faces[0].layer as usize].id,
+            "test:ore(ore=test:coal,rock=test:rock)"
+        );
+        assert!(!coal.emits_light() && iron.emits_light());
+        // `lit` isn't part of the item: 3 ores × 1 rock.
+        let item = content.item("test:stone").unwrap();
+        assert_eq!(item.state_count, 3);
+        let names: Vec<&str> = content
+            .item_states
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["Stone", "Coal Ore", "Iron Ore"]);
+    }
+
+    /// Items have properties of their own, fill texture inputs from them,
+    /// and pass the ones a block shares on to the state they place.
+    #[test]
+    fn items_carry_their_property_values() {
+        let content = materials(&[
+            (
+                "blocks/plank.json5",
+                r##"{ properties: { wood: { materials: "#wood" } }, model: "quad", textures: { all: "a" } }"##,
+            ),
+            (
+                "items/tool.json5",
+                r##"{
+                    name: "{head} Tool",
+                    properties: { head: { materials: "#metal" }, wood: { materials: "#wood" } },
+                    texture: { texture: "ore", materials: { rock: "{wood}", ore: "{head}" } },
+                    block: "plank",
+                    max_stack: 1,
+                }"##,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let tool = content.item("test:tool").unwrap();
+        assert_eq!(tool.state_count, 2);
+        // Oak, not the default (birch comes first by id), so the value
+        // has to reach the block.
+        let oak = tool.state(&[("wood", "test:oak")]).unwrap();
+        assert_ne!(oak, tool.default_state());
+        let look = content.item_state(oak).unwrap();
+        assert_eq!(look.name, "Iron Tool");
+        assert_eq!(
+            look.values,
+            [
+                ("head".into(), "test:iron".into()),
+                ("wood".into(), "test:oak".into())
+            ]
+        );
+        let plank = content.block("test:plank").unwrap();
+        assert_ne!(look.block, Some(plank.default_state()));
+        assert_eq!(look.block, plank.state(&[("wood", "test:oak")]));
+        assert_eq!(
+            look.texture,
+            content.texture("test:ore(ore=test:iron,rock=test:oak)")
+        );
+
+        // An item offering a value the block doesn't have is a mistake.
+        let content = materials(&[
+            (
+                "blocks/plank.json5",
+                r##"{ properties: { wood: { materials: "birch" } }, model: "quad", textures: { all: "a" } }"##,
+            ),
+            (
+                "items/tool.json5",
+                r##"{ properties: { wood: { materials: "#wood" } }, block: "plank" }"##,
+            ),
+        ]);
+        let all = errors(&content);
+        assert!(
+            all.contains("items/tool.json5")
+                && all.contains("block `test:plank` has no `wood` value `test:oak`"),
+            "{all}"
+        );
+        assert!(content.item("test:tool").is_none());
+    }
+
+    /// `item: true` puts a plain property in the block's item and
+    /// `item: false` leaves a material one out; the item places the block
+    /// with its values and the rest at their defaults.
+    #[test]
+    fn the_item_flag_picks_the_block_items_properties() {
+        let content = materials(&[(
+            "blocks/x.json5",
+            r##"{
+                properties: {
+                    color: { values: ["red", "blue"], item: true },
+                    wood: { materials: "#wood", item: false },
+                    rock: { materials: "#rock" },
+                },
+                model: "quad",
+                textures: { all: "a" },
+            }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let block = content.block("test:x").unwrap();
+        let item = content.item("test:x").unwrap();
+        let names: Vec<&str> = item.properties.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["color", "rock"]);
+        assert_eq!(item.state_count, 2);
+        let blue = item.state(&[("color", "blue")]).unwrap();
+        assert_eq!(
+            content.item_state(blue).unwrap().block,
+            block.state(&[("color", "blue")])
+        );
+    }
+
+    /// A block's item file fills `{property}` in its name and texture from
+    /// each item state's values.
+    #[test]
+    fn a_block_items_file_fills_in_its_values() {
+        let content = materials(&[
+            (
+                "blocks/log.json5",
+                r##"{ properties: { wood: { materials: "#wood" } }, model: "quad", textures: { all: "a" } }"##,
+            ),
+            (
+                "items/log.json5",
+                r##"{ name: "{wood} Thing", texture: { texture: "bark", materials: { wood: "{wood}" } } }"##,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let item = content.item("test:log").unwrap();
+        let oak = content
+            .item_state(item.state(&[("wood", "test:oak")]).unwrap())
+            .unwrap();
+        assert_eq!(oak.name, "Oak Thing");
+        assert_eq!(oak.texture, content.texture("test:bark(wood=test:oak)"));
+        assert_eq!(
+            content.textures[oak.texture.unwrap() as usize].template,
+            "test:bark"
+        );
+    }
+
+    #[test]
+    fn material_mistakes_are_reported() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: { materials: "#nothing" } }, model: "quad", textures: { all: "a" } }"##,
+                "no material has tag `nothing`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: { materials: "teak" } }, model: "quad", textures: { all: "a" } }"##,
+                "no material `test:teak`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: { values: ["a"], optional: true } }, model: "quad", textures: { all: "a" } }"##,
+                "`optional` is for material properties",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: { materials: "#wood" } }, model: "quad", textures: { all: "bark" } }"##,
+                "texture `test:bark` needs a material for `$wood`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: { texture: "a", materials: { wood: "oak" } } } }"##,
+                "texture `test:a` has no input `$wood`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: { materials: "#wood" } }, model: "quad", textures: { all: "a" },
+                     variants: [{ when: { w: "#rock" } }] }"##,
+                "`w` has no value `#rock`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: ["a"] }, model: "quad", textures: { all: "a" },
+                     variants: [{ when: { w: { not: "b" } } }] }"##,
+                "`w` has no value `b`",
+            ),
+            (
+                "items/x.json5",
+                r##"{ properties: { w: { materials: "#wood", item: true } } }"##,
+                "`item` is only for block properties",
+            ),
+            (
+                "textures/x.json5",
+                r##"{ layers: [{ image: "a", palette: ["#000", "#fff"], role: "bark" }] }"##,
+                "`role` is for layers with a `material`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: ["a"] }, model: "quad", textures: { all: "a" },
+                     variants: [{ when: { w: [] } }] }"##,
+                "`w` lists no values",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: { materials: [] } }, model: "quad", textures: { all: "a" } }"##,
+                "property `w`: it lists no materials",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: { materials: "#wood", optinal: true } }, model: "quad", textures: { all: "a" } }"##,
+                "unknown field `optinal`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: { texture: "a", material: {} } } }"##,
+                "unknown field `material`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: ["a", "b"] }, model: "quad", textures: { all: "a" },
+                     variants: [{ when: { w: { not: "a", also: "b" } } }] }"##,
+                "unknown field `also`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { w: "a" }, model: "quad", textures: { all: "a" } }"##,
+                "a list of values, or `{ values }` or `{ materials }`",
+            ),
+            (
+                "materials/x.json5",
+                r##"{ palette: ["#000", "#fff"], palettes: { bark: ["#000"] } }"##,
+                "palette `bark`: a palette needs 2 to 8 colors",
+            ),
+        ];
+        for &(path, text, expected) in cases {
+            let content = materials(&[(path, text)]);
+            let all = errors(&content);
+            assert_eq!(content.errors.len(), 1, "{path}: {text}\n{all}");
+            assert!(all.contains(&format!("mods/test/{path}")), "{all}");
+            assert!(all.contains(expected), "expected `{expected}` in: {all}");
+        }
+        // A block's item takes the block's properties, not its own.
+        let content = materials(&[
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" } }"##,
+            ),
+            ("items/x.json5", r##"{ properties: { p: ["a"] } }"##),
+        ]);
+        assert!(
+            errors(&content).contains("items/x.json5"),
+            "{}",
+            errors(&content)
+        );
+        assert!(content.item("test:x").is_none());
+    }
+
+    #[test]
+    fn names_skip_empty_values() {
+        let content = materials(&[(
+            "blocks/x.json5",
+            r##"{ name: "{ore} Rock", properties: { ore: { materials: "#ore", optional: true } },
+                 model: "quad", textures: { all: "a" } }"##,
+        )]);
+        let block = content.block("test:x").unwrap();
+        assert_eq!(content.state(block.default_state()).name, "Rock");
     }
 
     #[test]

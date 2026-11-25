@@ -17,7 +17,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockState, Content, ItemId},
+    content::{BlockState, Content, ItemState},
     ui::{Clicked, ItemSlot, UiTheme, item_slot, playing},
 };
 
@@ -83,7 +83,7 @@ pub struct HotbarInput;
 /// The item in each slot, slot 1 first.
 #[derive(Resource, Reflect, Debug, Clone, PartialEq, Eq)]
 #[reflect(Resource)]
-pub struct Hotbar(pub [Option<ItemId>; HOTBAR_SLOTS]);
+pub struct Hotbar(pub [Option<ItemState>; HOTBAR_SLOTS]);
 
 impl FromWorld for Hotbar {
     /// [`DEFAULT_HOTBAR`]. An item that didn't load is reported and leaves
@@ -91,7 +91,7 @@ impl FromWorld for Hotbar {
     fn from_world(world: &mut World) -> Self {
         let content = world.resource::<Content>();
         Self(DEFAULT_HOTBAR.map(|id| {
-            let item = content.item_id(id);
+            let item = content.default_item(id);
             if item.is_none() {
                 error!("the hotbar starts with item `{id}`, which didn't load");
             }
@@ -107,13 +107,13 @@ pub struct ActiveSlot(pub usize);
 
 impl Hotbar {
     /// The item in the active slot.
-    pub fn active(&self, slot: ActiveSlot) -> Option<ItemId> {
+    pub fn active(&self, slot: ActiveSlot) -> Option<ItemState> {
         self.0.get(slot.0).copied().flatten()
     }
 
     /// The block the active slot's item places, if it places one.
     pub fn active_block(&self, slot: ActiveSlot, content: &Content) -> Option<BlockState> {
-        content.item_at(self.active(slot)?)?.block
+        content.item_state(self.active(slot)?)?.block
     }
 }
 
@@ -336,7 +336,7 @@ mod tests {
         let ids: Vec<&str> = hotbar
             .0
             .iter()
-            .map(|item| base().item_at(item.unwrap()).unwrap().id.as_str())
+            .map(|item| base().item_of(item.unwrap()).unwrap().id.as_str())
             .collect();
         assert_eq!(ids, DEFAULT_HOTBAR);
     }
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn the_slots_show_the_hotbar_and_the_active_slot() {
         let mut app = app();
-        let dirt = base().item_id("defaria:dirt");
+        let dirt = base().default_item("defaria:dirt");
         app.world_mut().resource_mut::<Hotbar>().0[4] = dirt;
         app.world_mut().resource_mut::<ActiveSlot>().0 = 4;
         app.update();
@@ -404,7 +404,7 @@ mod tests {
         assert!(shown.contains(&(
             0,
             ItemSlot {
-                item: base().item_id("defaria:stone"),
+                item: base().default_item("defaria:stone"),
                 selected: false
             }
         )));
@@ -419,7 +419,7 @@ mod tests {
             .world_mut()
             .query::<(&Text, &TextColor, &TextShadow, &ActiveItemName)>();
         let (text, color, shadow, _) = names.single(app.world()).unwrap();
-        assert_eq!(text.0, "Log");
+        assert_eq!(text.0, "Oak Log");
         assert_eq!(color.0.alpha(), 1.0);
         assert_eq!(shadow.color, TextShadow::default().color);
         // 0.1 s a frame: 1.6 s on, 0.4 s are left, partway through the fade.

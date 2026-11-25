@@ -15,11 +15,11 @@ wait 1
 camera 1850 150 -100 47 -10        # back over the foothills
 settle
 hold MouseLeft 1                   # lock the cursor
-press ControlLeft                  # sprint
+press KeyF                         # sprint
 timing
 hold KeyW 600                      # ten seconds' flight across the range
 timing                             # flying: loading as it goes
-release ControlLeft
+release KeyF
 screenshot target/scenarios/mountains/2-flight.png
 wait 60
 timing                             # hovering: just drawing

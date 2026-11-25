@@ -1,5 +1,5 @@
 {
   layers: [
-    { image: "log_side", material: "bark" },
+    { image: "log_side", material: "$wood", role: "bark" },
   ],
 }

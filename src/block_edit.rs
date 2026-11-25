@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn right_click_with_an_item_that_places_nothing_does_nothing() {
         let (mut app, left, _) = app();
-        let pickaxe = base().item_id("defaria:pickaxe");
+        let pickaxe = base().default_item("defaria:pickaxe");
         let mut hotbar = app.world_mut().resource_mut::<Hotbar>();
         hotbar.0[0] = pickaxe;
         hotbar.0[1] = None;

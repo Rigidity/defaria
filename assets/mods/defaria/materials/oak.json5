@@ -1,0 +1,11 @@
+// Warm mid-brown wood. The main palette is sawn boards (planks, tool
+// handles), whose darkest level is the seams between boards.
+{
+  name: "Oak",
+  tags: ["wood"],
+  palette: ["#5a3e22", "#8a643a", "#a87e4c", "#be945e"],
+  palettes: {
+    bark: ["#2e2014", "#483422", "#5e462e", "#74583a"],
+    heartwood: ["#7a5834", "#9e784a", "#bc9662", "#d2ae78"],
+  },
+}

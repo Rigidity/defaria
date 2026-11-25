@@ -1,0 +1,49 @@
+# Every material combination of the base game's blocks, built in the sky,
+# then the inventory with every item state.
+# Run: cargo headless scenarios/materials.txt
+camera 63.5 75 88 0 0
+settle
+wait 2
+fill 58 70 80 76 79 80 air
+fill 60 78 80 60 78 80 stone[rock=defaria:stone,ore=none]
+fill 61 78 80 61 78 80 stone[rock=defaria:stone,ore=defaria:coal]
+fill 62 78 80 62 78 80 stone[rock=defaria:stone,ore=defaria:copper]
+fill 63 78 80 63 78 80 stone[rock=defaria:stone,ore=defaria:gold]
+fill 64 78 80 64 78 80 stone[rock=defaria:stone,ore=defaria:iron]
+fill 66 78 80 66 78 80 stone_slab[rock=defaria:stone]
+fill 60 77 80 60 77 80 stone[rock=defaria:granite,ore=none]
+fill 61 77 80 61 77 80 stone[rock=defaria:granite,ore=defaria:coal]
+fill 62 77 80 62 77 80 stone[rock=defaria:granite,ore=defaria:copper]
+fill 63 77 80 63 77 80 stone[rock=defaria:granite,ore=defaria:gold]
+fill 64 77 80 64 77 80 stone[rock=defaria:granite,ore=defaria:iron]
+fill 66 77 80 66 77 80 stone_slab[rock=defaria:granite]
+fill 60 76 80 60 76 80 stone[rock=defaria:slate,ore=none]
+fill 61 76 80 61 76 80 stone[rock=defaria:slate,ore=defaria:coal]
+fill 62 76 80 62 76 80 stone[rock=defaria:slate,ore=defaria:copper]
+fill 63 76 80 63 76 80 stone[rock=defaria:slate,ore=defaria:gold]
+fill 64 76 80 64 76 80 stone[rock=defaria:slate,ore=defaria:iron]
+fill 66 76 80 66 76 80 stone_slab[rock=defaria:slate]
+fill 60 74 80 60 74 80 log[wood=defaria:oak]
+fill 61 74 80 61 74 80 log[wood=defaria:oak,axis=x]
+fill 62 74 80 62 74 80 log[wood=defaria:oak,axis=z]
+fill 63 74 80 63 74 80 planks[wood=defaria:oak]
+fill 64 74 80 64 74 80 planks_slab[wood=defaria:oak]
+fill 60 73 80 60 73 80 log[wood=defaria:birch]
+fill 61 73 80 61 73 80 log[wood=defaria:birch,axis=x]
+fill 62 73 80 62 73 80 log[wood=defaria:birch,axis=z]
+fill 63 73 80 63 73 80 planks[wood=defaria:birch]
+fill 64 73 80 64 73 80 planks_slab[wood=defaria:birch]
+fill 60 72 80 60 72 80 log[wood=defaria:spruce]
+fill 61 72 80 61 72 80 log[wood=defaria:spruce,axis=x]
+fill 62 72 80 62 72 80 log[wood=defaria:spruce,axis=z]
+fill 63 72 80 63 72 80 planks[wood=defaria:spruce]
+fill 64 72 80 64 72 80 planks_slab[wood=defaria:spruce]
+wait 3
+screenshot target/scenarios/materials/wall.png
+wait 1
+hold MouseLeft 1
+wait 1
+hold KeyE 1
+wait 3
+screenshot target/scenarios/materials/inventory.png
+wait 1

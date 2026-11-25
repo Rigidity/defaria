@@ -1,7 +1,7 @@
 {
   layers: [
-    { image: "items/sword_grip", material: "planks" },
-    { image: "items/sword_guard", material: "iron" },
-    { image: "items/sword_blade", material: "iron" },
+    { image: "items/sword_grip", material: "$handle" },
+    { image: "items/sword_guard", material: "$head" },
+    { image: "items/sword_blade", material: "$head" },
   ],
 }

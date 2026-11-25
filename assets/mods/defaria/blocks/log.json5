@@ -1,10 +1,17 @@
 // A tree trunk: bark on the sides, rings on the ends. `axis` is the
 // direction the trunk runs; the cube is turned so its ends face that way.
+// Every wood is its own item; the axis isn't part of the item.
 {
-  name: "Log",
-  properties: { axis: ["y", "x", "z"] },
+  name: "{wood} Log",
+  properties: {
+    wood: { materials: ["oak", "#wood"] },
+    axis: ["y", "x", "z"],
+  },
   model: "cube",
-  textures: { side: "log_side", end: "log_top" },
+  textures: {
+    side: { texture: "log_side", materials: { wood: "{wood}" } },
+    end: { texture: "log_top", materials: { wood: "{wood}" } },
+  },
   variants: [
     { when: { axis: "x" }, rotate: [0, 0, 90] },
     { when: { axis: "z" }, rotate: [90, 0, 0] },

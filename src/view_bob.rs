@@ -271,6 +271,32 @@ mod tests {
         assert!(bob.amount < 1e-3, "flying: {bob:?}");
     }
 
+    /// Sprinting bobs faster, not bigger: walking already sways as much as
+    /// it can, and each bob is a step, so covering more ground takes more of
+    /// them. As in Minecraft.
+    #[test]
+    fn sprinting_bobs_faster() {
+        let walked = |keys: &[KeyCode]| {
+            let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+            app.add_plugins(ViewBobPlugin);
+            let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+            hold(&mut app, keys);
+            run(&mut app, 1.0);
+            *app.world().get::<ViewBob>(player).unwrap()
+        };
+        let walking = walked(&[KeyCode::KeyW]);
+        let sprinting = walked(&[KeyCode::KeyW, KeyCode::KeyF]);
+        assert!((walking.amount - MAX_AMOUNT).abs() < 1e-3, "{walking:?}");
+        assert!(
+            (sprinting.amount - MAX_AMOUNT).abs() < 1e-3,
+            "{sprinting:?}"
+        );
+        assert!(
+            sprinting.walked > walking.walked * 1.2,
+            "{sprinting:?} vs {walking:?}"
+        );
+    }
+
     /// Sneaking walks slower, so it sways less: its speed after a tick's
     /// friction.
     #[test]

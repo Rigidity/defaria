@@ -1,0 +1,6 @@
+// Pinkish-brown, a little warmer and lighter than stone.
+{
+  name: "Granite",
+  tags: ["rock"],
+  palette: ["#4e3632", "#74524a", "#946c60", "#b08a7a"],
+}

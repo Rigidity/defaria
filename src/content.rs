@@ -122,7 +122,11 @@ pub struct ModInfo {
 /// A tile: grayscale images colored by palettes and stacked, bottom first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Texture {
+    /// The texture file's id, with the materials for its inputs if it has
+    /// any: `defaria:log_side(wood=defaria:birch)`.
     pub id: String,
+    /// The texture file's id alone: `defaria:log_side`.
+    pub template: String,
     pub layers: Vec<TextureLayer>,
 }
 
@@ -178,13 +182,95 @@ pub struct Vertex {
     pub uv: Vec2,
 }
 
+/// A material: what a texture layer is colored with, and a value that
+/// properties can take, such as a log's wood.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Material {
+    pub id: String,
+    /// Shown in names that use it, such as "Birch Log".
+    pub name: String,
+    pub tags: Vec<String>,
+    pub palette: Palette,
+    /// Palettes for particular uses, by role.
+    pub palettes: BTreeMap<String, Palette>,
+}
+
+impl Material {
+    /// The palette for `role`, or the main one.
+    pub fn palette_for(&self, role: Option<&str>) -> Palette {
+        role.and_then(|role| self.palettes.get(role))
+            .copied()
+            .unwrap_or(self.palette)
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t == tag)
+    }
+}
+
+/// The value of an optional material property that has no material.
+pub const NONE: &str = "none";
+
+/// A block or item property: its values, the default first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Property {
+    pub name: String,
+    /// Plain values, or material ids (and maybe [`NONE`]) for a material
+    /// property.
+    pub values: Vec<String>,
+    /// Whether the values are materials.
+    pub materials: bool,
+    /// Whether the block's item carries it, so each value is a different
+    /// item. Only for block properties.
+    pub item: bool,
+}
+
+/// The index of the state with these property values, the rest at their
+/// defaults, counting the last property fastest. `None` for a property or
+/// value that isn't there.
+fn state_offset(properties: &[Property], values: &[(&str, &str)]) -> Option<usize> {
+    let mut index = vec![0; properties.len()];
+    for &(name, value) in values {
+        let p = properties.iter().position(|prop| prop.name == name)?;
+        index[p] = properties[p].values.iter().position(|v| v == value)?;
+    }
+    Some(offset_of(properties, &index))
+}
+
+/// The offset of the state with these value indices: the last property
+/// counts fastest.
+fn offset_of(properties: &[Property], index: &[usize]) -> usize {
+    let mut offset = 0;
+    for (property, &i) in properties.iter().zip(index) {
+        offset = offset * property.values.len() + i;
+    }
+    offset
+}
+
+/// The value indices of the state at `offset`; undoes [`offset_of`].
+fn index_of(properties: &[Property], offset: usize) -> Vec<usize> {
+    let mut rest = offset;
+    let mut index = vec![0; properties.len()];
+    for (p, property) in properties.iter().enumerate().rev() {
+        index[p] = rest % property.values.len();
+        rest /= property.values.len();
+    }
+    index
+}
+
+/// How many states the properties make.
+fn state_count(properties: &[Property]) -> usize {
+    properties
+        .iter()
+        .fold(1usize, |count, p| count.saturating_mul(p.values.len()))
+}
+
 /// A block and the range of [`BlockState`]s it owns.
 #[derive(Debug, Clone)]
 pub struct Block {
     pub id: String,
-    pub name: String,
-    /// Each property with its values, the default first, sorted by name.
-    pub properties: Vec<(String, Vec<String>)>,
+    /// Sorted by name.
+    pub properties: Vec<Property>,
     pub first_state: u16,
     pub state_count: u16,
 }
@@ -198,22 +284,8 @@ impl Block {
     /// The state with the given property values, the rest at their
     /// defaults. `None` for a property or value the block doesn't have.
     pub fn state(&self, values: &[(&str, &str)]) -> Option<BlockState> {
-        let mut index = vec![0; self.properties.len()];
-        for &(name, value) in values {
-            let p = self.properties.iter().position(|(n, _)| n == name)?;
-            index[p] = self.properties[p].1.iter().position(|v| v == value)?;
-        }
-        Some(BlockState(self.first_state + self.state_offset(&index)))
-    }
-
-    /// The offset of the state with these value indices: the last property
-    /// counts fastest.
-    fn state_offset(&self, index: &[usize]) -> u16 {
-        let mut offset = 0;
-        for ((_, values), &i) in self.properties.iter().zip(index) {
-            offset = offset * values.len() + i;
-        }
-        offset as u16
+        let offset = state_offset(&self.properties, values)?;
+        Some(BlockState(self.first_state + offset as u16))
     }
 }
 
@@ -222,6 +294,8 @@ impl Block {
 pub struct State {
     /// Index into [`Content::blocks`].
     pub block: usize,
+    /// What it's called, with its property values filled in.
+    pub name: String,
     /// Property name and value, in the block's property order.
     pub values: Vec<(String, String)>,
     pub faces: Vec<BakedFace>,
@@ -264,19 +338,49 @@ pub struct BakedFace {
     pub cull: Option<Direction>,
 }
 
-/// An item, by its index in [`Content::items`].
+/// An item in one particular state: an index into
+/// [`Content::item_states`]. Items carry their property values this way, as
+/// blocks do, so a birch log and an iron-headed pickaxe are each one value.
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ItemId(pub usize);
+pub struct ItemState(pub u32);
 
+/// An item and the range of [`ItemState`]s it owns.
 #[derive(Debug, Clone)]
 pub struct Item {
     pub id: String,
+    /// Sorted by name.
+    pub properties: Vec<Property>,
+    pub first_state: u32,
+    pub state_count: u32,
+    pub max_stack: u32,
+}
+
+impl Item {
+    /// Every property at its first value.
+    pub fn default_state(&self) -> ItemState {
+        ItemState(self.first_state)
+    }
+
+    /// The state with the given property values, the rest at their
+    /// defaults. `None` for a property or value the item doesn't have.
+    pub fn state(&self, values: &[(&str, &str)]) -> Option<ItemState> {
+        let offset = state_offset(&self.properties, values)?;
+        Some(ItemState(self.first_state + offset as u32))
+    }
+}
+
+/// What an item state is: its name, icon and the block it places.
+#[derive(Debug, Clone)]
+pub struct ItemStateInfo {
+    /// Index into [`Content::items`].
+    pub item: usize,
+    /// Property name and value, in the item's property order.
+    pub values: Vec<(String, String)>,
     pub name: String,
     /// The icon's layer in the block texture array.
     pub texture: Option<u32>,
     /// The block it places.
     pub block: Option<BlockState>,
-    pub max_stack: u32,
 }
 
 /// Everything the mods define, resolved.
@@ -284,7 +388,7 @@ pub struct Item {
 pub struct Content {
     /// In load order.
     pub mods: Vec<ModInfo>,
-    pub materials: BTreeMap<String, Palette>,
+    pub materials: BTreeMap<String, Material>,
     /// In block texture array order: texture `i` is layer `i`.
     pub textures: Vec<Texture>,
     pub models: BTreeMap<String, Model>,
@@ -292,6 +396,7 @@ pub struct Content {
     pub blocks: Vec<Block>,
     pub states: Vec<State>,
     pub items: Vec<Item>,
+    pub item_states: Vec<ItemStateInfo>,
     /// What went wrong while loading, one message per problem.
     pub errors: Vec<String>,
     texture_index: HashMap<String, u32>,
@@ -309,11 +414,12 @@ impl FromWorld for Content {
             error!("{error}");
         }
         info!(
-            "loaded {} mods: {} blocks ({} states), {} items, {} textures",
+            "loaded {} mods: {} blocks ({} states), {} items ({} states), {} textures",
             content.mods.len(),
             content.blocks.len() - 1,
             content.states.len() - 1,
             content.items.len(),
+            content.item_states.len(),
             content.textures.len(),
         );
         content
@@ -373,20 +479,31 @@ impl Content {
         self.item_index.get(id).map(|&i| &self.items[i])
     }
 
-    /// The [`ItemId`] of the item with this id.
-    pub fn item_id(&self, id: &str) -> Option<ItemId> {
-        self.item_index.get(id).copied().map(ItemId)
+    /// The item's default state.
+    pub fn default_item(&self, id: &str) -> Option<ItemState> {
+        self.item(id).map(Item::default_state)
     }
 
-    /// The item an [`ItemId`] names. `None` for one past the end, which a
-    /// stale id from other content could be.
-    pub fn item_at(&self, id: ItemId) -> Option<&Item> {
-        self.items.get(id.0)
+    /// What item `id`'s default state is.
+    #[cfg(test)]
+    pub fn default_item_info(&self, id: &str) -> Option<&ItemStateInfo> {
+        self.item_state(self.default_item(id)?)
     }
 
-    /// The display name of the item an [`ItemId`] names.
-    pub fn item_name(&self, id: ItemId) -> Option<&str> {
-        self.item_at(id).map(|item| item.name.as_str())
+    /// What an [`ItemState`] is. `None` for one past the end, which a stale
+    /// state from other content could be.
+    pub fn item_state(&self, state: ItemState) -> Option<&ItemStateInfo> {
+        self.item_states.get(state.0 as usize)
+    }
+
+    /// The item an [`ItemState`] is a state of.
+    pub fn item_of(&self, state: ItemState) -> Option<&Item> {
+        self.item_state(state).map(|info| &self.items[info.item])
+    }
+
+    /// The display name of an [`ItemState`].
+    pub fn item_name(&self, state: ItemState) -> Option<&str> {
+        self.item_state(state).map(|info| info.name.as_str())
     }
 
     /// Every image some texture uses, as asset paths, each once.
@@ -457,6 +574,19 @@ pub fn base() -> &'static Content {
         assert!(content.errors.is_empty(), "{:#?}", content.errors);
         content
     })
+}
+
+/// The array layer of base game texture `defaria:<name>`: the first tile
+/// baked from it, which for a texture with inputs is the one the first
+/// block using it has in its default state.
+#[cfg(test)]
+pub fn base_texture(name: &str) -> u32 {
+    let id = format!("defaria:{name}");
+    base()
+        .textures
+        .iter()
+        .position(|t| t.template == id)
+        .unwrap_or_else(|| panic!("no texture {id}")) as u32
 }
 
 /// The default state of base game block `defaria:<name>`.
@@ -584,24 +714,45 @@ mod tests {
             let state = content.default_state(&id).unwrap();
             assert_eq!(content.state(state).faces.len(), 6, "{id}");
             // Every block gets an item that places it.
-            assert_eq!(content.item(&id).unwrap().block, Some(state), "{id}");
+            assert_eq!(
+                content.default_item_info(&id).unwrap().block,
+                Some(state),
+                "{id}"
+            );
         }
-        let pickaxe = content.item("defaria:pickaxe").unwrap();
+        let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
         assert_eq!(pickaxe.block, None);
-        assert_eq!(pickaxe.max_stack, 1);
-        assert_eq!(pickaxe.texture, content.texture("defaria:pickaxe"));
+        assert_eq!(pickaxe.name, "Iron Pickaxe");
+        assert_eq!(content.item("defaria:pickaxe").unwrap().max_stack, 1);
+        assert_eq!(
+            pickaxe.texture,
+            content.texture("defaria:pickaxe(handle=defaria:oak,head=defaria:iron)")
+        );
     }
 
     #[test]
     fn states_count_properties_last_fastest() {
         let content = base();
         let log = content.block("defaria:log").unwrap();
-        assert_eq!(log.state_count, 3);
+        // Three axes by three woods; `wood` comes after `axis`, so it
+        // counts fastest.
+        assert_eq!(log.state_count, 9);
         assert_eq!(log.state(&[]), Some(log.default_state()));
         let x = log.state(&[("axis", "x")]).unwrap();
-        assert_eq!(x.0, log.first_state + 1);
+        assert_eq!(x.0, log.first_state + 3);
+        let birch = log
+            .state(&[("axis", "x"), ("wood", "defaria:birch")])
+            .unwrap();
+        assert_eq!(birch.0, x.0 + 1);
         assert_eq!(content.block_of(x).id, "defaria:log");
-        assert_eq!(content.state(x).values, [("axis".into(), "x".into())]);
+        assert_eq!(
+            content.state(x).values,
+            [
+                ("axis".into(), "x".into()),
+                ("wood".into(), "defaria:oak".into())
+            ]
+        );
+        assert_eq!(content.state(birch).name, "Birch Log");
         assert_eq!(log.state(&[("axis", "w")]), None);
         assert_eq!(log.state(&[("colour", "x")]), None);
     }

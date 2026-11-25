@@ -716,7 +716,7 @@ mod tests {
             .faces
             .iter()
             .map(|face| {
-                let id = &content.textures[face.layer as usize].id;
+                let id = &content.textures[face.layer as usize].template;
                 (
                     face.normal.as_ivec3(),
                     id.trim_start_matches("defaria:").to_owned(),

@@ -24,7 +24,7 @@
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
 //! | `grain` | Print a texture-noise number for this frame (see below). |
 //! | `inspect <Component>` | Print that component on every entity that has it. |
-//! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears). |
+//! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
@@ -578,6 +578,39 @@ fn apply_world_commands(world: &mut World) {
     }
 }
 
+/// The state `name` means: a block id (the base game's without
+/// `defaria:`), with `[property=value,…]` setting some of its properties.
+fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
+    let (id, values) = match name.split_once('[') {
+        Some((id, rest)) => {
+            let values = rest
+                .strip_suffix(']')
+                .ok_or_else(|| format!("`{name}` has a `[` with no `]`"))?;
+            (id, values)
+        }
+        None => (name, ""),
+    };
+    let id = if id.contains(':') {
+        id.to_owned()
+    } else {
+        format!("defaria:{id}")
+    };
+    let block = content
+        .block(&id)
+        .ok_or_else(|| format!("no block `{id}`"))?;
+    let pairs = values
+        .split(',')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            pair.split_once('=')
+                .ok_or_else(|| format!("`{pair}` isn't `property=value`"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    block
+        .state(&pairs)
+        .ok_or_else(|| format!("block `{id}` has no state `{name}`"))
+}
+
 fn fill(
     In((min, max, id)): In<(IVec3, IVec3, String)>,
     content: Res<Content>,
@@ -586,14 +619,7 @@ fn fill(
     let state = if id == crate::content::AIR {
         BlockState::AIR
     } else {
-        let id = if id.contains(':') {
-            id
-        } else {
-            format!("defaria:{id}")
-        };
-        content
-            .default_state(&id)
-            .ok_or_else(|| format!("fill: no block `{id}`"))?
+        fill_state(&content, &id).map_err(|error| format!("fill: {error}"))?
     };
     for x in min.x..=max.x {
         for y in min.y..=max.y {
@@ -1170,7 +1196,7 @@ mod tests {
             ..default()
         });
         run_more(&mut app, "camera 8.5 40 8.5 0 0\nsettle\n");
-        for moves in ["hold Space 300\n", "press ControlLeft\nhold KeyW 300\n"] {
+        for moves in ["hold Space 300\n", "press KeyF\nhold KeyW 300\n"] {
             let script = Script::parse(moves).unwrap();
             app.world_mut()
                 .resource_mut::<ScriptRunner>()
@@ -1240,6 +1266,22 @@ mod tests {
             "{} frames kept after the report",
             runner.frame_times.len()
         );
+    }
+
+    #[test]
+    fn fill_names_a_block_and_some_of_its_properties() {
+        let content = crate::content::base();
+        let log = content.block("defaria:log").unwrap();
+        assert_eq!(fill_state(content, "log"), Ok(log.default_state()));
+        assert_eq!(
+            fill_state(content, "defaria:log[wood=defaria:birch,axis=x]"),
+            Ok(log
+                .state(&[("axis", "x"), ("wood", "defaria:birch")])
+                .unwrap())
+        );
+        for bad in ["log[axis=w]", "log[axis]", "log[axis=x", "nonsense"] {
+            assert!(fill_state(content, bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
