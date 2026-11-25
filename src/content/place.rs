@@ -30,6 +30,9 @@ impl Placement {
         let mut out = [None; 6];
         match given {
             Some(given) => {
+                if given.is_empty() {
+                    return Err("`place` `values` is empty".into());
+                }
                 for (side, value) in given {
                     let i = index(value).ok_or_else(|| {
                         format!("`place` gives `{value}`, which isn't one of its values")
@@ -178,6 +181,10 @@ mod tests {
             (
                 r#"{ model: "m", properties: { half: { values: ["a", "b"], place: { from: "face", values: { up: "c" } } } } }"#,
                 "`c`",
+            ),
+            (
+                r#"{ model: "m", properties: { half: { values: ["a", "b"], place: { from: "face", values: {} } } } }"#,
+                "is empty",
             ),
             (
                 r#"{ model: "m", properties: { axis: { values: ["x", "y"], place: "sideways" } } }"#,

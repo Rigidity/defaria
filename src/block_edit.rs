@@ -334,7 +334,7 @@ mod tests {
     use crate::{
         content::{base, block, test_mod},
         headless::{Script, settle, test_game},
-        hotbar::select_with_keys,
+        hotbar::{DEFAULT_HOTBAR, select_with_keys},
         mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{
@@ -508,6 +508,24 @@ mod tests {
     /// Two chunks side by side along X, a camera locked in front of them,
     /// and the edit, mining and remesh systems; no rendering.
     fn app() -> (App, Entity, Entity) {
+        let content = base().clone();
+        let hotbar = Hotbar(DEFAULT_HOTBAR.map(|id| content.default_item(id)));
+        let (mut app, left, right) = app_with(content, hotbar);
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        // A wall at x = 14..=15 of the left chunk, on the chunk border.
+        for y in 0..4 {
+            chunk.set(15, y, 5, block("stone"));
+        }
+        chunk.set(14, 1, 5, block("dirt"));
+        let mut chunk = app.world_mut().get_mut::<Chunk>(right).unwrap();
+        chunk.set(0, 1, 5, block("stone"));
+        // Meshes the new chunks and lets their change ticks pass.
+        finish_meshing(&mut app);
+        (app, left, right)
+    }
+
+    /// [`app`] with `content` and `hotbar`, and both chunks empty.
+    fn app_with(content: Content, hotbar: Hotbar) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), MiningPlugin))
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -518,8 +536,8 @@ mod tests {
                 material: Handle::default(),
                 layers: default(),
             })
-            .insert_resource(base().clone())
-            .init_resource::<Hotbar>()
+            .insert_resource(content)
+            .insert_resource(hotbar)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ActiveSlot>()
@@ -542,20 +560,12 @@ mod tests {
             },
             PrimaryWindow,
         ));
-        let mut left = Chunk::default();
-        // A wall at x = 14..=15 of the left chunk, on the chunk border.
-        for y in 0..4 {
-            left.set(15, y, 5, block("stone"));
-        }
-        left.set(14, 1, 5, block("dirt"));
-        let mut right = Chunk::default();
-        right.set(0, 1, 5, block("stone"));
         let mut chunks = [Entity::PLACEHOLDER; 2];
-        for (i, (coord, chunk)) in [(IVec3::ZERO, left), (IVec3::X, right)]
-            .into_iter()
-            .enumerate()
-        {
-            let entity = app.world_mut().spawn((ChunkCoord(coord), chunk)).id();
+        for (i, coord) in [IVec3::ZERO, IVec3::X].into_iter().enumerate() {
+            let entity = app
+                .world_mut()
+                .spawn((ChunkCoord(coord), Chunk::default()))
+                .id();
             app.world_mut()
                 .resource_mut::<ChunkMap>()
                 .insert(ChunkCoord(coord), entity);
@@ -566,8 +576,6 @@ mod tests {
             FlyCamera::default(),
             Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
         ));
-        // Meshes the new chunks and lets their change ticks pass.
-        finish_meshing(&mut app);
         (app, chunks[0], chunks[1])
     }
 
@@ -753,33 +761,15 @@ mod tests {
             ),
         ];
         for (item, from, at, pos, state) in expect {
-            let mut app = App::new();
-            let mut chunk = Chunk::default();
-            chunk.set(8, 8, 8, content.default_state("test:base").unwrap());
             let mut hotbar = Hotbar([None; crate::hotbar::HOTBAR_SLOTS]);
             hotbar.0[0] = content.default_item(item);
-            app.add_plugins(MinimalPlugins)
-                .insert_resource(content.clone())
-                .insert_resource(hotbar)
-                .init_resource::<ButtonInput<MouseButton>>()
-                .init_resource::<ActiveSlot>()
-                .init_resource::<ChunkMap>()
-                .add_message::<VoxelChanged>()
-                .add_systems(Update, edit_blocks);
-            app.world_mut().spawn((
-                Window::default(),
-                CursorOptions {
-                    grab_mode: CursorGrabMode::Locked,
-                    ..default()
-                },
-                PrimaryWindow,
-            ));
-            let entity = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), chunk)).id();
-            app.world_mut()
-                .resource_mut::<ChunkMap>()
-                .insert(ChunkCoord(IVec3::ZERO), entity);
-            app.world_mut()
-                .spawn((FlyCamera::default(), Transform::default()));
+            let (mut app, entity, _) = app_with(content.clone(), hotbar);
+            app.world_mut().get_mut::<Chunk>(entity).unwrap().set(
+                8,
+                8,
+                8,
+                content.default_state("test:base").unwrap(),
+            );
             look_at(&mut app, from, (at - from).normalize());
             click(&mut app, MouseButton::Right);
             let p = pos.as_uvec3();

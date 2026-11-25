@@ -387,7 +387,8 @@ properties: {
   `east`, `west`). A property whose values are neither needs `values`.
 - **`{ from, values }`** says which value each direction gives; `from` is
   `"face"` or `"look"`. A direction it leaves out keeps the value the
-  block would have had (from its item, or the default):
+  block would have had (from its item, or the default), but it must name
+  at least one:
 
   ```json5
   // A slab half: on top of a block it sits low, under one it sits high.
