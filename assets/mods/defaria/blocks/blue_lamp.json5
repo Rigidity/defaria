@@ -4,4 +4,6 @@
   model: "cube",
   textures: { all: "blue_lamp" },
   light: [3, 6, 15],
+  hardness: 0.3,
+  weight: 500,
 }

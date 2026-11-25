@@ -16,4 +16,6 @@
     { when: { axis: "x" }, rotate: [0, 0, 90] },
     { when: { axis: "z" }, rotate: [90, 0, 0] },
   ],
+  hardness: { materials: { wood: 1 } },
+  weight: { materials: { wood: 1 } },
 }

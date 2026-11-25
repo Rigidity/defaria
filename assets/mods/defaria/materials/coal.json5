@@ -3,4 +3,6 @@
   name: "Coal",
   tags: ["ore"],
   palette: ["#000000", "#0e0e12", "#1c1c22", "#9a9aa8"],
+  hardness: 1.2,
+  weight: 1350,
 }

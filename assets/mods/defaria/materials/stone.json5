@@ -3,4 +3,6 @@
   name: "Stone",
   tags: ["rock"],
   palette: ["#33353d", "#52535a", "#6f6f74", "#95938f"],
+  hardness: 1.5,
+  weight: 2600,
 }

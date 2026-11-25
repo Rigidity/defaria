@@ -7,4 +7,8 @@
   },
   texture: { texture: "knife", materials: { head: "{head}", handle: "{handle}" } },
   max_stack: 1,
+  // Mostly as hard as its head.
+  hardness: { materials: { head: 3, handle: 1 } },
+  // 0.05 litres in all, head to handle 1 to 1 by volume.
+  weight: { base: 0.00005, materials: { head: 1, handle: 1 } },
 }

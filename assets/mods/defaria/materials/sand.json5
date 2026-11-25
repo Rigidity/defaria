@@ -1,4 +1,6 @@
 // Pale and warm, low contrast like dirt: the sand image is fine noise.
 {
   palette: ["#b8a06a", "#d2bc84", "#e6d49e", "#f2e4b6"],
+  hardness: 0.5,
+  weight: 1600,
 }

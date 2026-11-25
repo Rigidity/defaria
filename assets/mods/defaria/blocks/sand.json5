@@ -2,4 +2,6 @@
   name: "Sand",
   model: "cube",
   textures: { all: "sand" },
+  hardness: 0.5,
+  weight: 1600,
 }

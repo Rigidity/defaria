@@ -7,4 +7,8 @@
   },
   texture: { texture: "axe", materials: { head: "{head}", handle: "{handle}" } },
   max_stack: 1,
+  // Mostly as hard as its head.
+  hardness: { materials: { head: 3, handle: 1 } },
+  // 0.6 litres in all, head to handle 1 to 3 by volume.
+  weight: { base: 0.0006, materials: { head: 1, handle: 3 } },
 }

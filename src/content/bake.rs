@@ -246,13 +246,147 @@ fn material(def: &Def<MaterialDef>) -> Result<Material, String> {
                 .map_err(|error| format!("palette `{role}`: {error}"))
         })
         .collect::<Result<_, String>>()?;
+    for (name, value) in [("hardness", material.hardness), ("weight", material.weight)] {
+        if let Some(value) = value {
+            check_amount(name, value)?;
+        }
+    }
     Ok(Material {
         id: def.id.clone(),
         name: material.name.clone().unwrap_or_else(|| title_case(&def.id)),
         tags: material.tags.clone(),
         palette: palette(&material.palette)?,
         palettes,
+        hardness: material.hardness,
+        weight: material.weight,
     })
+}
+
+/// Checks a hardness, weight or share: a number, not below 0.
+fn check_amount(what: &str, value: f32) -> Result<(), String> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{what}` must be a number of at least 0, not {value}"
+        ))
+    }
+}
+
+/// A block's or item's hardness or weight, checked against its
+/// properties, to work out per state.
+struct Mix {
+    /// `hardness` or `weight`, for errors.
+    name: &'static str,
+    /// The material's value.
+    of: fn(&Material) -> Option<f32>,
+    base: f32,
+    /// Property index and how much it counts.
+    shares: Vec<(usize, f32)>,
+}
+
+impl Mix {
+    fn hardness(def: Option<&Attribute>, properties: &[Property]) -> Result<Option<Self>, String> {
+        Self::new("hardness", |m| m.hardness, def, properties)
+    }
+
+    fn weight(def: Option<&Attribute>, properties: &[Property]) -> Result<Option<Self>, String> {
+        Self::new("weight", |m| m.weight, def, properties)
+    }
+
+    /// `None` if `def` is.
+    fn new(
+        name: &'static str,
+        of: fn(&Material) -> Option<f32>,
+        def: Option<&Attribute>,
+        properties: &[Property],
+    ) -> Result<Option<Self>, String> {
+        let (base, materials) = match def {
+            None => return Ok(None),
+            Some(Attribute::Fixed(value)) => (*value, None),
+            Some(Attribute::Mixed(mixed)) => (mixed.base, Some(&mixed.materials)),
+        };
+        check_amount(name, base)?;
+        let mut shares = Vec::new();
+        if let Some(materials) = materials {
+            if materials.is_empty() {
+                return Err(format!(
+                    "`{name}` has no `materials`; for a fixed value, write a number"
+                ));
+            }
+            for (property, &share) in materials {
+                let p = properties
+                    .iter()
+                    .position(|prop| &prop.name == property)
+                    .ok_or_else(|| {
+                        format!("`{name}` counts `{property}`, which isn't a property")
+                    })?;
+                if !properties[p].materials {
+                    return Err(format!(
+                        "`{name}` counts `{property}`, which isn't a material property"
+                    ));
+                }
+                if !(share.is_finite() && share > 0.0) {
+                    return Err(format!(
+                        "`{name}` counts `{property}` {share}; a share must be more than 0"
+                    ));
+                }
+                shares.push((p, share));
+            }
+        }
+        Ok(Some(Mix {
+            name,
+            of,
+            base,
+            shares,
+        }))
+    }
+
+    /// The value for the state with these value indices: the base times
+    /// the shares' weighted average of their materials' values, skipping
+    /// properties at `none`. The base alone if every one is `none`.
+    fn value(
+        &self,
+        properties: &[Property],
+        index: &[usize],
+        content: &Content,
+    ) -> Result<f32, String> {
+        let (mut sum, mut total) = (0.0, 0.0);
+        for &(p, share) in &self.shares {
+            let value = &properties[p].values[index[p]];
+            if value == NONE {
+                continue;
+            }
+            let material = &content.materials[value];
+            let amount = (self.of)(material).ok_or_else(|| {
+                format!(
+                    "`{}` counts `{}`, but material `{value}` has no `{}`",
+                    self.name, properties[p].name, self.name
+                )
+            })?;
+            sum += share * amount;
+            total += share;
+        }
+        Ok(if total > 0.0 {
+            self.base * sum / total
+        } else {
+            self.base
+        })
+    }
+}
+
+/// A [`Mix`]'s value for a state, or `fallback` if there's no mix.
+fn mixed(
+    mix: &Option<Mix>,
+    fallback: f32,
+    properties: &[Property],
+    index: &[usize],
+    content: &Content,
+) -> Result<f32, String> {
+    match mix {
+        Some(mix) => mix.value(properties, index, content),
+        None => Ok(fallback),
+    }
 }
 
 /// A texture file, checked, with its inputs still to fill.
@@ -800,6 +934,8 @@ fn add_block(
                 .map_err(|error| format!("variant {}: {error}", i + 1))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let hardness = Mix::hardness(block.hardness.as_ref(), &properties)?;
+    let weight = Mix::weight(block.weight.as_ref(), &properties)?;
 
     // Each state's property values, look and model, last property fastest.
     let mut looks = Vec::with_capacity(count);
@@ -837,7 +973,7 @@ fn add_block(
         };
         let state = name
             .and_then(|name| {
-                bake_state(
+                let mut state = bake_state(
                     look,
                     model,
                     values,
@@ -846,7 +982,10 @@ fn add_block(
                     index,
                     content,
                     textures,
-                )
+                )?;
+                state.hardness = mixed(&hardness, 0.0, &properties, value_index, content)?;
+                state.weight = mixed(&weight, 0.0, &properties, value_index, content)?;
+                Ok(state)
             })
             .map_err(|error| in_state(values, error))?;
         states.push(state);
@@ -1008,6 +1147,9 @@ fn bake_state(
         collision,
         occludes,
         light,
+        // Filled in by the block, which knows its properties.
+        hardness: 0.0,
+        weight: 0.0,
     })
 }
 
@@ -1169,17 +1311,22 @@ fn block_item(
         .cloned()
         .collect();
     let count = check_count(&properties)?;
+    let hardness = Mix::hardness(file.and_then(|f| f.def.hardness.as_ref()), &properties)?;
+    let weight = Mix::weight(file.and_then(|f| f.def.weight.as_ref()), &properties)?;
     let item = content.items.len();
     let mut states = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
         let info = (|| {
             let state = placed_state(&block, &values)?;
+            let placed = content.state(state);
             let mut info = ItemStateInfo {
                 item,
                 values: values.clone(),
-                name: content.state(state).name.clone(),
+                name: placed.name.clone(),
                 texture: None,
                 block: Some(state),
+                hardness: mixed(&hardness, placed.hardness, &properties, &index, content)?,
+                weight: mixed(&weight, placed.weight, &properties, &index, content)?,
             };
             if let Some(file) = file {
                 if let Some(name) = &file.def.name {
@@ -1221,6 +1368,8 @@ fn standalone_item(
         }
         None => None,
     };
+    let hardness = Mix::hardness(item_def.hardness.as_ref(), &properties)?;
+    let weight = Mix::weight(item_def.weight.as_ref(), &properties)?;
     let item = content.items.len();
     let mut states = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
@@ -1239,12 +1388,28 @@ fn standalone_item(
                 Some(block) => Some(placed_state(block, &values)?),
                 None => None,
             };
+            // Left out, it's as hard and heavy as the block it places.
+            let placed = block.map(|state| content.state(state));
             Ok::<_, String>(ItemStateInfo {
                 item,
                 values: values.clone(),
                 name,
                 texture,
                 block,
+                hardness: mixed(
+                    &hardness,
+                    placed.map_or(0.0, |s| s.hardness),
+                    &properties,
+                    &index,
+                    content,
+                )?,
+                weight: mixed(
+                    &weight,
+                    placed.map_or(0.0, |s| s.weight),
+                    &properties,
+                    &index,
+                    content,
+                )?,
             })
         })()
         .map_err(|error| in_state(&values, error))?;
@@ -1936,13 +2101,14 @@ mod tests {
     }
 
     /// Materials for the material tests: two woods (one with a `bark`
-    /// palette), a rock and two ores, plus a texture with inputs.
+    /// palette), a rock and two ores, plus a texture with inputs. Oak, rock
+    /// and iron have a hardness and weight; birch and coal don't.
     fn materials(files: &[(&'static str, &'static str)]) -> Content {
         let mut all = vec![
             (
                 "materials/oak.json5",
                 r##"{ name: "Oak", tags: ["wood"], palette: ["#100000", "#200000"],
-                     palettes: { bark: ["#300000", "#400000"] } }"##,
+                     palettes: { bark: ["#300000", "#400000"] }, hardness: 1, weight: 700 }"##,
             ),
             (
                 "materials/birch.json5",
@@ -1950,11 +2116,12 @@ mod tests {
             ),
             (
                 "materials/rock.json5",
-                r##"{ tags: ["rock"], palette: ["#000010", "#000020"] }"##,
+                r##"{ tags: ["rock"], palette: ["#000010", "#000020"], hardness: 2, weight: 2000 }"##,
             ),
             (
                 "materials/iron.json5",
-                r##"{ tags: ["ore", "metal"], palette: ["#101010", "#202020"] }"##,
+                r##"{ tags: ["ore", "metal"], palette: ["#101010", "#202020"], hardness: 4,
+                     weight: 8000 }"##,
             ),
             (
                 "materials/coal.json5",
@@ -2316,5 +2483,172 @@ mod tests {
     fn names_default_to_the_id_in_title_case() {
         assert_eq!(title_case("defaria:grass_top"), "Grass top");
         assert_eq!(title_case("defaria:ores/iron_ore"), "Iron ore");
+    }
+
+    /// Every block and item state in the base game has a hardness and a
+    /// weight, worked out from its materials where it has them.
+    #[test]
+    fn base_states_have_hardness_and_weight() {
+        let content = crate::content::base();
+        let air = content.state(BlockState::AIR);
+        assert_eq!((air.hardness, air.weight), (0.0, 0.0));
+        for state in &content.states[1..] {
+            assert!(state.hardness > 0.0, "{} hardness", state.name);
+            assert!(state.weight > 0.0, "{} weight", state.name);
+        }
+        for info in &content.item_states {
+            assert!(info.hardness > 0.0, "{} hardness", info.name);
+            assert!(info.weight > 0.0, "{} weight", info.name);
+            if let Some(state) = info.block {
+                let placed = content.state(state);
+                assert_eq!(
+                    (info.hardness, info.weight),
+                    (placed.hardness, placed.weight)
+                );
+            }
+        }
+        let stone = content.block("defaria:stone").unwrap();
+        let plain = content.state(stone.default_state());
+        assert_eq!((plain.hardness, plain.weight), (1.5, 2600.0));
+        // Rock counts three times as much as ore.
+        let ore = content
+            .state(stone.state(&[("ore", "defaria:iron")]).unwrap())
+            .hardness;
+        assert_eq!(ore, (3.0 * 1.5 + 3.0) / 4.0);
+        let slab = content.state(content.default_state("defaria:stone_slab").unwrap());
+        assert_eq!((slab.hardness, slab.weight), (1.5, 1300.0));
+        let dirt = content.state(content.default_state("defaria:dirt").unwrap());
+        assert_eq!(dirt.hardness, 0.5);
+        // An iron pickaxe on an oak handle weighs a kilogram or two.
+        let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
+        assert!((1.0..3.0).contains(&pickaxe.weight), "{}", pickaxe.weight);
+    }
+
+    /// A hardness or weight is a number, or a base times the weighted
+    /// average of the materials' values, skipping `none`. Left out, it's 0,
+    /// and an item that places a block takes the block's.
+    #[test]
+    fn hardness_and_weight_mix_materials() {
+        let content = materials(&[
+            (
+                "blocks/rock.json5",
+                r##"{
+                    properties: { rock: { materials: "#rock" }, ore: { materials: "iron", optional: true } },
+                    model: "quad", textures: { all: "a" },
+                    hardness: { materials: { rock: 3, ore: 1 } },
+                    weight: { base: 0.5, materials: { rock: 1 } },
+                }"##,
+            ),
+            (
+                "blocks/plain.json5",
+                r##"{ model: "quad", textures: { all: "a" }, hardness: 0.25, weight: 10 }"##,
+            ),
+            (
+                "blocks/nothing.json5",
+                r##"{ model: "quad", textures: { all: "a" } }"##,
+            ),
+            // Changes its block's item's weight only.
+            ("items/plain.json5", r##"{ weight: 3 }"##),
+            (
+                "items/tool.json5",
+                r##"{
+                    properties: { head: { materials: "iron" }, handle: { materials: "oak" } },
+                    hardness: { materials: { head: 1 } },
+                    weight: { base: 0.001, materials: { head: 1, handle: 3 } },
+                }"##,
+            ),
+            ("items/brick.json5", r##"{ block: "plain" }"##),
+            ("items/stick.json5", r##"{}"##),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let rock = content.block("test:rock").unwrap();
+        let plain = content.state(rock.default_state());
+        // `ore` is `none`, so only the rock counts.
+        assert_eq!((plain.hardness, plain.weight), (2.0, 1000.0));
+        let ore = content.state(rock.state(&[("ore", "test:iron")]).unwrap());
+        assert_eq!(
+            (ore.hardness, ore.weight),
+            ((3.0 * 2.0 + 4.0) / 4.0, 1000.0)
+        );
+
+        let fixed = content.state(content.default_state("test:plain").unwrap());
+        assert_eq!((fixed.hardness, fixed.weight), (0.25, 10.0));
+        let nothing = content.state(content.default_state("test:nothing").unwrap());
+        assert_eq!((nothing.hardness, nothing.weight), (0.0, 0.0));
+
+        let info = |id: &str| content.default_item_info(id).unwrap();
+        let both = |id: &str| (info(id).hardness, info(id).weight);
+        // The block's item: the block's hardness, the file's weight.
+        assert_eq!(both("test:plain"), (0.25, 3.0));
+        let rock_item = content.item("test:rock").unwrap();
+        let ore_item = rock_item.state(&[("ore", "test:iron")]).unwrap();
+        assert_eq!(content.item_state(ore_item).unwrap().hardness, ore.hardness);
+        let tool = info("test:tool");
+        assert_eq!(tool.hardness, 4.0);
+        assert!((tool.weight - 0.001 * (8000.0 + 3.0 * 700.0) / 4.0).abs() < 1e-4);
+        // An item that places a block is as hard and heavy as it.
+        assert_eq!(both("test:brick"), (0.25, 10.0));
+        assert_eq!(both("test:stick"), (0.0, 0.0));
+    }
+
+    #[test]
+    fn hardness_and_weight_mistakes_are_reported() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, hardness: { materials: { wood: 1 } } }"##,
+                "`hardness` counts `wood`, which isn't a property",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { axis: ["x"] }, model: "quad", textures: { all: "a" },
+                     weight: { materials: { axis: 1 } } }"##,
+                "`weight` counts `axis`, which isn't a material property",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { wood: { materials: "#wood" } }, model: "quad", textures: { all: "a" },
+                     hardness: { materials: { wood: 1 } } }"##,
+                "material `test:birch` has no `hardness`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { wood: { materials: "oak" } }, model: "quad", textures: { all: "a" },
+                     hardness: { materials: { wood: 0 } } }"##,
+                "a share must be more than 0",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, hardness: { materials: {} } }"##,
+                "`hardness` has no `materials`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, weight: -1 }"##,
+                "`weight` must be a number of at least 0",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, weight: "heavy" }"##,
+                "a number, or `{ base, materials }`",
+            ),
+            (
+                "items/x.json5",
+                r##"{ properties: { head: { materials: "coal" } }, weight: { materials: { head: 1 } } }"##,
+                "material `test:coal` has no `weight`",
+            ),
+            (
+                "materials/x.json5",
+                r##"{ palette: ["#000", "#fff"], hardness: -0.5 }"##,
+                "`hardness` must be a number of at least 0",
+            ),
+        ];
+        for &(path, text, expected) in cases {
+            let content = materials(&[(path, text)]);
+            let all = errors(&content);
+            assert_eq!(content.errors.len(), 1, "{path}: {text}\n{all}");
+            assert!(all.contains(&format!("mods/test/{path}")), "{all}");
+            assert!(all.contains(expected), "expected `{expected}` in: {all}");
+        }
     }
 }

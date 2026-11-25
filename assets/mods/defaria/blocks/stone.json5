@@ -14,4 +14,7 @@
       textures: { all: { texture: "ore", materials: { rock: "{rock}", ore: "{ore}" } } },
     },
   ],
+  // Mostly rock: ore counts a quarter.
+  hardness: { materials: { rock: 3, ore: 1 } },
+  weight: { materials: { rock: 3, ore: 1 } },
 }
