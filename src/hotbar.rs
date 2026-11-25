@@ -198,7 +198,7 @@ fn spawn_hotbar(mut commands: Commands, theme: Res<UiTheme>) {
                 Text::default(),
                 TextFont::from_font_size(theme.title_font_size),
                 TextColor(Color::NONE),
-                TextShadow::default(),
+                name_shadow(0.0),
             ));
             root.spawn((
                 Node {
@@ -257,11 +257,16 @@ fn show_active_name(
     active: Res<ActiveSlot>,
     content: Res<Content>,
     theme: Res<UiTheme>,
-    mut names: Query<(&mut ActiveItemName, &mut Text, &mut TextColor)>,
+    mut names: Query<(
+        &mut ActiveItemName,
+        &mut Text,
+        &mut TextColor,
+        &mut TextShadow,
+    )>,
 ) {
     // Not for the starting slot, only when it changes after.
     let switched = (active.is_changed() || hotbar.is_changed()) && !active.is_added();
-    for (mut left, mut text, mut color) in &mut names {
+    for (mut left, mut text, mut color, mut shadow) in &mut names {
         if switched {
             let name = hotbar
                 .active(*active)
@@ -275,6 +280,17 @@ fn show_active_name(
         }
         let alpha = (left.0 / NAME_FADE).min(1.0);
         color.0 = theme.text.with_alpha(alpha);
+        // The shadow fades with the text, or it would stay behind.
+        *shadow = name_shadow(alpha);
+    }
+}
+
+/// The name's shadow, as visible as the text at `alpha`.
+fn name_shadow(alpha: f32) -> TextShadow {
+    let shadow = TextShadow::default();
+    TextShadow {
+        color: shadow.color.with_alpha(shadow.color.alpha() * alpha),
+        ..shadow
     }
 }
 
@@ -401,25 +417,35 @@ mod tests {
         app.update();
         let mut names = app
             .world_mut()
-            .query::<(&Text, &TextColor, &ActiveItemName)>();
-        let (text, color, _) = names.single(app.world()).unwrap();
+            .query::<(&Text, &TextColor, &TextShadow, &ActiveItemName)>();
+        let (text, color, shadow, _) = names.single(app.world()).unwrap();
         assert_eq!(text.0, "Log");
         assert_eq!(color.0.alpha(), 1.0);
+        assert_eq!(shadow.color, TextShadow::default().color);
         // 0.1 s a frame: 1.6 s on, 0.4 s are left, partway through the fade.
         for _ in 0..16 {
             app.update();
         }
-        let (_, color, _) = names.single(app.world()).unwrap();
+        let (_, color, shadow, _) = names.single(app.world()).unwrap();
+        let alpha = 0.4 / NAME_FADE;
         assert!(
-            (color.0.alpha() - 0.4 / NAME_FADE).abs() < 1e-3,
+            (color.0.alpha() - alpha).abs() < 1e-3,
             "{}",
             color.0.alpha()
+        );
+        let full = TextShadow::default().color.alpha();
+        assert!(
+            (shadow.color.alpha() - full * alpha).abs() < 1e-3,
+            "{}",
+            shadow.color.alpha()
         );
         for _ in 0..5 {
             app.update();
         }
-        let (_, color, _) = names.single(app.world()).unwrap();
+        // Gone, shadow and all.
+        let (_, color, shadow, _) = names.single(app.world()).unwrap();
         assert_eq!(color.0.alpha(), 0.0);
+        assert_eq!(shadow.color.alpha(), 0.0);
     }
 
     /// The starting slot's name doesn't show at startup.
@@ -429,9 +455,10 @@ mod tests {
         app.update();
         let mut names = app
             .world_mut()
-            .query::<(&Text, &TextColor, &ActiveItemName)>();
-        let (text, color, _) = names.single(app.world()).unwrap();
+            .query::<(&Text, &TextColor, &TextShadow, &ActiveItemName)>();
+        let (text, color, shadow, _) = names.single(app.world()).unwrap();
         assert_eq!((text.0.as_str(), color.0.alpha()), ("", 0.0));
+        assert_eq!(shadow.color.alpha(), 0.0);
     }
 
     /// Touchpad pixels are physical: on a window at scale 2, a step takes
