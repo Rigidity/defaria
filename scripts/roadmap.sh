@@ -9,6 +9,7 @@
 #   scripts/roadmap.sh add <issue> <order>     add an issue at that place
 #   scripts/roadmap.sh order <issue> <order>   move an issue to another place
 #   scripts/roadmap.sh status <issue> <todo|doing|done>
+#   scripts/roadmap.sh check                   what's out of step; fails if anything is
 #
 # <order> is the Order field, a number: work goes in increasing order. To put
 # an issue between 7 and 8, give it 7.5.
@@ -63,6 +64,51 @@ order)
     [ $# -eq 3 ] || usage
     id=$(item "$2")
     set_order "$id" "$3"
+    ;;
+check)
+    # Open issues that aren't epics belong in the project, each with an
+    # Order; epics stay out.
+    items=$(gh project item-list "$number" --owner "$owner" --limit 1000 \
+        --format json)
+    issues=$(gh issue list --state open --limit 1000 \
+        --json number,title,labels)
+    problems=$(jq -rn --argjson items "$items" --argjson issues "$issues" '
+        ($items.items | map(select(.content.type == "Issue"))) as $items
+        | ($items | map(.content.number)) as $in
+        | ($issues | map(select(any(.labels[]; .name == "epic")))
+            | map(.number)) as $epics
+        | ($issues[]
+            | select((.number | IN($epics[])) | not)
+            | select((.number | IN($in[])) | not)
+            | "#\(.number) isn'"'"'t in the project: \(.title)"),
+          ($items[] | select(.order == null)
+            | "#\(.content.number) has no Order: \(.content.title)"),
+          ($items[] | select(.content.number | IN($epics[]))
+            | "#\(.content.number) is an epic; epics stay out: \(.content.title)"),
+          ($items | map(select(.order != null)) | group_by(.order)[]
+            | select(length > 1)
+            | "Order \(.[0].order) is shared by "
+                + (map("#\(.content.number)") | join(", ")))
+    ')
+    # Open epics whose work is all done should be closed; the
+    # close-finished-epics workflow normally does it.
+    for epic in $(printf '%s' "$issues" |
+        jq -r '.[] | select(any(.labels[]; .name == "epic")) | .number'); do
+        open=$(gh api --paginate \
+            "repos/$owner/defaria/issues/$epic/sub_issues?per_page=100" \
+            --jq '.[] | select(.state == "open") | .number' | wc -l)
+        total=$(gh api "repos/$owner/defaria/issues/$epic" \
+            --jq .sub_issues_summary.total)
+        if [ "$open" -eq 0 ] && [ "$total" -gt 0 ]; then
+            problems="$problems${problems:+
+}#$epic is an epic with every sub-issue closed; close it"
+        fi
+    done
+    if [ -n "$problems" ]; then
+        echo "$problems" >&2
+        exit 1
+    fi
+    echo "The roadmap is in step with the issues."
     ;;
 status)
     [ $# -eq 3 ] || usage
