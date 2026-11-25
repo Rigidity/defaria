@@ -254,6 +254,12 @@ documented in `docs/modding.md`; keep that file, the serde types in
 
 ## Conventions
 
+- Breaking changes are fine at this stage: to the mod file formats, the
+  save formats, saved worlds, Rust APIs, anything. Don't add backwards
+  compatibility, migrations, defaults or fallbacks just to keep old files,
+  worlds or code working; change them, and bump a format's version if it
+  has one.
+
 - Derive `Reflect` and add `#[reflect(Component)]` on gameplay components.
 - Keep systems small and give each one a single job. Prefer events, messages
   and observers over systems that reach into many unrelated queries.
