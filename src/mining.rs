@@ -23,7 +23,7 @@ use bevy::{
 };
 
 use crate::{
-    block_edit::{REACH, camera_ray, raycast, target_shape},
+    block_edit::{BlockEditSystems, crosshair_target},
     content::{BlockState, Content},
     fly_camera::{FlyCamera, FlyCameraSystems},
     terrain::{RemeshChunks, Voxels},
@@ -50,11 +50,20 @@ impl Plugin for MiningPlugin {
             .add_observer(give_the_camera_mining)
             .add_systems(
                 Update,
-                // Before the fly camera, so the click that locks the cursor
-                // finds it still unlocked and mines nothing.
-                mine.in_set(MiningSystems)
-                    .before(FlyCameraSystems)
-                    .before(RemeshChunks),
+                (
+                    // Before the fly camera, so the click that locks the
+                    // cursor finds it still unlocked and arms nothing.
+                    arm.before(FlyCameraSystems),
+                    // After the camera turns, so the block mined is the one
+                    // outlined on the frame being drawn. After placing, so
+                    // the two edits on one frame always land in the same
+                    // order. Before remeshing, so a break shows this frame.
+                    mine.in_set(MiningSystems)
+                        .after(arm)
+                        .after(FlyCameraSystems)
+                        .after(BlockEditSystems)
+                        .before(RemeshChunks),
+                ),
             );
     }
 }
@@ -76,12 +85,36 @@ pub struct Mining {
     armed: bool,
     /// What's left of [`BREAK_DELAY`].
     delay: Duration,
+    /// How long the target has been mined; `progress` is this over its
+    /// break time.
+    elapsed: Duration,
 }
 
 fn give_the_camera_mining(add: On<Add<FlyCamera>>, mut commands: Commands) {
     commands.entity(add.entity).insert(Mining::default());
 }
 
+/// Whether the player can mine now: the cursor is locked and no screen
+/// is open.
+fn can_mine(cursor: &CursorOptions, screens: Query<(), With<UiScreen>>) -> bool {
+    cursor.grab_mode != CursorGrabMode::None && playing(screens)
+}
+
+/// Arms mining on a left press made while the player can mine, before the
+/// fly camera can lock the cursor for it.
+fn arm(
+    mouse: Res<ButtonInput<MouseButton>>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    screens: Query<(), With<UiScreen>>,
+    mut mining: Single<&mut Mining, With<FlyCamera>>,
+) {
+    if mouse.just_pressed(MouseButton::Left) {
+        mining.armed = can_mine(&cursor, screens);
+    }
+}
+
+/// Mines the block under the crosshair while the armed button is held, and
+/// breaks it once its break time is up.
 fn mine(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -92,11 +125,7 @@ fn mine(
     mut voxels: Voxels,
 ) {
     let (transform, mut mining) = camera.into_inner();
-    let can_mine = cursor.grab_mode != CursorGrabMode::None && playing(screens);
-    if mouse.just_pressed(MouseButton::Left) {
-        mining.armed = can_mine;
-    }
-    if !(can_mine && mining.armed && mouse.pressed(MouseButton::Left)) {
+    if !(can_mine(&cursor, screens) && mining.armed && mouse.pressed(MouseButton::Left)) {
         mining.set_if_neq(Mining::default());
         return;
     }
@@ -106,30 +135,31 @@ fn mine(
             return;
         }
     }
-    let state_at = |pos| voxels.get(pos).unwrap_or(BlockState::AIR);
-    let Some(hit) = raycast(camera_ray(transform), REACH, |pos| {
-        target_shape(&content, state_at(pos))
-    }) else {
+    let Some(hit) = crosshair_target(transform, &content, &voxels) else {
         mining.target = None;
         mining.progress = 0.0;
+        mining.elapsed = Duration::ZERO;
         return;
     };
-    let target = (hit.block, state_at(hit.block));
+    let target = (hit.block, voxels.get(hit.block).unwrap_or(BlockState::AIR));
     let seconds = break_time(content.state(target.1).hardness);
     if mining.target == Some(target) {
-        mining.progress += time.delta_secs() / seconds;
+        mining.elapsed += time.delta();
     } else {
         // This frame's time went by before it was the target.
         mining.target = Some(target);
-        mining.progress = if seconds > 0.0 { 0.0 } else { 1.0 };
+        mining.elapsed = Duration::ZERO;
     }
-    if mining.progress >= 1.0 {
+    let needed = Duration::from_secs_f32(seconds);
+    if mining.elapsed >= needed {
         voxels.set(hit.block, BlockState::AIR);
         *mining = Mining {
             armed: true,
             delay: BREAK_DELAY,
             ..default()
         };
+    } else {
+        mining.progress = mining.elapsed.as_secs_f32() / seconds;
     }
 }
 
@@ -149,17 +179,20 @@ mod tests {
     /// One chunk with a stone at (5, 1, 5) and a dirt at (5, 1, 7), and a
     /// locked camera looking at the stone from three blocks away.
     fn app() -> App {
+        app_with(base().clone(), Duration::from_secs_f32(STEP))
+    }
+
+    /// [`app`], with these blocks and this long a frame.
+    fn app_with(content: Content, step: Duration) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-                STEP,
-            )))
-            .insert_resource(base().clone())
+            .insert_resource(TimeUpdateStrategy::ManualDuration(step))
+            .insert_resource(content)
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
             .add_observer(give_the_camera_mining)
-            .add_systems(Update, mine);
+            .add_systems(Update, (arm, mine).chain());
         app.world_mut().spawn((
             Window::default(),
             CursorOptions {
@@ -187,6 +220,12 @@ mod tests {
     fn at(app: &mut App, pos: IVec3) -> BlockState {
         let mut chunks = app.world_mut().query::<&Chunk>();
         chunks.single(app.world()).unwrap().at(pos)
+    }
+
+    fn set(app: &mut App, pos: IVec3, state: BlockState) {
+        let mut chunks = app.world_mut().query::<&mut Chunk>();
+        let mut chunk = chunks.single_mut(app.world_mut()).unwrap();
+        chunk.set(pos.x as usize, pos.y as usize, pos.z as usize, state);
     }
 
     fn mining(app: &mut App) -> Mining {
@@ -305,11 +344,7 @@ mod tests {
     #[test]
     fn holding_on_mines_the_next_block_after_a_delay() {
         let mut app = app();
-        let mut chunks = app.world_mut().query::<&mut Chunk>();
-        chunks
-            .single_mut(app.world_mut())
-            .unwrap()
-            .set(6, 1, 5, block("dirt"));
+        set(&mut app, IVec3::new(6, 1, 5), block("dirt"));
         let frames = frames_to_break(block("stone"));
         frame(&mut app, true);
         for _ in 0..frames {
@@ -330,6 +365,70 @@ mod tests {
             frame(&mut app, false);
         }
         assert_eq!(at(&mut app, IVec3::new(6, 1, 5)), BlockState::AIR);
+    }
+
+    /// The block changing under the crosshair, say to another state,
+    /// starts over on the new block's whole time.
+    #[test]
+    fn the_block_changing_starts_over() {
+        let mut app = app();
+        let pos = IVec3::new(5, 1, 5);
+        let frames = frames_to_break(block("stone"));
+        frame(&mut app, true);
+        for _ in 1..frames {
+            frame(&mut app, false);
+        }
+        assert!(mining(&mut app).progress > 0.5);
+        set(&mut app, pos, block("dirt"));
+        frame(&mut app, false);
+        assert_eq!(mining(&mut app).target, Some((pos, block("dirt"))));
+        assert_eq!(mining(&mut app).progress, 0.0);
+        let frames = frames_to_break(block("dirt"));
+        assert!(frames > 1);
+        for _ in 1..frames {
+            frame(&mut app, false);
+        }
+        assert_eq!(at(&mut app, pos), block("dirt"));
+        frame(&mut app, false);
+        assert_eq!(at(&mut app, pos), BlockState::AIR);
+    }
+
+    /// A block with no hardness breaks on the frame it's targeted, and
+    /// holding on still waits out the delay before the next one.
+    #[test]
+    fn a_block_with_no_hardness_breaks_at_once() {
+        let mut content = base().clone();
+        content.states[block("stone").0 as usize].hardness = 0.0;
+        let mut app = app_with(content, Duration::from_secs_f32(STEP));
+        let (first, second) = (IVec3::new(5, 1, 5), IVec3::new(6, 1, 5));
+        set(&mut app, second, block("stone"));
+        frame(&mut app, true);
+        assert_eq!(at(&mut app, first), BlockState::AIR);
+        assert_eq!(at(&mut app, second), block("stone"));
+        let delay = (BREAK_DELAY.as_secs_f32() / STEP).round() as usize;
+        for i in 1..delay {
+            frame(&mut app, false);
+            assert_eq!(at(&mut app, second), block("stone"), "broke at frame {i}");
+        }
+        frame(&mut app, false);
+        assert_eq!(at(&mut app, second), BlockState::AIR);
+    }
+
+    /// At 60 frames a second, a block that takes 0.75 s breaks on the 45th
+    /// frame after the press, not a frame late from rounding.
+    #[test]
+    fn breaks_on_the_frame_its_time_is_up() {
+        let mut content = base().clone();
+        content.states[block("stone").0 as usize].hardness = 1.0;
+        let mut app = app_with(content, Duration::from_secs_f64(1.0 / 60.0));
+        let stone = IVec3::new(5, 1, 5);
+        frame(&mut app, true);
+        for i in 1..45 {
+            frame(&mut app, false);
+            assert_eq!(at(&mut app, stone), block("stone"), "broke at frame {i}");
+        }
+        frame(&mut app, false);
+        assert_eq!(at(&mut app, stone), BlockState::AIR);
     }
 
     /// A press made while the cursor is free (the click that locks it)
