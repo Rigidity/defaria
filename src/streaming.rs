@@ -512,6 +512,7 @@ fn autosave(
             .loaded
             .keys()
             .chain(chunks.loading.keys())
+            .chain(chunks.ready.iter().map(|(c, _)| c))
             .map(|&c| region::split(c).0)
             .collect();
         source.store.evict(|region| in_use.contains(&region));

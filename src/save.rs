@@ -220,17 +220,38 @@ impl WorldStore {
             return (default(), true);
         }
         match region::decode(&data) {
-            Ok(chunks) => (
-                chunks
+            Ok(chunks) => {
+                // Checked here, not as each chunk loads, so it holds every
+                // time the region is read.
+                let newer = chunks.values().any(|blob| chunk::is_newer(blob));
+                if newer {
+                    error!(
+                        "{} holds chunks saved by a newer version of the game; this part \
+                         of the world won't be saved, so they aren't lost",
+                        path.display()
+                    );
+                }
+                let chunks = chunks
                     .into_iter()
                     .map(|(index, blob)| (index, Stored::Blob(blob.into())))
-                    .collect(),
-                false,
-            ),
+                    .collect();
+                (chunks, newer)
+            }
             Err(error) => {
-                // Keep the broken file for whoever wants to rescue it.
-                let mut backup = path.as_os_str().to_owned();
-                backup.push(".broken");
+                // Keep the broken file for whoever wants to rescue it,
+                // without replacing one kept before.
+                let backup = (0..)
+                    .map(|n| {
+                        let mut name = path.as_os_str().to_owned();
+                        name.push(if n == 0 {
+                            ".broken".into()
+                        } else {
+                            format!(".broken.{n}")
+                        });
+                        name
+                    })
+                    .find(|name| !Path::new(name).exists())
+                    .unwrap();
                 error!(
                     "{} is damaged ({error}); moved it to {} and starting the region over",
                     path.display(),
@@ -255,14 +276,8 @@ impl WorldStore {
             Stored::Chunk(chunk) => Some((*chunk).clone()),
             Stored::Blob(blob) => match chunk::decode(&blob, &self.names) {
                 Ok(chunk) => Some(chunk),
-                Err(_) if chunk::is_newer(&blob) => {
-                    error!(
-                        "chunk {coord} was saved by a newer version of the game; \
-                         its region won't be saved, so it isn't lost"
-                    );
-                    region.lock().unwrap().read_only = true;
-                    None
-                }
+                // Its region is read-only (see `read_region`).
+                Err(_) if chunk::is_newer(&blob) => None,
                 Err(error) => {
                     error!("chunk {coord} is damaged and will be generated again: {error}");
                     None
@@ -473,10 +488,21 @@ pub mod tests {
     fn a_damaged_region_is_set_aside() {
         let folder = temp_folder("damaged");
         std::fs::create_dir_all(folder.join("regions")).unwrap();
-        std::fs::write(folder.join("regions/r.0.0.0.dfr"), b"garbage").unwrap();
+        let path = folder.join("regions/r.0.0.0.dfr");
+        std::fs::write(&path, b"garbage").unwrap();
         let store = WorldStore::new(Some(&folder), base());
         assert_eq!(store.load(IVec3::ZERO), None);
         assert!(folder.join("regions/r.0.0.0.dfr.broken").exists());
+        // Damaged again: the first backup is kept.
+        std::fs::write(&path, b"more garbage").unwrap();
+        let store = WorldStore::new(Some(&folder), base());
+        assert_eq!(store.load(IVec3::ZERO), None);
+        let first = std::fs::read(folder.join("regions/r.0.0.0.dfr.broken")).unwrap();
+        let second = std::fs::read(folder.join("regions/r.0.0.0.dfr.broken.1")).unwrap();
+        assert_eq!(
+            (first.as_slice(), second.as_slice()),
+            (&b"garbage"[..], &b"more garbage"[..])
+        );
     }
 
     /// A chunk saved again while a flush is encoding keeps its newer copy,
@@ -518,6 +544,10 @@ pub mod tests {
         assert_eq!(store.flush(), 0);
         assert_eq!(std::fs::read(&path).unwrap(), newer);
         assert!(!folder.join("regions/r.0.0.0.dfr.broken").exists());
+        // Saves to it stay in memory: it isn't forgotten while they're there.
+        store.evict(|_| false);
+        assert_eq!(store.regions_held(), 1);
+        assert_eq!(store.load(IVec3::ZERO), Some(chunk_with(block("sand"))));
     }
 
     /// A region file the game isn't allowed to read is left alone too.
@@ -562,6 +592,16 @@ pub mod tests {
         let store = WorldStore::new(Some(&folder), base());
         assert_eq!(store.load(b), Some(chunk_with(block("lamp"))));
         assert_eq!(store.load(a), None);
+        store.save(a, chunk_with(block("sand")));
+        assert_eq!(store.flush(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), newer);
+
+        // Forgotten before anything's saved to it, and read again: still
+        // read-only.
+        let store = WorldStore::new(Some(&folder), base());
+        assert_eq!(store.load(a), None);
+        store.evict(|_| false);
+        assert_eq!(store.regions_held(), 0);
         store.save(a, chunk_with(block("sand")));
         assert_eq!(store.flush(), 0);
         assert_eq!(std::fs::read(&path).unwrap(), newer);

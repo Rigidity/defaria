@@ -655,6 +655,14 @@ mod tests {
     }
 
     #[test]
+    fn missing_terrain_blocks_are_named() {
+        assert!(TerrainBlocks::missing(base()).is_empty());
+        let mut content = base().clone();
+        assert!(content.forget_block("defaria:stone"));
+        assert_eq!(TerrainBlocks::missing(&content), ["defaria:stone"]);
+    }
+
+    #[test]
     fn different_seeds_make_different_terrain() {
         let a = terrain();
         let b = terrain_with(TerrainSettings {
