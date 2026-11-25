@@ -120,28 +120,56 @@ mod tests {
         assert_eq!(place(Vec2::new(5.0, 5.0), screen * 2.0, screen), Vec2::ZERO);
     }
 
+    /// On a scale-2 window the pointer is in physical pixels and the box
+    /// is placed in logical ones, flipping by its logical size at the edge.
     #[test]
     fn hovering_a_node_with_a_tooltip_shows_it() {
         let mut app = pointer::app();
         app.init_resource::<UiTheme>().add_plugins(TooltipPlugin);
+        let mut windows = app.world_mut().query::<&mut Window>();
+        windows
+            .single_mut(app.world_mut())
+            .unwrap()
+            .resolution
+            .set_scale_factor_override(Some(2.0));
         pointer::open_screen(&mut app);
-        let node = pointer::node(&mut app, Vec2::new(50.0, 50.0), 40.0, 1);
-        app.world_mut()
-            .entity_mut(node)
-            .insert((Hoverable, Tooltip("Stone".into())));
-        pointer::move_to(&mut app, Vec2::new(50.0, 50.0));
+        for (at, name) in [
+            (Vec2::new(100.0, 100.0), "Stone"),
+            (Vec2::new(1260.0, 700.0), "Dirt"),
+        ] {
+            let node = pointer::node(&mut app, at, 20.0, 1);
+            app.world_mut()
+                .entity_mut(node)
+                .insert((Hoverable, Tooltip(name.into())));
+        }
         app.update();
+        // The box's size from layout: 200×60 physical, 100×30 logical.
         let mut boxes = app
             .world_mut()
-            .query_filtered::<(&Node, &Text, &Visibility), With<TooltipBox>>();
-        let (node_style, text, visibility) = boxes.single(app.world()).unwrap();
+            .query_filtered::<(&Node, &Text, &Visibility, &mut ComputedNode), With<TooltipBox>>();
+        *boxes.single_mut(app.world_mut()).unwrap().3 = ComputedNode {
+            size: Vec2::new(200.0, 60.0),
+            inverse_scale_factor: 0.5,
+            ..default()
+        };
+
+        pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
+        app.update();
+        let (style, text, visibility, _) = boxes.single(app.world()).unwrap();
         assert_eq!(text.0, "Stone");
         assert_eq!(*visibility, Visibility::Inherited);
-        assert_eq!((node_style.left, node_style.top), (px(64.0), px(64.0)));
+        assert_eq!((style.left, style.top), (px(64.0), px(64.0)));
 
-        pointer::move_to(&mut app, Vec2::new(500.0, 50.0));
+        // At (630, 350) logical in a 640×360 window: above and left.
+        pointer::move_to(&mut app, Vec2::new(1260.0, 700.0));
         app.update();
-        let (_, _, visibility) = boxes.single(app.world()).unwrap();
+        let (style, text, ..) = boxes.single(app.world()).unwrap();
+        assert_eq!(text.0, "Dirt");
+        assert_eq!((style.left, style.top), (px(516.0), px(306.0)));
+
+        pointer::move_to(&mut app, Vec2::new(600.0, 50.0));
+        app.update();
+        let (_, _, visibility, _) = boxes.single(app.world()).unwrap();
         assert_eq!(*visibility, Visibility::Hidden);
     }
 }

@@ -33,23 +33,30 @@ pub struct BlockEditPlugin;
 
 impl Plugin for BlockEditPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_crosshair).add_systems(
-            Update,
-            (
-                // Before the fly camera, so the click that locks the cursor
-                // finds it still unlocked and edits nothing. After the
-                // hotbar, so a slot picked this frame is the one placed.
-                edit_blocks
-                    .run_if(playing)
-                    .after(HotbarInput)
-                    .before(FlyCameraSystems)
-                    .before(RemeshChunks),
-                // After the camera moves, so the outline matches the
-                // frame being drawn.
-                outline_target.after(FlyCameraSystems),
-                show_crosshair,
-            ),
-        );
+        app.add_systems(Startup, spawn_crosshair)
+            // After `Update`, so a screen opened or closed there shows on
+            // the same frame.
+            .add_systems(
+                PostUpdate,
+                show_crosshair
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            )
+            .add_systems(
+                Update,
+                (
+                    // Before the fly camera, so the click that locks the cursor
+                    // finds it still unlocked and edits nothing. After the
+                    // hotbar, so a slot picked this frame is the one placed.
+                    edit_blocks
+                        .run_if(playing)
+                        .after(HotbarInput)
+                        .before(FlyCameraSystems)
+                        .before(RemeshChunks),
+                    // After the camera moves, so the outline matches the
+                    // frame being drawn.
+                    outline_target.after(FlyCameraSystems),
+                ),
+            );
     }
 }
 
@@ -711,6 +718,29 @@ mod tests {
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 14, 1, 5), block("dirt"));
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+    }
+
+    /// The crosshair hides while a screen is open.
+    #[test]
+    fn the_crosshair_hides_while_a_screen_is_open() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Startup, spawn_crosshair)
+            .add_systems(Update, show_crosshair);
+        let shown = |app: &mut App| {
+            let mut crosshairs = app
+                .world_mut()
+                .query_filtered::<&Visibility, With<Crosshair>>();
+            *crosshairs.single(app.world()).unwrap() == Visibility::Inherited
+        };
+        app.update();
+        assert!(shown(&mut app));
+        let screen = app.world_mut().spawn(UiScreen).id();
+        app.update();
+        assert!(!shown(&mut app));
+        app.world_mut().despawn(screen);
+        app.update();
+        assert!(shown(&mut app));
     }
 
     fn world_voxel(app: &mut App, pos: IVec3) -> BlockState {

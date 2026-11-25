@@ -69,13 +69,10 @@ fn show_slot_items(
     mut icons: Query<&mut ItemIcon, With<SlotIcon>>,
 ) {
     for (slot, children, mut tooltip) in &mut slots {
-        let name = slot
-            .item
-            .and_then(|item| content.item_at(item))
-            .map(|item| item.name.clone())
-            .unwrap_or_default();
+        let name = slot.item.and_then(|item| content.item_name(item));
+        let name = name.unwrap_or_default();
         if tooltip.0 != name {
-            tooltip.0 = name;
+            tooltip.0 = name.to_owned();
         }
         for &child in children {
             if let Ok(mut icon) = icons.get_mut(child) {

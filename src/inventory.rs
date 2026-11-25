@@ -15,7 +15,7 @@ use bevy::prelude::*;
 
 use crate::{
     content::{Content, ItemId},
-    hotbar::{ActiveSlot, Hotbar},
+    hotbar::{ActiveSlot, Hotbar, hotbar_height},
     ui::{Clicked, ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel},
 };
 
@@ -23,8 +23,8 @@ use crate::{
 pub const COLUMNS: usize = 9;
 /// The most rows that show at once; more scroll.
 pub const VISIBLE_ROWS: usize = 5;
-/// Room left at the bottom of the screen for the hotbar, in logical pixels.
-const HOTBAR_ROOM: f32 = 120.0;
+/// Space between the inventory's room and the hotbar, in logical pixels.
+const ABOVE_HOTBAR: f32 = 12.0;
 
 pub struct InventoryPlugin;
 
@@ -61,6 +61,8 @@ fn toggle_inventory(
     screens: Query<(), With<UiScreen>>,
     theme: Res<UiTheme>,
     content: Res<Content>,
+    hotbar: Res<Hotbar>,
+    active: Res<ActiveSlot>,
 ) {
     if !keys.just_pressed(KeyCode::KeyE) {
         return;
@@ -69,11 +71,18 @@ fn toggle_inventory(
         // Escape may close it this frame too.
         commands.entity(inventory).try_despawn();
     } else if screens.is_empty() {
-        spawn_inventory(&mut commands, &theme, &content);
+        spawn_inventory(&mut commands, &theme, &content, hotbar.active(*active));
     }
 }
 
-fn spawn_inventory(commands: &mut Commands, theme: &UiTheme, content: &Content) {
+/// Spawns the inventory, with `framed` (the active hotbar slot's item)
+/// framed from its first frame.
+fn spawn_inventory(
+    commands: &mut Commands,
+    theme: &UiTheme,
+    content: &Content,
+    framed: Option<ItemId>,
+) {
     let slot = theme.slot_size;
     let gap = theme.slot_gap;
     let width = COLUMNS as f32 * slot + (COLUMNS - 1) as f32 * gap;
@@ -90,7 +99,7 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme, content: &Content) 
                 height: percent(100),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                padding: UiRect::bottom(px(HOTBAR_ROOM)),
+                padding: UiRect::bottom(px(hotbar_height(theme) + ABOVE_HOTBAR)),
                 ..default()
             },
             BackgroundColor(theme.backdrop),
@@ -136,7 +145,7 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme, content: &Content) 
                                     theme,
                                     ItemSlot {
                                         item: Some(item),
-                                        selected: false,
+                                        selected: framed == Some(item),
                                     },
                                 ),
                             ));
@@ -172,9 +181,8 @@ fn frame_active_item(
     hotbar: Res<Hotbar>,
     active: Res<ActiveSlot>,
     mut slots: Query<(&CatalogSlot, &mut ItemSlot)>,
-    added: Query<(), Added<CatalogSlot>>,
 ) {
-    if !hotbar.is_changed() && !active.is_changed() && added.is_empty() {
+    if !hotbar.is_changed() && !active.is_changed() {
         return;
     }
     let item = hotbar.active(*active);
@@ -373,16 +381,27 @@ mod tests {
         assert_eq!(grids.iter(app.world()).count(), 0);
     }
 
-    /// Escape closes it too, and with the base game's few items there's
-    /// no scrollbar.
+    /// Escape closes it too and locks the cursor again, and with the base
+    /// game's few items there's no scrollbar.
     #[test]
     fn escape_closes_the_inventory() {
         let mut app = test_game(Script::parse("wait 1").unwrap());
         settle(&mut app);
-        run_more(&mut app, "hold KeyE 1\nwait 2");
+        run_more(&mut app, "hold MouseLeft 1\nwait 1\nhold KeyE 1\nwait 2");
         assert!(is_open(&mut app));
         assert!(!scrollbar_shown(&mut app));
         run_more(&mut app, "hold Escape 1\nwait 2");
+        assert!(!is_open(&mut app));
+        assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
+    }
+
+    /// E doesn't open the inventory over another screen.
+    #[test]
+    fn e_does_nothing_while_another_screen_is_open() {
+        let mut app = test_game(Script::parse("wait 1").unwrap());
+        settle(&mut app);
+        app.world_mut().spawn(UiScreen);
+        run_more(&mut app, "hold KeyE 1\nwait 2");
         assert!(!is_open(&mut app));
     }
 }

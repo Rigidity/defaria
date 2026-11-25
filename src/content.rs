@@ -384,6 +384,11 @@ impl Content {
         self.items.get(id.0)
     }
 
+    /// The display name of the item an [`ItemId`] names.
+    pub fn item_name(&self, id: ItemId) -> Option<&str> {
+        self.item_at(id).map(|item| item.name.as_str())
+    }
+
     /// Every image some texture uses, as asset paths, each once.
     pub fn image_paths(&self) -> Vec<String> {
         let mut paths: Vec<String> = self

@@ -1,16 +1,19 @@
 //! The UI toolkit: the pieces screens and the HUD are built from.
 //!
 //! - [`theme`]: the shared sizes and colors, [`UiTheme`].
-//! - [`screen`]: the [`UiScreen`] state, which screen (if any) has the mouse
-//!   and keyboard, and the [`playing`] run condition for gameplay input.
+//! - [`screen`]: the [`UiScreen`] marker on an open screen's root, which
+//!   takes the mouse and keyboard from the game, and the [`playing`] run
+//!   condition for gameplay input.
 //! - [`pointer`]: hovering and clicking nodes ([`Hoverable`], [`Clicked`]).
 //! - [`scroll`]: wheel scrolling and scrollbars ([`scroll_panel`]).
 //! - [`icon`]: item icons drawn from the block textures ([`ItemIcon`]).
 //! - [`slot`]: the item slot widget ([`item_slot`]).
 //! - [`tooltip`]: text beside the pointer ([`Tooltip`]).
 //!
-//! Widgets are bundle-returning functions plus the components and systems
-//! that keep them up to date. They don't decide what a click does: the code
+//! Widgets are bundle-returning functions (or, where one part needs
+//! another's entity, functions that spawn and return it, like
+//! [`scroll_panel`]) plus the components and systems that keep them up to
+//! date. They don't decide what a click does: the code
 //! that spawns one observes its [`Clicked`]. Features build their own UI out
 //! of these in their own modules (`hotbar`, `inventory`).
 //!

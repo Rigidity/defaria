@@ -3,7 +3,8 @@
 
 use bevy::prelude::*;
 
-/// The look of the UI. Widgets read it when they're spawned.
+/// The look of the UI. Widgets read it when they're spawned; the colours
+/// that change with state (a slot's frame) are read as they change.
 #[derive(Resource, Debug, Clone)]
 pub struct UiTheme {
     /// Width and height of an item slot, border included, in logical pixels.
@@ -16,6 +17,10 @@ pub struct UiTheme {
     pub slot_gap: f32,
     pub panel_padding: f32,
     pub scrollbar_width: f32,
+    /// Between a scrolled area and its scrollbar.
+    pub scrollbar_gap: f32,
+    /// The shortest a scrollbar's thumb gets, however long the content.
+    pub scrollbar_min_thumb: f32,
     pub font_size: f32,
     pub title_font_size: f32,
 
@@ -43,6 +48,8 @@ impl Default for UiTheme {
             slot_gap: 4.0,
             panel_padding: 14.0,
             scrollbar_width: 6.0,
+            scrollbar_gap: 4.0,
+            scrollbar_min_thumb: 24.0,
             font_size: 16.0,
             title_font_size: 20.0,
 

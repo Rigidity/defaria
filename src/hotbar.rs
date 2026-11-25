@@ -165,17 +165,30 @@ pub struct HotbarSlot(pub usize);
 #[derive(Component, Debug, Clone, Copy, Default)]
 struct ActiveItemName(f32);
 
+/// From the bottom of the window to the hotbar, and from the bar to the
+/// item name above it, in logical pixels.
+const BOTTOM: f32 = 12.0;
+const NAME_GAP: f32 = 8.0;
+
+/// How much of the bottom of the window the hotbar and its item name take
+/// up, in logical pixels, so screens can leave it uncovered.
+pub fn hotbar_height(theme: &UiTheme) -> f32 {
+    // A line of text is about 1.2 times its font size.
+    let name = theme.title_font_size * 1.2;
+    BOTTOM + theme.slot_size + 2.0 * theme.slot_gap + NAME_GAP + name
+}
+
 fn spawn_hotbar(mut commands: Commands, theme: Res<UiTheme>) {
     commands
         .spawn((
             Name::new("Hotbar"),
             Node {
                 position_type: PositionType::Absolute,
-                bottom: px(12),
+                bottom: px(BOTTOM),
                 width: percent(100),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
-                row_gap: px(8),
+                row_gap: px(NAME_GAP),
                 ..default()
             },
         ))
@@ -252,10 +265,8 @@ fn show_active_name(
         if switched {
             let name = hotbar
                 .active(*active)
-                .and_then(|item| content.item_at(item))
-                .map(|item| item.name.clone())
-                .unwrap_or_default();
-            text.0 = name;
+                .and_then(|item| content.item_name(item));
+            text.0 = name.unwrap_or_default().to_owned();
             left.0 = NAME_TIME;
         } else if left.0 > 0.0 {
             left.0 = (left.0 - time.delta_secs()).max(0.0);

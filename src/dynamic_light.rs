@@ -254,5 +254,9 @@ mod tests {
         press(&mut app);
         assert!(on(&app));
         assert_eq!(drawn(&app), 1);
+        // While a screen (the inventory) is open, L is the screen's.
+        app.world_mut().spawn(crate::ui::UiScreen);
+        press(&mut app);
+        assert!(on(&app));
     }
 }

@@ -40,10 +40,13 @@ pub struct Scrollable {
     pub line: f32,
 }
 
-/// A scrollable node laid out as `node` (its `height` is the view's), with
-/// a scrollbar beside it, spawned under `parent`. `line` is how far a notch
-/// of the wheel scrolls; `extra` is added to the scrolled node, and
-/// `content` spawns its children. Returns the scrolled node.
+/// A scrollable node laid out as `node`, with a scrollbar beside it (as
+/// tall as the node), spawned under `parent`. `line` is how far a notch of
+/// the wheel scrolls; `extra` is added to the scrolled node, and `content`
+/// spawns its children. Returns the scrolled node.
+///
+/// Unlike the other widgets this spawns rather than returning a bundle,
+/// since the scrollbar needs the scrolled node's entity.
 pub fn scroll_panel(
     parent: &mut ChildSpawnerCommands,
     theme: &UiTheme,
@@ -52,11 +55,10 @@ pub fn scroll_panel(
     extra: impl Bundle,
     content: impl FnOnce(&mut ChildSpawnerCommands),
 ) -> Entity {
-    let height = node.height;
     let mut scrolled = Entity::PLACEHOLDER;
     parent
         .spawn(Node {
-            column_gap: px(theme.slot_gap),
+            column_gap: px(theme.scrollbar_gap),
             ..default()
         })
         .with_children(|row| {
@@ -76,11 +78,14 @@ pub fn scroll_panel(
                 Scrollbar::new(
                     scrolled,
                     ControlOrientation::Vertical,
-                    theme.slot_size / 2.0,
+                    theme.scrollbar_min_thumb,
                 ),
+                // Stretched to the row's height. Left out until the first
+                // layout shows the content doesn't fit, so it never flashes
+                // up on a list that fits.
                 Node {
                     width: px(theme.scrollbar_width),
-                    height,
+                    display: Display::None,
                     ..default()
                 },
                 BackgroundColor(theme.scrollbar_track),
@@ -100,19 +105,23 @@ pub fn max_scroll(node: &ComputedNode) -> f32 {
     (node.content_size.y - view).max(0.0) * node.inverse_scale_factor
 }
 
-/// The wheel scrolls the top scrollable node the pointer is over.
+/// The wheel scrolls the top scrollable node the pointer is over, or the
+/// one whose scrollbar it's over.
 fn scroll_with_wheel(
     wheel: Res<AccumulatedMouseScroll>,
     pointer: Res<UiPointer>,
-    targets: Query<HitTestData, With<Scrollable>>,
+    targets: Query<HitTestData, Or<(With<Scrollable>, With<Scrollbar>)>>,
+    bars: Query<&Scrollbar>,
     mut nodes: Query<(&Scrollable, &mut ScrollPosition, &ComputedNode)>,
 ) {
     if wheel.delta.y == 0.0 {
         return;
     }
-    let Some((scrollable, mut position, node)) = pointer
+    let target = pointer
         .topmost(&targets)
-        .and_then(|entity| nodes.get_mut(entity).ok())
+        .map(|entity| bars.get(entity).map_or(entity, |bar| bar.target));
+    let Some((scrollable, mut position, node)) =
+        target.and_then(|entity| nodes.get_mut(entity).ok())
     else {
         return;
     };
@@ -224,6 +233,21 @@ mod tests {
         pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
         turn(&mut app, MouseScrollUnit::Line, -2.0);
         assert_eq!(scrolled(&app, list), 0.0);
+    }
+
+    /// Over its scrollbar, the wheel scrolls what the bar scrolls.
+    #[test]
+    fn the_wheel_over_a_scrollbar_scrolls_its_target() {
+        let (mut app, list) = app();
+        let bar = pointer::node(&mut app, Vec2::new(160.0, 100.0), 10.0, 1);
+        app.world_mut().entity_mut(bar).insert(Scrollbar::new(
+            list,
+            ControlOrientation::Vertical,
+            10.0,
+        ));
+        pointer::move_to(&mut app, Vec2::new(160.0, 100.0));
+        turn(&mut app, MouseScrollUnit::Line, -1.0);
+        assert_eq!(scrolled(&app, list), 20.0);
     }
 
     /// When the content shrinks, the position comes back in range.

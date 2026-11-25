@@ -138,3 +138,25 @@ turning off the mouse input plugin there), once that's worked out; then
 
 **When to revisit.** When the UI needs dragging (moving stacks), text
 input, or Bevy's widgets.
+
+## The cursor has two owners (2026-11-24)
+
+**Decision.** `fly_camera` locks the cursor on a click and frees it on
+Escape while playing; `ui::screen` frees it when a screen opens and locks
+it when the last one closes. Gameplay input checks `ui::playing` (no screen
+open), and some of it (looking, breaking, placing) also checks that the
+cursor is locked.
+
+**What's wrong with it.** "The game has the input" is decided two ways.
+With no screen open but the cursor freed by Escape, the mouse wheel still
+steps through the hotbar, while the pointer doesn't hover the hotbar
+either, since the UI only takes the mouse while a screen is open. Escape is
+handled in two places, which only works because those systems don't run on
+the same frames.
+
+**What should replace it.** One owner of `CursorOptions` in `ui::screen`:
+the free-cursor state after Escape becomes a screen (a pause menu), so
+`playing` alone says whether the game has the input, and `fly_camera` only
+reads the cursor.
+
+**When to revisit.** With the first pause or settings menu.
