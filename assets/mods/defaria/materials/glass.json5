@@ -1,0 +1,6 @@
+// Pale, faintly blue-green: the glass image's alpha makes it see-through.
+{
+  palette: ["#5e7a7c", "#a6c4c4", "#d8ecea", "#f4fffe"],
+  hardness: 0.3,
+  weight: 2500,
+}

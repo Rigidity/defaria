@@ -1,0 +1,6 @@
+// Deep blue, translucent: each color's last two digits are its alpha.
+{
+  palette: ["#1c3f8cc0", "#2a56a8b8", "#3a6cbcb0", "#5a8ad0a8"],
+  hardness: 0,
+  weight: 1000,
+}

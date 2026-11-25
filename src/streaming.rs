@@ -653,10 +653,7 @@ mod tests {
             .insert_resource(base().clone())
             .add_plugins((TerrainPlugin, LightPlugin, StreamingPlugin))
             .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial {
-                material: Handle::default(),
-                layers: default(),
-            })
+            .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .insert_resource(settings())
             .insert_resource(TerrainSettings { seed, ..default() });
         if let Some(folder) = folder {
@@ -923,10 +920,7 @@ mod tests {
             .insert_resource(crate::content::test_mod(&[]))
             .add_plugins((TerrainPlugin, LightPlugin, StreamingPlugin))
             .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial {
-                material: Handle::default(),
-                layers: default(),
-            })
+            .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .insert_resource(settings())
             .insert_resource(WorldFolder(folder.clone()));
         app.world_mut()
@@ -973,10 +967,7 @@ mod tests {
             .insert_resource(base().clone())
             .add_plugins((TerrainPlugin, LightPlugin))
             .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial {
-                material: Handle::default(),
-                layers: default(),
-            });
+            .insert_resource(BlockMaterial::unloaded(Handle::default()));
         spawn_patch(patch.world_mut());
         finish_meshing(&mut patch);
         // Chunks in the middle of both, away from either's edge.

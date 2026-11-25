@@ -47,7 +47,8 @@ impl Plugin for VoxelMaterialPlugin {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .init_resource::<BlockMaterial>()
             .init_resource::<BlockTiles>()
-            .add_systems(Update, build_block_texture);
+            .add_systems(Update, build_block_texture)
+            .add_systems(PostUpdate, sync_see_through_materials);
     }
 }
 
@@ -69,6 +70,9 @@ pub struct VoxelMaterial {
     pub blocks: Handle<Image>,
     #[uniform(2)]
     pub lighting: LightingUniform,
+    /// Opaque, cut out (alpha to coverage, with holes where the texture is
+    /// transparent) or blended.
+    pub alpha_mode: AlphaMode,
 }
 
 /// The light that isn't baked into chunk meshes. Kept up to date by
@@ -102,6 +106,10 @@ pub struct GpuDynamicLight {
 }
 
 impl Material for VoxelMaterial {
+    fn alpha_mode(&self) -> AlphaMode {
+        self.alpha_mode
+    }
+
     fn vertex_shader() -> ShaderRef {
         SHADER_PATH.into()
     }
@@ -151,10 +159,17 @@ const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 6] = [
     (ATTRIBUTE_FACE, "face: vec2<u32>"),
 ];
 
-/// The material every chunk mesh shares, and the images behind it.
+/// The materials chunk meshes are drawn with, one per
+/// [`Render`](crate::content::Render), and the
+/// images behind them. They differ only in how they blend: `material` is
+/// the opaque one, and the others copy its texture and lighting (see
+/// [`sync_see_through_materials`]), so the rest of the game only updates
+/// `material`.
 #[derive(Resource, Debug, Clone)]
 pub struct BlockMaterial {
     pub material: Handle<VoxelMaterial>,
+    pub cutout: Handle<VoxelMaterial>,
+    pub translucent: Handle<VoxelMaterial>,
     /// The grayscale layer images as loaded, by asset path. The material's
     /// texture is built from them.
     pub layers: HashMap<String, Handle<Image>>,
@@ -181,13 +196,55 @@ impl FromWorld for BlockMaterial {
         // A handle with no image behind it yet: chunks don't draw until the
         // layers have loaded and the real texture replaces it.
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
-        let material = world
-            .resource_mut::<Assets<VoxelMaterial>>()
-            .add(VoxelMaterial {
-                blocks,
+        let mut materials = world.resource_mut::<Assets<VoxelMaterial>>();
+        let mut add = |alpha_mode| {
+            materials.add(VoxelMaterial {
+                blocks: blocks.clone(),
                 lighting: default(),
-            });
-        Self { material, layers }
+                alpha_mode,
+            })
+        };
+        Self {
+            material: add(AlphaMode::Opaque),
+            cutout: add(AlphaMode::AlphaToCoverage),
+            translucent: add(AlphaMode::Blend),
+            layers,
+        }
+    }
+}
+
+impl BlockMaterial {
+    /// Materials with nothing behind them, for tests that don't draw.
+    #[cfg(test)]
+    pub fn unloaded(material: Handle<VoxelMaterial>) -> Self {
+        Self {
+            material,
+            cutout: Handle::default(),
+            translucent: Handle::default(),
+            layers: default(),
+        }
+    }
+}
+
+/// Gives the cut-out and translucent materials the opaque one's texture
+/// and lighting whenever they change. In `PostUpdate`, after everything
+/// that changes them, so all three draw the same frame alike.
+fn sync_see_through_materials(
+    block: Res<BlockMaterial>,
+    mut materials: ResMut<Assets<VoxelMaterial>>,
+) {
+    let Some(main) = materials.get(&block.material) else {
+        return;
+    };
+    let (blocks, lighting) = (main.blocks.clone(), main.lighting);
+    for handle in [&block.cutout, &block.translucent] {
+        let stale = materials
+            .get(handle)
+            .is_some_and(|m| m.blocks != blocks || m.lighting != lighting);
+        if stale && let Some(mut material) = materials.get_mut(handle) {
+            material.blocks = blocks.clone();
+            material.lighting = lighting;
+        }
     }
 }
 

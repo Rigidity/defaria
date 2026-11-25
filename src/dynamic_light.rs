@@ -204,11 +204,9 @@ mod tests {
             .add(VoxelMaterial {
                 blocks: Handle::default(),
                 lighting: default(),
+                alpha_mode: AlphaMode::Opaque,
             });
-        app.insert_resource(BlockMaterial {
-            material,
-            layers: default(),
-        });
+        app.insert_resource(BlockMaterial::unloaded(material));
         app
     }
 

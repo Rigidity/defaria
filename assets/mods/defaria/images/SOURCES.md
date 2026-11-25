@@ -19,6 +19,23 @@ update the row when a layer is replaced.
 | `planks.png` | Retro Diffusion, converted with `scripts/gray-layer.py` (no `--even`, which would erase the seams), then rebuilt by hand: four boards of three rows over a one-row seam (level 1), the source's grain marks kept, the bottom row of each board one level darker, a few level-6 highlights on top rows, and one staggered end joint (level 2) per board | 2026-11-24 | `rd_lite__default` | close-up of a wooden plank floor surface filling the entire frame edge to edge, four horizontal boards stacked with thin dark seams between them, subtle wood grain lines along each board, no outline, no border, no background, grayscale, even lighting | `b88a1319-3618-4224-948e-ed44963ebdd2` | 98% |
 | `ore.png` | Retro Diffusion for where the nuggets go (in color, so the ore could be told from the stone); the generated nuggets were one or two pixels, so redrawn by hand as six small clusters at the same spots, lit from the top left (levels 6, 5, 4 and 3, 2 underneath), transparent elsewhere. An overlay stacked over `stone.png`, colored by the ore material's `ore` palette | 2026-11-25 | `rd_plus__mc_texture` | grey stone with several small clusters of shiny orange metal ore nuggets embedded in it, flat block surface texture, even lighting | `2fb46ee2-fd9c-4080-824f-6089fb27c603` | 98% |
 
+## Drawn by script
+
+`glass.png`, `water.png`, `lava.png` and `tuft.png` were drawn
+procedurally by `scripts/draw-layers.py` (no Retro Diffusion), 2026-11-25.
+Re-run the script to redraw them.
+
+- `glass.png`: a solid one-pixel frame, lit from the top left, two short
+  highlight streaks, and a nearly clear middle (alpha 40). Partly
+  transparent, for translucent glass.
+- `water.png`: soft, wrapping ripples, fully solid; the water material's
+  palette carries its alpha.
+- `lava.png`: dark crust plates with bright molten seams between them,
+  wrapping.
+- `tuft.png`: nine blades of grass rising from the bottom edge and bending
+  outward toward their tips, thicker near the ground, transparent around
+  them.
+
 ## Cracks (`cracks/`)
 
 `stage_0.png` to `stage_9.png`, the cracks drawn over a block being mined,

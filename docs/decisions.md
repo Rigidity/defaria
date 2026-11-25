@@ -3,6 +3,50 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## See-through blocks let all light through (2026-11-25)
+
+**Context.** Leaves, glass, water and plants are drawn see-through
+(`render` in `docs/modding.md`). Light used to stop at any side a block
+covers; see-through blocks cover their sides too, so their faces against
+each other can be hidden.
+
+**Decision.** Light ignores the covered sides of see-through blocks: it
+passes through leaves, glass, water and plants as if they were air
+(`State::blocks_light` in `src/content.rs`), and they cast no ambient
+occlusion.
+
+**What's wrong with it.** Under a tree is as bright as open ground, and
+the bottom of a deep lake is in full sky light. Minecraft dims light a
+level or more through leaves and water.
+
+**What should replace it.** A per-block light filter: how many levels light
+loses passing through (leaves 1, water 2 or 3), applied in
+`src/light/propagate.rs` as light steps into the block. Sky light coming
+straight down should lose it too, so a deep lake darkens with depth.
+
+## Translucent faces are sorted per chunk, on the CPU (2026-11-25)
+
+**Context.** Translucent faces (glass, water) blend with what's behind
+them, so they must be drawn back to front.
+
+**Decision.** Each chunk's translucent faces are one mesh on a child
+entity, which Bevy sorts against other meshes by its centre. Inside it,
+`sort_translucent_faces` (`src/terrain.rs`) orders the faces farthest
+first from the camera by their centres, rewriting the index buffer when
+the camera has moved a block (near chunks) or a chunk (far ones).
+
+**What's wrong with it.** Sorting by face centres and by chunk centres is
+an approximation: big faces at grazing angles, and translucent faces in
+neighbouring chunks that overlap on screen, can blend in the wrong order.
+Each re-sort uploads the chunk's mesh again, which adds up over a sea.
+The water's surface is one face, facing up, so it can't be seen from
+underneath, and there's no tint or fog underwater.
+
+**What should replace it.** Order-independent transparency (Bevy has an
+OIT pass), or sorting only the index buffer on the GPU. For water, draw
+the surface from both sides and add an underwater view when fluids get
+physics.
+
 ## Every material combination is its own tile and state (2026-11-25)
 
 **Context.** Blocks and items can be made of materials

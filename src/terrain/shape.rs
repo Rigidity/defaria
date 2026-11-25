@@ -70,6 +70,11 @@ pub struct TerrainShape {
 }
 
 impl TerrainShape {
+    /// The world's seed.
+    pub fn seed(&self) -> u64 {
+        self.settings.seed
+    }
+
     pub fn new(settings: TerrainSettings) -> Self {
         let seed = settings.seed;
         Self {

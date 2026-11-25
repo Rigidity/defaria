@@ -1,0 +1,10 @@
+// Still lava. It doesn't flow yet. Opaque and glowing, and a fluid like
+// water.
+{
+  name: "Lava",
+  model: "fluid",
+  fluid: true,
+  textures: { all: "lava" },
+  light: [15, 10, 4],
+  weight: 3100,
+}

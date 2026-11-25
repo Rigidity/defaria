@@ -1,0 +1,48 @@
+// Two quads crossed diagonally through the block, for plants. Each quad is
+// two faces back to back, so it shows from both sides. They're inside the
+// block, so they're never hidden, and they're lit by the block's own voxel.
+// It covers no side, so light passes through and its neighbours' faces
+// show, and there's nothing to bump into.
+{
+  slots: { all: null },
+  occludes: [],
+  collision: [],
+  faces: [
+    {
+      texture: "all",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [1, 0, 1], uv: [1, 1] },
+        { pos: [1, 1, 1], uv: [1, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "all",
+      vertices: [
+        { pos: [1, 0, 1], uv: [0, 1] },
+        { pos: [0, 0, 0], uv: [1, 1] },
+        { pos: [0, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "all",
+      vertices: [
+        { pos: [1, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 1], uv: [1, 1] },
+        { pos: [0, 1, 1], uv: [1, 0] },
+        { pos: [1, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "all",
+      vertices: [
+        { pos: [0, 0, 1], uv: [0, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [0, 1, 1], uv: [0, 0] },
+      ],
+    },
+  ],
+}

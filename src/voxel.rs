@@ -43,7 +43,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BakedFace, BlockState, Content, MAX_LIGHT},
+    content::{BakedFace, BlockState, Content, MAX_LIGHT, Render},
     light::{ChunkLight, Light},
 };
 
@@ -288,10 +288,11 @@ impl Neighborhood {
         self.light[Self::index(pos)]
     }
 
-    /// Builds a mesh of every voxel's model faces in the middle chunk,
-    /// leaving out each face whose neighbour on its `cull` side covers the
-    /// side facing it, with ambient occlusion and light at every corner.
-    pub fn mesh(&self, content: &Content) -> Mesh {
+    /// Builds the meshes of every voxel's model faces in the middle chunk,
+    /// one per way faces are drawn (see [`Render`]), leaving out each face
+    /// its neighbour on its `cull` side hides (see [`Content::hides`]),
+    /// with ambient occlusion and light at every corner.
+    pub fn meshes(&self, content: &Content) -> ChunkMeshes {
         let opaque: Vec<bool> = self
             .blocks
             .iter()
@@ -299,56 +300,40 @@ impl Neighborhood {
             .collect();
         let opaque_at = |pos: IVec3| opaque[Self::index(pos)];
 
-        let mut positions = Vec::new();
-        let mut normals = Vec::new();
-        let mut uvs = Vec::new();
-        let mut corners = Vec::new();
-        let mut lights = Vec::new();
-        let mut faces = Vec::new();
-        let mut indices = Vec::new();
-
+        let mut builders: [MeshBuilder; 3] = Default::default();
         for (x, y, z) in Chunk::positions() {
             let pos = IVec3::new(x as i32, y as i32, z as i32);
             let voxel = self.block(pos);
             if voxel.is_air() {
                 continue;
             }
-            let origin = pos.as_vec3();
             let state = content.state(voxel);
             let glows = state.emits_light();
+            let builder = &mut builders[state.render as usize];
             for face in &state.faces {
-                if face.hidden_by(|side| content.covers(self.block(pos + side.normal()), side)) {
+                if face
+                    .hidden_by(|side| content.hides(voxel, self.block(pos + side.normal()), side))
+                {
                     continue;
                 }
                 let shading = self.shade_face(pos, face, glows, &opaque_at);
-                let base = positions.len() as u32;
-                let triangle = face.vertices.len() == 3;
-                for (i, vertex) in face.vertices.iter().enumerate() {
-                    positions.push((origin + vertex.pos).to_array());
-                    normals.push(face.normal.to_array());
-                    uvs.push(vertex.uv.to_array());
-                    // A triangle's third vertex is the fourth corner; the
-                    // third is made up so the blend is flat across it.
-                    let corner = if triangle && i == 2 { 3 } else { i };
-                    corners.push(CORNERS[corner]);
-                    lights.push(shading.light);
-                    faces.push([face.layer, shading.occlusion]);
-                }
-                indices.extend(face.indices().iter().map(|i| base + i));
+                builder.push(pos.as_vec3(), face, shading);
             }
         }
+        let [opaque, cutout, translucent] = builders;
+        let faces = TranslucentFaces(translucent.sort_faces.clone());
+        ChunkMeshes {
+            opaque: opaque.build(),
+            cutout: cutout.build(),
+            translucent: translucent.build(),
+            translucent_faces: faces,
+        }
+    }
 
-        Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
-        )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-        .with_inserted_attribute(ATTRIBUTE_CORNER, corners)
-        .with_inserted_attribute(ATTRIBUTE_LIGHT, lights)
-        .with_inserted_attribute(ATTRIBUTE_FACE, faces)
-        .with_inserted_indices(Indices::U32(indices))
+    /// The opaque mesh alone, for tests of meshes with nothing see-through.
+    #[cfg(test)]
+    pub fn mesh(&self, content: &Content) -> Mesh {
+        self.meshes(content).opaque
     }
 
     /// The light and ambient occlusion at a face's corners, packed for the
@@ -449,6 +434,122 @@ impl Neighborhood {
     }
 }
 
+/// A chunk's meshes, one per [`Render`]. A mesh with no vertices has
+/// nothing to draw.
+pub struct ChunkMeshes {
+    pub opaque: Mesh,
+    pub cutout: Mesh,
+    /// Its faces are in no particular order until sorted with
+    /// `translucent_faces`.
+    pub translucent: Mesh,
+    pub translucent_faces: TranslucentFaces,
+}
+
+impl ChunkMeshes {
+    /// The mesh drawn the way `render` says.
+    pub fn get(&self, render: Render) -> &Mesh {
+        match render {
+            Render::Opaque => &self.opaque,
+            Render::Cutout => &self.cutout,
+            Render::Translucent => &self.translucent,
+        }
+    }
+}
+
+/// A translucent mesh's faces, for drawing them back to front: blended
+/// faces only look right drawn over everything behind them.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct TranslucentFaces(Vec<SortFace>);
+
+/// One face of a translucent mesh.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SortFace {
+    /// The middle of the face, chunk-local.
+    center: Vec3,
+    /// Its first vertex in the mesh.
+    first: u32,
+    triangle: bool,
+}
+
+impl TranslucentFaces {
+    /// The mesh's indices with its faces ordered farthest first from
+    /// `eye`, chunk-local.
+    pub fn indices_from(&self, eye: Vec3) -> Vec<u32> {
+        let mut order: Vec<(f32, &SortFace)> = self
+            .0
+            .iter()
+            .map(|face| (face.center.distance_squared(eye), face))
+            .collect();
+        order.sort_by(|a, b| b.0.total_cmp(&a.0));
+        order
+            .into_iter()
+            .flat_map(|(_, face)| {
+                let indices: &[u32] = if face.triangle {
+                    &[0, 1, 2]
+                } else {
+                    &[0, 1, 2, 0, 2, 3]
+                };
+                indices.iter().map(move |i| face.first + i)
+            })
+            .collect()
+    }
+}
+
+/// The vertex data of one chunk mesh, as it's built.
+#[derive(Default)]
+struct MeshBuilder {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    corners: Vec<[f32; 2]>,
+    lights: Vec<[u32; 4]>,
+    faces: Vec<[u32; 2]>,
+    indices: Vec<u32>,
+    sort_faces: Vec<SortFace>,
+}
+
+impl MeshBuilder {
+    /// Adds a face of the block at `origin`.
+    fn push(&mut self, origin: Vec3, face: &BakedFace, shading: FaceShading) {
+        let base = self.positions.len() as u32;
+        let triangle = face.vertices.len() == 3;
+        let mut center = Vec3::ZERO;
+        for (i, vertex) in face.vertices.iter().enumerate() {
+            let pos = origin + vertex.pos;
+            center += pos;
+            self.positions.push(pos.to_array());
+            self.normals.push(face.normal.to_array());
+            self.uvs.push(vertex.uv.to_array());
+            // A triangle's third vertex is the fourth corner; the third is
+            // made up so the blend is flat across it.
+            let corner = if triangle && i == 2 { 3 } else { i };
+            self.corners.push(CORNERS[corner]);
+            self.lights.push(shading.light);
+            self.faces.push([face.layer, shading.occlusion]);
+        }
+        self.indices.extend(face.indices().iter().map(|i| base + i));
+        self.sort_faces.push(SortFace {
+            center: center / face.vertices.len() as f32,
+            first: base,
+            triangle,
+        });
+    }
+
+    fn build(self) -> Mesh {
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs)
+        .with_inserted_attribute(ATTRIBUTE_CORNER, self.corners)
+        .with_inserted_attribute(ATTRIBUTE_LIGHT, self.lights)
+        .with_inserted_attribute(ATTRIBUTE_FACE, self.faces)
+        .with_inserted_indices(Indices::U32(self.indices))
+    }
+}
+
 /// [`ATTRIBUTE_CORNER`] for each corner.
 const CORNERS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 /// The ambient occlusion level of a corner with nothing around it.
@@ -509,7 +610,7 @@ fn set_sky_color(mut commands: Commands) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{Direction, base, block, test_mod};
+    use crate::content::{Direction, Render, base, block, test_mod};
     use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
 
     /// A completely full chunk: stone, topped with dirt, topped with grass.
@@ -1081,5 +1182,105 @@ mod tests {
         let sky = lights[0].map(|corner| corner.to_le_bytes()[0] as i32);
         assert_ne!(sky[0], sky[1]);
         assert_eq!(sky[2], (sky[1] + sky[3] - sky[0]).clamp(0, 255));
+    }
+
+    /// Faces per mesh, opaque, cut-out and translucent, of `blocks` (by
+    /// name, at chunk-local positions) in open air.
+    fn split(blocks: &[(IVec3, &str)]) -> [usize; 3] {
+        let blocks: Vec<_> = blocks.iter().map(|&(p, b)| (p, block(b))).collect();
+        let meshes = neighborhood(&blocks, |_| OPEN_SKY).meshes(base());
+        [Render::Opaque, Render::Cutout, Render::Translucent].map(|r| faces(meshes.get(r)))
+    }
+
+    const A: IVec3 = IVec3::new(5, 5, 5);
+    const B: IVec3 = IVec3::new(6, 5, 5);
+
+    /// Each block's faces go in the mesh for how it's drawn.
+    #[test]
+    fn faces_go_in_the_mesh_for_their_render() {
+        assert_eq!(split(&[(A, "stone")]), [6, 0, 0]);
+        assert_eq!(split(&[(A, "leaves")]), [0, 6, 0]);
+        assert_eq!(split(&[(A, "glass")]), [0, 0, 6]);
+        assert_eq!(split(&[(A, "water")]), [0, 0, 6]);
+        // Lava glows, but it's opaque.
+        assert_eq!(split(&[(A, "lava")]), [6, 0, 0]);
+    }
+
+    /// Nothing is hidden next to a cut-out block, not even another one:
+    /// its holes show what's behind. An opaque block still hides a
+    /// cut-out's face against it.
+    #[test]
+    fn faces_next_to_cut_outs_are_not_culled() {
+        assert_eq!(split(&[(A, "leaves"), (B, "leaves")]), [0, 12, 0]);
+        assert_eq!(split(&[(A, "stone"), (B, "leaves")]), [6, 5, 0]);
+    }
+
+    /// Faces between two of the same translucent block are hidden, so
+    /// glass walls and water look like one body; against anything else
+    /// both faces show.
+    #[test]
+    fn faces_between_the_same_translucent_block_are_culled() {
+        assert_eq!(split(&[(A, "glass"), (B, "glass")]), [0, 0, 10]);
+        assert_eq!(split(&[(A, "water"), (B, "water")]), [0, 0, 10]);
+        assert_eq!(split(&[(A, "glass"), (B, "water")]), [0, 0, 12]);
+        assert_eq!(split(&[(A, "stone"), (B, "glass")]), [6, 0, 5]);
+        assert_eq!(split(&[(A, "leaves"), (B, "glass")]), [0, 6, 6]);
+    }
+
+    /// A plant is four faces inside its block, lit by its own voxel, and
+    /// it covers no side, so it hides nothing around it and nothing hides
+    /// it.
+    #[test]
+    fn plants_are_crossed_quads_that_hide_nothing() {
+        assert_eq!(split(&[(A, "tuft")]), [0, 4, 0]);
+        assert_eq!(split(&[(A, "tuft"), (B, "stone")]), [6, 4, 0]);
+        let below = A - IVec3::Y;
+        assert_eq!(split(&[(A, "tuft"), (below, "grass")]), [6, 4, 0]);
+        let blocks = [(A, block("tuft"))];
+        let light = |p: IVec3| Light::new(if p == A { 9 } else { 15 }, [0; 3]);
+        let meshes = neighborhood(&blocks, light).meshes(base());
+        let Some(VertexAttributeValues::Uint32x4(lights)) =
+            meshes.cutout.attribute(ATTRIBUTE_LIGHT)
+        else {
+            panic!("no light attribute");
+        };
+        let nine = (9.0 * LEVEL_STEP).round() as u8;
+        for light in lights {
+            assert!(light.iter().all(|c| c.to_le_bytes()[0] == nine));
+        }
+    }
+
+    /// Translucent faces sort farthest first from the eye, as whole faces.
+    #[test]
+    fn translucent_faces_sort_back_to_front() {
+        let blocks = [
+            (A, block("glass")),
+            (A + IVec3::new(0, 0, 3), block("glass")),
+        ];
+        let meshes = neighborhood(&blocks, |_| OPEN_SKY).meshes(base());
+        let positions = vec3s(&meshes.translucent, Mesh::ATTRIBUTE_POSITION);
+        let center = |quad: &[u32]| {
+            quad.iter().map(|&i| positions[i as usize]).sum::<Vec3>() / quad.len() as f32
+        };
+        for eye in [
+            Vec3::new(5.5, 6.0, 20.0),
+            Vec3::new(5.5, 6.0, -10.0),
+            Vec3::splat(6.0),
+        ] {
+            let indices = meshes.translucent_faces.indices_from(eye);
+            assert_eq!(indices.len(), 12 * 6);
+            let distances: Vec<f32> = indices
+                .chunks(6)
+                .map(|quad| {
+                    // Two triangles of one face: 0 1 2, 0 2 3.
+                    assert_eq!((quad[0], quad[2]), (quad[3], quad[4]));
+                    center(&[quad[0], quad[1], quad[2], quad[5]]).distance(eye)
+                })
+                .collect();
+            assert!(
+                distances.is_sorted_by(|a, b| a >= b),
+                "{eye}: {distances:?}"
+            );
+        }
     }
 }

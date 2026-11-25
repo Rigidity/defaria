@@ -137,7 +137,7 @@ fn show_cracks(
         .into_iter()
         .filter(|&side| {
             let neighbour = voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR);
-            content.covers(neighbour, side)
+            content.hides(state, neighbour, side)
         })
         .fold(0, |bits, side| bits | side.bit());
     if cracks.drawn != Some((state, hidden)) {

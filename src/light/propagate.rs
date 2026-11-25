@@ -76,7 +76,7 @@ impl LightTable {
                         .iter()
                         .enumerate()
                         .filter(|&(_, &d)| {
-                            Direction::from_normal(d).is_some_and(|side| state.occludes(side))
+                            Direction::from_normal(d).is_some_and(|side| state.blocks_light(side))
                         })
                         .fold(0, |bits, (i, _)| bits | 1 << i)
                 })

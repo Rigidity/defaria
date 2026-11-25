@@ -1036,7 +1036,7 @@ fn add_block(
                     name,
                     attributes,
                     &def.namespace,
-                    index,
+                    (index, block.fluid),
                     content,
                     textures,
                 )
@@ -1073,6 +1073,7 @@ struct Look<'d> {
     model: Option<&'d str>,
     rotate: Option<[i32; 3]>,
     light: Option<[u8; 3]>,
+    render: Option<Render>,
     textures: BTreeMap<&'d str, &'d TextureRef>,
 }
 
@@ -1082,6 +1083,7 @@ fn look<'d>(block: &'d BlockDef, whens: &[When], index: &[usize]) -> Look<'d> {
         model: block.model.as_deref(),
         rotate: block.rotate,
         light: block.light,
+        render: block.render,
         textures: block
             .textures
             .iter()
@@ -1094,6 +1096,7 @@ fn look<'d>(block: &'d BlockDef, whens: &[When], index: &[usize]) -> Look<'d> {
             look.model = variant.model.as_deref().or(look.model);
             look.rotate = variant.rotate.or(look.rotate);
             look.light = variant.light.or(look.light);
+            look.render = variant.render.or(look.render);
             look.textures.extend(
                 variant
                     .textures
@@ -1132,7 +1135,7 @@ fn bake_state(
     name: String,
     (hardness, weight): (f32, f32),
     namespace: &str,
-    block: usize,
+    (block, fluid): (usize, bool),
     content: &mut Content,
     textures: &Textures,
 ) -> Result<State, String> {
@@ -1203,6 +1206,8 @@ fn bake_state(
         collision,
         occludes,
         light,
+        render: look.render.unwrap_or_default(),
+        fluid,
         hardness,
         weight,
     })
@@ -1595,6 +1600,72 @@ mod tests {
                 .is_opaque()
         );
         assert!(!content.state(crate::content::BlockState::AIR).is_opaque());
+    }
+
+    /// `render` says how a block's faces are drawn (opaque unless it says
+    /// otherwise), and variants replace it. A see-through block lets light
+    /// through its covered sides, and its covered sides hide only the
+    /// faces they should. `fluid` is off unless set.
+    #[test]
+    fn blocks_are_drawn_as_their_render_says() {
+        // The quad covers its top.
+        let content = content(&[
+            (
+                "blocks/pane.json5",
+                r#"{
+                    properties: { kind: ["clear", "leafy", "solid"] },
+                    model: "quad",
+                    textures: { all: "a" },
+                    render: "translucent",
+                    variants: [
+                        { when: { kind: "leafy" }, render: "cutout" },
+                        { when: { kind: "solid" }, render: "opaque" },
+                    ],
+                }"#,
+            ),
+            (
+                "blocks/pool.json5",
+                r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let pane = content.block("test:pane").unwrap();
+        let state = |kind| pane.state(&[("kind", kind)]).unwrap();
+        let [clear, leafy, solid] = ["clear", "leafy", "solid"].map(state);
+        let render = |s| content.state(s).render;
+        assert_eq!(
+            [clear, leafy, solid].map(render),
+            [Render::Translucent, Render::Cutout, Render::Opaque]
+        );
+        for see_through in [clear, leafy] {
+            let state = content.state(see_through);
+            assert!(state.occludes(Direction::Up) && !state.blocks_light(Direction::Up));
+        }
+        assert!(content.state(solid).blocks_light(Direction::Up));
+        let pool = content.default_state("test:pool").unwrap();
+        assert!(content.state(pool).fluid && !content.state(solid).fluid);
+        assert_eq!(render(pool), Render::Opaque);
+
+        // What hides a block's bottom face, from below.
+        let hides = |block, neighbour| content.hides(block, neighbour, Direction::Down);
+        assert!(hides(clear, solid) && hides(leafy, solid));
+        assert!(hides(clear, pool), "an opaque fluid hides like any block");
+        assert!(hides(clear, clear), "the same translucent block");
+        assert!(!hides(pool, clear), "another translucent block");
+        assert!(
+            !hides(pool, leafy) && !hides(leafy, leafy),
+            "cut-outs hide nothing"
+        );
+    }
+
+    #[test]
+    fn an_unknown_render_is_an_error() {
+        let content = content(&[(
+            "blocks/odd.json5",
+            r#"{ model: "quad", textures: { all: "a" }, render: "glowing" }"#,
+        )]);
+        assert!(content.block("test:odd").is_none());
+        assert!(errors(&content).contains("glowing"), "{}", errors(&content));
     }
 
     #[test]
@@ -2551,18 +2622,24 @@ mod tests {
     }
 
     /// Every block and item state in the base game has a hardness and a
-    /// weight, worked out from its materials where it has them.
+    /// weight, worked out from its materials where it has them. Fluids,
+    /// which can't be mined, needn't have a hardness.
     #[test]
     fn base_states_have_hardness_and_weight() {
         let content = crate::content::base();
         let air = content.state(BlockState::AIR);
         assert_eq!((air.hardness, air.weight), (0.0, 0.0));
         for state in &content.states[1..] {
-            assert!(state.hardness > 0.0, "{} hardness", state.name);
+            assert!(
+                state.hardness > 0.0 || state.fluid,
+                "{} hardness",
+                state.name
+            );
             assert!(state.weight > 0.0, "{} weight", state.name);
         }
         for info in &content.item_states {
-            assert!(info.hardness > 0.0, "{} hardness", info.name);
+            let fluid = info.block.is_some_and(|state| content.state(state).fluid);
+            assert!(info.hardness > 0.0 || fluid, "{} hardness", info.name);
             assert!(info.weight > 0.0, "{} weight", info.name);
             if let Some(state) = info.block {
                 let placed = content.state(state);

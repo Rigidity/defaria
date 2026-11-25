@@ -1,0 +1,73 @@
+// A full cube for fluids: the cube's faces, but nothing to bump into. It
+// covers every side, so a fluid's faces against the same fluid are hidden.
+{
+  slots: {
+    all: null,
+    side: "all",
+    end: "all",
+    up: "end",
+    down: "end",
+    north: "side",
+    south: "side",
+    east: "side",
+    west: "side",
+  },
+  occludes: ["up", "down", "north", "south", "east", "west"],
+  collision: [],
+  faces: [
+    {
+      texture: "east", cull: "east",
+      vertices: [
+        { pos: [1, 0, 1], uv: [0, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "west", cull: "west",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 1], uv: [1, 1] },
+        { pos: [0, 1, 1], uv: [1, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "up", cull: "up",
+      vertices: [
+        { pos: [0, 1, 1], uv: [0, 1] },
+        { pos: [1, 1, 1], uv: [1, 1] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "down", cull: "down",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 0, 1], uv: [1, 0] },
+        { pos: [0, 0, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "south", cull: "south",
+      vertices: [
+        { pos: [0, 0, 1], uv: [0, 1] },
+        { pos: [1, 0, 1], uv: [1, 1] },
+        { pos: [1, 1, 1], uv: [1, 0] },
+        { pos: [0, 1, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "north", cull: "north",
+      vertices: [
+        { pos: [1, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 0], uv: [1, 1] },
+        { pos: [0, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 0], uv: [0, 0] },
+      ],
+    },
+  ],
+}

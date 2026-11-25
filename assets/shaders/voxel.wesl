@@ -153,6 +153,29 @@ fn pixel_art_uv(uv: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
     return (edge + offset) / size;
 }
 
+// The alpha a texel is drawn with. Cut-out faces use alpha to coverage
+// with multisampling: the alpha is sharpened by how fast it changes across
+// the screen, so a hole's edge is about one pixel wide at any distance and
+// the samples smooth it. (The block texture's mipmaps keep each tile's
+// coverage, so cut-outs don't fade away with distance.) Without
+// multisampling they're an alpha test. Opaque and blended faces keep their
+// alpha.
+@if(ALPHA_TO_COVERAGE)
+fn cut_out(alpha: f32) -> f32 {
+    return (alpha - 0.5) / max(fwidth(alpha), 1e-4) + 0.5;
+}
+@if(MAY_DISCARD)
+fn cut_out(alpha: f32) -> f32 {
+    if alpha < 0.5 {
+        discard;
+    }
+    return 1.0;
+}
+@if(!ALPHA_TO_COVERAGE && !MAY_DISCARD)
+fn cut_out(alpha: f32) -> f32 {
+    return alpha;
+}
+
 // Fades `color` into the fog with distance from the camera.
 @if(DISTANCE_FOG)
 fn fogged(color: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
@@ -193,5 +216,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let sky = lighting.sky.rgb * brightness(vec3<f32>(baked.x));
     let light = max(max(sky, brightness(block)), vec3<f32>(AMBIENT));
     let ao = mix(OCCLUDED, 1.0, occlusion(in.face.y, in.corner) / 3.0);
-    return vec4<f32>(fogged(texel.rgb * light * ao, in.world_position), 1.0);
+    let alpha = cut_out(texel.a);
+    return vec4<f32>(fogged(texel.rgb * light * ao, in.world_position), alpha);
 }

@@ -219,7 +219,9 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `src/devtools.rs`: CLI flags, windowed screenshot mode and BRP.
 - `src/headless.rs`: headless mode and the scenario script runner.
 - `src/terrain.rs`: terrain generation, the loaded chunks (`ChunkMap`,
-  `Voxels`) and chunk meshing.
+  `Voxels`) and showing chunk meshes: opaque faces on the chunk's entity,
+  cut-out and translucent ones on child entities (`ChunkParts`), with the
+  translucent faces sorted back to front. `src/voxel.rs` builds the meshes.
 - `src/ui.rs` (and `src/ui/`): the UI toolkit that the HUD and screens are
   built from: the theme, screens (`UiScreen`, and the `playing` run
   condition gameplay input runs under), pointer hover and clicks, scrolling,
@@ -254,7 +256,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `docs/decisions.md`: deliberate shortcuts to revisit, and what should
   replace them. Add to it when you make one.
 - `scripts/`: helper scripts, such as `pr-screenshots.sh` for PR
-  descriptions, `gray-layer.py` for turning images into texture layers and
+  descriptions, `gray-layer.py` for turning images into texture layers,
+  `draw-layers.py` for the procedurally drawn layers and
   `roadmap.sh` for keeping the roadmap project in step with the issues.
 
 ## Conventions
