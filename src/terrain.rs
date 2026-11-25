@@ -840,10 +840,12 @@ mod tests {
             .entity_mut(entity)
             .remove::<AwaitingNeighbours>();
         app.update();
-        assert!(
-            app.world().get::<MeshTask>(entity).is_some(),
-            "in the background"
-        );
+        // Built in the background: still being built, or (if the task pool
+        // got through it before the frame's end, as it can on a slow or
+        // busy machine) already shown. Either way not left alone.
+        let building = app.world().get::<MeshTask>(entity).is_some();
+        let shown = meshes(&mut app)[&coord] != before;
+        assert!(building || shown, "neither building nor rebuilt");
         finish_meshing(&mut app);
         assert_ne!(meshes(&mut app)[&coord], before);
     }
