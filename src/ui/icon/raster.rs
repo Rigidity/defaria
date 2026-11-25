@@ -15,7 +15,7 @@ use bevy::prelude::*;
 
 use crate::{
     block_texture::TILE_SIZE,
-    content::{BakedFace, Content, ItemLook},
+    content::{BakedFace, Content, ItemStateInfo},
 };
 
 /// Width and height of a block icon, in pixels: at least the icon's size
@@ -40,7 +40,7 @@ pub struct IconPixels {
 /// The icon for `item`. An item with a texture of its own shows that tile;
 /// one that places a block shows the block; anything else (or a tile
 /// that isn't there) is fully transparent.
-pub fn item_icon(content: &Content, item: &ItemLook, tiles: &[Vec<u8>]) -> IconPixels {
+pub fn item_icon(content: &Content, item: &ItemStateInfo, tiles: &[Vec<u8>]) -> IconPixels {
     if let Some(layer) = item.texture {
         if let Some(tile) = tiles.get(layer as usize) {
             return IconPixels {

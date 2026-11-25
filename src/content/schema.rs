@@ -5,9 +5,15 @@
 //! than silently ignored. References to other definitions are plain strings
 //! here; [`super::bake`] resolves them.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt, marker::PhantomData};
 
-use serde::Deserialize;
+use serde::{
+    Deserialize, Deserializer,
+    de::{
+        self, MapAccess, SeqAccess, Unexpected, Visitor,
+        value::{MapAccessDeserializer, SeqAccessDeserializer},
+    },
+};
 
 /// `mod.json5`, at the root of a mod folder.
 #[derive(Deserialize, Debug, Clone)]
@@ -74,8 +80,7 @@ pub struct LayerDef {
 
 /// A texture as blocks and items name it: its id, or its id with materials
 /// for its `$inputs`.
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum TextureRef {
     Id(String),
     Bound(BoundTexture),
@@ -92,8 +97,7 @@ pub struct BoundTexture {
 
 /// A block or item property: a list of values, the first the default, or
 /// the materials it can be.
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum PropertyDef {
     Values(Vec<String>),
     Full(PropertySpec),
@@ -123,11 +127,16 @@ pub struct PropertySpec {
 /// What a variant's `when` asks of one property: a value, any of several,
 /// or none of them. A value may be `#tag`, matching every material with
 /// that tag.
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum Condition {
     Is(OneOrMany),
-    Not { not: OneOrMany },
+    Not(NotCondition),
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct NotCondition {
+    pub not: OneOrMany,
 }
 
 /// `models/<name>.json5`.
@@ -241,8 +250,7 @@ pub struct VariantDef {
     pub light: Option<[u8; 3]>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum OneOrMany {
     One(String),
     Many(Vec<String>),
@@ -278,4 +286,121 @@ pub struct ItemDef {
     pub block: Option<String>,
     #[serde(default)]
     pub max_stack: Option<u32>,
+}
+
+/// A value that can be written in more than one form: a string, a list or
+/// a map. Picking the form by what's written, rather than trying each
+/// (`#[serde(untagged)]`), passes on the chosen form's own error, so a
+/// misspelt key in a map is named.
+trait Forms: Sized {
+    const EXPECTING: &'static str;
+
+    fn from_str<E: de::Error>(_: &str) -> Result<Self, E> {
+        Err(E::invalid_type(
+            Unexpected::Other("a string"),
+            &Self::EXPECTING,
+        ))
+    }
+
+    fn from_seq<'de, A: SeqAccess<'de>>(_: A) -> Result<Self, A::Error> {
+        Err(de::Error::invalid_type(Unexpected::Seq, &Self::EXPECTING))
+    }
+
+    fn from_map<'de, A: MapAccess<'de>>(_: A) -> Result<Self, A::Error> {
+        Err(de::Error::invalid_type(Unexpected::Map, &Self::EXPECTING))
+    }
+}
+
+struct FormsVisitor<T>(PhantomData<T>);
+
+impl<'de, T: Forms> Visitor<'de> for FormsVisitor<T> {
+    type Value = T;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(T::EXPECTING)
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<T, E> {
+        T::from_str(value)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<T, A::Error> {
+        T::from_seq(seq)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+        T::from_map(map)
+    }
+}
+
+macro_rules! deserialize_forms {
+    ($($ty:ty),*) => {$(
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                deserializer.deserialize_any(FormsVisitor(PhantomData))
+            }
+        }
+    )*};
+}
+
+deserialize_forms!(TextureRef, PropertyDef, Condition, OneOrMany);
+
+fn seq<'de, T: Deserialize<'de>, A: SeqAccess<'de>>(seq: A) -> Result<T, A::Error> {
+    T::deserialize(SeqAccessDeserializer::new(seq))
+}
+
+fn map<'de, T: Deserialize<'de>, A: MapAccess<'de>>(map: A) -> Result<T, A::Error> {
+    T::deserialize(MapAccessDeserializer::new(map))
+}
+
+impl Forms for TextureRef {
+    const EXPECTING: &'static str = "a texture id, or `{ texture, materials }`";
+
+    fn from_str<E: de::Error>(value: &str) -> Result<Self, E> {
+        Ok(TextureRef::Id(value.into()))
+    }
+
+    fn from_map<'de, A: MapAccess<'de>>(m: A) -> Result<Self, A::Error> {
+        map(m).map(TextureRef::Bound)
+    }
+}
+
+impl Forms for PropertyDef {
+    const EXPECTING: &'static str = "a list of values, or `{ values }` or `{ materials }`";
+
+    fn from_seq<'de, A: SeqAccess<'de>>(s: A) -> Result<Self, A::Error> {
+        seq(s).map(PropertyDef::Values)
+    }
+
+    fn from_map<'de, A: MapAccess<'de>>(m: A) -> Result<Self, A::Error> {
+        map(m).map(PropertyDef::Full)
+    }
+}
+
+impl Forms for Condition {
+    const EXPECTING: &'static str = "a value, a list of values, or `{ not }`";
+
+    fn from_str<E: de::Error>(value: &str) -> Result<Self, E> {
+        OneOrMany::from_str(value).map(Condition::Is)
+    }
+
+    fn from_seq<'de, A: SeqAccess<'de>>(s: A) -> Result<Self, A::Error> {
+        OneOrMany::from_seq(s).map(Condition::Is)
+    }
+
+    fn from_map<'de, A: MapAccess<'de>>(m: A) -> Result<Self, A::Error> {
+        map(m).map(Condition::Not)
+    }
+}
+
+impl Forms for OneOrMany {
+    const EXPECTING: &'static str = "a value or a list of values";
+
+    fn from_str<E: de::Error>(value: &str) -> Result<Self, E> {
+        Ok(OneOrMany::One(value.into()))
+    }
+
+    fn from_seq<'de, A: SeqAccess<'de>>(s: A) -> Result<Self, A::Error> {
+        seq(s).map(OneOrMany::Many)
+    }
 }

@@ -716,15 +716,10 @@ mod tests {
             .faces
             .iter()
             .map(|face| {
-                let id = &content.textures[face.layer as usize].id;
+                let id = &content.textures[face.layer as usize].template;
                 (
                     face.normal.as_ivec3(),
-                    // Without the materials of a texture with inputs.
-                    id.trim_start_matches("defaria:")
-                        .split('(')
-                        .next()
-                        .unwrap()
-                        .to_owned(),
+                    id.trim_start_matches("defaria:").to_owned(),
                 )
             })
             .collect();

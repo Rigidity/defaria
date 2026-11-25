@@ -386,13 +386,19 @@ mod tests {
         assert_eq!(grids.iter(app.world()).count(), 0);
     }
 
-    /// Escape closes it too and locks the cursor again.
+    /// Escape closes it too and locks the cursor again. With few enough
+    /// items to fit there's no scrollbar.
     #[test]
     fn escape_closes_the_inventory() {
         let mut app = test_game(Script::parse("wait 1").unwrap());
+        app.world_mut()
+            .resource_mut::<Content>()
+            .item_states
+            .truncate(COLUMNS * 2);
         settle(&mut app);
         run_more(&mut app, "hold MouseLeft 1\nwait 1\nhold KeyE 1\nwait 2");
         assert!(is_open(&mut app));
+        assert!(!scrollbar_shown(&mut app));
         run_more(&mut app, "hold Escape 1\nwait 2");
         assert!(!is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);

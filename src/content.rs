@@ -122,7 +122,11 @@ pub struct ModInfo {
 /// A tile: grayscale images colored by palettes and stacked, bottom first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Texture {
+    /// The texture file's id, with the materials for its inputs if it has
+    /// any: `defaria:log_side(wood=defaria:birch)`.
     pub id: String,
+    /// The texture file's id alone: `defaria:log_side`.
+    pub template: String,
     pub layers: Vec<TextureLayer>,
 }
 
@@ -367,7 +371,7 @@ impl Item {
 
 /// What an item state is: its name, icon and the block it places.
 #[derive(Debug, Clone)]
-pub struct ItemLook {
+pub struct ItemStateInfo {
     /// Index into [`Content::items`].
     pub item: usize,
     /// Property name and value, in the item's property order.
@@ -392,7 +396,7 @@ pub struct Content {
     pub blocks: Vec<Block>,
     pub states: Vec<State>,
     pub items: Vec<Item>,
-    pub item_states: Vec<ItemLook>,
+    pub item_states: Vec<ItemStateInfo>,
     /// What went wrong while loading, one message per problem.
     pub errors: Vec<String>,
     texture_index: HashMap<String, u32>,
@@ -481,13 +485,13 @@ impl Content {
     }
 
     /// What item `id`'s default state is.
-    pub fn default_item_look(&self, id: &str) -> Option<&ItemLook> {
+    pub fn default_item_look(&self, id: &str) -> Option<&ItemStateInfo> {
         self.item_state(self.default_item(id)?)
     }
 
     /// What an [`ItemState`] is. `None` for one past the end, which a stale
     /// state from other content could be.
-    pub fn item_state(&self, state: ItemState) -> Option<&ItemLook> {
+    pub fn item_state(&self, state: ItemState) -> Option<&ItemStateInfo> {
         self.item_states.get(state.0 as usize)
     }
 
@@ -577,11 +581,10 @@ pub fn base() -> &'static Content {
 #[cfg(test)]
 pub fn base_texture(name: &str) -> u32 {
     let id = format!("defaria:{name}");
-    let prefix = format!("{id}(");
     base()
         .textures
         .iter()
-        .position(|t| t.id == id || t.id.starts_with(&prefix))
+        .position(|t| t.template == id)
         .unwrap_or_else(|| panic!("no texture {id}")) as u32
 }
 
