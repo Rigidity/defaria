@@ -1152,6 +1152,16 @@ mod tests {
     #[test]
     fn moving_on_doesnt_bring_the_fog_in() {
         let mut app = test_game(Script::parse("wait 1\n").unwrap());
+        // Big enough that the fog has a chunk to spare all round (at a
+        // radius of 4 it's held at its one-chunk minimum, which doesn't
+        // quite fit), and no more levels than that needs, so loading keeps
+        // up on a slow machine whatever the game's defaults are.
+        app.insert_resource(crate::streaming::StreamingSettings {
+            radius: 6,
+            above: 4,
+            below: 4,
+            ..default()
+        });
         run_more(&mut app, "camera 8.5 40 8.5 0 0\nsettle\n");
         for moves in ["hold Space 300\n", "press ControlLeft\nhold KeyW 300\n"] {
             let script = Script::parse(moves).unwrap();
