@@ -6,7 +6,7 @@ screenshot target/scenarios/fly-around/0-start.png
 inspect FlyCamera
 
 hold MouseLeft 1   # lock the cursor so the mouse turns the camera
-hold KeyW 38       # about ten blocks forward
+hold KeyW 50       # about ten blocks forward
 screenshot target/scenarios/fly-around/1-closer.png
 
 mouse 150 0        # turn right

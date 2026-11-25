@@ -38,7 +38,7 @@ screenshot target/scenarios/build-blocks/2-placed.png
 wait 1
 mouse 0 -610       # look across at the tower
 wait 1
-hold KeyS 33       # back off to see it
+hold KeyS 45       # back off to see it
 wait 2
 screenshot target/scenarios/build-blocks/3-tower.png
 inspect FlyCamera

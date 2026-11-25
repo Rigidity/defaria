@@ -1123,10 +1123,10 @@ mod tests {
         assert_eq!(exit, AppExit::Success);
 
         let (end_camera, end_transform) = camera(&mut app);
-        // Half a second of W, flying, from a standstill: about 6 blocks
+        // Half a second of W, flying, from a standstill: about 5 blocks
         // north (−Z), level, along where it faced before turning.
         let moved = end_transform.translation - Vec3::new(64.5, 62.0, 92.5);
-        assert!((-6.5..-5.5).contains(&moved.z), "{moved}");
+        assert!((-5.5..-4.6).contains(&moved.z), "{moved}");
         assert!(moved.x.abs() < 1e-3 && moved.y.abs() < 1e-3, "{moved}");
         // Moving the mouse 100px right turns the camera right.
         let turned = end_camera.yaw;

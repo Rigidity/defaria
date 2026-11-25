@@ -87,8 +87,8 @@ const AIR: Rule = Rule {
     response: 0.25,
 };
 const FLY: Rule = Rule {
-    speed: 16.0,
-    response: 0.12,
+    speed: 12.0,
+    response: 0.06,
 };
 /// Up and down, flying.
 const FLY_VERTICAL: Rule = Rule {
@@ -465,11 +465,11 @@ mod tests {
         }
     }
 
-    /// Letting go stops the player quickly: within a tenth of a block
-    /// walking and under two blocks flying.
+    /// Letting go stops the player quickly: within a third of a block
+    /// walking and a block flying.
     #[test]
     fn letting_go_stops_quickly() {
-        for (flying, limit) in [(false, 0.3), (true, 2.0)] {
+        for (flying, limit) in [(false, 0.3), (true, 1.0)] {
             let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
             let player = spawn(
                 &mut app,
