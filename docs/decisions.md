@@ -154,17 +154,45 @@ updates for the loaded chunks below them.
 **When to revisit.** When caves leaking sky light or tall builds not
 shading the ground start to matter, or when worlds get an atmosphere top.
 
+## The terrain is a heightmap, shaped by splines (2026-11-25)
+
+**Context.** The ground's height in each column comes from
+continentalness, erosion and ridged peaks noise, each mapped through a
+spline as Minecraft's terrain is, with the old rolling hills on top
+(`src/terrain/shape.rs`). The land near the origin is kept to the old hills.
+
+**Decision.** Keep it a heightmap: one height per column, stone below,
+air above.
+
+**What's wrong with it.** No overhangs, arches, caves or floating
+islands; cliffs are steep stairs rather than sheer faces. Changing the
+generator changed every chunk not yet saved, so worlds saved before it
+have seams where saved land meets newly generated land (the save format
+doesn't record which generator made a chunk).
+
+**What should replace it.** A 3D density function shaped by the same
+splines (density falling off with height above the spline's surface),
+with caves carved from 3D noise, and the generator's version recorded in
+the world's `world.json5` so old worlds keep generating as they did.
+
+**When to revisit.** When caves or overhangs are wanted, or before the
+generator changes again for worlds anyone cares about.
+
 ## A fixed range of chunks is loaded around the player (2026-11-24)
 
-**Decision.** Chunks within 10 sideways, 6 above and 8 below the player's
-chunk are loaded (`StreamingSettings` in `src/streaming.rs`), wherever the
-player is.
+**Decision.** Chunks within 16 sideways, 12 above and 12 below the
+player's chunk are loaded (`StreamingSettings` in `src/streaming.rs`),
+wherever the player is.
 
-**What's wrong with it.** Fly more than about 130 blocks above the highest
-ground and the ground drops out of the loaded range, so the view below is
-empty sky; well before that, the edge of the loaded disc shows. Loading
-further down everywhere costs memory and loading time for chunks that are
-mostly solid rock.
+**What's wrong with it.** The mountains (see the terrain entry) stand
+about 350 blocks from the lowest valleys to the highest peaks, more than
+the 176 drawn above or below the camera. From a summit the valleys aren't
+loaded, so the mountain stands over empty sky; from a valley the peaks'
+tops are cut off; flying more than about 190 blocks over the ground loses
+it. The fog hides the edge, but it looks like missing land. Loading
+further up and down everywhere costs memory and loading time for chunks
+that are nearly all solid rock or empty sky: about 20,000 chunks and 1 GB
+already.
 
 **What should replace it.** Load what can be seen rather than a fixed box:
 for example, below the player, down to the surface in each column (which

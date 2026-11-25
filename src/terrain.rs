@@ -38,7 +38,7 @@ use crate::{
 
 pub mod shape;
 
-use shape::TerrainShape;
+use shape::{NEIGHBOURS, TerrainShape};
 
 /// Layers of dirt under the grass.
 const DIRT_DEPTH: i32 = 3;
@@ -290,8 +290,7 @@ impl Terrain {
     /// Whether the column at `(x, z)` is bare rock, without soil.
     #[cfg(test)]
     pub fn is_rock(&self, x: i32, z: i32) -> bool {
-        let neighbours =
-            [(1, 0), (-1, 0), (0, 1), (0, -1)].map(|(dx, dz)| self.height(x + dx, z + dz));
+        let neighbours = NEIGHBOURS.map(|(dx, dz)| self.height(x + dx, z + dz));
         self.shape.is_rock(self.height(x, z), neighbours)
     }
 
@@ -312,19 +311,10 @@ impl Terrain {
             .map(|i| self.height(origin.x + i % padded - 1, origin.z + i / padded - 1))
             .collect();
         let at = |x: i32, z: i32| heights[((z + 1) * padded + x + 1) as usize];
-        let columns: Vec<(i32, bool)> = (0..size * size)
-            .map(|i| {
-                let (x, z) = (i % size, i / size);
-                let neighbours = [at(x + 1, z), at(x - 1, z), at(x, z + 1), at(x, z - 1)];
-                let height = at(x, z);
-                (height, self.shape.is_rock(height, neighbours))
-            })
-            .collect();
-        let (lowest, highest) = columns
-            .iter()
-            .fold((i32::MAX, i32::MIN), |(low, high), &(h, _)| {
-                (low.min(h), high.max(h))
-            });
+        let columns = || (0..size * size).map(|i| (i % size, i / size));
+        let (lowest, highest) = columns().fold((i32::MAX, i32::MIN), |(low, high), (x, z)| {
+            (low.min(at(x, z)), high.max(at(x, z)))
+        });
         // Most chunks are all sky or all stone; skip the voxel loop.
         if origin.y >= highest {
             return Chunk::default();
@@ -333,8 +323,12 @@ impl Terrain {
             return Chunk::filled(self.blocks.stone);
         }
         let mut chunk = Chunk::default();
-        for (i, &(height, rock)) in columns.iter().enumerate() {
-            let (x, z) = (i % CHUNK_SIZE, i / CHUNK_SIZE);
+        for (x, z) in columns() {
+            let height = at(x, z);
+            let rock = self
+                .shape
+                .is_rock(height, NEIGHBOURS.map(|(dx, dz)| at(x + dx, z + dz)));
+            let (x, z) = (x as usize, z as usize);
             for y in 0..CHUNK_SIZE {
                 chunk.set(
                     x,
@@ -712,6 +706,48 @@ mod tests {
             ..default()
         });
         assert!(columns().any(|(x, z)| a.height(x, z) != b.height(x, z)));
+    }
+
+    /// In the mountains, among cliffs and peaks, chunks match the
+    /// column-by-column answer voxel for voxel, across their borders and
+    /// in the all-air and all-stone shortcuts, and bare-rock columns are
+    /// stone right to the top.
+    #[test]
+    fn mountain_chunks_match_their_columns() {
+        let terrain = terrain();
+        let (mut rock, mut grass) = (0, 0);
+        // East of the start, where the mountains are cliffs below the rock
+        // line.
+        for cx in 102..106 {
+            for cz in 4..7 {
+                let (x0, z0) = (cx * 16, cz * 16);
+                let surface = terrain.height(x0 + 8, z0 + 8).div_euclid(16);
+                for cy in surface - 1..=surface + 1 {
+                    let coord = ChunkCoord(IVec3::new(cx, cy, cz));
+                    let chunk = terrain.chunk(coord);
+                    for (x, y, z) in Chunk::positions() {
+                        let world = coord.origin() + IVec3::new(x as i32, y as i32, z as i32);
+                        assert_eq!(chunk.get(x, y, z), terrain.voxel(world), "at {world}");
+                    }
+                }
+                for x in x0..x0 + 16 {
+                    for z in z0..z0 + 16 {
+                        let top = terrain.voxel(IVec3::new(x, terrain.height(x, z) - 1, z));
+                        if terrain.is_rock(x, z) {
+                            rock += 1;
+                            assert_eq!(top, block("stone"), "at ({x}, {z})");
+                        } else {
+                            grass += 1;
+                            assert_eq!(top, block("grass"), "at ({x}, {z})");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            rock > 50 && grass > 50,
+            "{rock} rock and {grass} grass columns"
+        );
     }
 
     #[test]

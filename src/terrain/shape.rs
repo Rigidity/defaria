@@ -40,10 +40,15 @@ pub const FULL_RADIUS: f32 = 500.0;
 
 /// The land at and above this height (from the base height) is bare rock.
 pub const ROCK_LINE: i32 = 100;
-/// A column this many blocks higher or lower than a neighbour is a cliff,
-/// with no soil on it. The plain hills step at most 3, so they're never
-/// cliffs.
-pub const CLIFF: i32 = 4;
+/// Ground this steep, in blocks up per block across, is a cliff, with no soil
+/// on it. Measured across each column, from its neighbours either side,
+/// so it changes smoothly and cliffs aren't speckled with grass. The plain
+/// hills step at most 3 a block each way, at most 4.24 diagonally, so
+/// they're never cliffs.
+pub const CLIFF: f32 = 4.5;
+/// The columns next to one, in the order [`TerrainShape::is_rock`] takes
+/// their heights: east, west, south, north.
+pub const NEIGHBOURS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
 /// Works out the ground's height in any column.
 pub struct TerrainShape {
@@ -128,12 +133,13 @@ impl TerrainShape {
         height.round() as i32
     }
 
-    /// Whether the column at `(x, z)`, `height` tall, is bare rock: high
-    /// up, or a cliff (`neighbours` are the heights of the four columns
-    /// next to it).
+    /// Whether a column `height` tall is bare rock: high up, or a cliff.
+    /// `neighbours` are the heights of the columns next to it, in
+    /// [`NEIGHBOURS`] order.
     pub fn is_rock(&self, height: i32, neighbours: [i32; 4]) -> bool {
-        height >= self.settings.base_height as i32 + ROCK_LINE
-            || neighbours.iter().any(|&n| (n - height).abs() >= CLIFF)
+        let [east, west, south, north] = neighbours;
+        let slope = ((east - west) as f32).hypot((south - north) as f32) / 2.0;
+        height >= self.settings.base_height as i32 + ROCK_LINE || slope >= CLIFF
     }
 }
 
@@ -197,7 +203,7 @@ mod tests {
                 steepest = steepest.max((shape.height(nx, nz) - h).abs());
             }
         }
-        assert!(steepest >= CLIFF * 2, "the steepest step is {steepest}");
+        assert!(steepest >= 8, "the steepest step is {steepest}");
         assert!(steepest <= 16, "a step of {steepest}");
     }
 
@@ -223,9 +229,40 @@ mod tests {
         let flat = |h: i32| [h; 4];
         assert!(!shape.is_rock(base, flat(base)));
         assert!(shape.is_rock(base + ROCK_LINE, flat(base + ROCK_LINE)));
-        assert!(!shape.is_rock(base, [base + CLIFF - 1, base, base - CLIFF + 1, base]));
-        assert!(shape.is_rock(base, [base, base, base - CLIFF, base]));
-        assert!(shape.is_rock(base, [base + CLIFF, base, base, base]));
+        assert!(!shape.is_rock(base + ROCK_LINE - 1, flat(base + ROCK_LINE - 1)));
+        // East to west across the column: 9 blocks over 2 is a cliff, 8
+        // isn't; and the plain hills' steepest, 3 a block each way, isn't.
+        assert!(shape.is_rock(base, [base + 5, base - 4, base, base]));
+        assert!(!shape.is_rock(base, [base + 4, base - 4, base, base]));
+        assert!(!shape.is_rock(base, [base + 3, base - 3, base + 3, base - 3]));
+        // Diagonal: 7 a block both ways.
+        assert!(shape.is_rock(base, [base + 7, base, base + 7, base]));
+    }
+
+    /// The land eases from the plain hills into the shaped terrain: walking
+    /// out from the start in any direction, no step between neighbouring
+    /// columns is a wall.
+    #[test]
+    fn the_edge_of_the_calm_land_is_smooth() {
+        let shape = shape();
+        let mut steepest = 0;
+        for step in 0..720 {
+            let angle = (step as f32 * 0.5).to_radians();
+            let (dx, dz) = (angle.cos(), angle.sin());
+            let mut last: Option<((i32, i32), i32)> = None;
+            for r in (CALM_RADIUS as i32 - 50)..(FULL_RADIUS as i32 + 50) {
+                let column = ((dx * r as f32) as i32, (dz * r as f32) as i32);
+                if last.is_some_and(|(at, _)| at == column) {
+                    continue;
+                }
+                let h = shape.height(column.0, column.1);
+                if let Some((_, before)) = last {
+                    steepest = steepest.max((h - before).abs());
+                }
+                last = Some((column, h));
+            }
+        }
+        assert!(steepest <= 16, "a step of {steepest}");
     }
 
     #[test]

@@ -119,8 +119,11 @@ const RESOLUTION: UVec2 = UVec2::new(1280, 720);
 /// never loads can't hang an agent forever.
 const END_TIMEOUT_FRAMES: u32 = 600;
 /// Give up if the world hasn't finished loading this many frames into a
-/// `settle` (or the start).
-pub const SETTLE_TIMEOUT_FRAMES: u32 = 3000;
+/// `settle` (or the start). Only a guard against a hang: loading is on
+/// other threads, so how many frames it takes depends on the machine. The
+/// mountains at the full render distance take about 1,900 here, and CI's
+/// unoptimized build takes two to four times as many.
+pub const SETTLE_TIMEOUT_FRAMES: u32 = 12_000;
 
 /// [`DefaultPlugins`] set up to run without a window. With `rendering` off
 /// there's no GPU at all (for CI); screenshots are then skipped.
