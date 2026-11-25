@@ -18,6 +18,7 @@ mod perlin;
 mod physics;
 mod player;
 pub mod save;
+mod spline;
 mod streaming;
 mod terrain;
 pub mod ui;

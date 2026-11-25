@@ -38,14 +38,17 @@ colour (`ClearColor`).
 
 **What's wrong with it.** Underground, far cave walls fade to bright sky
 blue rather than darkness, and a day-night cycle would leave the fog
-behind. The cylinder's bottom is only 96 blocks below the camera (six
-chunks: the world loads eight down, less one that's never drawn and one
-to spare), so flying higher than that over the ground fogs it out
-entirely.
+behind. The cylinder's bottom is 160 blocks below the camera and its top
+160 above (ten chunks: the world loads twelve each way, less one that's
+never drawn and one to spare). Mountains rise nearly 300 blocks above
+their valleys, so from a summit the valleys are lost in the fog, and
+from a valley so are the tops of the peaks.
 
 **What should replace it.** Fog coloured by the sky light where the camera
 is (dark in caves), following the sky colour once it changes over the
-day.
+day. Loading chunks around the ground's surface rather than a fixed
+number of levels around the camera, so whole mountainsides are loaded
+(and buried stone and empty sky aren't).
 
 **When to revisit.** With a day-night cycle, when caves get big enough
 to see far across, or if flying high should keep the ground in view
