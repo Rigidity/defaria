@@ -1,0 +1,33 @@
+# View bobbing and sneaking on a flat platform with two pillars: standing
+# level, sneaking (lower eyes), then walking frames a few apart, where the
+# view sways side to side, rolls a little and bobs once a step.
+# Run: cargo headless scenarios/view-bob.txt
+wait 5
+fill 20 45 20 44 45 44 stone       # the platform, top at y = 46
+fill 30 46 30 30 48 30 planks      # two pillars to judge the sway by
+fill 34 46 30 34 47 30 stone
+camera 32.5 49 41.5 0 0            # south of the pillars, flying
+hold ShiftLeft 40                  # down to land, which stops flying
+wait 30
+screenshot target/scenarios/view-bob/0-standing.png
+inspect Player
+wait 1
+press ShiftLeft                    # sneak: the eyes ease down
+wait 30
+screenshot target/scenarios/view-bob/1-sneaking.png
+inspect Player
+wait 1
+release ShiftLeft
+wait 30
+press KeyW                         # walk north, swaying
+wait 40
+screenshot target/scenarios/view-bob/2-walking.png
+inspect ViewBob
+wait 6
+screenshot target/scenarios/view-bob/3-walking.png
+wait 6
+screenshot target/scenarios/view-bob/4-walking.png
+release KeyW
+wait 60                            # stopped: level again
+screenshot target/scenarios/view-bob/5-stopped.png
+inspect ViewBob
