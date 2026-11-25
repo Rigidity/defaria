@@ -550,6 +550,33 @@ mod tests {
         assert_eq!((hit.block, hit.normal), (IVec3::new(2, 0, 0), IVec3::Y));
     }
 
+    /// A block you walk through is still picked, as a whole block; air
+    /// isn't picked at all.
+    #[test]
+    fn blocks_with_no_collision_are_picked_whole() {
+        let content = test_mod(&[
+            ("models/ghost.json5", r#"{ collision: [], faces: [] }"#),
+            ("blocks/ghost.json5", r#"{ model: "ghost" }"#),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let ghost = content.default_state("test:ghost").unwrap();
+        assert!(content.state(ghost).collision.is_empty());
+        assert_eq!(target_shape(&content, ghost), [BlockBox::FULL]);
+        assert_eq!(target_shape(&content, BlockState::AIR), []);
+        let at = |pos: IVec3| {
+            if pos == IVec3::new(3, 0, 0) {
+                ghost
+            } else {
+                BlockState::AIR
+            }
+        };
+        let hit = raycast(ray(Vec3::splat(0.5), Vec3::X), 8.0, |pos| {
+            target_shape(&content, at(pos))
+        })
+        .unwrap();
+        assert_eq!((hit.block, hit.normal), (IVec3::new(3, 0, 0), IVec3::NEG_X));
+    }
+
     #[test]
     fn ray_starting_inside_a_block_hits_it_with_no_face() {
         let blocks = [IVec3::ZERO];

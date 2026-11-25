@@ -180,10 +180,10 @@ impl TestWorld {
                         };
                         let n = pos + direction;
                         let from = self.block(pos).unwrap();
-                        let open = self
+                        let next = self
                             .block(n)
-                            .is_some_and(|to| table.passes(from, to, i, channel));
-                        if next > 0 && open && level(&mut light, n, next) {
+                            .map_or(0, |to| table.passing(from, to, i, channel, next));
+                        if next > 0 && level(&mut light, n, next) {
                             buckets[next as usize].push(n);
                         }
                     }
@@ -371,9 +371,10 @@ fn covered_sides_stop_light_across_chunk_borders() {
     let lid = content.default_state("test:lid").unwrap();
     // Covers its top only.
     assert!(table.closed(lid, UP) && !table.closed(lid, DOWN));
-    assert!(table.passes(BlockState::AIR, lid, DOWN + 1, SKY));
-    assert!(!table.passes(BlockState::AIR, lid, DOWN, SKY));
-    assert!(!table.passes(lid, BlockState::AIR, UP, SKY));
+    let through = |from, to, direction| table.passing(from, to, direction, SKY, 9);
+    assert_eq!(through(BlockState::AIR, lid, DOWN + 1), 9);
+    assert_eq!(through(BlockState::AIR, lid, DOWN), 0);
+    assert_eq!(through(lid, BlockState::AIR, UP), 0);
 
     let mut store = TestWorld::new(1);
     let mut queue = LightQueue::default();
@@ -401,6 +402,52 @@ fn covered_sides_stop_light_across_chunk_borders() {
     // border, which is lit from the sides instead.
     assert_eq!(sky(IVec3::new(1, 16, 0)), MAX_LIGHT);
     assert_eq!(sky(IVec3::new(1, 15, 0)), MAX_LIGHT - 1);
+}
+
+/// A light source that covers a side shines its own light out through it,
+/// but not light that came in from elsewhere.
+#[test]
+fn light_sources_shine_only_their_own_light_through_covered_sides() {
+    let content = crate::content::test_mod(&[
+        (
+            "models/cube.json5",
+            r#"{ slots: { all: null }, occludes: ["up", "down", "north", "south", "east", "west"], faces: [] }"#,
+        ),
+        ("blocks/wall.json5", r#"{ model: "cube" }"#),
+        (
+            "blocks/lamp.json5",
+            r#"{ model: "cube", light: [15, 0, 0] }"#,
+        ),
+        // Covers its top, and glows a dimmer red.
+        (
+            "blocks/glow.json5",
+            r#"{ model: "quad", textures: { all: "a" }, light: [10, 0, 0] }"#,
+        ),
+    ]);
+    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let table = LightTable::new(&content);
+    let state = |id: &str| content.default_state(&format!("test:{id}")).unwrap();
+    let mut chunk = Chunk::default();
+    let glow = IVec3::new(5, 5, 5);
+    let above = glow + IVec3::Y;
+    chunk.set_at(glow, state("glow"));
+    // The lamp lights the glow block through its open west side.
+    chunk.set_at(glow - IVec3::X, state("lamp"));
+    // Walls round the voxel above it, so light only gets there through the
+    // glow block's covered top.
+    for d in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z, IVec3::Y] {
+        chunk.set_at(above + d, state("wall"));
+    }
+    let mut store = TestWorld::new(1);
+    let mut queue = LightQueue::default();
+    queue.chunk_loaded(IVec3::ZERO, &chunk, &table, &*store.sky, |_| None);
+    store
+        .chunks
+        .insert(IVec3::ZERO, (chunk, ChunkLight::default()));
+    queue.run(&mut store, &table);
+    assert_eq!(store.light(glow).block()[0], 14);
+    // Its own 10, less one: not the lamp's 14, less one.
+    assert_eq!(store.light(above).block()[0], 9);
 }
 
 /// A lamp in the dark: each channel drops a level per block walked, around

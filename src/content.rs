@@ -102,8 +102,7 @@ impl Direction {
         }
     }
 
-    /// This side's bit in [`State::occluded_sides`].
-    pub fn bit(self) -> u8 {
+    fn bit(self) -> u8 {
         1 << self as u8
     }
 }
@@ -252,12 +251,6 @@ impl State {
     /// face against it.
     pub fn occludes(&self, side: Direction) -> bool {
         self.occludes & side.bit() != 0
-    }
-
-    /// The sides it covers completely, a bit per [`Direction`] in
-    /// [`Direction::ALL`] order.
-    pub fn occluded_sides(&self) -> u8 {
-        self.occludes
     }
 }
 

@@ -589,6 +589,8 @@ fn bake_state(
             "light level {level} is too bright; the most is {MAX_LIGHT}"
         ));
     }
+    // Turns a point in the block about the block's center.
+    let turn = |p: Vec3| rotation * (p - Vec3::splat(0.5)) + Vec3::splat(0.5);
     let rotate_direction = |d: Direction| {
         Direction::from_normal((rotation * d.normal().as_vec3()).round().as_ivec3()).unwrap()
     };
@@ -614,7 +616,7 @@ fn bake_state(
                 .vertices
                 .iter()
                 .map(|v| Vertex {
-                    pos: rotation * (v.pos - Vec3::splat(0.5)) + Vec3::splat(0.5),
+                    pos: turn(v.pos),
                     uv: v.uv,
                 })
                 .collect();
@@ -635,8 +637,7 @@ fn bake_state(
         .collision
         .iter()
         .map(|b| {
-            let [a, c] =
-                [b.min, b.max].map(|p| rotation * (p - Vec3::splat(0.5)) + Vec3::splat(0.5));
+            let [a, c] = [b.min, b.max].map(turn);
             BlockBox {
                 min: a.min(c),
                 max: a.max(c),

@@ -102,17 +102,35 @@ impl LightTable {
         self.closed.get(state.0 as usize) == Some(&ALL_DIRECTIONS)
     }
 
-    /// Whether `channel`'s light leaves a voxel of `state` toward
-    /// `DIRECTIONS[direction]`: the side isn't covered, or the block gives
-    /// off that colour, which shines out of every side.
-    fn leaves(&self, state: BlockState, direction: usize, channel: usize) -> bool {
-        !self.closed(state, direction) || self.emits(state, channel) > 0
+    /// The level `channel`'s light leaves a voxel of `state` with toward
+    /// `DIRECTIONS[direction]`, where it would be `next` through an open
+    /// side. Through a covered side only the block's own light gets out (a
+    /// light source shines out of every side), so 0 for a block that gives
+    /// off none of that colour.
+    fn leaving(&self, state: BlockState, direction: usize, channel: usize, next: u8) -> u8 {
+        if self.closed(state, direction) {
+            next.min(self.emits(state, channel).saturating_sub(1))
+        } else {
+            next
+        }
     }
 
-    /// Whether `channel`'s light passes from a voxel of `from` into its
-    /// neighbour of `to` toward `DIRECTIONS[direction]`.
-    fn passes(&self, from: BlockState, to: BlockState, direction: usize, channel: usize) -> bool {
-        self.leaves(from, direction, channel) && !self.closed(to, opposite(direction))
+    /// The level `channel`'s light reaches a voxel of `to` with, stepping
+    /// in from its neighbour of `from` toward `DIRECTIONS[direction]`,
+    /// where it would be `next` with nothing in the way.
+    fn passing(
+        &self,
+        from: BlockState,
+        to: BlockState,
+        direction: usize,
+        channel: usize,
+        next: u8,
+    ) -> u8 {
+        if self.closed(to, opposite(direction)) {
+            0
+        } else {
+            self.leaving(from, direction, channel, next)
+        }
     }
 
     fn emits(&self, state: BlockState, channel: usize) -> u8 {
@@ -380,7 +398,7 @@ impl LightQueue {
             }
             let passes = above.is_some_and(|(blocks, light)| {
                 let bottom = IVec3::new(x, 0, z);
-                light.at(bottom).get(SKY) == MAX_LIGHT && table.leaves(blocks.at(bottom), DOWN, SKY)
+                light.at(bottom).get(SKY) == MAX_LIGHT && !table.closed(blocks.at(bottom), DOWN)
             });
             if !passes {
                 let index = Chunk::index_of(IVec3::new(x, last, z));
@@ -620,20 +638,23 @@ impl<'a> Fill<'a> {
                     } else {
                         level - 1
                     };
-                    if next == 0 || !self.table.leaves(state, i, self.channel) {
+                    if next == 0 {
                         continue;
                     }
                     let (coord, neighbour) = self.step(pos + direction);
                     if coord != self.coord {
-                        self.queue_addition(coord, neighbour, next, heading(i));
+                        // The other chunk checks the side it comes in by.
+                        let next = self.table.leaving(state, i, self.channel, next);
+                        if next > 0 {
+                            self.queue_addition(coord, neighbour, next, heading(i));
+                        }
                         continue;
                     }
                     let n = neighbour as usize;
-                    if light.get(n).get(self.channel) < next
-                        && self
-                            .table
-                            .passes(state, chunk.get_index(n), i, self.channel)
-                    {
+                    let next = self
+                        .table
+                        .passing(state, chunk.get_index(n), i, self.channel, next);
+                    if next > 0 && light.get(n).get(self.channel) < next {
                         self.set(light, n, next);
                         buckets[next as usize].push(Node {
                             index: neighbour,
