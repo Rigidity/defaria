@@ -3,12 +3,11 @@
 //! - While the cursor is locked, left click breaks the block under the
 //!   crosshair and right click places the active block against the face
 //!   you're looking at. The click that locks the cursor doesn't break
-//!   anything.
-//! - The number keys 1–9 and 0 pick the active block from the [`HOTBAR`]
-//!   items.
-//! - A crosshair marks the middle of the screen, an outline shows the
-//!   targeted block, and a hotbar along the bottom lists the blocks with the
-//!   active one highlighted.
+//!   anything. The active block is the active hotbar slot's (see `hotbar`); an item
+//!   that places no block places nothing.
+//! - A crosshair marks the middle of the screen (hidden while a screen is
+//!   open), and an outline shows the targeted block.
+//! - Nothing is edited while a screen (the inventory) is open.
 //!
 //! Edits go through [`Voxels`], and the terrain remeshes the changed chunks
 //! on the same frame.
@@ -21,57 +20,38 @@ use bevy::{
 use crate::{
     content::{BlockBox, BlockState, Content},
     fly_camera::{FlyCamera, FlyCameraSystems},
+    hotbar::{ActiveSlot, Hotbar, HotbarInput},
     physics::{Aabb, Body},
     terrain::{RemeshChunks, Voxels},
+    ui::{UiScreen, playing},
 };
 
 /// How far away, in blocks, you can break or place.
 pub const REACH: f32 = 8.0;
 
-/// The items on the number keys, in order: key 1 is the first.
-pub const HOTBAR: [&str; 10] = [
-    "defaria:stone",
-    "defaria:dirt",
-    "defaria:grass",
-    "defaria:sand",
-    "defaria:stone_slab",
-    "defaria:log",
-    "defaria:planks",
-    "defaria:lamp",
-    "defaria:red_lamp",
-    "defaria:blue_lamp",
-];
-
-const HOTBAR_KEYS: [KeyCode; HOTBAR.len()] = [
-    KeyCode::Digit1,
-    KeyCode::Digit2,
-    KeyCode::Digit3,
-    KeyCode::Digit4,
-    KeyCode::Digit5,
-    KeyCode::Digit6,
-    KeyCode::Digit7,
-    KeyCode::Digit8,
-    KeyCode::Digit9,
-    KeyCode::Digit0,
-];
-
 pub struct BlockEditPlugin;
 
 impl Plugin for BlockEditPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Hotbar>()
-            .init_resource::<ActiveBlock>()
-            .add_systems(Startup, spawn_hud)
+        app.add_systems(Startup, spawn_crosshair)
+            // After `Update`, so a screen opened or closed there shows on
+            // the same frame.
+            .add_systems(
+                PostUpdate,
+                show_crosshair
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            )
             .add_systems(
                 Update,
                 (
-                    // Before the fly camera, so the click that locks the
-                    // cursor finds it still unlocked and edits nothing.
-                    (select_block, edit_blocks)
-                        .chain()
+                    // Before the fly camera, so the click that locks the cursor
+                    // finds it still unlocked and edits nothing. After the
+                    // hotbar, so a slot picked this frame is the one placed.
+                    edit_blocks
+                        .run_if(playing)
+                        .after(HotbarInput)
                         .before(FlyCameraSystems)
                         .before(RemeshChunks),
-                    update_hotbar,
                     // After the camera moves, so the outline matches the
                     // frame being drawn.
                     outline_target.after(FlyCameraSystems),
@@ -79,48 +59,6 @@ impl Plugin for BlockEditPlugin {
             );
     }
 }
-
-/// The hotbar's items, as the content defines them.
-#[derive(Resource, Debug, Clone)]
-pub struct Hotbar(pub Vec<HotbarItem>);
-
-#[derive(Debug, Clone)]
-pub struct HotbarItem {
-    pub name: String,
-    /// The block it places, if any.
-    pub block: Option<BlockState>,
-}
-
-impl FromWorld for Hotbar {
-    /// Looks up the [`HOTBAR`] items. One that didn't load is reported and
-    /// leaves its slot empty.
-    fn from_world(world: &mut World) -> Self {
-        let content = world.resource::<Content>();
-        Self(
-            HOTBAR
-                .iter()
-                .map(|&id| match content.item(id) {
-                    Some(item) => HotbarItem {
-                        name: item.name.clone(),
-                        block: item.block,
-                    },
-                    None => {
-                        error!("the hotbar needs item `{id}`, which didn't load");
-                        HotbarItem {
-                            name: "?".into(),
-                            block: None,
-                        }
-                    }
-                })
-                .collect(),
-        )
-    }
-}
-
-/// The hotbar slot whose item right click places.
-#[derive(Resource, Reflect, Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[reflect(Resource)]
-pub struct ActiveBlock(pub usize);
 
 /// A block a ray ran into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,12 +180,6 @@ pub fn target_shape(content: &Content, state: BlockState) -> &[BlockBox] {
     }
 }
 
-fn select_block(keys: Res<ButtonInput<KeyCode>>, mut active: ResMut<ActiveBlock>) {
-    if let Some(index) = HOTBAR_KEYS.iter().position(|&key| keys.just_pressed(key)) {
-        active.0 = index;
-    }
-}
-
 /// The ray from the camera through the crosshair.
 fn camera_ray(transform: &Transform) -> Ray3d {
     Ray3d::new(transform.translation, transform.forward())
@@ -257,7 +189,7 @@ fn edit_blocks(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
-    active: Res<ActiveBlock>,
+    active: Res<ActiveSlot>,
     hotbar: Res<Hotbar>,
     content: Res<Content>,
     bodies: Query<&Body>,
@@ -283,7 +215,7 @@ fn edit_blocks(
         voxels.set(hit.block, BlockState::AIR);
         return;
     }
-    let Some(block) = hotbar.0.get(active.0).and_then(|item| item.block) else {
+    let Some(block) = hotbar.active_block(*active, &content) else {
         return;
     };
     let Some(pos) = hit.place_at() else {
@@ -328,18 +260,28 @@ fn outline_target(
     }
 }
 
-/// One slot of the hotbar, showing [`Hotbar`]`[index]`.
+/// The crosshair's root node.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
 #[reflect(Component)]
-struct HotbarSlot(usize);
+struct Crosshair;
 
-const SLOT_COLOR: Color = Color::srgba(0.0, 0.0, 0.0, 0.45);
-const ACTIVE_SLOT_COLOR: Color = Color::srgba(0.95, 0.85, 0.35, 0.85);
-const SLOT_TEXT: Color = Color::srgb(0.9, 0.9, 0.9);
-const ACTIVE_SLOT_TEXT: Color = Color::srgb(0.1, 0.1, 0.1);
+/// Shows the crosshair only while playing.
+fn show_crosshair(
+    screens: Query<(), With<UiScreen>>,
+    mut crosshairs: Query<&mut Visibility, With<Crosshair>>,
+) {
+    let wanted = if playing(screens) {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut crosshairs {
+        visibility.set_if_neq(wanted);
+    }
+}
 
-fn spawn_hud(mut commands: Commands, items: Res<Hotbar>) {
-    // Crosshair: two thin bars crossing at the middle of the screen.
+fn spawn_crosshair(mut commands: Commands) {
+    // Two thin bars crossing at the middle of the screen.
     let bar = |width: f32, height: f32| {
         (
             Node {
@@ -353,6 +295,7 @@ fn spawn_hud(mut commands: Commands, items: Res<Hotbar>) {
     };
     commands.spawn((
         Name::new("Crosshair"),
+        Crosshair,
         Node {
             width: percent(100),
             height: percent(100),
@@ -363,64 +306,6 @@ fn spawn_hud(mut commands: Commands, items: Res<Hotbar>) {
         Pickable::IGNORE,
         children![bar(16.0, 2.0), bar(2.0, 16.0)],
     ));
-
-    commands
-        .spawn((
-            Name::new("Hotbar"),
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: px(16),
-                width: percent(100),
-                justify_content: JustifyContent::Center,
-                column_gap: px(6),
-                ..default()
-            },
-        ))
-        .with_children(|hotbar| {
-            for (index, item) in items.0.iter().enumerate() {
-                hotbar.spawn((
-                    HotbarSlot(index),
-                    Node {
-                        padding: UiRect::axes(px(10), px(6)),
-                        ..default()
-                    },
-                    BackgroundColor(SLOT_COLOR),
-                    children![(
-                        // Key 0 is the tenth slot.
-                        Text::new(format!("{} {}", (index + 1) % 10, item.name)),
-                        TextFont::from_font_size(16.0),
-                        TextColor(SLOT_TEXT),
-                    )],
-                ));
-            }
-        });
-}
-
-fn update_hotbar(
-    active: Res<ActiveBlock>,
-    mut slots: Query<(&HotbarSlot, &mut BackgroundColor, &Children)>,
-    mut texts: Query<&mut TextColor>,
-) {
-    if !active.is_changed() {
-        return;
-    }
-    for (slot, mut background, children) in &mut slots {
-        let is_active = slot.0 == active.0;
-        background.0 = if is_active {
-            ACTIVE_SLOT_COLOR
-        } else {
-            SLOT_COLOR
-        };
-        for &child in children {
-            if let Ok(mut color) = texts.get_mut(child) {
-                color.0 = if is_active {
-                    ACTIVE_SLOT_TEXT
-                } else {
-                    SLOT_TEXT
-                };
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -430,6 +315,7 @@ mod tests {
     use crate::{
         content::{base, block, test_mod},
         headless::{Script, settle, test_game},
+        hotbar::select_with_keys,
         player::SIZE,
         terrain::{
             ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, apply_finished_meshes,
@@ -609,13 +495,13 @@ mod tests {
             .init_resource::<Hotbar>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
-            .init_resource::<ActiveBlock>()
+            .init_resource::<ActiveSlot>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
             .add_systems(
                 Update,
                 (
-                    (select_block, edit_blocks).chain().before(RemeshChunks),
+                    (select_with_keys, edit_blocks).chain().before(RemeshChunks),
                     (remesh_changed_chunks, apply_finished_meshes)
                         .chain()
                         .in_set(RemeshChunks),
@@ -733,7 +619,7 @@ mod tests {
     fn right_click_places_the_active_block_against_the_face() {
         let (mut app, left, _) = app();
         press_key(&mut app, KeyCode::Digit6);
-        assert_eq!(*app.world().resource::<ActiveBlock>(), ActiveBlock(5));
+        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(5));
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), block("log"));
         // Placing again stacks toward the camera, but never into it.
@@ -763,51 +649,20 @@ mod tests {
         assert_eq!(voxel(&app, left, 13, 1, 5), block("stone_slab"));
     }
 
-    /// An item that places no block (a tool, or a slot whose item didn't
-    /// load) does nothing on right click.
+    /// An item that places no block (a tool, or an empty slot) does
+    /// nothing on right click.
     #[test]
     fn right_click_with_an_item_that_places_nothing_does_nothing() {
         let (mut app, left, _) = app();
-        app.insert_resource(Hotbar(vec![HotbarItem {
-            name: "Pickaxe".into(),
-            block: None,
-        }]));
+        let pickaxe = base().item_id("defaria:pickaxe");
+        let mut hotbar = app.world_mut().resource_mut::<Hotbar>();
+        hotbar.0[0] = pickaxe;
+        hotbar.0[1] = None;
+        click(&mut app, MouseButton::Right);
+        press_key(&mut app, KeyCode::Digit2);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
         assert_eq!(voxel(&app, left, 14, 1, 5), block("dirt"));
-    }
-
-    /// The hotbar takes its names and blocks from the items, and a slot
-    /// whose item didn't load is left empty rather than shifting the keys.
-    #[test]
-    fn hotbar_comes_from_the_items() {
-        let mut world = World::new();
-        world.insert_resource(base().clone());
-        let hotbar = Hotbar::from_world(&mut world);
-        let names: Vec<&str> = hotbar.0.iter().map(|item| item.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "Stone",
-                "Dirt",
-                "Grass",
-                "Sand",
-                "Stone Slab",
-                "Log",
-                "Planks",
-                "Lamp",
-                "Red Lamp",
-                "Blue Lamp"
-            ]
-        );
-        assert_eq!(hotbar.0[5].block, Some(block("log")));
-
-        world.insert_resource(test_mod(&[]));
-        let hotbar = Hotbar::from_world(&mut world);
-        assert_eq!(hotbar.0.len(), HOTBAR.len());
-        for item in hotbar.0 {
-            assert_eq!((item.name.as_str(), item.block), ("?", None));
-        }
     }
 
     /// The left chunk's block at x = 0 faces -X, where there's no chunk.
@@ -865,47 +720,27 @@ mod tests {
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
     }
 
+    /// The crosshair hides while a screen is open.
     #[test]
-    fn number_keys_pick_every_hotbar_slot() {
-        let (mut app, _, _) = app();
-        for (index, key) in HOTBAR_KEYS.into_iter().enumerate() {
-            press_key(&mut app, key);
-            assert_eq!(app.world().resource::<ActiveBlock>().0, index);
-        }
-    }
-
-    #[test]
-    fn hotbar_highlights_the_active_slot() {
+    fn the_crosshair_hides_while_a_screen_is_open() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(base().clone())
-            .init_resource::<Hotbar>()
-            .init_resource::<ActiveBlock>()
-            .add_systems(Startup, spawn_hud)
-            .add_systems(Update, update_hotbar);
-        for active in [0, 2, 6] {
-            app.world_mut().resource_mut::<ActiveBlock>().0 = active;
-            app.update();
-            let mut slots = app
+            .add_systems(Startup, spawn_crosshair)
+            .add_systems(Update, show_crosshair);
+        let shown = |app: &mut App| {
+            let mut crosshairs = app
                 .world_mut()
-                .query::<(&HotbarSlot, &BackgroundColor, &Children)>();
-            let slots: Vec<_> = slots
-                .iter(app.world())
-                .map(|(slot, background, children)| {
-                    let text = app.world().get::<TextColor>(children[0]).unwrap().0;
-                    (slot.0, background.0, text)
-                })
-                .collect();
-            assert_eq!(slots.len(), HOTBAR.len());
-            for (slot, background, text) in slots {
-                let expected = if slot == active {
-                    (ACTIVE_SLOT_COLOR, ACTIVE_SLOT_TEXT)
-                } else {
-                    (SLOT_COLOR, SLOT_TEXT)
-                };
-                assert_eq!((background, text), expected, "slot {slot}, active {active}");
-            }
-        }
+                .query_filtered::<&Visibility, With<Crosshair>>();
+            *crosshairs.single(app.world()).unwrap() == Visibility::Inherited
+        };
+        app.update();
+        assert!(shown(&mut app));
+        let screen = app.world_mut().spawn(UiScreen).id();
+        app.update();
+        assert!(!shown(&mut app));
+        app.world_mut().despawn(screen);
+        app.update();
+        assert!(shown(&mut app));
     }
 
     fn world_voxel(app: &mut App, pos: IVec3) -> BlockState {

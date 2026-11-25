@@ -36,18 +36,29 @@ pub const TILE_SIZE: u32 = 16;
 const MAX_ANISOTROPY: u16 = 16;
 
 /// Builds the block texture: layer `i` is `textures[i]`. `image` looks up a
-/// loaded layer image by its asset path.
-///
-/// A texture that can't be built (an image missing, or breaking the layer
-/// rules) gets [`placeholder`] in its layer instead, so one bad image only
-/// marks its own tiles, and the other layers keep their places. Returns the
-/// texture and one message per texture that failed.
+/// loaded layer image by its asset path. Returns the texture, the tiles it
+/// was built from (see [`tiles`]) and one message per texture that failed.
 pub fn build<'a>(
     textures: &[Texture],
     image: impl Fn(&str) -> Option<&'a Image>,
-) -> (Image, Vec<String>) {
+) -> (Image, Vec<Vec<u8>>, Vec<String>) {
+    let (tiles, errors) = tiles(textures, image);
+    (array_texture(&tiles), tiles, errors)
+}
+
+/// Colorizes and stacks every texture: tile `i` is `textures[i]`, as
+/// [`TILE_SIZE`]-square sRGB RGBA8 pixels, rows top first.
+///
+/// A texture that can't be built (an image missing, or breaking the layer
+/// rules) gets [`placeholder`] instead, so one bad image only marks its own
+/// tiles, and the other tiles keep their places. Returns the tiles and one
+/// message per texture that failed.
+pub fn tiles<'a>(
+    textures: &[Texture],
+    image: impl Fn(&str) -> Option<&'a Image>,
+) -> (Vec<Vec<u8>>, Vec<String>) {
     let mut errors = Vec::new();
-    let mut tiles: Vec<Vec<u8>> = textures
+    let tiles = textures
         .iter()
         .map(|texture| {
             compose(texture, &image).unwrap_or_else(|error| {
@@ -56,11 +67,7 @@ pub fn build<'a>(
             })
         })
         .collect();
-    // An array texture needs at least one layer.
-    if tiles.is_empty() {
-        tiles.push(placeholder());
-    }
-    (array_texture(&tiles), errors)
+    (tiles, errors)
 }
 
 /// The tile shown for a texture that couldn't be built: a magenta and black
@@ -99,7 +106,15 @@ fn compose<'a>(
 
 /// A 2D array texture with a full mip chain, one array layer per entry of
 /// `tiles` (each [`TILE_SIZE`] square, sRGB RGBA8).
+/// An empty list gets one [`placeholder`] layer, since an array texture
+/// needs at least one.
 fn array_texture(tiles: &[Vec<u8>]) -> Image {
+    let placeholder = [placeholder()];
+    let tiles = if tiles.is_empty() {
+        &placeholder[..]
+    } else {
+        tiles
+    };
     let mut data = Vec::new();
     for tile in tiles {
         let mut level = tile.clone();
@@ -265,7 +280,7 @@ mod tests {
     }
 
     fn build_base(layers: &HashMap<String, Image>) -> Image {
-        let (image, errors) = build(&base().textures, |path| layers.get(path));
+        let (image, _, errors) = build(&base().textures, |path| layers.get(path));
         assert!(errors.is_empty(), "{errors:?}");
         image
     }
@@ -442,7 +457,7 @@ mod tests {
             layers
         };
         for (layers, message) in [(&bad, "not gray"), (&missing, "isn't loaded")] {
-            let (image, errors) = build(&base().textures, |path| layers.get(path));
+            let (image, _, errors) = build(&base().textures, |path| layers.get(path));
             assert_eq!(errors.len(), 1, "{errors:?}");
             assert!(
                 errors[0].contains("defaria:stone")
@@ -465,7 +480,7 @@ mod tests {
     /// With no textures at all there's still a valid one-layer texture.
     #[test]
     fn no_textures_build_a_placeholder_layer() {
-        let (image, errors) = build(&[], |_| None);
+        let (image, _, errors) = build(&[], |_| None);
         assert!(errors.is_empty());
         assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 1);
         assert_eq!(tile_pixels(&image, 0), placeholder());

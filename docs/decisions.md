@@ -96,3 +96,67 @@ a lower level of detail.
 
 **When to revisit.** When flying high or seeing far matters, or alongside
 the surface tracker.
+
+## Item icons are drawn on the CPU, unlit (2026-11-24)
+
+**Decision.** Each item's icon is drawn once on the CPU
+(`src/ui/icon/raster.rs`): a block's model in isometric view, each face
+shaded by a fixed amount, or an item's own tile, flat. They redraw only
+when the block texture is rebuilt.
+
+**What's wrong with it.** Icons don't go through the world's shader, so
+they don't match its lighting exactly, and lamps don't glow. Anything the
+shader learns later (animated or emissive textures, tinting) won't show in
+icons. The block icons are drawn at 128 pixels (enough for a scale-2
+window) and scaled down to the slot, which softens them slightly.
+
+**What should replace it.** Rendering icons on the GPU with the voxel
+material: an offscreen camera drawing each block's mesh into an atlas,
+lit the same way as the world, redrawn when the texture or shader changes.
+
+**When to revisit.** When icons need to match the world (emissive blocks,
+animated textures), or for entity or held-item models, which will need a
+3D renderer for items anyway.
+
+## UI hit testing is our own, not `bevy_picking` (2026-11-24)
+
+**Decision.** `src/ui/pointer.rs` finds the node under the cursor itself,
+from each `Hoverable` node's laid-out rectangle, stack order and clipping,
+and triggers its own `Clicked` event, rather than using `bevy_picking`.
+
+**What's wrong with it.** It duplicates what Bevy's picking does, without
+its extras (drag, press and release events, touch, several pointers), and
+the stock `bevy_ui_widgets` that rely on picking won't respond to it.
+Bevy's mouse pointer always targets the window, while headless runs draw
+into an image, so picking would never hit anything there, and UI couldn't
+be tested.
+
+**What should replace it.** `bevy_picking` with a pointer the headless
+runner drives at the image target (writing `PointerInput` itself and
+turning off the mouse input plugin there), once that's worked out; then
+`Clicked` can become picking's `Pointer<Click>`.
+
+**When to revisit.** When the UI needs dragging (moving stacks), text
+input, or Bevy's widgets.
+
+## The cursor has two owners (2026-11-24)
+
+**Decision.** `fly_camera` locks the cursor on a click and frees it on
+Escape while playing; `ui::screen` frees it when a screen opens and locks
+it when the last one closes. Gameplay input checks `ui::playing` (no screen
+open), and some of it (looking, breaking, placing) also checks that the
+cursor is locked.
+
+**What's wrong with it.** "The game has the input" is decided two ways.
+With no screen open but the cursor freed by Escape, the mouse wheel still
+steps through the hotbar, while the pointer doesn't hover the hotbar
+either, since the UI only takes the mouse while a screen is open. Escape is
+handled in two places, which only works because those systems don't run on
+the same frames.
+
+**What should replace it.** One owner of `CursorOptions` in `ui::screen`:
+the free-cursor state after Escape becomes a screen (a pause menu), so
+`playing` alone says whether the game has the input, and `fly_camera` only
+reads the cursor.
+
+**When to revisit.** With the first pause or settings menu.

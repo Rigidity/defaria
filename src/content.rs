@@ -264,6 +264,10 @@ pub struct BakedFace {
     pub cull: Option<Direction>,
 }
 
+/// An item, by its index in [`Content::items`].
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ItemId(pub usize);
+
 #[derive(Debug, Clone)]
 pub struct Item {
     pub id: String,
@@ -367,6 +371,22 @@ impl Content {
 
     pub fn item(&self, id: &str) -> Option<&Item> {
         self.item_index.get(id).map(|&i| &self.items[i])
+    }
+
+    /// The [`ItemId`] of the item with this id.
+    pub fn item_id(&self, id: &str) -> Option<ItemId> {
+        self.item_index.get(id).copied().map(ItemId)
+    }
+
+    /// The item an [`ItemId`] names. `None` for one past the end, which a
+    /// stale id from other content could be.
+    pub fn item_at(&self, id: ItemId) -> Option<&Item> {
+        self.items.get(id.0)
+    }
+
+    /// The display name of the item an [`ItemId`] names.
+    pub fn item_name(&self, id: ItemId) -> Option<&str> {
+        self.item_at(id).map(|item| item.name.as_str())
     }
 
     /// Every image some texture uses, as asset paths, each once.

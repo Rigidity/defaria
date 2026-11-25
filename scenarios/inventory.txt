@@ -1,0 +1,37 @@
+# The hotbar and the inventory: switch slots with the wheel, open the
+# inventory, put an item in the active slot, and place it.
+# Run: cargo headless scenarios/inventory.txt
+camera 64 56 92 0 -37.9          # the start's view, flying
+fill 61 48 86 67 58 86 planks    # a wall in reach, to place against
+wait 5
+hold MouseLeft 1                 # lock the cursor
+wait 1
+screenshot target/scenarios/inventory/0-hotbar.png
+wait 1
+
+scroll -2                        # two slots right: grass
+wait 1
+screenshot target/scenarios/inventory/1-wheel.png
+inspect ActiveSlot
+wait 1
+
+hold KeyE 1                      # open the inventory
+wait 3
+hold Digit9 1                    # pick the last slot
+cursor 578 331                   # hover the stone slab, second row
+wait 2
+screenshot target/scenarios/inventory/2-open.png
+wait 1
+hold MouseLeft 1                 # put it in slot 9
+wait 2
+screenshot target/scenarios/inventory/3-picked.png
+inspect Hotbar
+wait 1
+scroll -3                        # everything fits: nothing scrolls
+wait 1
+
+hold KeyE 1                      # close: back to playing
+wait 3
+hold MouseRight 1                # place a stone slab on the wall
+wait 2
+screenshot target/scenarios/inventory/4-placed.png

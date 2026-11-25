@@ -34,7 +34,7 @@ pub struct DynamicLightPlugin;
 impl Plugin for DynamicLightPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(give_the_player_a_light)
-            .add_systems(Update, toggle_player_light)
+            .add_systems(Update, toggle_player_light.run_if(crate::ui::playing))
             .add_systems(
                 PostUpdate,
                 // After transforms propagate, so lights are drawn where they
@@ -254,5 +254,9 @@ mod tests {
         press(&mut app);
         assert!(on(&app));
         assert_eq!(drawn(&app), 1);
+        // While a screen (the inventory) is open, L is the screen's.
+        app.world_mut().spawn(crate::ui::UiScreen);
+        press(&mut app);
+        assert!(on(&app));
     }
 }

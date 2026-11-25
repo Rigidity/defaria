@@ -90,7 +90,8 @@ changes.
    Commands: `wait`, `press`, `release`, `hold`, `mouse`, `screenshot`,
    `grain` (a texture-noise number for the frame; lower is smoother, and only
    comparable between runs with the same view and art), `inspect`, `fill`
-   (set a box of voxels to a block, to build a test scene), `camera` (put the
+   (set a box of voxels to a block, to build a test scene), `cursor` and
+   `scroll` (point at and wheel over UI, such as the inventory), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -197,6 +198,13 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `src/headless.rs`: headless mode and the scenario script runner.
 - `src/terrain.rs`: terrain generation, the loaded chunks (`ChunkMap`,
   `Voxels`) and chunk meshing.
+- `src/ui.rs` (and `src/ui/`): the UI toolkit that the HUD and screens are
+  built from: the theme, screens (`UiScreen`, and the `playing` run
+  condition gameplay input runs under), pointer hover and clicks, scrolling,
+  item icons, item slots and tooltips. Build new UI from these, in the
+  feature's own module.
+- `src/hotbar.rs`: the nine-slot hotbar. `src/inventory.rs`: the inventory
+  screen (E).
 - `src/physics.rs`: boxes colliding with block shapes (swept, sliding,
   stepping up), in `FixedUpdate`. `src/player.rs`: the player's
   Minecraft-style walking, jumping, sneaking, sprinting and flying, on a

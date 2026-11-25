@@ -115,7 +115,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(give_the_camera_a_body)
-            .add_systems(Update, toggle_flying)
+            .add_systems(Update, toggle_flying.run_if(crate::ui::playing))
             .add_systems(FixedUpdate, move_player)
             .add_systems(
                 RunFixedMainLoop,
@@ -192,11 +192,15 @@ fn drift(velocity: f64, accel: f64, decay: f64, dt: f64) -> (f64, f64) {
 fn move_player(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    screens: Query<(), With<crate::ui::UiScreen>>,
     shapes: WorldShapes,
     mut players: Query<(&FlyCamera, &mut Player, &mut Body)>,
 ) {
     let dt = time.delta_secs_f64();
-    let held = |key: KeyCode| keys.pressed(key);
+    // With a screen open, keys are for it: the player stops pressing them
+    // but still falls and slides.
+    let playing = crate::ui::playing(screens);
+    let held = |key: KeyCode| playing && keys.pressed(key);
     let axis = |positive: KeyCode, negative: KeyCode| {
         held(positive) as i8 as f64 - held(negative) as i8 as f64
     };
