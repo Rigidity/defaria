@@ -307,3 +307,24 @@ the free-cursor state after Escape becomes a screen (a pause menu), so
 reads the cursor.
 
 **When to revisit.** With the first pause or settings menu.
+
+## Crack images are fixed files in the base mod (2026-11-25)
+
+**Decision.** `cracks` loads its ten stages from
+`mods/defaria/images/cracks/stage_<n>.png` by path, and draws them with
+Bevy's `StandardMaterial` (unlit, multiply blending) on a mesh of the
+mined block's faces, not through the block texture array or the voxel
+shader.
+
+**What's wrong with it.** Mods can't replace or add crack images, or give
+a block its own cracks, and the overlay doesn't share the block texture's
+filtering: its 16×16 images are sampled nearest with no mips, so far away
+or at a grazing angle the cracks shimmer where the block under them
+doesn't.
+
+**What should replace it.** Crack stages as a texture kind in the mod
+format, built into the block texture array (or an array of their own with
+mips), drawn by the voxel material's shader over the block's own layers.
+
+**When to revisit.** When mods add mining effects, or if the shimmer shows
+in play.

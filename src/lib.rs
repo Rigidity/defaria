@@ -6,6 +6,7 @@
 mod block_edit;
 mod block_texture;
 pub mod content;
+mod cracks;
 mod devtools;
 mod dynamic_light;
 mod fly_camera;
@@ -56,6 +57,11 @@ impl Plugin for GamePlugin {
             streaming::StreamingPlugin,
         ))
         // Bevy takes at most 15 plugins in one tuple.
-        .add_plugins((fog::FogPlugin, fov::FovPlugin, mining::MiningPlugin));
+        .add_plugins((
+            fog::FogPlugin,
+            fov::FovPlugin,
+            mining::MiningPlugin,
+            cracks::CracksPlugin,
+        ));
     }
 }

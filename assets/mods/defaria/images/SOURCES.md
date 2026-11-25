@@ -19,6 +19,17 @@ update the row when a layer is replaced.
 | `planks.png` | Retro Diffusion, converted with `scripts/gray-layer.py` (no `--even`, which would erase the seams), then rebuilt by hand: four boards of three rows over a one-row seam (level 1), the source's grain marks kept, the bottom row of each board one level darker, a few level-6 highlights on top rows, and one staggered end joint (level 2) per board | 2026-11-24 | `rd_lite__default` | close-up of a wooden plank floor surface filling the entire frame edge to edge, four horizontal boards stacked with thin dark seams between them, subtle wood grain lines along each board, no outline, no border, no background, grayscale, even lighting | `b88a1319-3618-4224-948e-ed44963ebdd2` | 98% |
 | `ore.png` | Retro Diffusion for where the nuggets go (in color, so the ore could be told from the stone); the generated nuggets were one or two pixels, so redrawn by hand as six small clusters at the same spots, lit from the top left (levels 6, 5, 4 and 3, 2 underneath), transparent elsewhere. An overlay stacked over `stone.png`, colored by the ore material's `ore` palette | 2026-11-25 | `rd_plus__mc_texture` | grey stone with several small clusters of shiny orange metal ore nuggets embedded in it, flat block surface texture, even lighting | `2fb46ee2-fd9c-4080-824f-6089fb27c603` | 98% |
 
+## Cracks (`cracks/`)
+
+`stage_0.png` to `stage_9.png`, the cracks drawn over a block being mined,
+were drawn procedurally by `scripts/crack-stages.py` (no Retro Diffusion):
+one fixed network of jagged, branching lines spreading from a point near
+the middle, each stage showing more of it. New crack pixels start at level
+3 and deepen to level 1 over two stages; from stage 5 a few level-5 chips
+appear beside the oldest lines. Transparent elsewhere. The game multiplies
+the block under them by the gray. Re-run the script to redraw them
+(2026-11-25).
+
 ## Items (`items/`)
 
 Tools are split into one layer per part, so each part takes its own

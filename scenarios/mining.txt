@@ -1,7 +1,8 @@
 # Mining: hold left click on a stone block and then a stone slab, on a
 # platform built in the air, until each breaks. `inspect Mining` shows the
 # target and how far along it is on the way; releasing in between starts
-# over. Stone takes about a second (its hardness times 0.75 s).
+# over. Stone takes about a second (its hardness times 0.75 s). The
+# screenshots show the cracks growing on each, fitting the slab's shape.
 # Run: cargo headless scenarios/mining.txt
 wait 5
 fill 20 45 20 30 45 30 planks       # the platform
