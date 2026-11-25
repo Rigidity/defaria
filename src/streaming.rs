@@ -117,9 +117,9 @@ pub struct StreamingSettings {
 impl Default for StreamingSettings {
     fn default() -> Self {
         Self {
-            radius: 10,
-            above: 6,
-            below: 8,
+            radius: 16,
+            above: 12,
+            below: 12,
             unload_margin: 2,
             max_loading: 64,
             spawns_per_frame: 24,

@@ -1,8 +1,10 @@
 //! Heightmap terrain from Perlin noise, in chunks, and the meshing of
 //! chunks.
 //!
-//! Each column's height comes from fractal Perlin noise. Below the surface is
-//! stone, then a few layers of dirt, then one layer of grass on top. The world
+//! Each column's height comes from noise mapped through splines, with
+//! plains, mountains, ridges and valleys (see [`shape`]). Below the surface
+//! is stone, then a few layers of dirt, then one layer of grass on top, except
+//! high up and on cliffs, which are bare stone. The world
 //! goes on forever in every direction, up and down too, in 16×16×16 chunks:
 //! stone all the way down, air all the way up. Chunks are loaded and
 //! unloaded around the player (see `streaming`), so [`ChunkMap`] only holds
@@ -30,10 +32,13 @@ use bevy::{
 use crate::{
     content::{BlockState, Content},
     light::ChunkLight,
-    perlin::Perlin,
     voxel::{CHUNK_SIZE, Chunk, Neighborhood, touching_offsets},
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
+
+pub mod shape;
+
+use shape::{NEIGHBOURS, TerrainShape};
 
 /// Layers of dirt under the grass.
 const DIRT_DEPTH: i32 = 3;
@@ -65,14 +70,22 @@ pub struct RemeshChunks;
 #[reflect(Resource)]
 pub struct TerrainSettings {
     pub seed: u64,
-    /// Horizontal size of the largest hills, in voxels.
+    /// Horizontal size of the largest rolling hills, in voxels.
     pub scale: f32,
-    /// Noise layers; each adds detail at half the size of the last.
+    /// Noise layers in the hills; each adds detail at half the size of the
+    /// last.
     pub octaves: u32,
-    /// Surface height where the noise is 0.
+    /// Surface height where all the noise is 0.
     pub base_height: f32,
-    /// How far the surface moves up or down at the noise's extremes.
+    /// How far the hills move the surface up or down at the noise's
+    /// extremes.
     pub amplitude: f32,
+    /// Horizontal size of the continentalness noise: lowlands to plateaus.
+    pub continent_scale: f32,
+    /// Horizontal size of the erosion noise: smooth land to rugged.
+    pub erosion_scale: f32,
+    /// Horizontal size of the peaks-and-valleys noise.
+    pub peak_scale: f32,
 }
 
 impl Default for TerrainSettings {
@@ -83,6 +96,9 @@ impl Default for TerrainSettings {
             octaves: 3,
             base_height: 22.0,
             amplitude: 36.0,
+            continent_scale: 900.0,
+            erosion_scale: 500.0,
+            peak_scale: 300.0,
         }
     }
 }
@@ -253,52 +269,57 @@ impl TerrainBlocks {
 /// Answers "what voxel is at this world position?" for the whole world.
 /// Shared with the tasks that generate chunks.
 pub struct Terrain {
-    settings: TerrainSettings,
     blocks: TerrainBlocks,
-    noise: Perlin,
+    shape: TerrainShape,
 }
 
 impl Terrain {
     pub fn new(settings: TerrainSettings, blocks: TerrainBlocks) -> Self {
         Self {
-            noise: Perlin::new(settings.seed),
-            settings,
+            shape: TerrainShape::new(settings),
             blocks,
         }
     }
 
     /// The height of the ground in the column at `(x, z)`: its top solid
     /// voxel is at `y = height - 1`.
+    #[cfg(test)]
     pub fn height(&self, x: i32, z: i32) -> i32 {
-        let s = &self.settings;
-        // Sample at voxel centers so lattice points (where noise is 0) don't
-        // line up with voxel edges.
-        let n = self.noise.fbm(
-            (x as f32 + 0.5) / s.scale,
-            (z as f32 + 0.5) / s.scale,
-            s.octaves,
-        );
-        (s.base_height + n * s.amplitude).round() as i32
+        self.shape.height(x, z)
+    }
+
+    /// Whether the column at `(x, z)` is bare rock, without soil.
+    #[cfg(test)]
+    pub fn is_rock(&self, x: i32, z: i32) -> bool {
+        let neighbours = NEIGHBOURS.map(|(dx, dz)| self.shape.surface(x + dx, z + dz));
+        self.shape.is_rock(self.height(x, z), neighbours)
     }
 
     /// The voxel at a world position.
     #[cfg(test)]
     pub fn voxel(&self, pos: IVec3) -> BlockState {
-        self.column_voxel(pos.y, self.height(pos.x, pos.z))
+        self.column_voxel(pos.y, self.height(pos.x, pos.z), self.is_rock(pos.x, pos.z))
     }
 
     /// Fills one chunk of the world.
     pub fn chunk(&self, coord: ChunkCoord) -> Chunk {
         let origin = coord.origin();
         let size = CHUNK_SIZE as i32;
-        // One noise lookup per column, not per voxel.
-        let heights: Vec<i32> = (0..size * size)
-            .map(|i| self.height(origin.x + i % size, origin.z + i / size))
+        // One noise lookup per column, not per voxel, with a column more on
+        // each side for telling cliffs.
+        let padded = size + 2;
+        let surfaces: Vec<f32> = (0..padded * padded)
+            .map(|i| {
+                self.shape
+                    .surface(origin.x + i % padded - 1, origin.z + i / padded - 1)
+            })
             .collect();
-        let (lowest, highest) = (
-            *heights.iter().min().unwrap(),
-            *heights.iter().max().unwrap(),
-        );
+        let surface = |x: i32, z: i32| surfaces[((z + 1) * padded + x + 1) as usize];
+        let at = |x: i32, z: i32| surface(x, z).round() as i32;
+        let columns = || (0..size * size).map(|i| (i % size, i / size));
+        let (lowest, highest) = columns().fold((i32::MAX, i32::MIN), |(low, high), (x, z)| {
+            (low.min(at(x, z)), high.max(at(x, z)))
+        });
         // Most chunks are all sky or all stone; skip the voxel loop.
         if origin.y >= highest {
             return Chunk::default();
@@ -307,20 +328,30 @@ impl Terrain {
             return Chunk::filled(self.blocks.stone);
         }
         let mut chunk = Chunk::default();
-        for (i, &height) in heights.iter().enumerate() {
-            let (x, z) = (i % CHUNK_SIZE, i / CHUNK_SIZE);
+        for (x, z) in columns() {
+            let height = at(x, z);
+            let rock = self
+                .shape
+                .is_rock(height, NEIGHBOURS.map(|(dx, dz)| surface(x + dx, z + dz)));
+            let (x, z) = (x as usize, z as usize);
             for y in 0..CHUNK_SIZE {
-                chunk.set(x, y, z, self.column_voxel(origin.y + y as i32, height));
+                chunk.set(
+                    x,
+                    y,
+                    z,
+                    self.column_voxel(origin.y + y as i32, height, rock),
+                );
             }
         }
         chunk
     }
 
     /// The voxel at height `y` in a column whose surface is `height`
-    /// voxels tall.
-    fn column_voxel(&self, y: i32, height: i32) -> BlockState {
+    /// voxels tall, and bare rock if `rock`.
+    fn column_voxel(&self, y: i32, height: i32, rock: bool) -> BlockState {
         match y {
             y if y >= height => BlockState::AIR,
+            _ if rock => self.blocks.stone,
             y if y == height - 1 => self.blocks.grass,
             y if y >= height - 1 - DIRT_DEPTH => self.blocks.dirt,
             _ => self.blocks.stone,
@@ -562,10 +593,16 @@ mod tests {
             let mut heights = Vec::new();
             for x in x0..x0 + 64 {
                 let h = terrain.height(x, z0);
-                assert_eq!(terrain.voxel(IVec3::new(x, h - 1, z0)), block("grass"));
+                let top = if terrain.is_rock(x, z0) {
+                    block("stone")
+                } else {
+                    block("grass")
+                };
+                assert_eq!(terrain.voxel(IVec3::new(x, h - 1, z0)), top);
+                assert!(terrain.voxel(IVec3::new(x, h, z0)).is_air());
                 if let Some(&last) = heights.last() {
                     let step: i32 = h - last;
-                    assert!(step.abs() <= 3, "cliff at ({x}, {z0})");
+                    assert!(step.abs() <= 16, "a wall at ({x}, {z0})");
                 }
                 heights.push(h);
             }
@@ -598,8 +635,9 @@ mod tests {
         }
     }
 
-    /// Hills, not a flat plane or random spikes: the height varies a lot over
-    /// the world but only a little between neighbouring columns.
+    /// Around the start, hills, not a flat plane or random spikes: the
+    /// height varies a lot over the patch but only a little between
+    /// neighbouring columns. (Further out there are mountains: see `shape`.)
     #[test]
     fn terrain_is_hilly_and_smooth() {
         let terrain = terrain();
@@ -621,11 +659,14 @@ mod tests {
     #[test]
     fn sky_all_the_way_up_and_stone_all_the_way_down() {
         let terrain = terrain();
-        for y in [200, 10_000, 1_000_000] {
-            assert_eq!(terrain.voxel(IVec3::new(-5, y, 3)), BlockState::AIR);
-            assert_eq!(terrain.voxel(IVec3::new(-5, -y, 3)), block("stone"));
+        // By the start, and in the mountains.
+        for (x, z) in [(-5, 3), (1576, -352)] {
+            for y in [400, 10_000, 1_000_000] {
+                assert_eq!(terrain.voxel(IVec3::new(x, y, z)), BlockState::AIR);
+                assert_eq!(terrain.voxel(IVec3::new(x, -y, z)), block("stone"));
+            }
         }
-        for pos in [IVec3::ZERO, IVec3::new(-1, 0, -1), IVec3::new(500, 0, 0)] {
+        for pos in [IVec3::ZERO, IVec3::new(-1, 0, -1), IVec3::new(100, 0, 0)] {
             assert_eq!(terrain.voxel(pos), block("stone"));
         }
         let sky = ChunkCoord(IVec3::new(3, 40, -2));
@@ -670,6 +711,48 @@ mod tests {
             ..default()
         });
         assert!(columns().any(|(x, z)| a.height(x, z) != b.height(x, z)));
+    }
+
+    /// In the mountains, among cliffs and peaks, chunks match the
+    /// column-by-column answer voxel for voxel, across their borders and
+    /// in the all-air and all-stone shortcuts, and bare-rock columns are
+    /// stone right to the top.
+    #[test]
+    fn mountain_chunks_match_their_columns() {
+        let terrain = terrain();
+        let (mut rock, mut grass) = (0, 0);
+        // East of the start, where the mountains are cliffs below the rock
+        // line.
+        for cx in 102..106 {
+            for cz in 4..7 {
+                let (x0, z0) = (cx * 16, cz * 16);
+                let surface = terrain.height(x0 + 8, z0 + 8).div_euclid(16);
+                for cy in surface - 1..=surface + 1 {
+                    let coord = ChunkCoord(IVec3::new(cx, cy, cz));
+                    let chunk = terrain.chunk(coord);
+                    for (x, y, z) in Chunk::positions() {
+                        let world = coord.origin() + IVec3::new(x as i32, y as i32, z as i32);
+                        assert_eq!(chunk.get(x, y, z), terrain.voxel(world), "at {world}");
+                    }
+                }
+                for x in x0..x0 + 16 {
+                    for z in z0..z0 + 16 {
+                        let top = terrain.voxel(IVec3::new(x, terrain.height(x, z) - 1, z));
+                        if terrain.is_rock(x, z) {
+                            rock += 1;
+                            assert_eq!(top, block("stone"), "at ({x}, {z})");
+                        } else {
+                            grass += 1;
+                            assert_eq!(top, block("grass"), "at ({x}, {z})");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            rock > 50 && grass > 50,
+            "{rock} rock and {grass} grass columns"
+        );
     }
 
     #[test]

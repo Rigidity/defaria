@@ -1,0 +1,25 @@
+# The mountains east of the start: the most complex terrain to draw, for
+# stress testing rendering and streaming. Compare the `timing` lines between
+# runs on the same machine.
+# Run: cargo headless scenarios/mountains.txt
+camera 1700 40 -230 45 20          # in the foothills, looking north-west up at the highest peak
+settle
+timing                             # loading it all
+screenshot target/scenarios/mountains/0-range.png
+wait 1
+camera 1576 312 -352 225 -50       # on the highest peak, looking down its ridge
+settle
+timing                             # the jump, until it's all loaded
+screenshot target/scenarios/mountains/1-summit.png
+wait 1
+camera 1850 150 -100 47 -10        # back over the foothills
+settle
+hold MouseLeft 1                   # lock the cursor
+press ControlLeft                  # sprint
+timing
+hold KeyW 600                      # ten seconds' flight across the range
+timing                             # flying: loading as it goes
+release ControlLeft
+screenshot target/scenarios/mountains/2-flight.png
+wait 60
+timing                             # hovering: just drawing

@@ -163,7 +163,7 @@ impl Chunk {
         (y * CHUNK_SIZE + z) * CHUNK_SIZE + x
     }
 
-    fn positions() -> impl Iterator<Item = (usize, usize, usize)> {
+    pub(crate) fn positions() -> impl Iterator<Item = (usize, usize, usize)> {
         (0..CHUNK_SIZE).flat_map(|y| {
             (0..CHUNK_SIZE).flat_map(move |z| (0..CHUNK_SIZE).map(move |x| (x, y, z)))
         })
