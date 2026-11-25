@@ -53,13 +53,14 @@ impl Plugin for CracksPlugin {
     }
 }
 
-/// The crack overlay. `drawn` is the state and the hidden sides its mesh
-/// was built for, and whether that left any faces to draw. It has no mesh
+/// The crack overlay. `stage` is the crack stage it shows, or `None` while
+/// it's hidden. `drawn` is the state and the hidden sides its mesh was
+/// built for, and whether that left any faces to draw. It has no mesh
 /// until the first block with faces to crack.
 #[derive(Component, Reflect, Debug, Default)]
 #[reflect(Component)]
 pub struct Cracks {
-    pub stage: usize,
+    pub stage: Option<usize>,
     #[reflect(ignore)]
     drawn: Option<(BlockState, u8)>,
     #[reflect(ignore)]
@@ -129,7 +130,7 @@ fn show_cracks(
         .iter()
         .find_map(|mining| Some((mining, mining.target?)))
     else {
-        visibility.set_if_neq(Visibility::Hidden);
+        hide(&mut cracks, &mut visibility);
         return;
     };
     let hidden = Direction::ALL
@@ -153,16 +154,25 @@ fn show_cracks(
         }
     }
     if cracks.empty {
-        visibility.set_if_neq(Visibility::Hidden);
+        hide(&mut cracks, &mut visibility);
         return;
     }
-    cracks.stage = stage(mining.progress);
-    let wanted = cracks.stages[cracks.stage].clone();
+    let now = stage(mining.progress);
+    cracks.stage = Some(now);
+    let wanted = cracks.stages[now].clone();
     if material.0 != wanted {
         material.0 = wanted;
     }
     transform.translation = pos.as_vec3();
     visibility.set_if_neq(Visibility::Inherited);
+}
+
+/// Hides the overlay, which then shows no stage.
+fn hide(cracks: &mut Mut<Cracks>, visibility: &mut Mut<Visibility>) {
+    if cracks.stage.is_some() {
+        cracks.stage = None;
+    }
+    visibility.set_if_neq(Visibility::Hidden);
 }
 
 /// The faces of `state`, in its block's coordinates, lifted off them by
@@ -336,7 +346,7 @@ mod tests {
         app.update();
     }
 
-    fn overlay(app: &mut App) -> (usize, Vec3, Visibility, Vec<Vec3>, bool) {
+    fn overlay(app: &mut App) -> (Option<usize>, Vec3, Visibility, Vec<Vec3>, bool) {
         let mut query = app.world_mut().query::<(
             &Cracks,
             &Transform,
@@ -353,7 +363,9 @@ mod tests {
             transform.translation,
             *visibility,
             points,
-            material.0 == cracks.stages[cracks.stage],
+            cracks
+                .stage
+                .is_some_and(|stage| material.0 == cracks.stages[stage]),
         )
     }
 
@@ -361,8 +373,8 @@ mod tests {
     fn the_overlay_follows_the_block_being_mined() {
         let mut app = app();
         mine(&mut app, None, 0.0);
-        let (_, _, visibility, points, _) = overlay(&mut app);
-        assert_eq!(visibility, Visibility::Hidden);
+        let (stage, _, visibility, points, _) = overlay(&mut app);
+        assert_eq!((stage, visibility), (None, Visibility::Hidden));
         // No mesh until there's something to crack.
         assert!(points.is_empty());
 
@@ -371,7 +383,7 @@ mod tests {
         let (stage, at, visibility, points, material) = overlay(&mut app);
         assert_eq!(
             (stage, at, visibility),
-            (5, slab.as_vec3(), Visibility::Inherited)
+            (Some(5), slab.as_vec3(), Visibility::Inherited)
         );
         assert!(material);
         // The slab's faces but its bottom, which the stone under it covers.
@@ -379,9 +391,10 @@ mod tests {
         assert!(points.iter().all(|p| p.y >= 0.0));
 
         mine(&mut app, Some((slab, block("stone_slab"))), 0.95);
-        assert_eq!(overlay(&mut app).0, 9);
+        assert_eq!(overlay(&mut app).0, Some(9));
         mine(&mut app, None, 0.0);
-        assert_eq!(overlay(&mut app).2, Visibility::Hidden);
+        let (stage, _, visibility, _, _) = overlay(&mut app);
+        assert_eq!((stage, visibility), (None, Visibility::Hidden));
 
         // The stone under it: every face but its top, under the slab, and
         // its bottom, which is open.
@@ -390,10 +403,34 @@ mod tests {
         let (stage, at, visibility, points, _) = overlay(&mut app);
         assert_eq!(
             (stage, at, visibility),
-            (0, stone.as_vec3(), Visibility::Inherited)
+            (Some(0), stone.as_vec3(), Visibility::Inherited)
         );
         assert_eq!(points.len(), 5 * 4);
         assert!(points.iter().all(|p| p.y <= 1.0));
+    }
+
+    /// A block with every side covered has nothing to crack: the overlay
+    /// hides rather than showing the last block's cracks.
+    #[test]
+    fn a_fully_covered_block_hides_the_overlay() {
+        let mut app = app();
+        let slab = IVec3::new(5, 1, 5);
+        mine(&mut app, Some((slab, block("stone_slab"))), 0.55);
+        let (stage, _, visibility, points, _) = overlay(&mut app);
+        assert_eq!((stage, visibility), (Some(5), Visibility::Inherited));
+        assert!(!points.is_empty());
+
+        // A stone with stone on all six sides.
+        let enclosed = IVec3::new(10, 10, 10);
+        let mut chunks = app.world_mut().query::<&mut Chunk>();
+        let mut chunk = chunks.single_mut(app.world_mut()).unwrap();
+        chunk.set_at(enclosed, block("stone"));
+        for side in Direction::ALL {
+            chunk.set_at(enclosed + side.normal(), block("stone"));
+        }
+        mine(&mut app, Some((enclosed, block("stone"))), 0.55);
+        let (stage, _, visibility, _, _) = overlay(&mut app);
+        assert_eq!((stage, visibility), (None, Visibility::Hidden));
     }
 
     /// The mesh is rebuilt when a neighbour changes under the same target:
@@ -437,10 +474,11 @@ mod tests {
         let (stage, at, visibility, points, _) = overlay(&mut app);
         assert_eq!(at, Vec3::new(40.0, 120.0, 40.0));
         assert_eq!(visibility, Visibility::Inherited);
-        assert!(stage > 0, "stage {stage}");
+        assert!(stage.is_some_and(|stage| stage > 0), "stage {stage:?}");
         assert_eq!(points.len(), 6 * 4);
 
         run_more(&mut app, "release MouseLeft\nwait 2");
-        assert_eq!(overlay(&mut app).2, Visibility::Hidden);
+        let (stage, _, visibility, _, _) = overlay(&mut app);
+        assert_eq!((stage, visibility), (None, Visibility::Hidden));
     }
 }

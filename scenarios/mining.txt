@@ -4,7 +4,8 @@
 # over. Stone takes about a second (its hardness times 0.75 s, 68
 # frames), and the screenshots at 10, 34 and 60 frames in show the cracks
 # growing on each through light, middle and heavy stages, fitting the
-# slab's shape. `inspect Cracks` shows the overlay's stage.
+# slab's shape. `inspect Cracks` shows the overlay's stage, None once
+# it's hidden.
 # Run: cargo headless scenarios/mining.txt
 wait 5
 fill 20 45 20 30 45 30 planks       # the platform
