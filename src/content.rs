@@ -102,7 +102,8 @@ impl Direction {
         }
     }
 
-    fn bit(self) -> u8 {
+    /// This side's bit in a set of sides kept as a `u8`.
+    pub(crate) fn bit(self) -> u8 {
         1 << self as u8
     }
 }
@@ -348,6 +349,25 @@ pub struct BakedFace {
     pub cull: Option<Direction>,
 }
 
+impl BakedFace {
+    /// Whether the face is hidden, given which sides of its block are
+    /// `covered` (see [`Content::covers`]). Faces with no `cull` side are
+    /// never hidden.
+    pub fn hidden_by(&self, covered: impl FnOnce(Direction) -> bool) -> bool {
+        self.cull.is_some_and(covered)
+    }
+
+    /// The face's triangles, as indices into its vertices: one triangle, or
+    /// a quad as two counter-clockwise triangles.
+    pub fn indices(&self) -> &'static [u32] {
+        if self.vertices.len() == 3 {
+            &[0, 1, 2]
+        } else {
+            &[0, 1, 2, 0, 2, 3]
+        }
+    }
+}
+
 /// An item in one particular state: an index into
 /// [`Content::item_states`]. Items carry their property values this way, as
 /// blocks do, so a birch log and an iron-headed pickaxe are each one value.
@@ -477,6 +497,12 @@ impl Content {
     /// What `state` looks like. Air for a state that doesn't exist.
     pub fn state(&self, state: BlockState) -> &State {
         self.states.get(state.0 as usize).unwrap_or(&self.states[0])
+    }
+
+    /// Whether `neighbour`, next to a block on its `side`, covers that
+    /// side, so the block's faces culled against it aren't drawn.
+    pub fn covers(&self, neighbour: BlockState, side: Direction) -> bool {
+        self.state(neighbour).occludes(side.opposite())
     }
 
     /// The block `state` is a state of.
