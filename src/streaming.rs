@@ -254,6 +254,17 @@ fn open_world(
     light: Res<LightTable>,
     sky: Res<Sky>,
 ) {
+    // Chunks generated without the terrain's blocks would be saved as air
+    // for good, so a world isn't saved unless they loaded.
+    let missing = TerrainBlocks::missing(&content);
+    let folder = folder.filter(|_| {
+        if !missing.is_empty() {
+            error!(
+                "the terrain's blocks {missing:?} didn't load; playing a world that won't be saved"
+            );
+        }
+        missing.is_empty()
+    });
     let folder = folder.and_then(|folder| match save::open_world(&folder.0, settings.seed) {
         Ok(seed) => {
             info!("playing the world in {}", folder.0.display());
@@ -855,6 +866,30 @@ mod tests {
         assert_eq!(get(&mut app, pos), Some(block("red_lamp")));
         let seed = app.world().resource::<TerrainSettings>().seed;
         assert_eq!(seed, TerrainSettings::default().seed);
+    }
+
+    /// Without the terrain's blocks, nothing is written to the world: what
+    /// was generated would be saved as air.
+    #[test]
+    fn worlds_arent_saved_without_the_terrains_blocks() {
+        let folder = temp_folder("no-blocks");
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
+            .insert_resource(crate::content::test_mod(&[]))
+            .add_plugins((TerrainPlugin, LightPlugin, StreamingPlugin))
+            .init_asset::<Mesh>()
+            .insert_resource(BlockMaterial {
+                material: Handle::default(),
+                layers: default(),
+            })
+            .insert_resource(settings())
+            .insert_resource(WorldFolder(folder.clone()));
+        app.world_mut()
+            .spawn((ChunkLoader, Transform::from_translation(Vec3::splat(8.0))));
+        settle(&mut app);
+        app.world_mut().write_message(AppExit::Success);
+        app.update();
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
     }
 
     /// Edits reach the disk while the game runs, not only when it exits.

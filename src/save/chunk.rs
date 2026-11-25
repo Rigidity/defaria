@@ -119,6 +119,11 @@ pub fn encode(chunk: &Chunk, names: &StateNames) -> Vec<u8> {
     blob
 }
 
+/// Whether `blob` is a chunk in a newer format than this build reads.
+pub fn is_newer(blob: &[u8]) -> bool {
+    blob.first().is_some_and(|&format| format > CHUNK_FORMAT)
+}
+
 /// Decodes a chunk saved by [`encode`].
 pub fn decode(blob: &[u8], names: &StateNames) -> Result<Chunk, String> {
     let (&format, compressed) = blob.split_first().ok_or("empty chunk")?;
@@ -348,6 +353,8 @@ mod tests {
         let good = encode(&lamp, &names);
         assert!(decode(&[], &names).is_err());
         assert!(decode(&[CHUNK_FORMAT + 1], &names).is_err());
+        assert!(is_newer(&[CHUNK_FORMAT + 1]));
+        assert!(!is_newer(&good));
         assert!(decode(&good[..good.len() - 2], &names).is_err());
         // Valid zlib around a truncated payload.
         let mut payload = Vec::new();

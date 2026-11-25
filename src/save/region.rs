@@ -64,6 +64,12 @@ pub fn encode(chunks: &HashMap<u16, impl AsRef<[u8]>>) -> Vec<u8> {
     out
 }
 
+/// Whether `data` is a region file in a newer format than this build
+/// reads: not damaged, but not this build's to read (or overwrite).
+pub fn is_newer(data: &[u8]) -> bool {
+    data.len() >= 6 && &data[..4] == MAGIC && u16::from_le_bytes([data[4], data[5]]) > REGION_FORMAT
+}
+
 /// Reads a region file written by [`encode`]: each saved chunk's blob, by
 /// index.
 pub fn decode(data: &[u8]) -> Result<HashMap<u16, Vec<u8>>, String> {
@@ -152,8 +158,11 @@ mod tests {
         assert!(decode(b"NOPE\x01\x00\x10\x00\x00\x00\x00\x00").is_err());
         assert!(decode(&file[..file.len() - 1]).is_err(), "truncated blob");
         assert!(decode(&file[..14]).is_err(), "truncated table");
+        assert!(!is_newer(&file));
         let mut newer = file.clone();
         newer[4] = 2;
         assert!(decode(&newer).unwrap_err().contains("format 2"));
+        assert!(is_newer(&newer));
+        assert!(!is_newer(b"garbage"));
     }
 }

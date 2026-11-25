@@ -222,6 +222,16 @@ pub struct TerrainBlocks {
 }
 
 impl TerrainBlocks {
+    const IDS: [&str; 3] = ["defaria:grass", "defaria:dirt", "defaria:stone"];
+
+    /// The ids of the blocks the terrain needs that didn't load.
+    pub fn missing(content: &Content) -> Vec<&'static str> {
+        Self::IDS
+            .into_iter()
+            .filter(|id| content.block(id).is_none())
+            .collect()
+    }
+
     /// The base game's grass, dirt and stone. One that didn't load is
     /// reported and left as air.
     pub fn from_content(content: &Content) -> Self {

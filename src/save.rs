@@ -13,7 +13,10 @@
 //! always sees the latest save, flushed or not. [`WorldStore::flush`]
 //! encodes and writes the regions that changed, each to a temporary file
 //! that then replaces the old one, so a crash mid-write leaves the old file
-//! whole. A store with no folder keeps everything in memory instead: edits
+//! whole. A region that can't safely be read (its file is in a newer
+//! format, or the disk won't give it up) is played but never written, so
+//! what's in its file isn't lost. A store with no folder keeps everything
+//! in memory instead: edits
 //! survive their chunks unloading but not the game closing. Headless runs
 //! use one, so scenarios always start from the same world.
 
@@ -145,6 +148,9 @@ struct Region {
     chunks: HashMap<u16, Stored>,
     /// Whether it holds saves its file doesn't have yet.
     dirty: bool,
+    /// Whether its file mustn't be written: it couldn't be read, or holds
+    /// something newer than this build reads. Saves to it stay in memory.
+    read_only: bool,
 }
 
 /// The saved chunks of one world. See the module docs.
@@ -179,13 +185,15 @@ impl WorldStore {
             let mut guard = region.lock().unwrap();
             if !guard.read {
                 guard.read = true;
-                guard.chunks = self.read_region(coord);
+                (guard.chunks, guard.read_only) = self.read_region(coord);
             }
         }
         region
     }
 
-    fn read_region(&self, coord: IVec3) -> HashMap<u16, Stored> {
+    /// Reads a region's file: its chunks, and whether the file mustn't be
+    /// written.
+    fn read_region(&self, coord: IVec3) -> (HashMap<u16, Stored>, bool) {
         let Some(dir) = &self.regions_dir else {
             return default();
         };
@@ -194,18 +202,31 @@ impl WorldStore {
             Ok(data) => data,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return default(),
             Err(error) => {
-                // Leave the file alone: the game may just not be allowed
-                // to read it now. Its chunks are generated afresh and
-                // saving them overwrites it, so say so loudly.
-                error!("can't read {}: {error}", path.display());
-                return default();
+                // The game may just not be allowed to read it now: leave it
+                // alone, and don't write over it.
+                error!(
+                    "can't read {} ({error}); this part of the world won't be saved",
+                    path.display()
+                );
+                return (default(), true);
             }
         };
+        if region::is_newer(&data) {
+            error!(
+                "{} was saved by a newer version of the game; this part of the world \
+                 won't be saved, so it isn't lost",
+                path.display()
+            );
+            return (default(), true);
+        }
         match region::decode(&data) {
-            Ok(chunks) => chunks
-                .into_iter()
-                .map(|(index, blob)| (index, Stored::Blob(blob.into())))
-                .collect(),
+            Ok(chunks) => (
+                chunks
+                    .into_iter()
+                    .map(|(index, blob)| (index, Stored::Blob(blob.into())))
+                    .collect(),
+                false,
+            ),
             Err(error) => {
                 // Keep the broken file for whoever wants to rescue it.
                 let mut backup = path.as_os_str().to_owned();
@@ -216,7 +237,8 @@ impl WorldStore {
                     PathBuf::from(&backup).display()
                 );
                 if let Err(error) = std::fs::rename(&path, &backup) {
-                    error!("can't move it: {error}");
+                    error!("can't move it, so this part of the world won't be saved: {error}");
+                    return (default(), true);
                 }
                 default()
             }
@@ -227,17 +249,20 @@ impl WorldStore {
     /// can't be read, which is logged).
     pub fn load(&self, coord: IVec3) -> Option<Chunk> {
         let (region, index) = region::split(coord);
-        let stored = self
-            .region(region)
-            .lock()
-            .unwrap()
-            .chunks
-            .get(&index)?
-            .clone();
+        let region = self.region(region);
+        let stored = region.lock().unwrap().chunks.get(&index)?.clone();
         match stored {
             Stored::Chunk(chunk) => Some((*chunk).clone()),
             Stored::Blob(blob) => match chunk::decode(&blob, &self.names) {
                 Ok(chunk) => Some(chunk),
+                Err(_) if chunk::is_newer(&blob) => {
+                    error!(
+                        "chunk {coord} was saved by a newer version of the game; \
+                         its region won't be saved, so it isn't lost"
+                    );
+                    region.lock().unwrap().read_only = true;
+                    None
+                }
                 Err(error) => {
                     error!("chunk {coord} is damaged and will be generated again: {error}");
                     None
@@ -266,76 +291,88 @@ impl WorldStore {
             .iter()
             .map(|(coord, region)| (*coord, region.clone()))
             .collect();
-        let mut written = 0;
-        for (coord, region) in regions {
-            let unencoded: Vec<(u16, Arc<Chunk>)> = {
-                let mut region = region.lock().unwrap();
-                if !region.dirty {
-                    continue;
-                }
-                region.dirty = false;
-                region
-                    .chunks
-                    .iter()
-                    .filter_map(|(&index, stored)| match stored {
-                        Stored::Chunk(chunk) => Some((index, chunk.clone())),
-                        Stored::Blob(_) => None,
-                    })
-                    .collect()
-            };
-            // Encode without the lock, so saving and loading chunks in this
-            // region (on the main thread, and loading tasks) don't wait.
-            let encoded: Vec<(u16, Arc<Chunk>, Arc<[u8]>)> = unencoded
-                .into_iter()
-                .map(|(index, chunk)| {
-                    let blob = chunk::encode(&chunk, &self.names).into();
-                    (index, chunk, blob)
+        regions
+            .into_iter()
+            .filter(|(coord, region)| self.flush_region(*coord, region, || {}))
+            .count()
+    }
+
+    /// Flushes one region; whether it wrote it. `while_encoding` runs while
+    /// the region's chunks are being encoded, with its lock free (for
+    /// tests, which save into it then).
+    fn flush_region(
+        &self,
+        coord: IVec3,
+        region: &Mutex<Region>,
+        while_encoding: impl FnOnce(),
+    ) -> bool {
+        let unencoded: Vec<(u16, Arc<Chunk>)> = {
+            let mut region = region.lock().unwrap();
+            if !region.dirty || region.read_only {
+                return false;
+            }
+            region.dirty = false;
+            region
+                .chunks
+                .iter()
+                .filter_map(|(&index, stored)| match stored {
+                    Stored::Chunk(chunk) => Some((index, chunk.clone())),
+                    Stored::Blob(_) => None,
                 })
-                .collect();
-            let file = {
-                let mut region = region.lock().unwrap();
-                for (index, chunk, blob) in encoded {
-                    // Unless it was saved again while this was encoding.
-                    if let Some(Stored::Chunk(current)) = region.chunks.get(&index)
-                        && Arc::ptr_eq(current, &chunk)
-                    {
-                        region.chunks.insert(index, Stored::Blob(blob));
-                    }
-                }
-                // What was saved meanwhile (rarely anything) is encoded
-                // here; the region is dirty again, so it's written again too.
-                for stored in region.chunks.values_mut() {
-                    if let Stored::Chunk(chunk) = stored {
-                        *stored = Stored::Blob(chunk::encode(chunk, &self.names).into());
-                    }
-                }
-                let Some(dir) = &self.regions_dir else {
-                    continue;
-                };
-                let blobs: HashMap<u16, Arc<[u8]>> = region
-                    .chunks
-                    .iter()
-                    .map(|(&index, stored)| match stored {
-                        Stored::Blob(blob) => (index, blob.clone()),
-                        Stored::Chunk(_) => unreachable!("encoded above"),
-                    })
-                    .collect();
-                (dir.join(region::file_name(coord)), blobs)
-            };
-            // Write without holding the lock, so loads from this region
-            // don't wait on the disk.
-            let (path, blobs) = file;
-            let result = std::fs::create_dir_all(path.parent().unwrap())
-                .and_then(|()| write_atomically(&path, &region::encode(&blobs)));
-            match result {
-                Ok(()) => written += 1,
-                Err(error) => {
-                    error!("can't save {}: {error}", path.display());
-                    region.lock().unwrap().dirty = true;
+                .collect()
+        };
+        // Encode without the lock, so saving and loading chunks in this
+        // region (on the main thread, and loading tasks) don't wait.
+        let encoded: Vec<(u16, Arc<Chunk>, Arc<[u8]>)> = unencoded
+            .into_iter()
+            .map(|(index, chunk)| {
+                let blob = chunk::encode(&chunk, &self.names).into();
+                (index, chunk, blob)
+            })
+            .collect();
+        while_encoding();
+        let (path, blobs) = {
+            let mut region = region.lock().unwrap();
+            for (index, chunk, blob) in encoded {
+                // Unless it was saved again while this was encoding.
+                if let Some(Stored::Chunk(current)) = region.chunks.get(&index)
+                    && Arc::ptr_eq(current, &chunk)
+                {
+                    region.chunks.insert(index, Stored::Blob(blob));
                 }
             }
+            // What was saved meanwhile (rarely anything) is encoded here;
+            // the region is dirty again, so it's written again too.
+            for stored in region.chunks.values_mut() {
+                if let Stored::Chunk(chunk) = stored {
+                    *stored = Stored::Blob(chunk::encode(chunk, &self.names).into());
+                }
+            }
+            let Some(dir) = &self.regions_dir else {
+                return false;
+            };
+            let blobs: HashMap<u16, Arc<[u8]>> = region
+                .chunks
+                .iter()
+                .map(|(&index, stored)| match stored {
+                    Stored::Blob(blob) => (index, blob.clone()),
+                    Stored::Chunk(_) => unreachable!("encoded above"),
+                })
+                .collect();
+            (dir.join(region::file_name(coord)), blobs)
+        };
+        // Write without holding the lock, so loads from this region don't
+        // wait on the disk.
+        let result = std::fs::create_dir_all(path.parent().unwrap())
+            .and_then(|()| write_atomically(&path, &region::encode(&blobs)));
+        match result {
+            Ok(()) => true,
+            Err(error) => {
+                error!("can't save {}: {error}", path.display());
+                region.lock().unwrap().dirty = true;
+                false
+            }
         }
-        written
     }
 
     /// Forgets the regions `in_use` says nothing needs and that have no
@@ -440,6 +477,94 @@ pub mod tests {
         let store = WorldStore::new(Some(&folder), base());
         assert_eq!(store.load(IVec3::ZERO), None);
         assert!(folder.join("regions/r.0.0.0.dfr.broken").exists());
+    }
+
+    /// A chunk saved again while a flush is encoding keeps its newer copy,
+    /// in memory and on disk.
+    #[test]
+    fn saving_during_a_flush_keeps_the_newer_save() {
+        let folder = temp_folder("during-flush");
+        let store = WorldStore::new(Some(&folder), base());
+        let coord = IVec3::new(1, 2, 3);
+        store.save(coord, chunk_with(block("sand")));
+        let (region_coord, _) = region::split(coord);
+        let region = store.region(region_coord);
+        assert!(store.flush_region(region_coord, &region, || {
+            store.save(coord, chunk_with(block("lamp")));
+        }));
+        assert_eq!(store.load(coord), Some(chunk_with(block("lamp"))));
+        store.flush();
+        let reopened = WorldStore::new(Some(&folder), base());
+        assert_eq!(reopened.load(coord), Some(chunk_with(block("lamp"))));
+    }
+
+    /// A region saved by a newer version of the game is left alone: it's
+    /// played without its saves and never written over.
+    #[test]
+    fn regions_from_a_newer_version_are_never_written() {
+        let folder = temp_folder("newer");
+        let store = WorldStore::new(Some(&folder), base());
+        store.save(IVec3::ZERO, chunk_with(block("lamp")));
+        store.flush();
+        let path = folder.join("regions/r.0.0.0.dfr");
+        let mut newer = std::fs::read(&path).unwrap();
+        newer[4] = 2;
+        std::fs::write(&path, &newer).unwrap();
+
+        let store = WorldStore::new(Some(&folder), base());
+        assert_eq!(store.load(IVec3::ZERO), None);
+        store.save(IVec3::ZERO, chunk_with(block("sand")));
+        assert_eq!(store.load(IVec3::ZERO), Some(chunk_with(block("sand"))));
+        assert_eq!(store.flush(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), newer);
+        assert!(!folder.join("regions/r.0.0.0.dfr.broken").exists());
+    }
+
+    /// A region file the game isn't allowed to read is left alone too.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_regions_are_never_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = temp_folder("unreadable");
+        let store = WorldStore::new(Some(&folder), base());
+        store.save(IVec3::ZERO, chunk_with(block("lamp")));
+        store.flush();
+        let path = folder.join("regions/r.0.0.0.dfr");
+        let before = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
+        if std::fs::read(&path).is_ok() {
+            return; // Running as root: nothing is unreadable.
+        }
+
+        let store = WorldStore::new(Some(&folder), base());
+        assert_eq!(store.load(IVec3::ZERO), None);
+        store.save(IVec3::ZERO, chunk_with(block("sand")));
+        assert_eq!(store.flush(), 0);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// The same for a single chunk saved in a newer format.
+    #[test]
+    fn chunks_from_a_newer_version_keep_their_region_from_being_written() {
+        let folder = temp_folder("newer-chunk");
+        let store = WorldStore::new(Some(&folder), base());
+        let (a, b) = (IVec3::ZERO, IVec3::X);
+        store.save(a, chunk_with(block("lamp")));
+        store.save(b, chunk_with(block("lamp")));
+        store.flush();
+        let path = folder.join("regions/r.0.0.0.dfr");
+        let mut chunks = region::decode(&std::fs::read(&path).unwrap()).unwrap();
+        chunks.get_mut(&0).unwrap()[0] = chunk::CHUNK_FORMAT + 1;
+        let newer = region::encode(&chunks);
+        std::fs::write(&path, &newer).unwrap();
+
+        let store = WorldStore::new(Some(&folder), base());
+        assert_eq!(store.load(b), Some(chunk_with(block("lamp"))));
+        assert_eq!(store.load(a), None);
+        store.save(a, chunk_with(block("sand")));
+        assert_eq!(store.flush(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), newer);
     }
 
     #[test]

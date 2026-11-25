@@ -23,9 +23,12 @@ world/
 ```
 
 The code is in `src/save.rs` (folders and the store), `src/save/region.rs` and
-`src/save/chunk.rs`. Every format here has a version number, and a build
-refuses (with an error, without touching the file) to read a version newer than
-it knows. When a format changes, bump its version and keep reading the old one.
+`src/save/chunk.rs`. Every format here has a version number. When a format
+changes, bump its version and keep reading the old one. A build that finds a
+version newer than it knows leaves the file alone: a newer `world.json5` means
+the world is played without saving; a newer region file or chunk means that
+region is played (generated afresh) but never written. A region file the game
+can't read at all is treated the same way.
 
 ## `world.json5`
 
@@ -70,8 +73,8 @@ All numbers little-endian.
 | … | The chunk blobs |
 
 Chunks that aren't in the table have never been saved, and are generated when
-they're loaded. A region file that can't be read is renamed to
-`<name>.broken` (and logged), and the region starts over.
+they're loaded. A region file that's damaged is renamed to `<name>.broken`
+(and logged), and the region starts over.
 
 ### Chunk blob, format 1
 
