@@ -90,8 +90,17 @@ log, and a mod adding a wood gets its logs, planks and tool handles too.
   palettes: {
     bark: ["#2e2014", "#483422", "#5e462e", "#74583a"],
   },
+  hardness: 1,                     // required: how hard it is to break
+  weight: 750,                     // required: kg per block of it
 }
 ```
+
+`hardness` and `weight` are what blocks and items made of the material
+count toward their own (see [Hardness and weight](#hardness-and-weight)).
+Hardness has no unit: dirt is about 0.5, stone 1.5 and iron 3. Weight is in
+kilograms for a whole block of the material, a cube a metre on each side,
+so it's the material's density in kg/m³: oak 750, stone 2600, iron 7870.
+Every material needs both.
 
 Each palette is 2 to 8 hex colors, darkest first. They're spread evenly over
 the 8 gray levels and blended in between (in Oklab, so the steps look
@@ -239,6 +248,42 @@ gives off light shines out of every side, covered or not. A block whose
 model covers all six sides is opaque: no light gets in, and it shades the
 corners of the faces next to it (ambient occlusion).
 
+### Hardness and weight
+
+Every block state and item state has a hardness (how long it takes to
+break; no unit, dirt about 0.5 and stone 1.5) and a weight in kilograms.
+Each is a number:
+
+```json5
+{ name: "Dirt", model: "cube", textures: { all: "dirt" }, hardness: 0.5, weight: 1500 }
+```
+
+or, for something made of materials, a `base` times the weighted average
+of its material properties' values:
+
+```json5
+// blocks/stone.json5: mostly rock, so ore counts a quarter.
+hardness: { materials: { rock: 3, ore: 1 } },
+weight: { materials: { rock: 3, ore: 1 } },
+
+// blocks/stone_slab.json5: half a block of rock.
+weight: { base: 0.5, materials: { rock: 1 } },
+```
+
+- **`materials`** names material properties and how much each counts.
+  Stone with iron ore is `(3 × 1.5 + 1 × 3) / 4 = 1.875` hard. A property
+  at `none` doesn't count, so plain stone is just its rock's 1.5. Every
+  state needs a material in at least one of them, so counting only
+  optional properties is an error (in the state where all are `none`,
+  there'd be nothing to average); count one that isn't optional, or
+  write a number.
+- **`base`** multiplies the average; it defaults to 1. A material's weight
+  is per whole block, so a slab's base is 0.5, and a tool's is its volume
+  in cubic metres (a 0.7-litre pickaxe is `0.0007`).
+- Left out, a block's hardness and weight are 0.
+
+Each state's values are worked out once, at load.
+
 ### States, properties and variants
 
 A block can have **properties**, each with a list of values; the first is
@@ -340,7 +385,8 @@ block with those values and the rest at their defaults: there's an Oak
 Log and a Birch Log item, but no item per axis. Set `item: false` on a
 property to leave it out, or on the block to have no item at all.
 
-To change the item (its name, icon or stack size), add an item file with
+The item is as hard and as heavy as the block state it places. To change
+the item (its name, icon, stack size, hardness or weight), add an item file with
 the same name: what it leaves out comes from the block. It can't add
 properties or a `block`.
 
@@ -359,8 +405,17 @@ properties or a `block`.
   texture: { texture: "pickaxe", materials: { head: "{head}", handle: "{handle}" } },
   max_stack: 1,          // default 64
   block: "stone",        // optional: the block it places
+  // As for blocks: a number, or a base times its materials' average.
+  hardness: { materials: { head: 3, handle: 1 } },
+  // 0.7 litres, a quarter of it the head.
+  weight: { base: 0.0007, materials: { head: 1, handle: 3 } },
 }
 ```
+
+`hardness` and `weight` work as they do for
+[blocks](#hardness-and-weight), with the item's own properties; weight is
+what one of the item weighs, in kilograms. Left out, they're those of the
+block state the item places, or 0 for an item that places none.
 
 Items have properties as blocks do, plain or material, and every
 combination is a separate item state: an item carries its property values
@@ -380,8 +435,9 @@ the textures hot reload. Every item state shows in the inventory.
 - JSON5 changes need a restart; images hot reload.
 - Placement rules (such as setting a log's `axis` from the face you click)
   aren't data yet, so placed blocks are in their item's state.
-- Material attributes (hardness, weight) and other item data that isn't a
-  fixed list of values, such as durability.
+- Item data that isn't a fixed list of values, such as durability.
+- Hardness and weight are worked out but nothing uses them yet. Variants
+  can't change them.
 - Cut-out textures (leaves with holes): block faces are drawn opaque.
 - Models are block-only so far: no bones or animation for entities.
 - A mod can only add definitions in its own namespace, not replace another

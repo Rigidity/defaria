@@ -51,6 +51,11 @@ pub struct MaterialDef {
     /// one if it has none.
     #[serde(default)]
     pub palettes: BTreeMap<String, Vec<String>>,
+    /// How hard it is to break, unitless: dirt is about 0.5, stone 1.5.
+    pub hardness: f32,
+    /// What a whole block of it weighs, in kilograms (its density in
+    /// kg/m³).
+    pub weight: f32,
 }
 
 /// `textures/<name>.json5`.
@@ -216,6 +221,12 @@ pub struct BlockDef {
     /// The light the block gives off: red, green and blue levels, 0 to 15.
     #[serde(default)]
     pub light: Option<[u8; 3]>,
+    /// How hard each state is to break. Left out, 0.
+    #[serde(default)]
+    pub hardness: Option<Attribute>,
+    /// What each state weighs, in kilograms. Left out, 0.
+    #[serde(default)]
+    pub weight: Option<Attribute>,
     /// Applied in order on top of the block's own look, each where its
     /// `when` matches the state.
     #[serde(default)]
@@ -286,6 +297,37 @@ pub struct ItemDef {
     pub block: Option<String>,
     #[serde(default)]
     pub max_stack: Option<u32>,
+    /// How hard each state is. Left out, the block it places' (for a
+    /// block's item, the state it places), or 0.
+    #[serde(default)]
+    pub hardness: Option<Attribute>,
+    /// What one of each state weighs, in kilograms. Left out, what the
+    /// block it places weighs, or 0.
+    #[serde(default)]
+    pub weight: Option<Attribute>,
+}
+
+/// A block's or item's hardness or weight: a number, or a base times a
+/// weighted average of what its material properties' materials say.
+#[derive(Debug, Clone)]
+pub enum Attribute {
+    Fixed(f32),
+    Mixed(MixedAttribute),
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct MixedAttribute {
+    /// Multiplies the average. Default 1.
+    #[serde(default = "default_one")]
+    pub base: f32,
+    /// Material property to how much it counts, such as
+    /// `{ rock: 3, ore: 1 }`. A property at `none` doesn't count.
+    pub materials: BTreeMap<String, f32>,
+}
+
+fn default_one() -> f32 {
+    1.0
 }
 
 /// A value that can be written in more than one form: a string, a list or
@@ -309,6 +351,21 @@ trait Forms: Sized {
     fn from_map<'de, A: MapAccess<'de>>(_: A) -> Result<Self, A::Error> {
         Err(de::Error::invalid_type(Unexpected::Map, &Self::EXPECTING))
     }
+
+    fn from_f64<E: de::Error>(value: f64) -> Result<Self, E> {
+        Err(E::invalid_type(Unexpected::Float(value), &Self::EXPECTING))
+    }
+
+    fn from_i64<E: de::Error>(value: i64) -> Result<Self, E> {
+        Err(E::invalid_type(Unexpected::Signed(value), &Self::EXPECTING))
+    }
+
+    fn from_u64<E: de::Error>(value: u64) -> Result<Self, E> {
+        Err(E::invalid_type(
+            Unexpected::Unsigned(value),
+            &Self::EXPECTING,
+        ))
+    }
 }
 
 struct FormsVisitor<T>(PhantomData<T>);
@@ -322,6 +379,18 @@ impl<'de, T: Forms> Visitor<'de> for FormsVisitor<T> {
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<T, E> {
         T::from_str(value)
+    }
+
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<T, E> {
+        T::from_f64(value)
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<T, E> {
+        T::from_i64(value)
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<T, E> {
+        T::from_u64(value)
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<T, A::Error> {
@@ -343,7 +412,7 @@ macro_rules! deserialize_forms {
     )*};
 }
 
-deserialize_forms!(TextureRef, PropertyDef, Condition, OneOrMany);
+deserialize_forms!(TextureRef, PropertyDef, Condition, OneOrMany, Attribute);
 
 fn seq<'de, T: Deserialize<'de>, A: SeqAccess<'de>>(seq: A) -> Result<T, A::Error> {
     T::deserialize(SeqAccessDeserializer::new(seq))
@@ -402,5 +471,25 @@ impl Forms for OneOrMany {
 
     fn from_seq<'de, A: SeqAccess<'de>>(s: A) -> Result<Self, A::Error> {
         seq(s).map(OneOrMany::Many)
+    }
+}
+
+impl Forms for Attribute {
+    const EXPECTING: &'static str = "a number, or `{ base, materials }`";
+
+    fn from_f64<E: de::Error>(value: f64) -> Result<Self, E> {
+        Ok(Attribute::Fixed(value as f32))
+    }
+
+    fn from_i64<E: de::Error>(value: i64) -> Result<Self, E> {
+        Ok(Attribute::Fixed(value as f32))
+    }
+
+    fn from_u64<E: de::Error>(value: u64) -> Result<Self, E> {
+        Ok(Attribute::Fixed(value as f32))
+    }
+
+    fn from_map<'de, A: MapAccess<'de>>(m: A) -> Result<Self, A::Error> {
+        map(m).map(Attribute::Mixed)
     }
 }

@@ -1,4 +1,6 @@
 // Bright and saturated, shifting from blue-green shadows to yellow-green highlights, over a low-contrast range.
 {
   palette: ["#3a7a28", "#519a2d", "#6bb535", "#8fce45"],
+  hardness: 0.6,
+  weight: 1400,
 }

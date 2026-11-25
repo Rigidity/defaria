@@ -3,4 +3,6 @@
   name: "Gold",
   tags: ["metal", "ore"],
   palette: ["#6a4a0a", "#b08a1a", "#e8c43a", "#fff294"],
+  hardness: 1.2,
+  weight: 19300,
 }

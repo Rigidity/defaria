@@ -3,4 +3,6 @@
   properties: { rock: { materials: ["stone", "#rock"] } },
   model: "slab",
   textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
+  hardness: { materials: { rock: 1 } },
+  weight: { base: 0.5, materials: { rock: 1 } },
 }

@@ -193,6 +193,11 @@ pub struct Material {
     pub palette: Palette,
     /// Palettes for particular uses, by role.
     pub palettes: BTreeMap<String, Palette>,
+    /// How hard it is to break; see [`State::hardness`].
+    pub hardness: f32,
+    /// What a whole block of it weighs, in kilograms: its density in
+    /// kg/m³, a block being a metre on each side.
+    pub weight: f32,
 }
 
 impl Material {
@@ -307,6 +312,11 @@ pub struct State {
     /// The light it gives off: red, green and blue levels, up to
     /// [`MAX_LIGHT`].
     pub light: [u8; 3],
+    /// How hard it is to break, unitless: dirt is about 0.5 and stone
+    /// about 1.5. Air's is 0.
+    pub hardness: f32,
+    /// What it weighs, in kilograms. A whole block of stone is about 2600.
+    pub weight: f32,
 }
 
 impl State {
@@ -381,6 +391,12 @@ pub struct ItemStateInfo {
     pub texture: Option<u32>,
     /// The block it places.
     pub block: Option<BlockState>,
+    /// How hard it is, on the same scale as [`State::hardness`]. A block's
+    /// item has the hardness of the state it places.
+    pub hardness: f32,
+    /// What one of it weighs, in kilograms. A block's item weighs what the
+    /// state it places does.
+    pub weight: f32,
 }
 
 /// Everything the mods define, resolved.
@@ -649,7 +665,7 @@ pub fn test_mod(files: &[(&str, &str)]) -> Content {
         ("images/a.png", ""),
         (
             "materials/grey.json5",
-            r##"{ palette: ["#000000", "#ffffff"] }"##,
+            r##"{ palette: ["#000000", "#ffffff"], hardness: 1, weight: 1000 }"##,
         ),
         (
             "textures/a.json5",

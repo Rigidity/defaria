@@ -7,4 +7,6 @@
     bark: ["#3a3632", "#9a948a", "#cfcac0", "#e8e4da"],
     heartwood: ["#a08a5c", "#c4ae7e", "#dac698", "#eadcb2"],
   },
+  hardness: 0.9,
+  weight: 670,
 }

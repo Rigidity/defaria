@@ -3,4 +3,6 @@
   properties: { wood: { materials: ["oak", "#wood"] } },
   model: "cube",
   textures: { all: { texture: "planks", materials: { wood: "{wood}" } } },
+  hardness: { materials: { wood: 1 } },
+  weight: { materials: { wood: 1 } },
 }

@@ -2,4 +2,6 @@
   name: "Grass",
   model: "cube",
   textures: { up: "grass_top", down: "dirt", side: "grass_side" },
+  hardness: 0.6,
+  weight: 1400,
 }

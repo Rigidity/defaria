@@ -1,4 +1,6 @@
 // Low contrast, like stone: the dirt image is fine noise.
 {
   palette: ["#3d2818", "#573a24", "#6f4c31", "#8a6141"],
+  hardness: 0.5,
+  weight: 1500,
 }

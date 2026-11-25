@@ -6,4 +6,6 @@
   palettes: {
     ore: ["#5a3420", "#9a6040", "#c8946a", "#ecc8a4"],
   },
+  hardness: 3,
+  weight: 7870,
 }
