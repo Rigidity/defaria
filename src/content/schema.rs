@@ -127,6 +127,38 @@ pub struct PropertySpec {
     /// plain values. Only for blocks.
     #[serde(default)]
     pub item: Option<bool>,
+    /// How a placed block picks the value, from where you click or look.
+    /// Only for plain block properties.
+    #[serde(default)]
+    pub place: Option<PlaceDef>,
+}
+
+/// How a property is set when the block is placed: `"face"` or `"look"`,
+/// or `{ from, values }` to say which value each direction gives.
+#[derive(Debug, Clone)]
+pub struct PlaceDef {
+    pub from: PlaceFrom,
+    /// Direction to value. Left out, each direction gives the value named
+    /// after its axis (`x`, `y`, `z`) or after itself (`up`, `north`, ...).
+    pub values: Option<BTreeMap<Direction, String>>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct PlaceSpec {
+    from: PlaceFrom,
+    #[serde(default)]
+    values: Option<BTreeMap<Direction, String>>,
+}
+
+/// Where a placed block's direction comes from.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaceFrom {
+    /// The side of the block you click: placing on top of a block is `up`.
+    Face,
+    /// The way you look, along its strongest axis: looking down is `down`.
+    Look,
 }
 
 /// What a variant's `when` asks of one property: a value, any of several,
@@ -189,7 +221,7 @@ pub struct VertexDef {
 }
 
 /// A side of a block. Up is +Y, south is +Z and east is +X.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
     Up,
@@ -412,7 +444,14 @@ macro_rules! deserialize_forms {
     )*};
 }
 
-deserialize_forms!(TextureRef, PropertyDef, Condition, OneOrMany, Attribute);
+deserialize_forms!(
+    TextureRef,
+    PropertyDef,
+    Condition,
+    OneOrMany,
+    Attribute,
+    PlaceDef
+);
 
 fn seq<'de, T: Deserialize<'de>, A: SeqAccess<'de>>(seq: A) -> Result<T, A::Error> {
     T::deserialize(SeqAccessDeserializer::new(seq))
@@ -491,5 +530,22 @@ impl Forms for Attribute {
 
     fn from_map<'de, A: MapAccess<'de>>(m: A) -> Result<Self, A::Error> {
         map(m).map(Attribute::Mixed)
+    }
+}
+
+impl Forms for PlaceDef {
+    const EXPECTING: &'static str = "`\"face\"`, `\"look\"`, or `{ from, values }`";
+
+    fn from_str<E: de::Error>(value: &str) -> Result<Self, E> {
+        let from = PlaceFrom::deserialize(de::value::StrDeserializer::<E>::new(value))?;
+        Ok(PlaceDef { from, values: None })
+    }
+
+    fn from_map<'de, A: MapAccess<'de>>(m: A) -> Result<Self, A::Error> {
+        let spec: PlaceSpec = map(m)?;
+        Ok(PlaceDef {
+            from: spec.from,
+            values: spec.values,
+        })
     }
 }

@@ -26,6 +26,7 @@
 
 mod bake;
 pub mod load;
+mod place;
 pub mod schema;
 
 use std::{collections::BTreeMap, path::Path};
@@ -33,7 +34,8 @@ use std::{collections::BTreeMap, path::Path};
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
 
 use crate::block_texture::Palette;
-pub use schema::Direction;
+pub use place::Placement;
+pub use schema::{Direction, PlaceFrom};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -105,6 +107,50 @@ impl Direction {
     /// This side's bit in a set of sides kept as a `u8`.
     pub(crate) fn bit(self) -> u8 {
         1 << self as u8
+    }
+
+    /// The direction nearest `dir`: the one along its largest component.
+    /// Ties go to Y, then X.
+    pub fn along(dir: Vec3) -> Self {
+        let a = dir.abs();
+        if a.y >= a.x && a.y >= a.z {
+            if dir.y < 0.0 {
+                Direction::Down
+            } else {
+                Direction::Up
+            }
+        } else if a.x >= a.z {
+            if dir.x < 0.0 {
+                Direction::West
+            } else {
+                Direction::East
+            }
+        } else if dir.z < 0.0 {
+            Direction::North
+        } else {
+            Direction::South
+        }
+    }
+
+    /// The name of the axis the direction runs along.
+    pub fn axis_name(self) -> &'static str {
+        match self {
+            Direction::Up | Direction::Down => "y",
+            Direction::East | Direction::West => "x",
+            Direction::North | Direction::South => "z",
+        }
+    }
+
+    /// The name it's written with in mod files.
+    pub fn name(self) -> &'static str {
+        match self {
+            Direction::Up => "up",
+            Direction::Down => "down",
+            Direction::North => "north",
+            Direction::South => "south",
+            Direction::East => "east",
+            Direction::West => "west",
+        }
     }
 }
 
@@ -229,6 +275,8 @@ pub struct Property {
     /// Whether the block's item carries it, so each value is a different
     /// item. Only for block properties.
     pub item: bool,
+    /// How a placed block picks the value. Only for block properties.
+    pub place: Option<Placement>,
 }
 
 /// The index of the state with these property values, the rest at their
@@ -719,6 +767,23 @@ pub fn test_mod(files: &[(&str, &str)]) -> Content {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn along_picks_the_largest_component() {
+        assert_eq!(Direction::along(Vec3::new(0.1, -0.9, 0.3)), Direction::Down);
+        assert_eq!(Direction::along(Vec3::new(0.8, 0.5, -0.3)), Direction::East);
+        assert_eq!(
+            Direction::along(Vec3::new(-0.2, 0.1, -0.7)),
+            Direction::North
+        );
+        assert_eq!(Direction::along(Vec3::new(-0.7, 0.0, 0.2)), Direction::West);
+        assert_eq!(Direction::along(Vec3::new(0.0, 0.0, 1.0)), Direction::South);
+        assert_eq!(Direction::along(Vec3::new(0.0, 0.5, 0.0)), Direction::Up);
+        // Ties go to Y, then X.
+        assert_eq!(Direction::along(Vec3::new(0.7, -0.7, 0.0)), Direction::Down);
+        assert_eq!(Direction::along(Vec3::new(0.0, 0.7, -0.7)), Direction::Up);
+        assert_eq!(Direction::along(Vec3::new(-0.7, 0.0, 0.7)), Direction::West);
+    }
 
     #[test]
     fn references_are_qualified_with_their_mod() {

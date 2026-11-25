@@ -3,9 +3,11 @@
 //!
 //! - While the cursor is locked, holding left click breaks the block under
 //!   the crosshair (see `mining`) and right click places the active block
-//!   against the face you're looking at. The click that locks the cursor
-//!   doesn't edit anything. The active block is the active hotbar slot's
-//!   (see `hotbar`); an item that places no block places nothing.
+//!   against the face you're looking at. A property the block sets on
+//!   placement (a log's axis) comes from that face or your view. The click
+//!   that locks the cursor doesn't edit anything. The active block is the
+//!   active hotbar slot's (see `hotbar`); an item that places no block
+//!   places nothing.
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
@@ -19,7 +21,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockBox, BlockState, Content},
+    content::{BlockBox, BlockState, Content, Direction},
     fly_camera::{FlyCamera, FlyCameraSystems},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     physics::{Aabb, Body},
@@ -84,10 +86,12 @@ pub struct Hit {
 }
 
 impl Hit {
-    /// Where a block placed against the hit face goes. `None` if the ray
-    /// started inside the block, so there's no face to place against.
-    pub fn place_at(self) -> Option<IVec3> {
-        (self.normal != IVec3::ZERO).then_some(self.block + self.normal)
+    /// Where a block placed against the hit face goes, and which side of
+    /// the hit block that face is. `None` if the ray started inside the
+    /// block, so there's no face to place against.
+    pub fn place_at(self) -> Option<(IVec3, Direction)> {
+        let face = Direction::from_normal(self.normal)?;
+        Some((self.block + self.normal, face))
     }
 }
 
@@ -229,9 +233,11 @@ fn edit_blocks(
     let Some(block) = hotbar.active_block(*active, &content) else {
         return;
     };
-    let Some(pos) = hit.place_at() else {
+    let Some((pos, face)) = hit.place_at() else {
         return;
     };
+    // Properties such as a log's axis follow the face clicked or the view.
+    let block = content.placed(block, face, *camera.forward());
     // Not into the camera, outside the world, over another block, or where
     // it would overlap someone.
     let overlaps = content.state(block).collision.iter().any(|b| {
@@ -328,7 +334,7 @@ mod tests {
     use crate::{
         content::{base, block, test_mod},
         headless::{Script, settle, test_game},
-        hotbar::select_with_keys,
+        hotbar::{DEFAULT_HOTBAR, select_with_keys},
         mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{
@@ -366,7 +372,10 @@ mod tests {
                 normal: IVec3::NEG_X,
             })
         );
-        assert_eq!(hit.unwrap().place_at(), Some(IVec3::new(2, 0, 0)));
+        assert_eq!(
+            hit.unwrap().place_at(),
+            Some((IVec3::new(2, 0, 0), Direction::West))
+        );
     }
 
     #[test]
@@ -379,7 +388,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hit.normal, IVec3::Y);
-        assert_eq!(hit.place_at(), Some(IVec3::new(2, 2, 2)));
+        assert_eq!(hit.place_at(), Some((IVec3::new(2, 2, 2), Direction::Up)));
     }
 
     /// From x = 0.5, block 8's near face is 7.5 away and block 9's is 8.5.
@@ -448,7 +457,7 @@ mod tests {
         // Straight down onto its top, which places on the block above.
         let hit = raycast(ray(Vec3::new(2.5, 3.0, 0.5), Vec3::NEG_Y), 8.0, shape).unwrap();
         assert_eq!((hit.block, hit.normal), (IVec3::new(2, 0, 0), IVec3::Y));
-        assert_eq!(hit.place_at(), Some(IVec3::new(2, 1, 0)));
+        assert_eq!(hit.place_at(), Some((IVec3::new(2, 1, 0), Direction::Up)));
         // The top is 2.5 below, so a reach of 2.4 doesn't get there, though
         // the slab's block starts 2 below.
         assert_eq!(
@@ -499,6 +508,24 @@ mod tests {
     /// Two chunks side by side along X, a camera locked in front of them,
     /// and the edit, mining and remesh systems; no rendering.
     fn app() -> (App, Entity, Entity) {
+        let content = base().clone();
+        let hotbar = Hotbar(DEFAULT_HOTBAR.map(|id| content.default_item(id)));
+        let (mut app, left, right) = app_with(content, hotbar);
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        // A wall at x = 14..=15 of the left chunk, on the chunk border.
+        for y in 0..4 {
+            chunk.set(15, y, 5, block("stone"));
+        }
+        chunk.set(14, 1, 5, block("dirt"));
+        let mut chunk = app.world_mut().get_mut::<Chunk>(right).unwrap();
+        chunk.set(0, 1, 5, block("stone"));
+        // Meshes the new chunks and lets their change ticks pass.
+        finish_meshing(&mut app);
+        (app, left, right)
+    }
+
+    /// [`app`] with `content` and `hotbar`, and both chunks empty.
+    fn app_with(content: Content, hotbar: Hotbar) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), MiningPlugin))
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -509,8 +536,8 @@ mod tests {
                 material: Handle::default(),
                 layers: default(),
             })
-            .insert_resource(base().clone())
-            .init_resource::<Hotbar>()
+            .insert_resource(content)
+            .insert_resource(hotbar)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ActiveSlot>()
@@ -533,20 +560,12 @@ mod tests {
             },
             PrimaryWindow,
         ));
-        let mut left = Chunk::default();
-        // A wall at x = 14..=15 of the left chunk, on the chunk border.
-        for y in 0..4 {
-            left.set(15, y, 5, block("stone"));
-        }
-        left.set(14, 1, 5, block("dirt"));
-        let mut right = Chunk::default();
-        right.set(0, 1, 5, block("stone"));
         let mut chunks = [Entity::PLACEHOLDER; 2];
-        for (i, (coord, chunk)) in [(IVec3::ZERO, left), (IVec3::X, right)]
-            .into_iter()
-            .enumerate()
-        {
-            let entity = app.world_mut().spawn((ChunkCoord(coord), chunk)).id();
+        for (i, coord) in [IVec3::ZERO, IVec3::X].into_iter().enumerate() {
+            let entity = app
+                .world_mut()
+                .spawn((ChunkCoord(coord), Chunk::default()))
+                .id();
             app.world_mut()
                 .resource_mut::<ChunkMap>()
                 .insert(ChunkCoord(coord), entity);
@@ -557,8 +576,6 @@ mod tests {
             FlyCamera::default(),
             Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
         ));
-        // Meshes the new chunks and lets their change ticks pass.
-        finish_meshing(&mut app);
         (app, chunks[0], chunks[1])
     }
 
@@ -648,13 +665,117 @@ mod tests {
         let (mut app, left, _) = app();
         press_key(&mut app, KeyCode::Digit6);
         assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(5));
+        // Against the west face, so the log runs along X.
+        let log = base().block("defaria:log").unwrap();
+        let log = log.state(&[("axis", "x")]).unwrap();
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 13, 1, 5), block("log"));
+        assert_eq!(voxel(&app, left, 13, 1, 5), log);
         // Placing again stacks toward the camera, but never into it.
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 12, 1, 5), block("log"));
+        assert_eq!(voxel(&app, left, 12, 1, 5), log);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 11, 1, 5), BlockState::AIR);
+    }
+
+    /// A log placed against each face of a block runs along that face's
+    /// axis, whichever way you came at it.
+    #[test]
+    fn logs_placed_against_each_face_run_along_it() {
+        let (mut app, left, _) = app();
+        let target = IVec3::new(7, 7, 10);
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(7, 7, 10, block("stone"));
+        press_key(&mut app, KeyCode::Digit6);
+        let log = base().block("defaria:log").unwrap();
+        for face in Direction::ALL {
+            let normal = face.normal();
+            let axis = face.axis_name();
+            // Three blocks out from the face, looking back at it, a little
+            // off center so the view isn't straight along the axis.
+            let from = (target + normal * 3).as_vec3() + Vec3::splat(0.5);
+            let dir = (target.as_vec3() + Vec3::new(0.6, 0.55, 0.45) - from).normalize();
+            let up = if normal.y == 0 { Vec3::Y } else { Vec3::Z };
+            *app.world_mut()
+                .query_filtered::<&mut Transform, With<FlyCamera>>()
+                .single_mut(app.world_mut())
+                .unwrap() = Transform::from_translation(from).looking_to(dir, up);
+            click(&mut app, MouseButton::Right);
+            let pos = (target + normal).as_uvec3();
+            let placed = voxel(&app, left, pos.x as usize, pos.y as usize, pos.z as usize);
+            assert_eq!(placed, log.state(&[("axis", axis)]).unwrap(), "{face:?}");
+        }
+    }
+
+    /// Placing through a click tells a face from its opposite, and reads
+    /// the view the way the camera looks: a half placed on top of a block
+    /// is its bottom half and one placed underneath its top, and a block
+    /// facing the way you look faces west when you look mostly west.
+    #[test]
+    fn placing_reads_the_clicked_face_and_the_view() {
+        let content = test_mod(&[
+            ("models/m.json5", "{ faces: [] }"),
+            ("blocks/base.json5", r#"{ model: "m" }"#),
+            (
+                "blocks/half.json5",
+                r#"{ model: "m", properties: { half: {
+                    values: ["bottom", "top"],
+                    place: { from: "face", values: { up: "bottom", down: "top" } },
+                } } }"#,
+            ),
+            (
+                "blocks/facing.json5",
+                r#"{ model: "m", properties: { facing: {
+                    values: ["north", "south", "east", "west"], place: "look",
+                } } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let half = content.block("test:half").unwrap();
+        let facing = content.block("test:facing").unwrap();
+        let expect = [
+            // From above, looking down onto its top.
+            (
+                "test:half",
+                Vec3::new(8.5, 10.5, 8.5),
+                Vec3::new(8.6, 9.0, 8.4),
+                IVec3::new(8, 9, 8),
+                half.state(&[("half", "bottom")]).unwrap(),
+            ),
+            // From below, looking up at its underside.
+            (
+                "test:half",
+                Vec3::new(8.5, 6.5, 8.5),
+                Vec3::new(8.4, 8.0, 8.6),
+                IVec3::new(8, 7, 8),
+                half.state(&[("half", "top")]).unwrap(),
+            ),
+            // Onto its top from the east, looking mostly west and down.
+            (
+                "test:facing",
+                Vec3::new(10.5, 9.6, 8.5),
+                Vec3::new(8.5, 9.0, 8.4),
+                IVec3::new(8, 9, 8),
+                facing.state(&[("facing", "west")]).unwrap(),
+            ),
+        ];
+        for (item, from, at, pos, state) in expect {
+            let mut hotbar = Hotbar([None; crate::hotbar::HOTBAR_SLOTS]);
+            hotbar.0[0] = content.default_item(item);
+            let (mut app, entity, _) = app_with(content.clone(), hotbar);
+            app.world_mut().get_mut::<Chunk>(entity).unwrap().set(
+                8,
+                8,
+                8,
+                content.default_state("test:base").unwrap(),
+            );
+            look_at(&mut app, from, (at - from).normalize());
+            click(&mut app, MouseButton::Right);
+            let p = pos.as_uvec3();
+            let placed = voxel(&app, entity, p.x as usize, p.y as usize, p.z as usize);
+            assert_eq!(placed, state, "{item} from {from}");
+        }
     }
 
     /// A block isn't placed where it would overlap a body, such as the

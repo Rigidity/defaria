@@ -15,8 +15,8 @@ use serde::de::DeserializeOwned;
 
 use super::{
     AIR, BakedFace, Block, BlockBox, BlockState, Content, Direction, Item, ItemStateInfo,
-    MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Property, State, Texture, TextureLayer,
-    Vertex, index_of, load::LoadedMod, qualify, schema::*, state_count,
+    MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Placement, Property, State, Texture,
+    TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*, state_count,
 };
 use crate::block_texture::Palette;
 
@@ -774,11 +774,28 @@ fn property(
     if spec.item.is_some() && !for_block {
         return Err("`item` is only for block properties".into());
     }
+    if spec.place.is_some() && !for_block {
+        return Err("`place` is only for block properties".into());
+    }
     match (&spec.values, &spec.materials) {
         (Some(values), None) if !spec.optional => {
-            plain_property(name, values, spec.item.unwrap_or(false))
+            let mut property = plain_property(name, values, spec.item.unwrap_or(false))?;
+            if let Some(place) = &spec.place {
+                if property.item {
+                    return Err("a property set by `place` can't be part of the item".into());
+                }
+                property.place = Some(Placement::new(
+                    place.from,
+                    &property.values,
+                    place.values.as_ref(),
+                )?);
+            }
+            Ok(property)
         }
         (Some(_), None) => Err("`optional` is for material properties".into()),
+        (None, Some(_)) if spec.place.is_some() => {
+            Err("`place` is only for plain values, not materials".into())
+        }
         (None, Some(materials)) => {
             let mut values: Vec<String> = Vec::new();
             if spec.optional {
@@ -820,6 +837,7 @@ fn property(
                 values,
                 materials: true,
                 item: spec.item.unwrap_or(true),
+                place: None,
             })
         }
         _ => Err("give either `values` or `materials`".into()),
@@ -838,6 +856,7 @@ fn plain_property(name: &str, values: &[String], item: bool) -> Result<Property,
         values: values.to_vec(),
         materials: false,
         item,
+        place: None,
     })
 }
 
