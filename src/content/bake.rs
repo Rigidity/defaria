@@ -279,14 +279,16 @@ struct Attributes {
 }
 
 impl Attributes {
+    /// `block` is the block's properties when these are its item's.
     fn new(
         hardness: Option<&Attribute>,
         weight: Option<&Attribute>,
         properties: &[Property],
+        block: Option<&[Property]>,
     ) -> Result<Self, String> {
         Ok(Attributes {
-            hardness: Mix::new("hardness", |m| m.hardness, hardness, properties)?,
-            weight: Mix::new("weight", |m| m.weight, weight, properties)?,
+            hardness: Mix::new("hardness", |m| m.hardness, hardness, properties, block)?,
+            weight: Mix::new("weight", |m| m.weight, weight, properties, block)?,
         })
     }
 
@@ -322,11 +324,17 @@ struct Mix {
 
 impl Mix {
     /// `None` if `def` is. `name` is `hardness` or `weight`, for errors.
+    /// `block` is the block's properties when `properties` are its item's.
+    ///
+    /// Every state must have a material in at least one counted property:
+    /// `base` alone is a multiplier (a volume, a fraction of a block), not
+    /// a hardness or weight.
     fn new(
         name: &str,
         of: fn(&Material) -> f32,
         def: Option<&Attribute>,
         properties: &[Property],
+        block: Option<&[Property]>,
     ) -> Result<Option<Self>, String> {
         let (base, materials) = match def {
             None => return Ok(None),
@@ -346,7 +354,16 @@ impl Mix {
                     .iter()
                     .position(|prop| &prop.name == property)
                     .ok_or_else(|| {
-                        format!("`{name}` counts `{property}`, which isn't a property")
+                        let item_false =
+                            block.is_some_and(|block| block.iter().any(|p| &p.name == property));
+                        if item_false {
+                            format!(
+                                "`{name}` counts `{property}`, which isn't one of the item's \
+                                 properties: the block marks it `item: false`"
+                            )
+                        } else {
+                            format!("`{name}` counts `{property}`, which isn't a property")
+                        }
                     })?;
                 if !properties[p].materials {
                     return Err(format!(
@@ -360,14 +377,35 @@ impl Mix {
                 }
                 shares.push((p, share));
             }
+            // States are every combination, so one has them all at `none`
+            // exactly when each can be.
+            if shares
+                .iter()
+                .all(|&(p, _)| properties[p].values.iter().any(|v| v == NONE))
+            {
+                let counted: Vec<String> = shares
+                    .iter()
+                    .map(|&(p, _)| format!("{}=none", properties[p].name))
+                    .collect();
+                return Err(format!(
+                    "`{name}`: in states with {}, none of its counted properties has a \
+                     material; count a property that isn't optional, or write a number",
+                    counted.join(",")
+                ));
+            }
         }
         Ok(Some(Mix { of, base, shares }))
     }
 
-    /// The value for the state with these value indices: the base times
-    /// the shares' weighted average of their materials' values, skipping
-    /// properties at `none`. The base alone if every one is `none`.
+    /// The value for the state with these value indices: a fixed value's
+    /// base, or the base times the shares' weighted average of their
+    /// materials' values, skipping properties at `none` (`new` checked
+    /// that not every one is).
     fn value(&self, properties: &[Property], index: &[usize], content: &Content) -> f32 {
+        if self.shares.is_empty() {
+            // A fixed value.
+            return self.base;
+        }
         let (mut sum, mut total) = (0.0, 0.0);
         for &(p, share) in &self.shares {
             let value = &properties[p].values[index[p]];
@@ -377,11 +415,8 @@ impl Mix {
             sum += share * (self.of)(&content.materials[value]);
             total += share;
         }
-        if total > 0.0 {
-            self.base * sum / total
-        } else {
-            self.base
-        }
+        debug_assert!(total > 0.0, "every counted property is `none`");
+        self.base * sum / total
     }
 }
 
@@ -930,7 +965,12 @@ fn add_block(
                 .map_err(|error| format!("variant {}: {error}", i + 1))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let attributes = Attributes::new(block.hardness.as_ref(), block.weight.as_ref(), &properties)?;
+    let attributes = Attributes::new(
+        block.hardness.as_ref(),
+        block.weight.as_ref(),
+        &properties,
+        None,
+    )?;
 
     // Each state's property values, look and model, last property fastest.
     let mut looks = Vec::with_capacity(count);
@@ -1311,6 +1351,7 @@ fn block_item(
         file.and_then(|f| f.def.hardness.as_ref()),
         file.and_then(|f| f.def.weight.as_ref()),
         &properties,
+        Some(&block.properties),
     )?;
     let item = content.items.len();
     let mut states = Vec::with_capacity(count);
@@ -1377,6 +1418,7 @@ fn standalone_item(
         item_def.hardness.as_ref(),
         item_def.weight.as_ref(),
         &properties,
+        None,
     )?;
     let item = content.items.len();
     let mut states = Vec::with_capacity(count);
@@ -2677,6 +2719,20 @@ mod tests {
                 r##"{ model: "quad", textures: { all: "a" }, hardness: { materials: {} } }"##,
                 "`hardness` has no `materials`",
             ),
+            // `base` alone is a multiplier, not a weight.
+            (
+                "items/x.json5",
+                r##"{ properties: { head: { materials: "iron", optional: true },
+                                    handle: { materials: "oak", optional: true } },
+                     weight: { base: 0.0007, materials: { head: 1, handle: 3 } } }"##,
+                "`weight`: in states with handle=none,head=none, none of its counted properties has a material",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { ore: { materials: "#ore", optional: true } },
+                     model: "quad", textures: { all: "a" }, hardness: { materials: { ore: 1 } } }"##,
+                "`hardness`: in states with ore=none, none of its counted properties has a material",
+            ),
             (
                 "blocks/x.json5",
                 r##"{ model: "quad", textures: { all: "a" }, weight: -1 }"##,
@@ -2718,5 +2774,32 @@ mod tests {
             assert!(all.contains(&format!("mods/test/{path}")), "{all}");
             assert!(all.contains(expected), "expected `{expected}` in: {all}");
         }
+    }
+
+    /// A block's item file counting a property the block keeps off the
+    /// item says so, rather than that it isn't a property at all.
+    #[test]
+    fn an_item_counting_a_block_only_property_is_told_why() {
+        let content = materials(&[
+            (
+                "blocks/plank.json5",
+                r##"{ properties: { wood: { materials: "#wood", item: false } },
+                     model: "quad", textures: { all: "a" } }"##,
+            ),
+            (
+                "items/plank.json5",
+                r##"{ hardness: { materials: { wood: 1 } } }"##,
+            ),
+        ]);
+        let all = errors(&content);
+        assert_eq!(content.errors.len(), 1, "{all}");
+        assert!(all.contains("mods/test/items/plank.json5"), "{all}");
+        assert!(
+            all.contains(
+                "`hardness` counts `wood`, which isn't one of the item's properties: \
+                 the block marks it `item: false`"
+            ),
+            "{all}"
+        );
     }
 }

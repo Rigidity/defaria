@@ -272,8 +272,11 @@ weight: { base: 0.5, materials: { rock: 1 } },
 
 - **`materials`** names material properties and how much each counts.
   Stone with iron ore is `(3 × 1.5 + 1 × 3) / 4 = 1.875` hard. A property
-  at `none` doesn't count, so plain stone is just its rock's 1.5; if none
-  of them has a material, the value is `base`.
+  at `none` doesn't count, so plain stone is just its rock's 1.5. Every
+  state needs a material in at least one of them, so counting only
+  optional properties is an error (in the state where all are `none`,
+  there'd be nothing to average); count one that isn't optional, or
+  write a number.
 - **`base`** multiplies the average; it defaults to 1. A material's weight
   is per whole block, so a slab's base is 0.5, and a tool's is its volume
   in cubic metres (a 0.7-litre pickaxe is `0.0007`).
