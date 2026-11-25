@@ -961,7 +961,9 @@ pub fn run_more(app: &mut App, script: &str) {
     panic!("the script never finished");
 }
 
-/// Updates `app` until the world around its camera has loaded.
+/// Updates `app` until the world around its camera has loaded. Unlike the
+/// script's `settle`, it doesn't wait for the fog to open, which tests that
+/// look at the world rather than the view don't need.
 #[cfg(test)]
 pub fn settle(app: &mut App) {
     // A camera moved this frame reaches the loading a frame late.
@@ -1122,6 +1124,57 @@ mod tests {
             .light;
         let lamp = light_at(&mut app, IVec3::new(5000, -1000, 5000));
         assert_eq!(lamp.block()[0], red[0], "the lamp was placed and lit");
+    }
+
+    /// `settle`, and the start of a script, wait for the fog to open all the
+    /// way, so screenshots show the view as it stays.
+    #[test]
+    fn settle_waits_for_the_fog() {
+        let fog = |app: &App| *app.world().resource::<ChunkFog>();
+        let (app, exit) = run_game("wait 1\n");
+        assert_eq!(exit, AppExit::Success);
+        assert_eq!(fog(&app).scale, 1.0, "open when the script starts");
+        assert!(fog(&app).settled());
+
+        let (app, exit) = run_game(
+            "camera 5000.5 70.5 5000.5 0 0\n\
+             settle\n\
+             wait 1\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        assert_eq!(fog(&app).scale, 1.0, "open after the jump");
+        assert!(fog(&app).settled());
+    }
+
+    /// Flying straight up across chunk levels, and sprinting sideways
+    /// across chunks, the fog stays all the way open: the chunks that start
+    /// loading as the camera moves on are outside it.
+    #[test]
+    fn moving_on_doesnt_bring_the_fog_in() {
+        let mut app = test_game(Script::parse("wait 1\n").unwrap());
+        run_more(&mut app, "camera 8.5 40 8.5 0 0\nsettle\n");
+        for moves in ["hold Space 300\n", "press ControlLeft\nhold KeyW 300\n"] {
+            let script = Script::parse(moves).unwrap();
+            app.world_mut()
+                .resource_mut::<ScriptRunner>()
+                .commands
+                .extend(script.commands);
+            let mut frames = 0;
+            while !app.world().resource::<ScriptRunner>().finished() {
+                app.update();
+                // Loading runs on other threads; give it a moment, as a
+                // frame would.
+                std::thread::sleep(Duration::from_millis(1));
+                let fog = *app.world().resource::<ChunkFog>();
+                assert_eq!(fog.scale, 1.0, "{moves:?}, frame {frames}");
+                frames += 1;
+                assert!(frames < 400, "the script never finished");
+            }
+        }
+        // It really did climb, then fly on: more than two chunks each way.
+        let camera = camera(&mut app).1.translation;
+        assert!(camera.y > 40.0 + 32.0, "{camera}");
+        assert!(camera.z < 8.5 - 32.0, "{camera}");
     }
 
     /// A world that never finishes loading fails the run rather than

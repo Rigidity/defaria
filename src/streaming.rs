@@ -139,9 +139,15 @@ impl StreamingSettings {
             && (-self.below - extra..=self.above + extra).contains(&offset.y)
     }
 
-    /// Whether a chunk `offset` from a loader's chunk can be drawn: it's
-    /// loaded, and so are all its neighbours (see [`AwaitingNeighbours`]),
-    /// so that's one chunk in from the edge of what's loaded.
+    /// Whether a chunk `offset` from a loader's chunk is one chunk in from
+    /// the edge of what's loaded, where chunks are drawn: a chunk is only
+    /// drawn once all its neighbours are loaded (see
+    /// [`AwaitingNeighbours`]).
+    ///
+    /// Only nearly: a few chunks this counts, on the circle's diagonal edges,
+    /// have a neighbour outside the loaded circle and are never drawn. The
+    /// fog's cylinder keeps a chunk clear of the edge, so they don't reach
+    /// it.
     pub fn drawn(&self, offset: IVec3) -> bool {
         self.reaches(offset, -1)
     }

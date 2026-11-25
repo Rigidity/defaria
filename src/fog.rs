@@ -52,7 +52,14 @@ pub struct FogPlugin;
 
 impl Plugin for FogPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ChunkFog>().add_systems(
+        // On the camera from the start, so its first frame is fogged and its
+        // pipelines are only built with fog.
+        app.register_required_components_with::<EyeView, DistanceFog>(|| DistanceFog {
+            falloff: falloff(&ChunkFog::default()),
+            ..default()
+        })
+        .init_resource::<ChunkFog>()
+        .add_systems(
             PostUpdate,
             // After transforms propagate, so the fog is measured from
             // where the camera is this frame.
@@ -92,8 +99,8 @@ impl FogShape {
         Self {
             sideways: (settings.radius as f32 - 2.0 - SQRT_2).max(1.0) * size,
             // The camera's chunk is drawn up to its top, `above - 1` chunks
-            // up, so `above - 1` chunks above the camera are always drawn;
-            // likewise below.
+            // up, so `above - 1` chunks above the camera are always drawn,
+            // less one to spare; likewise below.
             up: (*levels.end() as f32 - 1.0).max(1.0) * size,
             down: (-*levels.start() as f32 - 1.0).max(1.0) * size,
         }
@@ -201,17 +208,31 @@ pub fn drawn_reach(
 }
 
 /// Moves [`ChunkFog`] toward the edge of the drawn world.
+///
+/// Once the fog is fully open it stays open until the camera moves into
+/// another chunk or a chunk goes (chunks are only ever drawn more, never
+/// less, while they're loaded), so the scan is skipped until then.
 fn follow_the_drawn_world(
     camera: Query<&GlobalTransform, With<FlyCamera>>,
     settings: Res<StreamingSettings>,
     map: Res<ChunkMap>,
     meshed: Query<(), With<Meshed>>,
+    mut unmeshed: RemovedComponents<Meshed>,
     time: Res<Time>,
     mut fog: ResMut<ChunkFog>,
+    mut last_chunk: Local<Option<IVec3>>,
 ) {
     let Some(camera) = camera.iter().next() else {
         return;
     };
+    let chunk = ChunkCoord::split(camera.translation().floor().as_ivec3())
+        .0
+        .0;
+    let removed = unmeshed.read().count() > 0;
+    let moved = last_chunk.replace(chunk) != Some(chunk);
+    if fog.scale == 1.0 && fog.settled() && !moved && !removed && !settings.is_changed() {
+        return;
+    }
     fog.shape = FogShape::new(&settings);
     let reach = drawn_reach(camera.translation(), &fog.shape, &settings, |chunk| {
         map.get(ChunkCoord(chunk))
@@ -235,26 +256,13 @@ pub fn falloff(fog: &ChunkFog) -> FogFalloff {
 
 /// Puts [`ChunkFog`] on the cameras, in the sky's colour.
 fn apply_fog(
-    mut commands: Commands,
     fog: Res<ChunkFog>,
     sky: Res<ClearColor>,
-    mut views: Query<(Entity, Option<&mut DistanceFog>), With<EyeView>>,
+    mut views: Query<&mut DistanceFog, With<EyeView>>,
 ) {
-    let wanted = DistanceFog {
-        color: sky.0,
-        falloff: falloff(&fog),
-        ..default()
-    };
-    for (entity, current) in &mut views {
-        match current {
-            Some(mut current) => {
-                current.color = wanted.color;
-                current.falloff = wanted.falloff.clone();
-            }
-            None => {
-                commands.entity(entity).insert(wanted.clone());
-            }
-        }
+    for mut view in &mut views {
+        view.color = sky.0;
+        view.falloff = falloff(&fog);
     }
 }
 
@@ -377,23 +385,31 @@ mod tests {
     #[test]
     fn the_fog_closes_quickly_and_opens_slowly() {
         let shape = FogShape::new(&settings());
-        let mut fog = ChunkFog {
+        let at = |scale: f32| ChunkFog {
             shape,
-            scale: 1.0,
-            target: 1.0,
+            scale,
+            target: scale,
         };
-        fog.approach(0.5, 0.1);
-        let closed = 1.0 - fog.scale;
-        assert!(!fog.settled());
 
-        let mut fog = ChunkFog {
-            shape,
-            scale: 0.5,
-            target: 0.5,
-        };
+        // One step, against the exponential approach it should follow.
+        let mut fog = at(1.0);
+        fog.approach(0.5, 0.1);
+        let closed = 1.0 - 0.5 * (1.0 - (-0.1 / CLOSE_SECONDS).exp());
+        assert!((fog.scale - closed).abs() < 1e-5, "{}", fog.scale);
+        assert!(!fog.settled());
+        let mut fog = at(0.5);
         fog.approach(1.0, 0.1);
-        let opened = fog.scale - 0.5;
-        assert!(closed > 2.0 * opened, "closed {closed}, opened {opened}");
+        let opened = 0.5 + 0.5 * (1.0 - (-0.1 / OPEN_SECONDS).exp());
+        assert!((fog.scale - opened).abs() < 1e-5, "{}", fog.scale);
+
+        // The same however the time is split into frames.
+        for target in [0.5, 1.0] {
+            let (mut once, mut twice) = (at(0.75), at(0.75));
+            once.approach(target, 0.1);
+            twice.approach(target, 0.05);
+            twice.approach(target, 0.05);
+            assert!((once.scale - twice.scale).abs() < 1e-6);
+        }
 
         // It gets there in the end, exactly.
         for _ in 0..600 {
@@ -401,13 +417,19 @@ mod tests {
         }
         assert!(fog.settled());
         assert_eq!(fog.scale, 1.0);
+
+        // Where it already is, nothing happens.
+        let mut fog = at(0.4);
+        fog.approach(0.4, 0.1);
+        assert_eq!(fog, at(0.4));
     }
 
-    #[test]
-    fn the_camera_gets_fog_in_the_sky_colour() {
+    /// The fog plugin around a camera in chunk (0, 0, 0), with `settings`,
+    /// stepping 16 ms a frame; and its eye view.
+    fn fog_app(settings: StreamingSettings) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin))
-            .init_resource::<StreamingSettings>()
+            .insert_resource(settings)
             .init_resource::<ChunkMap>()
             .insert_resource(ClearColor(Color::srgb(0.1, 0.2, 0.3)))
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -419,13 +441,21 @@ mod tests {
             .spawn((FlyCamera::default(), Transform::from_xyz(8.0, 8.0, 8.0)))
             .id();
         let view = app.world_mut().spawn((EyeView, ChildOf(camera))).id();
-        app.update();
-        app.update();
+        (app, view)
+    }
 
+    /// Spawns a drawn chunk entity at each of `chunks`, in the chunk map.
+    fn draw(app: &mut App, chunks: impl IntoIterator<Item = IVec3>) {
+        for chunk in chunks {
+            let entity = app.world_mut().spawn((ChunkCoord(chunk), Meshed)).id();
+            app.world_mut()
+                .resource_mut::<ChunkMap>()
+                .insert(ChunkCoord(chunk), entity);
+        }
+    }
+
+    fn view_fog(app: &App, view: Entity) -> (Color, Vec3, f32) {
         let fog = app.world().get::<DistanceFog>(view).unwrap();
-        assert_eq!(fog.color, Color::srgb(0.1, 0.2, 0.3));
-        // Nothing's loaded, so the fog is as close as it gets.
-        let shape = FogShape::new(&StreamingSettings::default());
         let FogFalloff::Atmospheric {
             extinction,
             inscattering,
@@ -433,10 +463,69 @@ mod tests {
         else {
             panic!("the shape travels in the atmospheric falloff");
         };
+        (fog.color, extinction, inscattering.x)
+    }
+
+    #[test]
+    fn the_camera_has_fog_from_the_start() {
+        let (app, view) = fog_app(settings());
+        // Before any update: a required component, closed in.
+        let shape = FogShape::new(&StreamingSettings::default());
+        let (_, extinction, start) = view_fog(&app, view);
         assert_eq!(
             extinction,
             Vec3::new(shape.sideways, shape.up, shape.down) * MIN_SCALE
         );
-        assert_eq!(inscattering.x, FOG_START);
+        assert_eq!(start, FOG_START);
+    }
+
+    #[test]
+    fn the_fog_opens_as_chunks_are_drawn_and_closes_on_a_gap() {
+        let settings = settings();
+        let shape = FogShape::new(&settings);
+        let (mut app, view) = fog_app(settings.clone());
+        app.update();
+        app.update();
+        // Nothing's drawn: as close as it gets, in the sky's colour.
+        let fog = *app.world().resource::<ChunkFog>();
+        assert_eq!((fog.scale, fog.target), (MIN_SCALE, MIN_SCALE));
+        let (color, extinction, _) = view_fog(&app, view);
+        assert_eq!(color, Color::srgb(0.1, 0.2, 0.3));
+        let full = Vec3::new(shape.sideways, shape.up, shape.down);
+        assert_eq!(extinction, full * MIN_SCALE);
+
+        // Everything's drawn: it opens all the way, a little each frame,
+        // and the camera's fog follows.
+        draw(&mut app, everything(&settings, IVec3::ZERO));
+        app.update();
+        let first = app.world().resource::<ChunkFog>().scale;
+        assert!(first > MIN_SCALE && first < 1.0, "{first}");
+        assert_eq!(view_fog(&app, view).1, full * first);
+        for _ in 0..600 {
+            app.update();
+        }
+        let fog = *app.world().resource::<ChunkFog>();
+        assert_eq!(fog.scale, 1.0);
+        assert!(fog.settled());
+        assert_eq!(view_fog(&app, view).1, full);
+
+        // A chunk a level up isn't drawn any more (loaded, but not meshed):
+        // the fog closes in to it, 8 blocks up.
+        let gap = IVec3::new(0, 1, 0);
+        let entity = app
+            .world()
+            .resource::<ChunkMap>()
+            .get(ChunkCoord(gap))
+            .unwrap();
+        app.world_mut().entity_mut(entity).remove::<Meshed>();
+        app.update();
+        let fog = *app.world().resource::<ChunkFog>();
+        assert_eq!(fog.target, 8.0 / shape.up);
+        assert!(fog.scale < 1.0);
+
+        // And the sky's colour is followed.
+        app.insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)));
+        app.update();
+        assert_eq!(view_fog(&app, view).0, Color::srgb(0.5, 0.5, 0.5));
     }
 }

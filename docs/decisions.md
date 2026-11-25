@@ -3,6 +3,30 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## The fog's cylinder rides in Bevy's atmospheric fog (2026-11-24)
+
+**Context.** The fog (`src/fog.rs`) is a cylinder: how far it reaches
+sideways, up and down. Bevy's `DistanceFog` reaches every material's shader
+in the view's bindings, which is cheap to change every frame, but none of
+its falloffs is a cylinder.
+
+**Decision.** Put the cylinder's three reaches in
+`FogFalloff::Atmospheric`'s `extinction` and where it starts thickening in
+`inscattering`, which Bevy passes to shaders unchanged, and read them in
+our chunk shader (`assets/shaders/voxel.wesl`).
+
+**What's wrong with it.** Anything drawn with Bevy's own PBR shader
+(`StandardMaterial`) on this camera would read those numbers as real
+atmospheric fog, hundreds of times too thick, and come out solid sky
+colour. Nothing uses it in the world today.
+
+**What should replace it.** A fog uniform of our own that every material
+in the world reads, or the cylinder written into Bevy's fog in a form its
+shader understands.
+
+**When to revisit.** With the first thing in the world not drawn by the
+chunk shader (held items, dropped items, mobs).
+
 ## The fog is the sky's colour everywhere (2026-11-24)
 
 **Context.** Distance fog (`src/fog.rs`) hides the edge of the drawn
