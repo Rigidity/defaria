@@ -4,11 +4,22 @@ use bevy::{app::ScheduleRunnerPlugin, prelude::*, window::PresentMode};
 use defaria::{
     Cli, DevToolsPlugin, GamePlugin,
     headless::{self, HeadlessPlugin, Script},
+    save::{self, WorldFolder},
 };
 
 fn main() -> AppExit {
     let cli = Cli::from_args(std::env::args().skip(1));
     let mut app = App::new();
+    // Headless runs play a world in memory unless told otherwise, so every
+    // run of a scenario starts from the same world.
+    let world = match cli.world.clone() {
+        Some(folder) => Some(folder),
+        None if cli.headless.is_none() => save::default_world(),
+        None => None,
+    };
+    if let Some(folder) = world {
+        app.insert_resource(WorldFolder(folder));
+    }
 
     if let Some(path) = cli.headless {
         let script = match Script::load(&path) {

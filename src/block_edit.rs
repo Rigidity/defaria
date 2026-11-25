@@ -358,14 +358,14 @@ fn update_hotbar(
 
 #[cfg(test)]
 mod tests {
-    use bevy::log::LogPlugin;
 
     use super::*;
     use crate::{
         content::{base, block, test_mod},
-        headless::{HeadlessPlugin, Script, default_plugins},
+        headless::{Script, settle, test_game},
         terrain::{
-            ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, remesh_changed_chunks,
+            ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, apply_finished_meshes,
+            remesh_changed_chunks, testing::finish_meshing,
         },
         voxel::Chunk,
         voxel_material::BlockMaterial,
@@ -479,7 +479,9 @@ mod tests {
                 Update,
                 (
                     (select_block, edit_blocks).chain().before(RemeshChunks),
-                    remesh_changed_chunks.in_set(RemeshChunks),
+                    (remesh_changed_chunks, apply_finished_meshes)
+                        .chain()
+                        .in_set(RemeshChunks),
                 ),
             );
         app.world_mut().spawn((
@@ -515,7 +517,7 @@ mod tests {
             Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
         ));
         // Meshes the new chunks and lets their change ticks pass.
-        app.update();
+        finish_meshing(&mut app);
         (app, chunks[0], chunks[1])
     }
 
@@ -773,18 +775,8 @@ mod tests {
              wait 2\n",
         )
         .unwrap();
-        let mut app = App::new();
-        app.add_plugins((
-            default_plugins(false).disable::<LogPlugin>(),
-            crate::GamePlugin,
-            HeadlessPlugin {
-                script,
-                rendering: false,
-            },
-        ));
-        app.finish();
-        app.cleanup();
-        app.update();
+        let mut app = test_game(script);
+        settle(&mut app);
 
         let (x, z) = (40, 40);
         let height = Terrain::new(default(), TerrainBlocks::from_content(base())).height(x, z);
@@ -805,7 +797,7 @@ mod tests {
         while app.should_exit().is_none() {
             app.update();
             frames += 1;
-            assert!(frames < 100, "script never finished");
+            assert!(frames < 200, "script never finished");
         }
         // Grass broken once, not twice, and stone placed in its place.
         assert_eq!(world_voxel(&mut app, top), block("stone"));

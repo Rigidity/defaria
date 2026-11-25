@@ -23,6 +23,13 @@
 //! The order chunks are handled in doesn't change the result, only how much
 //! work it takes: every voxel ends at the brightest level any source can
 //! reach it with.
+//!
+//! Sky light enters the loaded chunks at the top layer of each chunk with
+//! no loaded chunk above it, where [`OutsideSky`] says it does, and from
+//! there it's like any other source. So it moves when chunks load and
+//! unload above others: a chunk loading on top of another takes away the
+//! sky that shone into the one below (where it doesn't pass full sky light
+//! down itself), and one unloading gives it back.
 
 use std::collections::VecDeque;
 
@@ -31,7 +38,7 @@ use bevy::{
     prelude::*,
 };
 
-use super::{CHANNELS, ChunkLight, Light, MAX_LIGHT, SKY};
+use super::{CHANNELS, ChunkLight, Light, MAX_LIGHT, SKY, sky::OutsideSky};
 use crate::{
     content::{BlockState, Content},
     terrain::ChunkCoord,
@@ -43,6 +50,9 @@ pub trait ChunkStore {
     /// Calls `f` with the chunk at `coord` and its light. False, without
     /// calling it, if that chunk isn't loaded.
     fn with_chunk(&mut self, coord: IVec3, f: impl FnOnce(&Chunk, &mut ChunkLight)) -> bool;
+
+    /// Whether the chunk at `coord` is loaded.
+    fn is_loaded(&self, coord: IVec3) -> bool;
 }
 
 /// What each block state does to light, looked up once from [`Content`].
@@ -76,6 +86,48 @@ impl LightTable {
     }
 }
 
+/// Lights chunks by themselves, as if nothing else were loaded: their own
+/// light sources and the sky shining into each one with none of the others
+/// above it, spread through all of them. Returns each one's light, in
+/// order. Loading uses this to light chunks on a task, then
+/// [`LightQueue::lit_chunk_loaded`] joins them to the world.
+pub fn light_alone(
+    chunks: &[(IVec3, &Chunk)],
+    table: &LightTable,
+    sky: &dyn OutsideSky,
+) -> Vec<ChunkLight> {
+    struct Alone<'a> {
+        chunks: &'a [(IVec3, &'a Chunk)],
+        lights: Vec<ChunkLight>,
+    }
+    impl ChunkStore for Alone<'_> {
+        fn with_chunk(&mut self, coord: IVec3, f: impl FnOnce(&Chunk, &mut ChunkLight)) -> bool {
+            let Some(i) = self.chunks.iter().position(|&(c, _)| c == coord) else {
+                return false;
+            };
+            f(self.chunks[i].1, &mut self.lights[i]);
+            true
+        }
+
+        fn is_loaded(&self, coord: IVec3) -> bool {
+            self.chunks.iter().any(|&(c, _)| c == coord)
+        }
+    }
+    let mut queue = LightQueue::default();
+    for &(coord, chunk) in chunks {
+        queue.sources(coord, chunk, table);
+        if !chunks.iter().any(|&(c, _)| c == coord + IVec3::Y) {
+            queue.outside_sky(coord, sky);
+        }
+    }
+    let mut store = Alone {
+        chunks,
+        lights: vec![ChunkLight::default(); chunks.len()],
+    };
+    queue.run(&mut store, table);
+    store.lights
+}
+
 /// One step of the fill, in one chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Node {
@@ -95,6 +147,11 @@ const SOURCE: u8 = 2;
 /// A removal at a voxel that changed: always cleared, and its neighbours
 /// spread back into it.
 const CHANGED: u8 = 4;
+/// An addition of sky light from outside the loaded chunks, into a top
+/// layer. Dropped if a chunk has loaded above by the time it runs: queued
+/// before that chunk loaded, it's out of date (and the chunk loading took
+/// the outside sky away).
+const OUTSIDE: u8 = 8;
 
 /// The six neighbour directions. [`DOWN`] indexes the one below.
 const DIRECTIONS: [IVec3; 6] = [
@@ -120,16 +177,105 @@ impl LightQueue {
     }
 
     /// Queues the light for a chunk that just loaded, dark: its own light
-    /// sources, sky light from above if it's `under_sky`, and the light of
-    /// each loaded neighbour (`loaded` says which are) spreading in.
-    pub fn chunk_loaded(
+    /// sources, sky light from outside if the chunk above isn't loaded, and
+    /// the light of each loaded neighbour spreading in. `neighbour` gives a
+    /// loaded chunk's light by coordinate, and `None` for one that isn't
+    /// loaded.
+    pub fn chunk_loaded<'a>(
         &mut self,
         coord: IVec3,
         chunk: &Chunk,
         table: &LightTable,
-        under_sky: bool,
+        sky: &dyn OutsideSky,
+        neighbour: impl Fn(IVec3) -> Option<&'a ChunkLight>,
+    ) {
+        self.sources(coord, chunk, table);
+        if neighbour(coord + IVec3::Y).is_none() {
+            self.outside_sky(coord, sky);
+        }
+        self.borders(coord, |c| neighbour(c).is_some(), false);
+        self.cover_below(coord, None, sky, &neighbour);
+    }
+
+    /// Queues the light for a chunk that loaded already lit by
+    /// [`light_alone`] (`light`): each loaded neighbour's light spreading
+    /// in, and its own spreading out into them. Its own sources and the sky
+    /// from above are in its light already, so this is much less work than
+    /// [`chunk_loaded`] (and it's all that's left for the main thread when
+    /// chunks are lit on a task). If the chunk above is loaded after all,
+    /// the sky `light_alone` let in at the top is taken away again.
+    ///
+    /// [`chunk_loaded`]: LightQueue::chunk_loaded
+    pub fn lit_chunk_loaded<'a>(
+        &mut self,
+        coord: IVec3,
+        light: &ChunkLight,
+        sky: &dyn OutsideSky,
+        neighbour: impl Fn(IVec3) -> Option<&'a ChunkLight>,
+    ) {
+        self.borders(coord, |c| neighbour(c).is_some(), true);
+        if let Some(above) = neighbour(coord + IVec3::Y) {
+            self.cover(coord, Some(above), sky);
+        }
+        self.cover_below(coord, Some(light), sky, &neighbour);
+    }
+
+    /// Queues the light for a chunk that's been unloaded, whose light was
+    /// `light`: the light it gave the loaded chunks around it is taken away
+    /// (as if its voxels against them had gone dark), and the chunk below
+    /// it gets sky light from outside again. So the light always depends
+    /// only on what's loaded and the outside sky.
+    pub fn chunk_unloaded(
+        &mut self,
+        coord: IVec3,
+        light: &ChunkLight,
+        sky: &dyn OutsideSky,
         loaded: impl Fn(IVec3) -> bool,
     ) {
+        let last = CHUNK_SIZE as i32 - 1;
+        for (d, direction) in DIRECTIONS.into_iter().enumerate() {
+            let neighbour = coord + direction;
+            if !loaded(neighbour) {
+                continue;
+            }
+            let axis = axis_of(direction);
+            let ours = if direction[axis] > 0 { last } else { 0 };
+            let theirs = last - ours;
+            for (u, v) in square() {
+                let mut pos = IVec3::ZERO;
+                pos[(axis + 1) % 3] = u;
+                pos[(axis + 2) % 3] = v;
+                pos[axis] = ours;
+                let level = light.at(pos);
+                pos[axis] = theirs;
+                let index = Chunk::index_of(pos) as u16;
+                for (channel, removals) in self.removals.iter_mut().enumerate() {
+                    let level = level.get(channel);
+                    // Full sky into the top of the chunk below is what the
+                    // outside sky gives it now anyway.
+                    let unchanged = d == DOWN
+                        && channel == SKY
+                        && level == MAX_LIGHT
+                        && sky.shines_into(neighbour, pos.x, pos.z);
+                    if level == 0 || unchanged {
+                        continue;
+                    }
+                    removals.entry(neighbour).or_default().push(Node {
+                        index,
+                        level,
+                        flags: if d == DOWN { FROM_ABOVE } else { 0 },
+                    });
+                }
+            }
+        }
+        let below = coord - IVec3::Y;
+        if loaded(below) {
+            self.outside_sky(below, sky);
+        }
+    }
+
+    /// Queues a chunk's light sources.
+    fn sources(&mut self, coord: IVec3, chunk: &Chunk, table: &LightTable) {
         for index in 0..CHUNK_VOLUME {
             let state = chunk.get_index(index);
             for channel in 1..CHANNELS {
@@ -139,38 +285,96 @@ impl LightQueue {
                 }
             }
         }
+    }
+
+    /// Queues the sky shining into a chunk's top layer from outside the
+    /// loaded chunks, where `sky` says it does.
+    fn outside_sky(&mut self, coord: IVec3, sky: &dyn OutsideSky) {
         let last = CHUNK_SIZE as i32 - 1;
-        if under_sky {
-            for (x, z) in square() {
+        for (x, z) in square() {
+            if sky.shines_into(coord, x, z) {
                 let index = Chunk::index_of(IVec3::new(x, last, z));
-                self.add(SKY, coord, index, MAX_LIGHT, 0);
+                self.add(SKY, coord, index, MAX_LIGHT, OUTSIDE);
             }
         }
+    }
+
+    /// The chunk at `coord` has a chunk above it now, so the sky from
+    /// outside no longer shines into its top layer: takes it away from
+    /// every top voxel it shone into, except where the chunk above passes
+    /// full sky light straight down anyway (by its bottom layer in
+    /// `above`'s light, if known), since nothing would change there.
+    fn cover(&mut self, coord: IVec3, above: Option<&ChunkLight>, sky: &dyn OutsideSky) {
+        let last = CHUNK_SIZE as i32 - 1;
+        for (x, z) in square() {
+            if !sky.shines_into(coord, x, z) {
+                continue;
+            }
+            let passes =
+                above.is_some_and(|above| above.at(IVec3::new(x, 0, z)).get(SKY) == MAX_LIGHT);
+            if !passes {
+                let index = Chunk::index_of(IVec3::new(x, last, z));
+                self.removals[SKY].entry(coord).or_default().push(Node {
+                    index: index as u16,
+                    level: 0,
+                    flags: CHANGED,
+                });
+            }
+        }
+    }
+
+    /// Covers the loaded chunk below a chunk that just loaded with `light`
+    /// (`None` if it's still dark).
+    fn cover_below<'a>(
+        &mut self,
+        coord: IVec3,
+        light: Option<&ChunkLight>,
+        sky: &dyn OutsideSky,
+        neighbour: &impl Fn(IVec3) -> Option<&'a ChunkLight>,
+    ) {
+        let below = coord - IVec3::Y;
+        if neighbour(below).is_some() {
+            self.cover(below, light, sky);
+        }
+    }
+
+    /// Queues each loaded neighbour's layer against the chunk to spread its
+    /// light in, and with `outward`, the chunk's own layer against it to
+    /// spread out.
+    fn borders(&mut self, coord: IVec3, loaded: impl Fn(IVec3) -> bool, outward: bool) {
+        let last = CHUNK_SIZE as i32 - 1;
         for direction in DIRECTIONS {
             let neighbour = coord + direction;
             if !loaded(neighbour) {
                 continue;
             }
-            // The neighbour's layer facing this chunk.
             let axis = axis_of(direction);
-            let layer = if direction[axis] > 0 { 0 } else { last };
+            // The neighbour's layer facing this chunk, and this chunk's
+            // facing it.
+            let theirs = if direction[axis] > 0 { 0 } else { last };
+            let ours = last - theirs;
             for (u, v) in square() {
                 let mut pos = IVec3::ZERO;
-                pos[axis] = layer;
                 pos[(axis + 1) % 3] = u;
                 pos[(axis + 2) % 3] = v;
+                pos[axis] = theirs;
                 let index = Chunk::index_of(pos);
+                pos[axis] = ours;
+                let own = Chunk::index_of(pos);
                 for channel in 0..CHANNELS {
                     self.add(channel, neighbour, index, 0, 0);
+                    if outward {
+                        self.add(channel, coord, own, 0, 0);
+                    }
                 }
             }
         }
     }
 
     /// Queues the light around a voxel that changed, by world position.
-    /// `under_sky` says whether its chunk is at the top of the world, where
-    /// the top layer gets sky light from above.
-    pub fn voxel_changed(&mut self, pos: IVec3, under_sky: bool) {
+    /// `outside_sky` says whether sky light shines into it from outside the
+    /// loaded chunks (see [`OutsideSky`]).
+    pub fn voxel_changed(&mut self, pos: IVec3, outside_sky: bool) {
         let (coord, local) = split(pos);
         let index = Chunk::index_of(local);
         for channel in self.removals.iter_mut() {
@@ -180,10 +384,10 @@ impl LightQueue {
                 flags: CHANGED,
             });
         }
-        // The sky shines into the top layer from outside the world, so no
-        // neighbour spreads it back: offer it again, as on loading.
-        if under_sky && local.y == CHUNK_SIZE as i32 - 1 {
-            self.add(SKY, coord, index, MAX_LIGHT, 0);
+        // The sky shines into the top layer from outside, so no neighbour
+        // spreads it back: offer it again, as on loading.
+        if outside_sky {
+            self.add(SKY, coord, index, MAX_LIGHT, OUTSIDE);
         }
     }
 
@@ -212,7 +416,10 @@ impl LightQueue {
                 fill.report(&mut remesh);
             }
             while let Some(coord) = additions.keys().next().copied() {
-                let nodes = additions.remove(&coord).unwrap_or_default();
+                let mut nodes = additions.remove(&coord).unwrap_or_default();
+                if store.is_loaded(coord + IVec3::Y) {
+                    nodes.retain(|node| node.flags & OUTSIDE == 0);
+                }
                 let mut fill = Fill::new(coord, channel, table, removals, additions);
                 store.with_chunk(coord, |chunk, light| fill.add(nodes, chunk, light));
                 fill.report(&mut remesh);

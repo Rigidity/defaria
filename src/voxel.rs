@@ -81,7 +81,7 @@ impl Plugin for VoxelPlugin {
 
 /// A cube of voxels. Voxel `(x, y, z)` occupies the unit cube from
 /// `(x, y, z)` to `(x + 1, y + 1, z + 1)` in the chunk's local space.
-#[derive(Component, Reflect, Debug, Clone)]
+#[derive(Component, Reflect, Debug, Clone, PartialEq, Eq)]
 #[reflect(Component)]
 #[require(ChunkLight)]
 pub struct Chunk {
@@ -97,6 +97,24 @@ impl Default for Chunk {
 }
 
 impl Chunk {
+    /// A chunk with these voxels, in [`Chunk::index_of`] order. `None`
+    /// unless there are exactly [`CHUNK_VOLUME`].
+    pub fn from_voxels(voxels: Vec<BlockState>) -> Option<Self> {
+        (voxels.len() == CHUNK_VOLUME).then_some(Self { voxels })
+    }
+
+    /// A chunk of one block throughout.
+    pub fn filled(state: BlockState) -> Self {
+        Self {
+            voxels: vec![state; CHUNK_VOLUME],
+        }
+    }
+
+    /// Every voxel, in [`Chunk::index_of`] order.
+    pub fn voxels(&self) -> &[BlockState] {
+        &self.voxels
+    }
+
     #[cfg(test)]
     pub fn get(&self, x: usize, y: usize, z: usize) -> BlockState {
         self.voxels[Self::index(x, y, z)]

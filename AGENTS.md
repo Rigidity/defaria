@@ -43,6 +43,11 @@ Don't launch the game window yourself: no `cargo run`, `cargo play`,
 feels. Only open the window when the user explicitly asks. Use headless mode
 (below) to see the game instead.
 
+Likewise, leave the user's saved worlds alone: don't read, write or delete
+anything in `~/Library/Application Support/Defaria` (see
+`docs/world-format.md`). Headless runs and tests keep their worlds in memory
+or in folders they're given.
+
 ## Verifying changes
 
 Every change gets both kinds of check:
@@ -85,8 +90,13 @@ changes.
    comparable between runs with the same view and art), `inspect`, `fill`
    (set a box of voxels to a block, to build a test scene), `camera` (put the
    camera at a position and angle) and `timing` (mean and worst wall-clock
-   frame time since the last `timing`, for performance comparisons). The full
-   format is documented at the top of `src/headless.rs`. Commands between two
+   frame time since the last `timing`, for performance comparisons) and
+   `settle` (wait for the world around the camera to load, after a `camera`
+   jump somewhere new). The full format is documented at the top of
+   `src/headless.rs`. The world loads around the camera in the background;
+   the script starts once the first view has loaded. Headless runs play a
+   world kept in memory, so every run starts the same; add `--world <folder>`
+   to play and save one on disk (put it in your scratch directory). Commands between two
    `wait`s run on the same frame, so put a `wait 1` after a `screenshot`
    before input meant to come after it. A rendered run fails if a shader
    fails to compile.
@@ -99,8 +109,10 @@ changes.
    (screenshots are skipped there). Build the app with
    `headless::default_plugins(false)`, `GamePlugin` and `HeadlessPlugin`, step it
    until it exits, then assert on the world. See
-   `script_drives_the_fly_camera` in `src/headless.rs`. CI has no GPU, so tests
-   must use `rendering: false`.
+   `script_drives_the_fly_camera` in `src/headless.rs`; `headless::test_game`
+   builds that app (loading a smaller world) and `headless::settle` steps it
+   until the world has loaded. CI has no GPU, so tests must use
+   `rendering: false`.
 4. **Live state:** if the user has the game running and asks you to inspect
    it, the Bevy Remote Protocol listens on `127.0.0.1:15702` (or `BRP_PORT`).
    Example:
@@ -180,12 +192,25 @@ documented in `docs/modding.md`; keep that file, the serde types in
   parallel work doesn't collide. Touch `lib.rs` only to register the plugin.
 - `src/devtools.rs`: CLI flags, windowed screenshot mode and BRP.
 - `src/headless.rs`: headless mode and the scenario script runner.
+- `src/terrain.rs`: terrain generation, the loaded chunks (`ChunkMap`,
+  `Voxels`) and chunk meshing.
+- `src/streaming.rs`: loading, unloading and saving chunks around the
+  camera. The world has no edges, up and down included.
+- `src/light.rs` (and `src/light/`): block and sky light. `src/light/sky.rs`
+  decides where sky light comes in above the loaded chunks; see
+  `docs/decisions.md`.
+- `src/save.rs` (and `src/save/`): the world's folder on disk and its region
+  and chunk formats, documented in `docs/world-format.md`. Keep the two in
+  step, and bump a format's version when it changes.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `src/content.rs` (and `src/content/`): mod loading and the `Content`
   registry.
 - `assets/`: loaded through `AssetServer`. They hot reload in dev builds.
   Mods are in `assets/mods/`; their JSON5 files load once at startup.
 - `docs/modding.md`: the mod file formats.
+- `docs/world-format.md`: the save format.
+- `docs/decisions.md`: deliberate shortcuts to revisit, and what should
+  replace them. Add to it when you make one.
 - `scripts/`: helper scripts, such as `pr-screenshots.sh` for PR
   descriptions and `gray-layer.py` for turning images into texture layers.
 

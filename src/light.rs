@@ -9,37 +9,51 @@
 //!   the mod files) and drops by one level per block it travels, around
 //!   corners but not through opaque blocks, so a level-15 lamp lights blocks
 //!   up to 14 away.
-//! - **Sky light** comes down from the top of the world at full strength and
-//!   stays at full strength straight down until it hits an opaque block. From
-//!   every voxel it reaches it spreads sideways and into caves like block
-//!   light, dropping by one per block.
+//! - **Sky light** comes down at full strength into the top of each chunk
+//!   with no loaded chunk above it (where [`sky::OutsideSky`] says so; for
+//!   now, everywhere), and stays at full strength straight down until it
+//!   hits an opaque block. From every voxel it reaches it spreads sideways
+//!   and into caves like block light, dropping by one per block. The world
+//!   has no top, so what's above the loaded chunks is the one thing the
+//!   light can't see; `sky` is where that's decided, and
+//!   `docs/decisions.md` says why it's done the way it is.
 //!
 //! Light is kept up to date incrementally by [`propagate`]'s flood fill:
-//! when a chunk loads, its own sources and its loaded neighbours' light
-//! spread into it; when a voxel changes, the light that came through it is
-//! taken back and spread again around it. A chunk that isn't loaded lets no
+//! when a chunk loads, its own sources, the sky if nothing's above it, and
+//! its loaded neighbours' light spread into it (a chunk that arrives
+//! [`Prelit`], lit by itself on a loading task, only has its borders to
+//! settle), and it takes the outside sky away from the chunk below; when a
+//! voxel changes, the light that came through it is taken back and spread
+//! again around it. Apart from the sky, a chunk that isn't loaded lets no
 //! light through, and a chunk that loads later fills in, so the result
 //! doesn't depend on the order chunks load in. Because light reaches less
-//! than a chunk's width, a change only ever touches the chunk it's in and the
-//! chunks around it.
+//! than a chunk's width, a change only ever touches the chunk it's in and
+//! the chunks around it, except that sky light falls straight down through
+//! any number of open chunks.
 //!
 //! Chunk meshes bake the light into their vertices (see `voxel`), so a chunk
 //! is remeshed when its light, or the light just across its border,
 //! changes. Its `ChunkLight` is marked changed for that.
+//!
+//! Unloading a chunk takes back the light it spread into the chunks around
+//! it, as if it had gone dark, and gives the chunk below it the outside sky
+//! again. So the light only ever depends on which chunks are loaded and
+//! the outside sky. The chunks that lose light that way are at the edge of
+//! what's loaded, which isn't drawn.
 
 mod propagate;
+pub mod sky;
 
 use bevy::{platform::collections::HashSet, prelude::*};
 
 pub use crate::content::MAX_LIGHT;
 use crate::{
     content::Content,
-    terrain::{
-        ChunkCoord, ChunkMap, RemeshChunks, VoxelChanged, WORLD_CHUNKS, remesh_changed_chunks,
-    },
-    voxel::{CHUNK_VOLUME, Chunk},
+    terrain::{ChunkCoord, ChunkMap, RemeshChunks, VoxelChanged, remesh_changed_chunks},
+    voxel::{CHUNK_SIZE, CHUNK_VOLUME, Chunk},
 };
-pub use propagate::{ChunkStore, LightQueue, LightTable};
+pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
+use sky::Sky;
 
 /// The sky's channel in a [`Light`]; red, green and blue follow it.
 pub const SKY: usize = 0;
@@ -53,6 +67,8 @@ impl Plugin for LightPlugin {
         app.init_resource::<LightTable>()
             .init_resource::<LightQueue>()
             .init_resource::<SkyLight>()
+            .init_resource::<Sky>()
+            .add_observer(queue_unloaded_chunk)
             .add_systems(
                 Update,
                 (queue_loaded_chunks, queue_changed_voxels, propagate_light)
@@ -145,32 +161,62 @@ impl ChunkLight {
     }
 }
 
+/// A chunk that was spawned with its own light already worked out by
+/// [`light_alone`], so only its borders with the chunks around it are left
+/// to settle.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct Prelit;
+
 /// Queues the light for chunks that just loaded: their own sources, the sky
-/// for chunks at the top of the world, and their loaded neighbours' light.
+/// if nothing's loaded above them, and their loaded neighbours' light, or
+/// for [`Prelit`] chunks only the light across their borders.
 fn queue_loaded_chunks(
-    chunks: Query<(&ChunkCoord, &Chunk), Added<Chunk>>,
+    chunks: Query<(&ChunkCoord, &Chunk, &ChunkLight, Has<Prelit>), Added<Chunk>>,
+    lights: Query<&ChunkLight>,
     map: Res<ChunkMap>,
     table: Res<LightTable>,
+    sky: Res<Sky>,
     mut queue: ResMut<LightQueue>,
 ) {
-    for (coord, chunk) in &chunks {
-        queue.chunk_loaded(coord.0, chunk, &table, under_sky(*coord), |neighbour| {
-            map.get(ChunkCoord(neighbour)).is_some()
-        });
+    for (coord, chunk, light, prelit) in &chunks {
+        let neighbour = |c| lights.get(map.get(ChunkCoord(c))?).ok();
+        if prelit {
+            queue.lit_chunk_loaded(coord.0, light, &**sky, neighbour);
+        } else {
+            queue.chunk_loaded(coord.0, chunk, &table, &**sky, neighbour);
+        }
     }
 }
 
-/// Whether a chunk is at the top of the world, with the sky shining into
-/// its top layer.
-fn under_sky(coord: ChunkCoord) -> bool {
-    coord.0.y == WORLD_CHUNKS.y - 1
+/// Takes away the light an unloaded chunk gave the chunks around it, and
+/// gives the chunk below it the outside sky again.
+fn queue_unloaded_chunk(
+    remove: On<Remove<Chunk>>,
+    chunks: Query<(&ChunkCoord, &ChunkLight)>,
+    map: Res<ChunkMap>,
+    sky: Res<Sky>,
+    mut queue: ResMut<LightQueue>,
+) {
+    if let Ok((coord, light)) = chunks.get(remove.entity) {
+        let loaded = |c| map.get(ChunkCoord(c)).is_some_and(|e| e != remove.entity);
+        queue.chunk_unloaded(coord.0, light, &**sky, loaded);
+    }
 }
 
 /// Queues the light around every voxel that changed.
-fn queue_changed_voxels(mut changes: MessageReader<VoxelChanged>, mut queue: ResMut<LightQueue>) {
+fn queue_changed_voxels(
+    mut changes: MessageReader<VoxelChanged>,
+    map: Res<ChunkMap>,
+    sky: Res<Sky>,
+    mut queue: ResMut<LightQueue>,
+) {
     for change in changes.read() {
-        let (coord, _) = ChunkCoord::split(change.pos);
-        queue.voxel_changed(change.pos, under_sky(coord));
+        let (coord, local) = ChunkCoord::split(change.pos);
+        let outside_sky = local.y == CHUNK_SIZE as i32 - 1
+            && map.get(ChunkCoord(coord.0 + IVec3::Y)).is_none()
+            && sky.shines_into(coord.0, local.x, local.z);
+        queue.voxel_changed(change.pos, outside_sky);
     }
 }
 
@@ -191,6 +237,10 @@ impl ChunkStore for EcsChunks<'_, '_, '_> {
         };
         f(chunk, light.bypass_change_detection());
         true
+    }
+
+    fn is_loaded(&self, coord: IVec3) -> bool {
+        self.map.get(ChunkCoord(coord)).is_some()
     }
 }
 
@@ -232,7 +282,10 @@ mod tests {
     use super::*;
     use crate::{
         content::{BlockState, base, block},
-        terrain::{TerrainPlugin, Voxels},
+        terrain::{
+            TerrainPlugin, Voxels,
+            testing::{finish_meshing, spawn_patch},
+        },
         voxel::CHUNK_SIZE,
         voxel_material::BlockMaterial,
     };
@@ -249,7 +302,8 @@ mod tests {
                 material: Handle::default(),
                 layers: default(),
             });
-        app.update();
+        spawn_patch(app.world_mut());
+        finish_meshing(&mut app);
         app
     }
 

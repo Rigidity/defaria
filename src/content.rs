@@ -338,6 +338,13 @@ impl Content {
         &self.blocks[self.state(state).block]
     }
 
+    /// Forgets a block's id, as if it hadn't loaded. Returns whether it
+    /// was there.
+    #[cfg(test)]
+    pub fn forget_block(&mut self, id: &str) -> bool {
+        self.block_index.remove(id).is_some()
+    }
+
     pub fn item(&self, id: &str) -> Option<&Item> {
         self.item_index.get(id).map(|&i| &self.items[i])
     }

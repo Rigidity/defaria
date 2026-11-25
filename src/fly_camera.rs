@@ -20,10 +20,10 @@ use bevy::{
 /// or down, where yaw becomes ambiguous.
 pub const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
 
-/// Where the camera spawns: just above the hills near the middle of the
-/// 128×64×128 terrain, so there's ground right below.
+/// Where the camera spawns: just above the hills, so there's ground right
+/// below. The scenarios' coordinates are picked around it.
 pub const START_POSITION: Vec3 = Vec3::new(64.0, 56.0, 92.0);
-/// The point the camera looks at when it spawns: the middle of the terrain.
+/// The point the camera looks at when it spawns.
 pub const START_TARGET: Vec3 = Vec3::new(64.0, 28.0, 56.0);
 
 pub struct FlyCameraPlugin;
