@@ -18,7 +18,10 @@
 #
 # After a Bevy or dependency change, build in a worktree that has it
 # (`cargo test --no-run` and `cargo clippy --all-targets`) and run `--save`
-# there, or every new worktree compiles the new dependencies itself.
+# there, or every new worktree compiles the new dependencies itself. Saving
+# adds to the seed rather than replacing it, so a branch's new dependencies
+# join the ones main still uses (cargo keeps each version under its own
+# hash). To start the seed over, delete it and save.
 #
 # T3 Code runs this when it creates a worktree. DEFARIA_TARGET_SEED overrides
 # where the seed lives.
@@ -61,13 +64,17 @@ save() {
     fi
     new=$seed.new.$$
     rm -rf "$new"
-    mkdir -p "$new"
+    if [ -d "$seed" ]; then
+        cp -cR "$seed" "$new"
+    else
+        mkdir -p "$new"
+    fi
     [ -f "$target/CACHEDIR.TAG" ] && cp -c "$target/CACHEDIR.TAG" "$new/"
     # Only profile directories: screenshots and scenario output stay behind.
     for profile in "$target"/*/; do
         [ -e "$profile.cargo-lock" ] || continue
         name=$(basename "$profile")
-        mkdir "$new/$name"
+        mkdir -p "$new/$name"
         # Clone build/ one package at a time, so a large build/defaria is
         # never cloned only to be deleted.
         for entry in "$profile".[!.]* "$profile"*; do
@@ -76,7 +83,7 @@ save() {
             case $base in
             defaria* | libdefaria*) ;;
             build)
-                mkdir "$new/$name/build"
+                mkdir -p "$new/$name/build"
                 for package in "$entry"/*; do
                     case $(basename "$package") in
                     defaria*) ;;
@@ -97,7 +104,7 @@ save() {
         mkdir -p "$(dirname "$seed")"
         mv "$new" "$seed"
     fi
-    echo "seed-worktree-target: saved $target as the seed ($seed)"
+    echo "seed-worktree-target: added $target to the seed ($seed)"
 }
 
 seed_here() {

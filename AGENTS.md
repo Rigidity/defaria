@@ -42,8 +42,14 @@ and `cargo test`. CI runs the same checks, plus clippy with
   would run another worktree's code. A new worktree gets Bevy already
   compiled from `scripts/seed-worktree-target.sh` (T3 Code runs it when it
   creates one), and its first build compiles only the game crate, in about
-  30 seconds. After changing Bevy or another dependency, refresh the seed
-  with `scripts/seed-worktree-target.sh --save` once it builds.
+  30 seconds.
+- After adding, removing or updating a dependency (anything that changes
+  `Cargo.lock`, or Bevy's features), run
+  `scripts/seed-worktree-target.sh --save` yourself once `cargo test` and
+  `cargo clippy --all-targets -- -D warnings` have built it, without being
+  asked. That adds the new dependencies to the seed, so other worktrees
+  don't each compile them (about 10 minutes for a new Bevy). Saving only
+  adds, so it's safe on a branch that hasn't merged yet.
 
 ## Don't open the game window
 
