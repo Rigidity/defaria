@@ -181,9 +181,11 @@ fn fill(kind: BlockState, amount: u16) -> Cell {
 /// same every time. A cell that fluid moved into earlier in the same step
 /// waits for the next one, so fluid moves at most a cell a step.
 ///
-/// [`Simulation::tick`] steps at most a budget of cells. A step that
-/// doesn't fit carries on in the next tick, so a big flood slows down
-/// rather than taking longer each frame.
+/// A step is spread evenly over the ticks until the next one, rather than
+/// done all in one, so its cost doesn't land on a single frame. And
+/// [`Simulation::tick`] steps at most a budget of cells: a step that doesn't
+/// fit carries on in the next tick, so a big flood slows down rather than
+/// taking longer each frame.
 #[derive(Debug, Default)]
 pub struct Simulation {
     /// By fluid block, in order so they share the budget the same way every
@@ -205,6 +207,9 @@ struct Queue {
     clock: f32,
     /// Which way the step under way goes through the cells.
     reversed: bool,
+    /// How many of the step's cells to step each tick, to finish it in
+    /// time for the next one.
+    per_tick: usize,
 }
 
 /// How many cells a [`Simulation::tick`] stepped, and how many are active.
@@ -259,6 +264,7 @@ impl Simulation {
             let interval = 1.0 / flow.rate;
             let queue = self.queues.get_mut(&kind).expect("listed");
             queue.clock = (queue.clock + seconds).min(interval * 2.0);
+            let mut left = queue.per_tick;
             while stepped < budget {
                 if queue.current.is_empty() {
                     if queue.clock < interval || queue.next.is_empty() {
@@ -266,6 +272,12 @@ impl Simulation {
                     }
                     queue.clock -= interval;
                     queue.start_step();
+                    let share = queue.current.len() as f32 * (seconds / interval).min(1.0);
+                    queue.per_tick = (share.ceil() as usize).max(1);
+                    left = queue.per_tick;
+                }
+                if left == 0 {
+                    break;
                 }
                 let Some(pos) = queue.current.pop() else {
                     continue;
@@ -274,6 +286,7 @@ impl Simulation {
                     queue.next.insert(pos);
                     continue;
                 }
+                left -= 1;
                 stepped += 1;
                 step(cells, flow, pos, &mut changed);
                 for &cell in &changed {
@@ -639,6 +652,26 @@ pub(crate) mod tests {
         settle(&mut grid, &mut sim, 50);
         assert!(grid.amount(IVec3::new(3, 0, 0)) > 0);
         assert_eq!(grid.total(WATER), FULL_FLUID as u64);
+    }
+
+    /// A step is shared out over the ticks before the next one, not done
+    /// in the first.
+    #[test]
+    fn steps_are_spread_over_the_ticks_between_them() {
+        let mut grid = Grid::default();
+        grid.open(IVec3::new(0, 0, 0), IVec3::new(9, 1, 0));
+        let mut sim = Simulation::default();
+        for x in 0..10 {
+            pour(&mut grid, &mut sim, IVec3::new(x, 1, 0), WATER, FULL_FLUID);
+        }
+        // Water steps ten times a second; ticks of a hundredth of a second
+        // do a tenth of a step each.
+        let stepped: Vec<usize> = (0..21)
+            .map(|_| sim.tick(&mut grid, fluids, 0.01, usize::MAX).stepped)
+            .collect();
+        let first = stepped.iter().position(|&n| n > 0).unwrap();
+        assert!((9..=10).contains(&first), "waits for the first step");
+        assert_eq!(stepped[first..first + 10], [1; 10], "{stepped:?}");
     }
 
     /// With a budget, a step spreads over several ticks, but fluid still

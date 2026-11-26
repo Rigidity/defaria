@@ -20,15 +20,20 @@
 //! Generated seas and ponds are full voxels on solid ground, so they load
 //! settled and stay put until something disturbs them.
 //!
+//! With the eyes inside a fluid, the fog is the fluid's color and short,
+//! as the fluid's `view` says (see `docs/modding.md`).
+//!
 //! Placing a block into fluid deletes the fluid, in [`fluid_displaced`],
 //! which is where pushing it aside instead would go (#83).
 
 pub mod flow;
 
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::{ecs::system::SystemParam, pbr::FogFalloff, prelude::*};
 
 use crate::{
-    content::{BlockState, Content, FULL_FLUID},
+    content::{BlockState, Content, FULL_FLUID, Fluid},
+    fly_camera::EyeView,
+    fog::apply_fog,
     terrain::{ChunkCoord, ChunkMap, VoxelChanged, Voxels},
     voxel::{CHUNK_SIZE, Chunk, fluid_amount},
 };
@@ -42,7 +47,8 @@ impl Plugin for FluidPlugin {
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .add_systems(Update, (wake_around_edits, wake_loaded_chunks).chain())
-            .add_systems(FixedUpdate, run_flow);
+            .add_systems(FixedUpdate, run_flow)
+            .add_systems(PostUpdate, fog_inside_fluid.after(apply_fog));
     }
 }
 
@@ -58,19 +64,25 @@ pub struct FluidSettings {
 impl Default for FluidSettings {
     fn default() -> Self {
         Self {
-            cells_per_tick: 16_384,
+            cells_per_tick: 4096,
         }
     }
 }
 
-/// What flow did in the last fixed tick.
-#[derive(Resource, Reflect, Debug, Clone, Default, PartialEq, Eq)]
+/// What flow has done, for measuring it.
+#[derive(Resource, Reflect, Debug, Clone, Default, PartialEq)]
 #[reflect(Resource)]
 pub struct FluidStats {
-    /// Voxels that stepped.
-    pub stepped: usize,
-    /// Voxels active: waiting to step.
+    /// Voxels stepped since the start.
+    pub stepped: u64,
+    /// Voxels active now: waiting to step.
     pub active: usize,
+    /// The most voxels stepped in one fixed tick since the start.
+    pub most_in_a_tick: usize,
+    /// Wall-clock milliseconds spent stepping since the start.
+    pub millis: f64,
+    /// The most wall-clock milliseconds one fixed tick took.
+    pub worst_millis: f64,
 }
 
 /// The flow simulation over the loaded world.
@@ -91,15 +103,16 @@ impl CellView for WorldCells<'_, '_> {
     }
 }
 
-/// The loaded world as cells, to look at.
+/// The fluid in the loaded world, to look at: as cells for flow, and where
+/// its surface is, for swimming and the view from inside it.
 #[derive(SystemParam)]
-pub struct WorldView<'w, 's> {
+pub struct FluidView<'w, 's> {
     map: Res<'w, ChunkMap>,
     chunks: Query<'w, 's, &'static Chunk>,
     content: Res<'w, Content>,
 }
 
-impl CellView for WorldView<'_, '_> {
+impl CellView for FluidView<'_, '_> {
     fn cell(&self, pos: IVec3) -> Option<Cell> {
         let (coord, local) = ChunkCoord::split(pos);
         let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
@@ -108,6 +121,61 @@ impl CellView for WorldView<'_, '_> {
             chunk.at(local),
             chunk.partial_at(local),
         ))
+    }
+}
+
+impl FluidView<'_, '_> {
+    /// The fluid in the voxel at `pos`, and how high its surface is above
+    /// the voxel's bottom: the whole voxel if the same fluid is above it,
+    /// and otherwise as high as its amount fills it.
+    pub fn surface(&self, pos: IVec3) -> Option<(BlockState, f32)> {
+        let Some(Cell::Fluid(kind, amount)) = self.cell(pos) else {
+            return None;
+        };
+        let full =
+            matches!(self.cell(pos + IVec3::Y), Some(Cell::Fluid(above, _)) if above == kind);
+        let height = if full {
+            1.0
+        } else {
+            amount as f32 / FULL_FLUID as f32
+        };
+        Some((kind, height))
+    }
+
+    /// The fluid `point` is in, below its surface.
+    pub fn fluid_at(&self, point: Vec3) -> Option<BlockState> {
+        let pos = point.floor().as_ivec3();
+        let (kind, height) = self.surface(pos)?;
+        (point.y < pos.y as f32 + height).then_some(kind)
+    }
+
+    /// How a fluid flows and feels.
+    pub fn fluid(&self, kind: BlockState) -> Option<&Fluid> {
+        self.content.state(kind).fluid.as_ref()
+    }
+
+    /// How much of the height from `bottom` to `top`, up the column of
+    /// voxels at `(x, z)`, is under fluid, as a fraction from 0 to 1, and the
+    /// fluid most of that is. `None` if none of it is.
+    pub fn immersion(&self, x: f64, z: f64, bottom: f64, top: f64) -> Option<(BlockState, f64)> {
+        let mut depths: Vec<(BlockState, f64)> = Vec::new();
+        for y in bottom.floor() as i32..=top.floor() as i32 {
+            let pos = IVec3::new(x.floor() as i32, y, z.floor() as i32);
+            let Some((kind, height)) = self.surface(pos) else {
+                continue;
+            };
+            let under = (y as f64 + height as f64).min(top) - (y as f64).max(bottom);
+            if under <= 0.0 {
+                continue;
+            }
+            match depths.iter_mut().find(|(k, _)| *k == kind) {
+                Some((_, depth)) => *depth += under,
+                None => depths.push((kind, under)),
+            }
+        }
+        let total: f64 = depths.iter().map(|(_, depth)| depth).sum();
+        let (kind, _) = depths.into_iter().max_by(|a, b| a.1.total_cmp(&b.1))?;
+        Some((kind, (total / (top - bottom)).min(1.0)))
     }
 }
 
@@ -149,16 +217,21 @@ fn run_flow(
     content: Res<Content>,
     mut cells: WorldCells,
 ) {
+    let start = std::time::Instant::now();
     let report = sim.0.tick(
         &mut cells,
         |state| content.state(state).fluid.as_ref(),
         time.delta_secs(),
         settings.cells_per_tick,
     );
-    stats.set_if_neq(FluidStats {
-        stepped: report.stepped,
-        active: report.active,
-    });
+    if report.stepped > 0 || stats.active != report.active {
+        let millis = start.elapsed().as_secs_f64() * 1000.0;
+        stats.stepped += report.stepped as u64;
+        stats.active = report.active;
+        stats.most_in_a_tick = stats.most_in_a_tick.max(report.stepped);
+        stats.millis += millis;
+        stats.worst_millis = stats.worst_millis.max(millis);
+    }
 }
 
 /// Wakes the fluid around every voxel set to another block, and passes
@@ -166,7 +239,7 @@ fn run_flow(
 fn wake_around_edits(
     mut changes: MessageReader<VoxelChanged>,
     mut sim: ResMut<FluidSim>,
-    cells: WorldView,
+    cells: FluidView,
 ) {
     for change in changes.read() {
         let before = fluid_amount(&cells.content, change.before, change.partial_before);
@@ -176,6 +249,26 @@ fn wake_around_edits(
             fluid_displaced(change.pos, change.before, before);
         }
         sim.0.wake_around(&cells, change.pos);
+    }
+}
+
+/// With the eyes inside a fluid, the fog is the fluid's: its color, from
+/// right at the eyes out to its `view.distance`, in place of the fog at the
+/// edge of the world.
+fn fog_inside_fluid(
+    fluids: FluidView,
+    mut views: Query<(&GlobalTransform, &mut DistanceFog), With<EyeView>>,
+) {
+    for (transform, mut fog) in &mut views {
+        let inside = fluids.fluid_at(transform.translation());
+        let Some(fluid) = inside.and_then(|kind| fluids.fluid(kind)) else {
+            continue;
+        };
+        fog.color = fluid.view_color;
+        fog.falloff = FogFalloff::Atmospheric {
+            extinction: Vec3::splat(fluid.view_distance),
+            inscattering: Vec3::ZERO,
+        };
     }
 }
 
@@ -189,7 +282,7 @@ fn fluid_displaced(_pos: IVec3, _fluid: BlockState, _amount: u16) {}
 fn wake_loaded_chunks(
     added: Query<(&ChunkCoord, &Chunk), Added<Chunk>>,
     mut sim: ResMut<FluidSim>,
-    cells: WorldView,
+    cells: FluidView,
 ) {
     for (coord, chunk) in &added {
         let origin = coord.origin();

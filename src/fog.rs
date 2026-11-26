@@ -258,7 +258,7 @@ pub fn falloff(fog: &ChunkFog) -> FogFalloff {
 }
 
 /// Puts [`ChunkFog`] on the cameras, in the sky's colour.
-fn apply_fog(
+pub fn apply_fog(
     fog: Res<ChunkFog>,
     sky: Res<ClearColor>,
     mut views: Query<&mut DistanceFog, With<EyeView>>,
