@@ -1227,7 +1227,12 @@ mod tests {
                 .collect();
             (texture.id.clone(), images.join(" "))
         };
-        for (material, name) in [("dirt", "Dirt"), ("sand", "Sand"), ("gravel", "Gravel")] {
+        for (material, name) in [
+            ("dirt", "Dirt"),
+            ("sand", "Sand"),
+            ("gravel", "Gravel"),
+            ("loam", "Loam"),
+        ] {
             let id = format!("defaria:{material}");
             let image = format!("{material}.png");
             let bare = soil.state(&[("soil", &id)]).unwrap();
@@ -1270,6 +1275,60 @@ mod tests {
         }
         assert_eq!(soil.default_state(), block("soil"));
         assert_eq!(content.state(block("soil")).name, "Dirt");
+    }
+
+    /// Shale is a rock, so it reaches every block that takes any rock:
+    /// bare, with ore in it, and as a slab, on stone's image with its own
+    /// colors and numbers.
+    #[test]
+    fn shale_is_a_rock() {
+        let content = base();
+        let shale = &content.materials["defaria:shale"];
+        assert_eq!(shale.name, "Shale");
+        assert_eq!(shale.tags, ["rock"]);
+        let stone = &content.materials["defaria:stone"];
+        assert_ne!(shale.palette, stone.palette);
+        let bare = block_with("stone", &[("rock", "defaria:shale")]);
+        assert_eq!(content.state(bare).name, "Shale");
+        assert_eq!(content.state(bare).hardness, shale.hardness);
+        assert_eq!(content.state(bare).weight, shale.weight);
+        let ore = block_with(
+            "stone",
+            &[("rock", "defaria:shale"), ("ore", "defaria:coal")],
+        );
+        assert_eq!(content.state(ore).name, "Shale Coal Ore");
+        let slab = block_with("stone_slab", &[("rock", "defaria:shale")]);
+        assert_eq!(content.state(slab).name, "Shale Slab");
+        assert_eq!(content.state(slab).weight, shale.weight / 2.0);
+        let face = &content.state(bare).faces[0];
+        let texture = &content.textures[face.layer as usize];
+        assert_eq!(texture.id, "defaria:stone(rock=defaria:shale)");
+        assert!(texture.layers[0].image.ends_with("/stone.png"));
+        assert_eq!(texture.layers[0].palette, shale.palette);
+    }
+
+    /// Thatch is a building block, whole and as a slab, drawn with the
+    /// thatch image in the thatch material's colors.
+    #[test]
+    fn thatch_is_a_building_block() {
+        let content = base();
+        let thatch = &content.materials["defaria:thatch"];
+        for (id, name, weight) in [
+            ("thatch", "Thatch", thatch.weight),
+            ("thatch_slab", "Thatch Slab", thatch.weight / 2.0),
+        ] {
+            let state = content.state(block(id));
+            assert_eq!(state.name, name);
+            assert_eq!(state.hardness, thatch.hardness, "{id}");
+            assert_eq!(state.weight, weight, "{id}");
+            let texture = &content.textures[state.faces[0].layer as usize];
+            assert_eq!(texture.id, "defaria:thatch");
+            assert!(texture.layers[0].image.ends_with("/thatch.png"));
+            assert_eq!(texture.layers[0].palette, thatch.palette);
+            let item = content.item(&format!("defaria:{id}")).unwrap();
+            let category = content.item_category(item.default_state()).unwrap();
+            assert_eq!(category.id, "defaria:building", "{id}");
+        }
     }
 
     /// Every image the base game's textures use is in the image set, once.

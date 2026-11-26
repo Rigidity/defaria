@@ -1,0 +1,8 @@
+// Dark and rich, darker than dirt, over a low contrast range: the loam
+// image is fine crumbly noise.
+{
+  tags: ["soil"],
+  palette: ["#33231a", "#45311f", "#58402b", "#6c4f37"],
+  hardness: 0.5,
+  weight: 1400,
+}

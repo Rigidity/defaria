@@ -1,0 +1,65 @@
+# Shale, loam and thatch, built in the sky next to what they're like:
+# shale beside the other rocks (bare, with ore, as a slab), loam beside
+# the other soils (bare and with grass), and thatch blocks and slabs.
+# Then a thatched hut on the ground, and the inventory searched for them.
+# Run: cargo headless scenarios/more-materials.txt
+camera 63.5 75 90 0 0
+settle
+wait 2
+fill 54 69 80 74 80 80 air
+# Rocks, 2x2 each: stone, granite, slate, shale; then shale with coal
+# ore and a shale slab.
+fill 54 77 80 55 78 80 stone[rock=defaria:stone,ore=none]
+fill 57 77 80 58 78 80 stone[rock=defaria:granite,ore=none]
+fill 60 77 80 61 78 80 stone[rock=defaria:slate,ore=none]
+fill 63 77 80 64 78 80 stone[rock=defaria:shale,ore=none]
+fill 66 77 80 67 78 80 stone[rock=defaria:shale,ore=defaria:coal]
+fill 69 77 80 70 77 80 stone_slab[rock=defaria:shale]
+# Soils, 2x2 each: dirt, loam, sand, gravel; then loam with grass.
+fill 54 74 80 55 75 80 soil[soil=defaria:dirt,turf=none]
+fill 57 74 80 58 75 80 soil[soil=defaria:loam,turf=none]
+fill 60 74 80 61 75 80 soil[soil=defaria:sand,turf=none]
+fill 63 74 80 64 75 80 soil[soil=defaria:gravel,turf=none]
+fill 66 74 80 67 75 80 soil[soil=defaria:loam,turf=defaria:grass]
+fill 69 74 80 70 74 80 soil[soil=defaria:dirt,turf=defaria:grass]
+# Thatch: a 4x2 patch, then a row of slabs.
+fill 54 71 80 57 72 80 thatch
+fill 60 71 80 63 71 80 thatch_slab
+fill 66 71 80 69 72 80 planks[wood=defaria:oak]
+wait 3
+screenshot target/scenarios/more-materials/wall.png
+wait 1
+# A close look at the shale beside slate and granite.
+camera 61 77.5 84 0 0
+wait 3
+screenshot target/scenarios/more-materials/shale-close.png
+wait 1
+# A small hut on a floating island of grassy loam: oak plank walls under
+# a stepped thatch roof, seen from the front corner.
+camera 71 66 82 40 -18
+wait 2
+fill 56 58 64 68 66 76 air
+fill 57 59 65 67 59 75 soil[soil=defaria:loam,turf=defaria:grass]
+fill 59 60 68 65 62 72 planks[wood=defaria:oak]
+fill 60 60 69 64 62 71 air
+fill 61 60 72 63 61 72 air
+fill 58 63 67 66 63 73 thatch
+fill 59 64 68 65 64 72 thatch
+fill 60 65 69 64 65 71 thatch
+fill 61 66 70 63 66 70 thatch_slab
+fill 58 64 67 66 64 67 thatch_slab
+fill 58 64 73 66 64 73 thatch_slab
+wait 3
+screenshot target/scenarios/more-materials/hut.png
+wait 1
+hold MouseLeft 1
+wait 1
+hold KeyE 1
+wait 3
+cursor 640 73
+wait 1
+hold MouseLeft 1
+wait 1
+type thatch
+wait 2
+screenshot target/scenarios/more-materials/inventory-thatch.png

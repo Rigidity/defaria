@@ -1,0 +1,8 @@
+{
+  name: "Thatch Slab",
+  model: "slab",
+  textures: { all: "thatch" },
+  hardness: 0.4,
+  weight: 125,
+  category: "building",
+}
