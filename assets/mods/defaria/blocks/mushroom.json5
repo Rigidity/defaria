@@ -1,5 +1,5 @@
-// A mushroom, drawn as two crossed quads. It stands on dirt (grassy or
-// not), stone and mossy stone.
+// A mushroom, drawn as two crossed quads. It stands on dirt or loam (grassy
+// or not), stone and mossy stone.
 {
   name: "Mushroom",
   model: "cross",
@@ -9,7 +9,7 @@
   weight: 0.05,
   category: "natural",
   support: [
-    { block: "soil", when: { soil: "dirt" } },
+    { block: "soil", when: { soil: ["dirt", "loam"] } },
     { block: "stone" },
     { block: "mossy_stone" },
   ],

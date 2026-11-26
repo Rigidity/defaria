@@ -4,10 +4,11 @@
 
 use super::{BlockState, Content, bake::When, index_of, qualify, schema::SupportDef, state_count};
 
-/// Works out block `id`'s `support` and keeps it on the block. An error
-/// leaves the block without one.
+/// Works out the `support` of the block at `index` in
+/// [`Content::blocks`] and keeps it on the block. An error leaves the
+/// block without one.
 pub(super) fn bake(
-    id: &str,
+    index: usize,
     rules: &[SupportDef],
     namespace: &str,
     content: &mut Content,
@@ -31,10 +32,7 @@ pub(super) fn bake(
     }
     states.sort_unstable();
     states.dedup();
-    let index = content.blocks.iter().position(|b| b.id == id);
-    if let Some(index) = index {
-        content.blocks[index].support = Some(states);
-    }
+    content.blocks[index].support = Some(states);
     Ok(())
 }
 
@@ -68,10 +66,27 @@ mod tests {
         assert!(content.needs_support(tuft));
         assert!(content.supports(tuft, grass));
         assert!(content.supports(tuft, dirt));
+        // Bare loam is soil plants grow in, like bare dirt; bare sand isn't.
+        let loam = block_with("soil", &[("soil", "defaria:loam"), ("turf", "none")]);
+        for plant in ["tuft", "tulip", "daisy", "bluebell", "fern", "mushroom"] {
+            assert!(content.supports(block(plant), loam), "{plant} on loam");
+        }
+        assert!(!content.supports(block("dead_bush"), loam));
         assert!(!content.supports(tuft, crate::content::sand()));
         assert!(!content.supports(tuft, block("stone")));
         assert!(!content.supports(tuft, crate::content::BlockState::AIR));
         assert!(!content.supports(tuft, tuft));
+        // Grass on sand holds grass plants, and not a dead bush, which
+        // wants bare sand.
+        let grassy_sand = block_with(
+            "soil",
+            &[("soil", "defaria:sand"), ("turf", "defaria:grass")],
+        );
+        let bush = block("dead_bush");
+        assert!(content.supports(tuft, grassy_sand));
+        assert!(content.supports(bush, crate::content::sand()));
+        assert!(!content.supports(bush, grassy_sand));
+        assert!(!content.supports(bush, grass));
         // Blocks without a `support` stand on anything, air included.
         assert!(!content.needs_support(block("stone")));
         assert!(content.supports(block("stone"), crate::content::BlockState::AIR));

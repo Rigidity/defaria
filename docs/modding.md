@@ -810,12 +810,17 @@ in all its states or, with a `when` (see [Conditions](#conditions)), only
 those that match.
 
 ```json5
-// blocks/tuft.json5 (in part): on grass or bare dirt, not sand.
-support: [{ block: "soil", when: { soil: "dirt" } }],
-
-// blocks/mushroom.json5 (in part): on dirt, any stone or mossy stone.
+// blocks/tuft.json5 (in part): on dirt or loam, grassy or bare, and on
+// any soil under grass, but not on bare sand.
 support: [
-  { block: "soil", when: { soil: "dirt" } },
+  { block: "soil", when: { soil: ["dirt", "loam"] } },
+  { block: "soil", when: { turf: "grass" } },
+],
+
+// blocks/mushroom.json5 (in part): on dirt or loam, any stone or
+// mossy stone.
+support: [
+  { block: "soil", when: { soil: ["dirt", "loam"] } },
   { block: "stone" },
   { block: "mossy_stone" },
 ],

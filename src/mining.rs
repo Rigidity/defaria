@@ -551,4 +551,33 @@ mod tests {
             assert_eq!(inventory.count(daisy), expected, "{mode:?}");
         }
     }
+
+    /// In survival, a plant whose item doesn't fit breaks anyway, giving
+    /// nothing, as long as the ground under it fits.
+    #[test]
+    fn a_plant_that_doesnt_fit_breaks_without_its_item() {
+        let mut app = app();
+        let ground = IVec3::new(5, 1, 7);
+        let flower = ground + IVec3::Y;
+        set(&mut app, ground, crate::content::grass());
+        set(&mut app, flower, block("daisy"));
+        let grass = crate::game_mode::item_for_block(base(), crate::content::grass()).unwrap();
+        let daisy = crate::game_mode::item_for_block(base(), block("daisy")).unwrap();
+        // Room for the grass and not a gram more.
+        let room = crate::inventory::model::item_weight(base(), grass);
+        let player = crate::player::tests::local(&mut app);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((Inventory::new().with_max_weight(room), GameMode::Survival));
+        look_at(&mut app, ground.as_vec3() + Vec3::new(0.5, 0.9, 0.5));
+        frame(&mut app, true);
+        for _ in 0..frames_to_break(crate::content::grass()) {
+            frame(&mut app, false);
+        }
+        assert_eq!(at(&mut app, ground), BlockState::AIR);
+        assert_eq!(at(&mut app, flower), BlockState::AIR);
+        let inventory = app.world().get::<Inventory>(player).unwrap();
+        assert_eq!(inventory.count(grass), 1);
+        assert_eq!(inventory.count(daisy), 0);
+    }
 }

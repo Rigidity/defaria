@@ -217,11 +217,11 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
     }
     for def in &defs.blocks {
         if let Some(rules) = &def.def.support
-            && content.block(&def.id).is_some()
+            && let Some(&index) = content.block_index.get(&def.id)
         {
             report(
                 &def.file,
-                support::bake(&def.id, rules, &def.namespace, &mut content),
+                support::bake(index, rules, &def.namespace, &mut content),
             );
         }
     }

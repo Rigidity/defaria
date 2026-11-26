@@ -29,6 +29,7 @@ scripts/split-plants-raw/, where they're kept. Standard library only.
 Deterministic.
 """
 
+import argparse
 import colorsys
 import importlib.util
 import os
@@ -153,8 +154,11 @@ def mushroom(rows):
 
 
 def main():
-    out = sys.argv[1]
-    raw = sys.argv[2] if len(sys.argv) > 2 else os.path.join(HERE, "split-plants-raw")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("out_dir")
+    parser.add_argument("raw_dir", nargs="?", default=os.path.join(HERE, "split-plants-raw"))
+    args = parser.parse_args()
+    out, raw = args.out_dir, args.raw_dir
     os.makedirs(out, exist_ok=True)
     layers = {}
     for name, split_sprite in [

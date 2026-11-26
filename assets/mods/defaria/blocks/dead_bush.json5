@@ -1,4 +1,4 @@
-// A dead bush: dry twigs, drawn as two crossed quads. It stands on sand.
+// A dead bush: dry twigs, drawn as two crossed quads. It stands on bare sand.
 {
   name: "Dead Bush",
   model: "cross",
@@ -7,5 +7,5 @@
   hardness: 0.05,
   weight: 0.05,
   category: "natural",
-  support: [{ block: "soil", when: { soil: "sand" } }],
+  support: [{ block: "soil", when: { soil: "sand", turf: "none" } }],
 }

@@ -429,6 +429,7 @@ screenshot target/scenarios/flower-meadow/3-no-dead-bush.png
 wait 1
 hotbar 2 tulip[petals=defaria:petals/pink]                # a tulip is placed there
 hold MouseRight 1
+camera 32.5 48 35 0 -30                                   # back from it, to see it stand
 wait 2
 screenshot target/scenarios/flower-meadow/4-pink-tulip.png
 wait 1

@@ -5,7 +5,9 @@
 //!   (in `block_edit`), so nothing is used up.
 //! - After every edit ([`VoxelChanged`], from the player, scripts, fluids,
 //!   a scenario's `fill`), the edited voxel and the one above it are
-//!   checked: a block there that needs support and doesn't have it is
+//!   checked, and above every block whose state was updated in place
+//!   ([`PropertiesUpdated`]: a script's `set_state`, a machine turning
+//!   on): a block there that needs support and doesn't have it is
 //!   broken, and so is anything resting on it in turn. That's the same
 //!   frame for edits made in `Update`, and across chunk borders, as long
 //!   as both chunks are loaded. A block whose support is in a chunk that
@@ -25,7 +27,7 @@ use crate::{
     content::{BlockState, Content},
     meshing::RemeshChunks,
     mining::MiningSystems,
-    world::{VoxelChanged, Voxels},
+    world::{PropertiesUpdated, VoxelChanged, Voxels},
 };
 
 pub struct SupportPlugin;
@@ -56,11 +58,19 @@ pub struct SupportSystems;
 struct Unchecked(HashSet<IVec3>);
 
 /// Each edited voxel (a plant placed where it can't stand) and the one
-/// above it (standing on what changed).
-fn note_edits(mut changes: MessageReader<VoxelChanged>, mut unchecked: ResMut<Unchecked>) {
+/// above it (standing on what changed), and the one above each voxel whose
+/// state changed in place (grass turned to sand by a script's `set`).
+fn note_edits(
+    mut changes: MessageReader<VoxelChanged>,
+    mut updates: MessageReader<PropertiesUpdated>,
+    mut unchecked: ResMut<Unchecked>,
+) {
     for change in changes.read() {
         unchecked.0.insert(change.pos);
         unchecked.0.insert(change.pos + IVec3::Y);
+    }
+    for update in updates.read() {
+        unchecked.0.insert(update.pos + IVec3::Y);
     }
 }
 
@@ -97,7 +107,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        content::{base, block, grass, sand},
+        content::{base, block, grass, sand, test_mod},
         world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated},
     };
 
@@ -157,6 +167,51 @@ mod tests {
         // Sand doesn't.
         edit(&mut app, &[(ground, sand())]);
         assert_eq!(at(&mut app, tuft), BlockState::AIR);
+    }
+
+    /// A support changed in place (a script's `set_state`, or `set` to
+    /// another state of the same block) is checked too.
+    #[test]
+    fn support_updated_in_place_is_checked() {
+        let mut app = app();
+        let ground = IVec3::new(3, 4, 3);
+        let tuft = ground + IVec3::Y;
+        edit(&mut app, &[(ground, grass()), (tuft, block("tuft"))]);
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| voxels.update(ground, sand()))
+            .unwrap();
+        app.update();
+        assert_eq!(at(&mut app, ground), sand());
+        assert_eq!(at(&mut app, tuft), BlockState::AIR);
+    }
+
+    /// What stands on a plant that breaks breaks with it, on the same frame.
+    #[test]
+    fn plants_on_plants_break_together() {
+        let content = test_mod(&[
+            (
+                "blocks/ground.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/stalk.json5",
+                r#"{ model: "quad", textures: { all: "a" },
+                     support: [{ block: "ground" }, { block: "stalk" }] }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let ground = content.default_state("test:ground").unwrap();
+        let stalk = content.default_state("test:stalk").unwrap();
+        let mut app = app();
+        app.insert_resource(content);
+        let pos = IVec3::new(3, 2, 3);
+        let stack: Vec<_> = (1..5).map(|y| (pos + IVec3::Y * y, stalk)).collect();
+        edit(&mut app, &[&[(pos, ground)][..], &stack[..]].concat());
+        assert_eq!(at(&mut app, pos + IVec3::Y * 4), stalk);
+        edit(&mut app, &[(pos, BlockState::AIR)]);
+        for (at_pos, _) in stack {
+            assert_eq!(at(&mut app, at_pos), BlockState::AIR, "{at_pos}");
+        }
     }
 
     #[test]
@@ -226,5 +281,34 @@ mod tests {
         );
         assert_eq!(at(&mut app, pos), block("stone"));
         assert_eq!(at(&mut app, pos + IVec3::Y), block("log"));
+    }
+
+    /// End to end, in the whole game: plants a scenario's `fill` leaves
+    /// without support break, and the rest stay.
+    #[test]
+    fn fills_in_the_game_break_unsupported_plants() {
+        use crate::headless::{Script, test_game};
+        let script = Script::parse(
+            "wait 2\n\
+             fill 48 15 48 58 25 58 air\n\
+             fill 50 20 50 52 20 52 soil[turf=defaria:grass]\n\
+             fill 50 21 50 52 21 52 daisy\n\
+             fill 55 21 55 55 21 55 daisy\n\
+             wait 1\n\
+             fill 51 20 51 51 20 51 air\n\
+             wait 1\n",
+        )
+        .unwrap();
+        let mut app = test_game(script);
+        let mut frames = 0;
+        while app.should_exit().is_none() {
+            app.update();
+            frames += 1;
+            assert!(frames < 20_000, "the script never finished");
+        }
+        let mut at = |pos: IVec3| at(&mut app, pos);
+        assert_eq!(at(IVec3::new(50, 21, 50)), block("daisy"), "on grass");
+        assert_eq!(at(IVec3::new(51, 21, 51)), BlockState::AIR, "over the hole");
+        assert_eq!(at(IVec3::new(55, 21, 55)), BlockState::AIR, "in mid-air");
     }
 }

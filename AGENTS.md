@@ -335,6 +335,9 @@ documented in `docs/modding.md`; keep that file, the serde types in
   by their hardness (`Mining`, on the local player, has the target and
   progress).
   `src/cracks.rs`: the crack overlay on the block being mined.
+  `src/support.rs`: blocks that need support (plants, a block's
+  `support`): placing them only where they stand, and breaking them
+  when what's under them goes.
 - `src/connections.rs`: keeps blocks' connection properties (a pipe's
   joined sides) in step with their neighbours, after edits and on chunk
   load, through `Voxels::update`. Whether a neighbour takes a connection
