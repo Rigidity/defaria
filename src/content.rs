@@ -27,6 +27,7 @@
 mod bake;
 mod connect;
 pub mod load;
+mod machine;
 mod place;
 pub mod schema;
 
@@ -36,8 +37,11 @@ use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, pre
 
 use crate::block_texture::Palette;
 pub use connect::{Connections, Joins, Rule, SIDE_VALUES};
+pub use machine::{
+    EnergySpec, FACING, MAX_SLOTS, Machine, MachinePort, SlotGroupSpec, TankSpec, resolve_face,
+};
 pub use place::Placement;
-pub use schema::{Direction, PlaceFrom, Render, Solver};
+pub use schema::{Direction, PlaceFrom, PortRole, Render, Solver};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -422,6 +426,8 @@ pub struct State {
     pub stats: BTreeMap<String, f32>,
     /// Set for a conduit: the network it's part of, and what it carries.
     pub conduit: Option<Conduit>,
+    /// Set for a machine: its ports, buffer, tanks and slots.
+    pub machine: Option<Box<Machine>>,
 }
 
 /// A block state that's part of a network: a wire, pipe or tube.
@@ -810,6 +816,43 @@ impl Content {
     /// The display name of an [`ItemState`].
     pub fn item_name(&self, state: ItemState) -> Option<&str> {
         self.item_state(state).map(|info| info.name.as_str())
+    }
+
+    /// The name `item` is saved under: its id, with the values of its
+    /// properties if it has any (`defaria:log[wood=defaria:birch]`).
+    /// `None` for a state that doesn't exist.
+    pub fn saved_item_name(&self, item: ItemState) -> Option<String> {
+        let state = self.item_state(item)?;
+        let id = &self.items[state.item].id;
+        if state.values.is_empty() {
+            return Some(id.clone());
+        }
+        let values: Vec<String> = state
+            .values
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        Some(format!("{id}[{}]", values.join(",")))
+    }
+
+    /// The item state saved as `name` (see [`Content::saved_item_name`]).
+    /// An item whose properties changed comes back as its default state;
+    /// one that's gone doesn't come back.
+    pub fn saved_item(&self, name: &str) -> Option<ItemState> {
+        let Some((id, rest)) = name.split_once('[') else {
+            return self.default_item(name);
+        };
+        let item = self.item(id)?;
+        let values: Option<Vec<(&str, &str)>> = rest.strip_suffix(']').map(|rest| {
+            rest.split(',')
+                .filter_map(|pair| pair.split_once('='))
+                .collect()
+        });
+        Some(
+            values
+                .and_then(|values| item.state(&values))
+                .unwrap_or_else(|| item.default_state()),
+        )
     }
 
     /// Every image some texture uses, as asset paths, each once.

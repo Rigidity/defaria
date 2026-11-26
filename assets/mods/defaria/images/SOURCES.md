@@ -18,6 +18,8 @@ update the row when a layer is replaced.
 | `log_top_bark.png` | Cut by hand from `log_side.png`: the outer pixel frame, the corners outside `log_top.png`'s slice and the slice's dark outline next to them; transparent inside. Stacked over `log_top.png` | 2026-11-24 | | | | |
 | `planks.png` | Retro Diffusion, converted with `scripts/gray-layer.py` (no `--even`, which would erase the seams), then rebuilt by hand: four boards of three rows over a one-row seam (level 1), the source's grain marks kept, the bottom row of each board one level darker, a few level-6 highlights on top rows, and one staggered end joint (level 2) per board | 2026-11-24 | `rd_lite__default` | close-up of a wooden plank floor surface filling the entire frame edge to edge, four horizontal boards stacked with thin dark seams between them, subtle wood grain lines along each board, no outline, no border, no background, grayscale, even lighting | `b88a1319-3618-4224-948e-ed44963ebdd2` | 98% |
 | `ore.png` | Retro Diffusion for where the nuggets go (in color, so the ore could be told from the stone); the generated nuggets were one or two pixels, so redrawn by hand as six small clusters at the same spots, lit from the top left (levels 6, 5, 4 and 3, 2 underneath), transparent elsewhere. An overlay stacked over `stone.png`, colored by the ore material's `ore` palette | 2026-11-25 | `rd_plus__mc_texture` | grey stone with several small clusters of shiny orange metal ore nuggets embedded in it, flat block surface texture, even lighting | `2fb46ee2-fd9c-4080-824f-6089fb27c603` | 98% |
+| `machine_side.png` | Retro Diffusion, unused: came back as a flat plate in a frame; the casing in `scripts/draw-machines.py` keeps its layout (frame, rivets in the corners) | 2026-11-26 | `rd_lite__default` | close-up of a riveted metal machine casing panel filling the entire frame edge to edge, a flat plate with a raised metal frame around it and a small rivet in each corner, no outline, no border, no background, grayscale, even lighting | `13120796-e715-4d9b-ac35-b67e5c3878a0` | 98% |
+| `crate_side.png` | Retro Diffusion, unused: came back as a crate seen at an angle, off-centre; its crossed braces drawn by `scripts/draw-machines.py` | 2026-11-26 | `rd_lite__default` | close-up of the side of a reinforced metal storage crate filling the entire frame edge to edge, a thick metal frame with corner brackets, crossed diagonal braces and a small square socket in the center, no outline, no border, no background, grayscale, even lighting | `2c4f9362-4a4e-40e8-a651-86a7ebdabb04` | 98% |
 
 ## Drawn by script
 
@@ -62,6 +64,23 @@ samples it.
 - `tube_side.png`, `tube_end.png`: the glass item tube, the same layout as
   the pipe: solid rims and collars, a nearly clear middle (alpha 40) and a
   broken highlight streak. Partly transparent, for a translucent block.
+
+Every machine face is the same casing, a two-pixel frame lit from the top
+left with a rivet in each corner around a recessed flat panel, with its
+feature drawn into the panel.
+
+- `port.png`: a 6-pixel square socket (5–10) with a raised rim, an overlay
+  for any machine face; transparent around it.
+- `machine_side.png`: the plain casing, fully opaque, with a few faint
+  brushed streaks on the panel.
+- `machine_top.png`: the casing with a vent grille of four slots.
+- `battery_side.png`: the casing with a tall charge window of three lit
+  horizontal bars.
+- `tank_side.png`: the casing with a vertical sight glass and three gauge
+  marks beside it.
+- `crate_side.png`: the casing's frame around a dark panel with crossed
+  diagonal braces, corner brackets and a small port where the braces meet.
+  Layout from the Retro Diffusion crate in the table above.
 
 ## Cracks (`cracks/`)
 

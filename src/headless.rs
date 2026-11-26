@@ -27,7 +27,7 @@
 //! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). Like any edit, it's followed by the engine setting connection properties, so `pipe` joins the pipes next to it. |
 //! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
-//! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to; or `none`. |
+//! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to, each with its role (`produce`, `store`, `input`, ...); or `none`. |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
@@ -903,10 +903,12 @@ fn fluid_report(world: &mut World) -> String {
 
 /// The `network` report for the conduit at `pos`.
 fn network_report(world: &World, pos: IVec3) -> String {
+    let ports = world.resource::<crate::machine::MachinePorts>();
     crate::network::describe(
         world.resource::<crate::network::Networks>(),
         world.resource::<Content>(),
         pos,
+        |id, port| ports.role(id, port),
     )
 }
 

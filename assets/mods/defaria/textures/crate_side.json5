@@ -1,0 +1,6 @@
+// An iron machine casing face; see images/SOURCES.md.
+{
+  layers: [
+    { image: "crate_side", material: "iron" },
+  ],
+}

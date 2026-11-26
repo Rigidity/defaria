@@ -161,6 +161,20 @@ A **value** is a tag byte and what it says follows:
 
 Lists and tables nest at most 32 deep.
 
+The parts the game saves, each at version 1:
+
+| Key | Who has it | Value |
+|---|---|---|
+| `data` | blocks with `block_entity: { data }`, and scripts | a table of plain values |
+| `energy` | machines with `energy` | the integer energy stored |
+| `tanks` | machines with `tanks` | a table by tank name of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block; an empty tank is left out |
+| `slots` | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`) |
+
+A machine's ports and whether it's working aren't saved: they're worked
+out from the voxel's state. A tank or slot group the block doesn't have
+any more is dropped, as are slots past a group's count and items that no
+longer exist.
+
 A fluid voxel (a block with `fluid` set, such as water) holds an amount of
 its fluid, in thousandths of a block. Most fluid is full, so only the
 voxels that aren't are listed, in increasing index order; a fluid voxel

@@ -7,6 +7,8 @@
 
 use std::{collections::BTreeMap, fmt, marker::PhantomData};
 
+use bevy::reflect::Reflect;
+
 use crate::block_entity::Value;
 
 use serde::{
@@ -248,7 +250,7 @@ pub struct VertexDef {
 }
 
 /// A side of a block. Up is +Y, south is +Z and east is +X.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Deserialize, Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
     Up,
@@ -324,6 +326,160 @@ pub struct BlockDef {
     /// saved with its chunk.
     #[serde(default)]
     pub block_entity: Option<BlockEntityDef>,
+    /// It's a machine: its ports onto networks, its energy buffer, tanks
+    /// and item slots. A machine has a block entity, which keeps them.
+    #[serde(default)]
+    pub machine: Option<MachineDef>,
+}
+
+/// A block's `machine`: what it connects to and what it holds.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MachineDef {
+    /// Its faces that conduits join, each on a network kind with a role.
+    #[serde(default)]
+    pub ports: Vec<PortDef>,
+    /// The energy it stores, and how fast it takes and gives it.
+    #[serde(default)]
+    pub energy: Option<EnergyDef>,
+    /// Its fluid tanks, by name.
+    #[serde(default)]
+    pub tanks: BTreeMap<String, TankDef>,
+    /// Its item slots: how many in each named group.
+    #[serde(default)]
+    pub slots: BTreeMap<String, u32>,
+    /// The property values it has while it's working, such as
+    /// `{ lit: "true" }`. When it stops, they go back to the block's
+    /// defaults.
+    #[serde(default)]
+    pub active_state: BTreeMap<String, String>,
+}
+
+/// A face, or several, of a machine that conduits of one network kind join.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PortDef {
+    /// Sides (`up`, `north`, ...), which turn with the block's `rotate`,
+    /// or sides relative to its `facing` property (`front`, `back`,
+    /// `left`, `right`).
+    pub faces: Vec<PortFace>,
+    /// The network kind, such as `"electric"`.
+    pub network: String,
+    /// What it does on the network.
+    pub role: PortRole,
+    /// The tank a fluid port fills or drains. Left out, the machine's only
+    /// tank.
+    #[serde(default)]
+    pub tank: Option<String>,
+    /// The slot group an item port fills or takes from. Left out, the
+    /// machine's only group.
+    #[serde(default)]
+    pub slots: Option<String>,
+}
+
+/// A machine face as a port names it.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PortFace {
+    Up,
+    Down,
+    North,
+    South,
+    East,
+    West,
+    /// The side its `facing` property names.
+    Front,
+    /// The side opposite the front.
+    Back,
+    /// The machine's own left, facing out of its front.
+    Left,
+    /// The machine's own right.
+    Right,
+}
+
+/// What a port does on its network. Each solver takes some of them:
+/// energy `produce`, `consume` and `store`; fluid and item `input`,
+/// `output` and `store`.
+#[derive(Deserialize, Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PortRole {
+    /// Energy: gives the network energy from its buffer (a generator).
+    Produce,
+    /// Energy: takes energy from the network into its buffer (a lamp).
+    Consume,
+    /// Takes in and gives out both, as the network has too much or too
+    /// little: a battery, a tank, a crate.
+    Store,
+    /// Fluid or items: takes them from the network (an outlet, a
+    /// furnace's input).
+    Input,
+    /// Fluid or items: gives them to the network (a pump, a furnace's
+    /// output).
+    Output,
+}
+
+impl PortRole {
+    /// Whether things go from the machine into the network through it.
+    pub fn gives(self) -> bool {
+        matches!(self, PortRole::Produce | PortRole::Output | PortRole::Store)
+    }
+
+    /// Whether things come from the network into the machine through it.
+    pub fn takes(self) -> bool {
+        matches!(self, PortRole::Consume | PortRole::Input | PortRole::Store)
+    }
+
+    /// Whether a network run by `solver` has ports with this role.
+    pub fn fits(self, solver: Solver) -> bool {
+        match solver {
+            Solver::Energy => matches!(
+                self,
+                PortRole::Produce | PortRole::Consume | PortRole::Store
+            ),
+            Solver::Fluid | Solver::Item => {
+                matches!(self, PortRole::Input | PortRole::Output | PortRole::Store)
+            }
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PortRole::Produce => "produce",
+            PortRole::Consume => "consume",
+            PortRole::Store => "store",
+            PortRole::Input => "input",
+            PortRole::Output => "output",
+        }
+    }
+}
+
+/// A machine's energy buffer, in energy units.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct EnergyDef {
+    /// The most it holds.
+    pub capacity: Attribute,
+    /// The most it takes in a second.
+    #[serde(default = "zero")]
+    pub max_in: Attribute,
+    /// The most it gives in a second.
+    #[serde(default = "zero")]
+    pub max_out: Attribute,
+}
+
+fn zero() -> Attribute {
+    Attribute::Fixed(0.0)
+}
+
+/// One of a machine's fluid tanks.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TankDef {
+    /// How much it holds, in blocks of fluid.
+    pub capacity: Attribute,
+    /// The fluids (blocks with `fluid`) it takes. Left out, any.
+    #[serde(default)]
+    pub accepts: Vec<String>,
 }
 
 /// A block's block entity: what a new one starts with.

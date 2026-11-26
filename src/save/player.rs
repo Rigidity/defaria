@@ -89,21 +89,11 @@ pub struct ItemNames {
 
 impl ItemNames {
     pub fn new(content: &Content) -> Self {
-        let names: Vec<String> = content
-            .item_states
-            .iter()
-            .map(|state| {
-                let id = &content.items[state.item].id;
-                if state.values.is_empty() {
-                    id.clone()
-                } else {
-                    let values: Vec<String> = state
-                        .values
-                        .iter()
-                        .map(|(k, v)| format!("{k}={v}"))
-                        .collect();
-                    format!("{id}[{}]", values.join(","))
-                }
+        let names: Vec<String> = (0..content.item_states.len())
+            .map(|i| {
+                content
+                    .saved_item_name(ItemState(i as u32))
+                    .expect("every state has a name")
             })
             .collect();
         let by_name = names

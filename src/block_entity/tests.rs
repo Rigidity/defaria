@@ -33,11 +33,11 @@ impl BlockEntityPart for Ticks {
         (content.block_of(state).id == "test:counter").then_some(Self(0))
     }
 
-    fn save(&self) -> Value {
+    fn save(&self, _: &Content) -> Value {
         Value::Int(self.0)
     }
 
-    fn load(value: &Value, version: u32) -> Option<Self> {
+    fn load(value: &Value, version: u32, _: BlockState, _: &Content) -> Option<Self> {
         (version == 2).then(|| value.as_int().map(Self))?
     }
 }
