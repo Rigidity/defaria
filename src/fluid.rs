@@ -23,19 +23,20 @@
 //! With the eyes inside a fluid, the fog is the fluid's color and short,
 //! as the fluid's `view` says (see `docs/modding.md`).
 //!
-//! Placing a block into fluid deletes the fluid, in [`fluid_displaced`],
-//! which is where pushing it aside instead would go (#83).
+//! Placing a block into fluid deletes the fluid. Each time, flow calls
+//! [`fluid_displaced`] with what was there before it steps, which is where
+//! pushing it aside instead would go (#83).
 
 pub mod flow;
 
-use bevy::{ecs::system::SystemParam, pbr::FogFalloff, prelude::*};
+use bevy::{ecs::system::SystemParam, prelude::*};
 
 use crate::{
     content::{BlockState, Content, FULL_FLUID, Fluid},
     fly_camera::EyeView,
-    fog::apply_fog,
+    fog::{self, FogSystems},
     terrain::{ChunkCoord, ChunkMap, VoxelChanged, Voxels},
-    voxel::{CHUNK_SIZE, Chunk, fluid_amount},
+    voxel::{CHUNK_SIZE, Chunk, fluid_amount, fluid_surface},
 };
 use flow::{AROUND, Cell, CellView, Cells, Simulation};
 
@@ -46,9 +47,12 @@ impl Plugin for FluidPlugin {
         app.init_resource::<FluidSettings>()
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
-            .add_systems(Update, (wake_around_edits, wake_loaded_chunks).chain())
+            .add_systems(
+                Update,
+                (note_displaced_fluid, wake_around_edits, wake_loaded_chunks).chain(),
+            )
             .add_systems(FixedUpdate, run_flow)
-            .add_systems(PostUpdate, fog_inside_fluid.after(apply_fog));
+            .add_systems(PostUpdate, fog_inside_fluid.after(FogSystems));
     }
 }
 
@@ -83,11 +87,19 @@ pub struct FluidStats {
     pub millis: f64,
     /// The most wall-clock milliseconds one fixed tick took.
     pub worst_millis: f64,
+    /// Fluid deleted by placing blocks into it since the start, in
+    /// thousandths of a block.
+    pub displaced: u64,
 }
 
 /// The flow simulation over the loaded world.
 #[derive(Resource, Debug, Default)]
-pub struct FluidSim(pub Simulation);
+pub struct FluidSim {
+    pub sim: Simulation,
+    /// Fluid that blocks were placed into, by where, which fluid and how
+    /// much, waiting for [`fluid_displaced`].
+    displaced: Vec<(IVec3, BlockState, u16)>,
+}
 
 /// The loaded world as cells for flow.
 #[derive(SystemParam)]
@@ -126,20 +138,14 @@ impl CellView for FluidView<'_, '_> {
 
 impl FluidView<'_, '_> {
     /// The fluid in the voxel at `pos`, and how high its surface is above
-    /// the voxel's bottom: the whole voxel if the same fluid is above it,
-    /// and otherwise as high as its amount fills it.
+    /// the voxel's bottom, as it's drawn (see [`fluid_surface`]).
     pub fn surface(&self, pos: IVec3) -> Option<(BlockState, f32)> {
         let Some(Cell::Fluid(kind, amount)) = self.cell(pos) else {
             return None;
         };
-        let full =
+        let covered =
             matches!(self.cell(pos + IVec3::Y), Some(Cell::Fluid(above, _)) if above == kind);
-        let height = if full {
-            1.0
-        } else {
-            amount as f32 / FULL_FLUID as f32
-        };
-        Some((kind, height))
+        Some((kind, fluid_surface(amount, covered)))
     }
 
     /// The fluid `point` is in, below its surface.
@@ -217,8 +223,12 @@ fn run_flow(
     content: Res<Content>,
     mut cells: WorldCells,
 ) {
+    for (pos, fluid, amount) in std::mem::take(&mut sim.displaced) {
+        fluid_displaced(&mut cells, pos, fluid, amount);
+        stats.displaced += amount as u64;
+    }
     let start = std::time::Instant::now();
-    let report = sim.0.tick(
+    let report = sim.sim.tick(
         &mut cells,
         |state| content.state(state).fluid.as_ref(),
         time.delta_secs(),
@@ -234,23 +244,40 @@ fn run_flow(
     }
 }
 
-/// Wakes the fluid around every voxel set to another block, and passes
-/// fluid a block was placed into to [`fluid_displaced`].
+/// Wakes the fluid that might move because a voxel was set to another
+/// block: see [`flow::affected_by`].
 fn wake_around_edits(
     mut changes: MessageReader<VoxelChanged>,
     mut sim: ResMut<FluidSim>,
     cells: FluidView,
 ) {
     for change in changes.read() {
-        let before = fluid_amount(&cells.content, change.before, change.partial_before);
-        if before > 0
-            && let Some(Cell::Closed) = cells.cell(change.pos)
-        {
-            fluid_displaced(change.pos, change.before, before);
-        }
-        sim.0.wake_around(&cells, change.pos);
+        sim.sim.wake_around(&cells, change.pos);
     }
 }
+
+/// Notes the fluid each block was placed into, for [`run_flow`] to pass to
+/// [`fluid_displaced`]. Whether a block took fluid's place is read from the
+/// edit itself, not the voxel now, so fluid that had already flowed away
+/// isn't counted.
+fn note_displaced_fluid(
+    mut changes: MessageReader<VoxelChanged>,
+    content: Res<Content>,
+    mut sim: ResMut<FluidSim>,
+) {
+    for change in changes.read() {
+        let amount = fluid_amount(&content, change.before, change.partial_before);
+        if amount > 0 && cell_of(&content, change.after, None) == Cell::Closed {
+            sim.displaced.push((change.pos, change.before, amount));
+        }
+    }
+}
+
+/// A block was placed at `pos`, where there was `amount` of the fluid
+/// `fluid`. For now that fluid is deleted: it's already gone, so this does
+/// nothing. Pushing it into the cells around instead (#83) goes here, with
+/// `cells` to put it in.
+fn fluid_displaced(_cells: &mut impl Cells, _pos: IVec3, _fluid: BlockState, _amount: u16) {}
 
 /// With the eyes inside a fluid, the fog is the fluid's: its color, from
 /// right at the eyes out to its `view.distance`, in place of the fog at the
@@ -265,49 +292,53 @@ fn fog_inside_fluid(
             continue;
         };
         fog.color = fluid.view_color;
-        fog.falloff = FogFalloff::Atmospheric {
-            extinction: Vec3::splat(fluid.view_distance),
-            inscattering: Vec3::ZERO,
-        };
+        fog.falloff = fog::falloff_between(0.0, fluid.view_distance);
     }
 }
 
-/// A block was placed at `pos`, where there was `amount` of the fluid
-/// `fluid`. For now that fluid is deleted: it's already gone, so this does
-/// nothing. Pushing it into the voxels around instead (#83) would go here.
-fn fluid_displaced(_pos: IVec3, _fluid: BlockState, _amount: u16) {}
-
-/// Wakes the fluid that isn't settled in each chunk that's just loaded, and
-/// along the faces of the loaded chunks next to it.
+/// Wakes the fluid that might move in each chunk that's just loaded, and
+/// along the faces of the loaded chunks next to it, which couldn't flow
+/// into it while it wasn't loaded.
 fn wake_loaded_chunks(
     added: Query<(&ChunkCoord, &Chunk), Added<Chunk>>,
     mut sim: ResMut<FluidSim>,
     cells: FluidView,
 ) {
+    let content = &cells.content;
+    let mut wake = |chunk: &Chunk, origin: IVec3, local: IVec3| {
+        let state = chunk.at(local);
+        let Some(fluid) = content.state(state).fluid.as_ref() else {
+            return;
+        };
+        let pos = origin + local;
+        if flow::might_move(&cells, fluid, pos) {
+            sim.sim.wake(&cells, pos);
+        }
+    };
     for (coord, chunk) in &added {
         let origin = coord.origin();
-        let has_fluid = chunk
+        if chunk
             .voxels()
             .iter()
-            .any(|&state| cells.content.state(state).is_fluid());
-        if has_fluid {
+            .any(|&state| content.state(state).is_fluid())
+        {
             for index in 0..chunk.voxels().len() {
-                let pos = origin + Chunk::position_of(index);
-                if unsettled(&cells, pos) {
-                    sim.0.wake(&cells, pos);
-                }
+                wake(chunk, origin, Chunk::position_of(index));
             }
         }
         // The layer of each neighbour against this chunk.
         let last = CHUNK_SIZE as i32 - 1;
         for offset in AROUND {
+            let next = ChunkCoord(coord.0 + offset);
+            let Some(neighbour) = cells.map.get(next).and_then(|e| cells.chunks.get(e).ok()) else {
+                continue;
+            };
             for a in 0..CHUNK_SIZE as i32 {
                 for b in 0..CHUNK_SIZE as i32 {
-                    let local = face_voxel(offset, a, b, last);
-                    let pos = origin + local + offset;
-                    if unsettled(&cells, pos) {
-                        sim.0.wake(&cells, pos);
-                    }
+                    // This chunk's face toward the neighbour, seen from the
+                    // neighbour: the opposite face.
+                    let local = face_voxel(-offset, a, b, last);
+                    wake(neighbour, next.origin(), local);
                 }
             }
         }
@@ -324,31 +355,11 @@ fn face_voxel(offset: IVec3, a: i32, b: i32, last: i32) -> IVec3 {
     }
 }
 
-/// Whether the fluid at `pos` might move: it isn't full, or it has room
-/// below it or beside it. False where there's no fluid.
-fn unsettled(cells: &impl CellView, pos: IVec3) -> bool {
-    let Some(Cell::Fluid(kind, amount)) = cells.cell(pos) else {
-        return false;
-    };
-    if amount < FULL_FLUID {
-        return true;
-    }
-    let has_room = |at: IVec3| match cells.cell(at) {
-        Some(Cell::Open) => true,
-        Some(Cell::Fluid(k, a)) => k == kind && a < FULL_FLUID,
-        _ => false,
-    };
-    has_room(pos - IVec3::Y)
-        || [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z]
-            .into_iter()
-            .any(|side| has_room(pos + side))
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use bevy::time::TimeUpdateStrategy;
+    use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
 
     use super::*;
     use crate::{
@@ -387,7 +398,7 @@ mod tests {
         let (coord, local) = ChunkCoord::split(pos);
         let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
         let chunk = app.world().get::<Chunk>(entity).unwrap();
-        chunk.fluid_at(local, app.world().resource::<Content>())
+        chunk.fluid_amount_at(local, app.world().resource::<Content>())
     }
 
     fn run(app: &mut App, seconds: f32) {
@@ -473,13 +484,113 @@ mod tests {
                 ))
                 .id();
             app.update();
-            let fog = app.world().get::<DistanceFog>(eye).unwrap().color;
+            let fog = app.world().get::<DistanceFog>(eye).unwrap().clone();
             app.world_mut().despawn(eye);
-            fog
+            (fog.color, fog.falloff)
         };
         let water = base().state(block("water")).fluid.clone().unwrap();
-        assert_eq!(fog_at(&mut app, 4.25), water.view_color);
-        assert_eq!(fog_at(&mut app, 4.75), DistanceFog::default().color);
-        assert_eq!(fog_at(&mut app, 3.5), DistanceFog::default().color);
+        assert_eq!(fog_at(&mut app, 4.25).0, water.view_color);
+        assert_eq!(
+            format!("{:?}", fog_at(&mut app, 4.25).1),
+            format!("{:?}", fog::falloff_between(0.0, water.view_distance))
+        );
+        assert_eq!(fog_at(&mut app, 4.75).0, DistanceFog::default().color);
+        assert_eq!(fog_at(&mut app, 3.5).0, DistanceFog::default().color);
+    }
+
+    /// A chunk that loads with fluid in mid-flow, as saved during a flood,
+    /// carries on flowing: its own unsettled fluid wakes.
+    #[test]
+    fn fluid_saved_mid_flow_flows_on_when_it_loads() {
+        let mut app = app();
+        let mut chunk = Chunk::filled(block("stone"));
+        for x in 0..4 {
+            chunk.set(x, 1, 1, BlockState::AIR);
+        }
+        chunk.set(0, 1, 1, block("water"));
+        spawn(&mut app, IVec3::ZERO, chunk);
+        app.update();
+        assert!(app.world().resource::<FluidSim>().sim.active() > 0);
+        run(&mut app, 2.0);
+        assert!(amount(&app, IVec3::new(3, 1, 1)) > 0, "it spread");
+    }
+
+    /// Water falling and spreading across chunk borders keeps all of itself.
+    #[test]
+    fn falling_and_spreading_across_chunks_loses_nothing() {
+        let mut app = app();
+        // Eight chunks around the origin: a floor at y -8, open above.
+        for x in -1..=0 {
+            for y in -1..=0 {
+                for z in -1..=0 {
+                    let mut chunk = Chunk::default();
+                    if y == -1 {
+                        for i in 0..16 {
+                            for k in 0..16 {
+                                for j in 0..8 {
+                                    chunk.set(i, j, k, block("stone"));
+                                }
+                            }
+                        }
+                    }
+                    spawn(&mut app, IVec3::new(x, y, z), chunk);
+                }
+            }
+        }
+        // A tower of water on the corner where all eight meet.
+        let mut poured = 0;
+        for y in 0..6 {
+            for (x, z) in [(-1, -1), (0, 0), (-1, 0), (0, -1)] {
+                let pos = IVec3::new(x, y, z);
+                app.world_mut()
+                    .run_system_once(move |mut voxels: Voxels| {
+                        voxels.set(pos, block("water"));
+                    })
+                    .unwrap();
+                poured += FULL_FLUID as u32;
+            }
+        }
+        run(&mut app, 4.0);
+        let mut total = 0;
+        for x in -16..16 {
+            for y in -8..16 {
+                for z in -16..16 {
+                    total += amount(&app, IVec3::new(x, y, z)) as u32;
+                }
+            }
+        }
+        assert_eq!(total, poured);
+        for corner in [
+            IVec3::new(-3, -8, -3),
+            IVec3::new(2, -8, 2),
+            IVec3::new(-3, -8, 2),
+        ] {
+            assert!(
+                amount(&app, corner) > 0,
+                "it spread into each chunk: {corner}"
+            );
+        }
+    }
+
+    /// Flow steps at most `cells_per_tick` voxels a tick, however many
+    /// are active.
+    #[test]
+    fn flow_keeps_to_its_budget() {
+        let mut app = app();
+        app.insert_resource(FluidSettings { cells_per_tick: 7 });
+        let mut chunk = Chunk::default();
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 0, z, block("stone"));
+            }
+        }
+        for x in 4..12 {
+            chunk.set(x, 3, 8, block("water"));
+        }
+        spawn(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 2.0);
+        let stats = app.world().resource::<FluidStats>();
+        assert!(stats.stepped > 0);
+        assert_eq!(stats.most_in_a_tick, 7);
     }
 }

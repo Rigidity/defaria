@@ -698,7 +698,7 @@ fn fluid_report(world: &mut World) -> String {
     for chunk in chunks.iter(world) {
         for index in 0..chunk.voxels().len() {
             let pos = Chunk::position_of(index);
-            let amount = chunk.fluid_at(pos, content);
+            let amount = chunk.fluid_amount_at(pos, content);
             if amount > 0 {
                 let name = &content.blocks[content.state(chunk.at(pos)).block].id;
                 *totals.entry(name.clone()).or_default() += amount as u64;
@@ -1418,7 +1418,7 @@ mod tests {
         let (coord, local) = ChunkCoord::split(pos);
         let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
         let chunk = app.world().get::<Chunk>(entity).unwrap();
-        chunk.fluid_at(local, app.world().resource::<Content>())
+        chunk.fluid_amount_at(local, app.world().resource::<Content>())
     }
 
     /// `pour` puts fluid in a voxel through the game's own edit path, and
@@ -1440,6 +1440,23 @@ mod tests {
             .collect();
         assert_eq!(row.iter().map(|&a| a as u32).sum::<u32>(), 1000, "{row:?}");
         assert!(row.iter().filter(|&&a| a > 0).count() >= 7, "{row:?}");
+    }
+
+    /// The `fluids` report counts each fluid in the loaded world: deep
+    /// underground, where there's no other water, just what was poured.
+    #[test]
+    fn the_fluids_report_counts_what_was_poured() {
+        let (mut app, exit) = run_game(
+            "camera 5000.5 -1000.5 5000.5 0 0\n\
+             settle\n\
+             fill 4990 -1001 4990 5010 -1000 5010 air\n\
+             pour 5000 -1000 5000 water 0.75\n\
+             wait 1\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let report = fluid_report(app.world_mut());
+        assert!(report.starts_with("fluids: "), "{report}");
+        assert!(report.ends_with(" active, defaria:water 750"), "{report}");
     }
 
     /// Pouring something that isn't a fluid, or no amount, fails the run.
@@ -1472,10 +1489,11 @@ mod tests {
             .map(|x| fluid_at(&app, IVec3::new(x, 21, 51)))
             .collect();
         assert_eq!(row[0], 0, "the stone took the water's place");
-        // Two blocks spread over four voxels, and the stone took the
-        // quarter in one.
-        let total = row.iter().map(|&a| a as u32).sum::<u32>();
-        assert!((1490..=1510).contains(&total), "{row:?}");
+        // What the stone took is counted, and the rest is all there.
+        let displaced = app.world().resource::<FluidStats>().displaced;
+        assert!(displaced > 0);
+        let total = row.iter().map(|&a| a as u64).sum::<u64>();
+        assert_eq!(total + displaced, 2000, "{row:?}");
         assert!(row[8] > 0, "flowed past where the wall was: {row:?}");
     }
 

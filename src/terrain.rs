@@ -162,6 +162,8 @@ pub struct VoxelChanged {
     pub pos: IVec3,
     /// The block it was.
     pub before: BlockState,
+    /// The block it is now.
+    pub after: BlockState,
     /// The amount of fluid its chunk kept for it (see [`Chunk::partial_at`]):
     /// with `before` a fluid, `None` means it was full.
     pub partial_before: Option<u16>,
@@ -260,6 +262,7 @@ impl Voxels<'_, '_> {
         self.changes.write(VoxelChanged {
             pos,
             before,
+            after: state,
             partial_before,
         });
         true
@@ -1608,5 +1611,50 @@ mod tests {
             places.insert(changes[0]);
         }
         assert!(places.len() >= 8, "only {} different places", places.len());
+    }
+
+    /// Setting a voxel's fluid remeshes the chunks that show it only when
+    /// its drawn height changes, and across a chunk edge, its neighbour's
+    /// too.
+    #[test]
+    fn fluid_changes_remesh_only_when_the_height_changes() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ChunkMap>()
+            .add_message::<VoxelChanged>()
+            .add_message::<FluidChanged>();
+        let edge = IVec3::new(15, 5, 5);
+        for coord in [IVec3::ZERO, IVec3::X] {
+            let mut chunk = Chunk::default();
+            if coord == IVec3::ZERO {
+                chunk.set_at(edge, block("water"));
+            }
+            let entity = app.world_mut().spawn((ChunkCoord(coord), chunk)).id();
+            app.world_mut()
+                .resource_mut::<ChunkMap>()
+                .insert(ChunkCoord(coord), entity);
+        }
+        let changed = app.world_mut().register_system(
+            |chunks: Query<(&ChunkCoord, Ref<Chunk>)>| -> Vec<IVec3> {
+                let mut changed: Vec<IVec3> = chunks
+                    .iter()
+                    .filter(|(_, chunk)| chunk.is_changed())
+                    .map(|(coord, _)| coord.0)
+                    .collect();
+                changed.sort_by_key(|c| c.x);
+                changed
+            },
+        );
+        let set_fluid = |app: &mut App, amount: u16| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| voxels.set_fluid(edge, amount))
+                .unwrap();
+            app.world_mut().run_system(changed).unwrap()
+        };
+        set_fluid(&mut app, FULL_FLUID);
+        // 500 and 490 are both drawn half a block high.
+        assert_eq!(set_fluid(&mut app, 500), [IVec3::ZERO, IVec3::X]);
+        assert_eq!(set_fluid(&mut app, 490), Vec::<IVec3>::new());
+        assert_eq!(set_fluid(&mut app, 400), [IVec3::ZERO, IVec3::X]);
     }
 }

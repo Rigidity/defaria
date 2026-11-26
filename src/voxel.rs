@@ -129,14 +129,14 @@ impl Chunk {
 
     /// The amount of fluid kept for the voxel at a chunk-local position:
     /// `None` when none is kept, which for a fluid voxel means it's full.
-    /// See [`Chunk::fluid_at`] for the amount itself.
+    /// See [`Chunk::fluid_amount_at`] for the amount itself.
     pub fn partial_at(&self, pos: IVec3) -> Option<u16> {
         self.partial.get(&(Self::index_of(pos) as u16)).copied()
     }
 
     /// The amount of fluid in the voxel at a chunk-local position: 0 if it
     /// isn't a fluid.
-    pub fn fluid_at(&self, pos: IVec3, content: &Content) -> u16 {
+    pub fn fluid_amount_at(&self, pos: IVec3, content: &Content) -> u16 {
         fluid_amount(content, self.at(pos), self.partial_at(pos))
     }
 
@@ -249,6 +249,19 @@ pub const FLUID_STEPS: u16 = 16;
 /// next one up, so even a little shows. 0 for no fluid.
 pub fn fluid_step(amount: u16) -> u16 {
     (amount.min(FULL_FLUID) as u32 * FLUID_STEPS as u32).div_ceil(FULL_FLUID as u32) as u16
+}
+
+/// How high a voxel's fluid surface is, in blocks above the voxel's
+/// bottom: the whole voxel if the same fluid is above it (`covered`), so a
+/// column has no seams, and otherwise as high as `amount` is drawn, at its
+/// [`fluid_step`]. This is the surface you see, swim at, and see the fog
+/// start at.
+pub fn fluid_surface(amount: u16, covered: bool) -> f32 {
+    if covered {
+        1.0
+    } else {
+        fluid_step(amount) as f32 / FLUID_STEPS as f32
+    }
 }
 
 /// The amount of fluid in a voxel of block `state`, with `partial` the
@@ -413,21 +426,17 @@ impl Neighborhood {
         self.light[Self::index(pos)]
     }
 
-    /// How high the fluid of block `fluid` at `pos` is drawn, in blocks: a
-    /// full block if the same fluid is above it, so a column has no seams,
-    /// and otherwise its amount's [`fluid_step`]. 0 where there's none.
+    /// How high the fluid of block `fluid` at `pos` is drawn (see
+    /// [`fluid_surface`]); 0 where there's none.
     fn fluid_height(&self, content: &Content, fluid: BlockState, pos: IVec3) -> f32 {
         if self.block(pos) != fluid {
             return 0.0;
         }
         let above = pos + IVec3::Y;
         let inside = above.cmple(IVec3::splat(CHUNK_SIZE as i32)).all();
-        if inside && self.block(above) == fluid {
-            return 1.0;
-        }
         let kept = self.partial[Self::index(pos)];
         let amount = fluid_amount(content, fluid, (kept > 0).then_some(kept));
-        fluid_step(amount) as f32 / FLUID_STEPS as f32
+        fluid_surface(amount, inside && self.block(above) == fluid)
     }
 
     /// The faces of the fluid voxel at `pos`, and their backs if it's
@@ -1586,6 +1595,37 @@ mod tests {
         assert!(!band.is_empty());
         let level = fluid_mesh(&[(A, "water", Some(490)), (B, "water", Some(500))]);
         assert_eq!(faces(&level), 2 * 10, "drawn as high: no face between them");
+    }
+
+    /// Meshing reads the fluid amounts from the chunks themselves, across
+    /// a chunk border too: half a block of water against a quarter in the
+    /// next chunk shows its side above the quarter.
+    #[test]
+    fn fluid_heights_come_from_the_chunks_across_borders() {
+        let (here, there) = (IVec3::new(15, 5, 5), IVec3::new(0, 5, 5));
+        let mut middle = Chunk::default();
+        middle.set_at(here, block("water"));
+        middle.set_fluid_at(here, FULL_FLUID / 2);
+        let mut east = Chunk::default();
+        east.set_at(there, block("water"));
+        east.set_fluid_at(there, FULL_FLUID / 4);
+        let light = ChunkLight::default();
+        let meshes = Neighborhood::gather(|offset| match offset {
+            IVec3::ZERO => Some((&middle, &light)),
+            IVec3::X => Some((&east, &light)),
+            _ => None,
+        })
+        .meshes(base());
+        let positions = positions(&meshes.translucent);
+        let top = positions.iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, 5.5);
+        // The side against the east chunk starts a quarter up: only that
+        // band has corners there.
+        let band = positions
+            .iter()
+            .filter(|p| p.x == 16.0 && p.y == 5.25)
+            .count();
+        assert_eq!(band, 4, "front and back, two corners each");
     }
 
     /// Fluid with the same fluid above it is drawn full height, so a falling

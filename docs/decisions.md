@@ -7,31 +7,37 @@ what should replace them. Newest first.
 
 **Context.** Fluid is volumetric: each voxel holds an amount, and flow
 moves amounts between neighbouring voxels (`src/fluid/flow.rs`). Only
-active voxels step, so settled fluid is free, and each fixed tick steps
-at most `FluidSettings::cells_per_tick` (4096) of them, spread evenly
-between a fluid's steps.
+active voxels step, so settled fluid is free. Each fixed tick visits at
+most `FluidSettings::cells_per_tick` (4096) of them, a fluid's step is
+spread evenly over the ticks until its next one, and the step's changes
+are made all at once when it's done.
 
-**Decision.** Keep flow local: a voxel only ever looks at its six
-neighbours. A surface counts as level once neighbours are within the
-fluid's `ripple`.
+**Decision.** Keep flow local: a voxel only ever looks at its neighbours,
+and gives each lower side at most an eighth of the difference between
+them, so levels never swing back and forth. A surface counts as level once
+neighbours are within the fluid's `ripple`.
 
 **What's wrong with it.** Sideways, local flow is diffusion. Measured in
-`scenarios/sea-breach.txt` (a cut 64 long, 31 wide and 12 deep opened
-onto the sea): the sea pours in slowly, its front creeping rather than
+`scenarios/sea-breach.txt` (a cut 64 long, 31 wide and 12 deep opened onto
+the sea): the sea pours in slowly, its front creeping rather than
 rushing, and after 20 seconds the cut is still mostly dry. The sea around
 the breach drops in a shallow cone, sloping by up to a ripple a voxel,
-and that disturbance keeps spreading out across the loaded sea: 1,500
-active voxels after one second, 8,900 after twenty, about 1 µs each. Frame
-times stay in budget (mean 3.6 to 5.4 ms, worst under 9 ms, against 2.5
-to 3 ms with the same cut on `main`, where water doesn't flow), but a
-longer drain wakes more and more of the sea until the budget caps it, and
-then flow slows down. A settled sea costs nothing: flying over one is as
-fast as on `main`.
+and that disturbance keeps spreading out across the loaded sea: 1,000
+active voxels after one second, 3,900 after twenty, under a microsecond
+each. Frame times stay in budget (mean 3.2 to 3.8 ms, worst under 10 ms,
+against 2.5 to 3 ms with the same cut on `main`, where water doesn't
+flow), but a longer drain wakes more and more of the sea until the budget
+caps it, and then flow slows down. A settled sea costs nothing: flying
+over one is as fast as on `main`. Chunks whose fluid changed are remeshed
+on the frame it changes, with no cap of their own; the breach didn't need
+one, but a flood across many chunks at once might.
 
 **What should replace it.** Treat a settled, connected body of a fluid as
 one reservoir with a shared level: water leaving it lowers the whole
 surface evenly, without stepping each voxel. That also makes a dam break
-fast, and it's what pumps drawing from a lake or an oil pool will need.
+fast, and it's what pumps drawing from a lake or an oil pool will need. If
+floods turn out to remesh too much at once, cap the chunks remeshed for
+fluid alone per frame.
 
 ## A fluid's kind is its block; only its amount is stored apart (2026-11-25)
 

@@ -11,7 +11,7 @@
     rate: 10,
     fall: 1,
     film: 0.0625,
-    ripple: 0.005,
+    ripple: 0.008,
     move_speed: 0.5,
     view: { color: "#1d3f73", distance: 14 },
   },

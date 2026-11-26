@@ -864,6 +864,30 @@ mod tests {
         assert_eq!(get(&mut app, pos), Some(block("lamp")));
     }
 
+    /// A change to only the amount of fluid in a voxel marks its chunk
+    /// edited, so it's saved and comes back after unloading.
+    #[test]
+    fn fluid_amounts_survive_unloading() {
+        let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
+        let pos = IVec3::new(3, 50, -5);
+        let coord = ChunkCoord::split(pos).0.0;
+        set(&mut app, pos, block("water"));
+        // Away and back, so the chunk comes back from the save.
+        move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
+        move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
+        assert!(app.world().resource::<Chunks>().loaded[&coord].saved);
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| assert!(voxels.set_fluid(pos, 321)))
+            .unwrap();
+        app.update();
+        move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
+        move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
+        let (coord, local) = ChunkCoord::split(pos);
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        assert_eq!(chunk.partial_at(local), Some(321));
+    }
+
     /// Generated chunks are saved when they unload, edited or not, so the
     /// world stays as it was first generated.
     #[test]

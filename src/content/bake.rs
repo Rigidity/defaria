@@ -20,7 +20,7 @@ use super::{
     State, Texture, TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*,
     state_count,
 };
-use crate::block_texture::Palette;
+use crate::{block_texture::Palette, fluid::flow::SHARE};
 
 /// The kinds of definition, each in its own folder.
 #[derive(Debug, Clone, Copy)]
@@ -1448,7 +1448,7 @@ fn bake_state(
         occludes,
         light,
         render: look.render.unwrap_or_default(),
-        fluid: fluid.clone(),
+        fluid,
         double_sided: def.double_sided,
         hardness,
         weight,
@@ -1481,13 +1481,21 @@ fn bake_fluid(def: &FluidDef) -> Result<Fluid, String> {
             def.view.distance
         ));
     }
+    let ripple = units("ripple", def.ripple)?;
+    if ripple < SHARE {
+        return Err(format!(
+            "fluid `ripple` is {}; it must be at least {}, or nothing would flow",
+            def.ripple,
+            SHARE as f32 / FULL_FLUID as f32
+        ));
+    }
     let color = Srgba::hex(&def.view.color)
         .map_err(|_| format!("`{}` isn't a hex color", def.view.color))?;
     Ok(Fluid {
         rate: def.rate,
         fall: units("fall", def.fall)?.max(1),
         film: units("film", def.film)?,
-        ripple: units("ripple", def.ripple)?.max(1),
+        ripple,
         move_speed: def.move_speed,
         view_color: color.into(),
         view_distance: def.view.distance,
@@ -1885,9 +1893,31 @@ mod tests {
 
     /// A block's `fluid`, for tests that only need it to be a fluid.
     pub(crate) const TEST_FLUID: &str = r##"fluid: {
-        rate: 10, fall: 1, film: 0.06, ripple: 0.005, move_speed: 0.5,
+        rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5,
         view: { color: "#203060", distance: 12 },
     }"##;
+
+    /// A fluid's amounts are turned from blocks into thousandths, and a
+    /// `fall` too small to move anything moves one.
+    #[test]
+    fn fluid_amounts_are_baked_to_thousandths() {
+        let content = content(&[(
+            "blocks/pool.json5",
+            r##"{ model: "quad", textures: { all: "a" }, fluid: {
+                rate: 4, fall: 0.0001, film: 0.25, ripple: 0.05, move_speed: 0.3,
+                view: { color: "#102030", distance: 3 },
+            } }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let state = content.state(content.default_state("test:pool").unwrap());
+        let fluid = state.fluid.as_ref().unwrap();
+        assert_eq!((fluid.fall, fluid.film, fluid.ripple), (1, 250, 50));
+        assert_eq!(
+            (fluid.rate, fluid.move_speed, fluid.view_distance),
+            (4.0, 0.3, 3.0)
+        );
+        assert_eq!(fluid.view_color, Srgba::hex("#102030").unwrap().into());
+    }
 
     /// `render` says how a block's faces are drawn (opaque unless it says
     /// otherwise), and variants replace it. A see-through block lets light
@@ -2752,6 +2782,46 @@ mod tests {
                 "has a slot `al`",
             ),
             ("blocks/defaria:x.json5", "{}", "must be"),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 0, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `rate` is 0; it must be above 0",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1.5, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `fall` is 1.5; it must be from 0 to 1 block",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: -0.1, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `film` is -0.1",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.001, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `ripple` is 0.001; it must be at least 0.008",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 2, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `move_speed` is 2",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 0 } } }"##,
+                "fluid view `distance` is 0",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "blue", distance: 12 } } }"##,
+                "`blue` isn't a hex color",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 }, depth: 3 } }"##,
+                "unknown field `depth`",
+            ),
             (
                 "models/x.json5",
                 r#"{ slots: { a: null }, faces: [{ texture: "a", vertices: [

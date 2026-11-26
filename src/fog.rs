@@ -65,10 +65,16 @@ impl Plugin for FogPlugin {
             // where the camera is this frame.
             (follow_the_drawn_world, apply_fog)
                 .chain()
+                .in_set(FogSystems)
                 .after(TransformSystems::Propagate),
         );
     }
 }
+
+/// Where the fog is put on the cameras, in [`PostUpdate`]. Anything that
+/// changes it, such as the view from inside water, runs after.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FogSystems;
 
 /// How far the fog reaches from the camera at its full size, in blocks: the
 /// cylinder that ends it.
@@ -244,21 +250,32 @@ fn follow_the_drawn_world(
     fog.approach(reach.max(MIN_SCALE), time.delta_secs());
 }
 
-/// The [`DistanceFog`] falloff that carries `fog` to the shader. Bevy
-/// passes the atmospheric falloff's two vectors through unchanged; the
-/// shader reads them as `be` and `bi`.
+/// The [`DistanceFog`] falloff that carries `fog` to the shader.
 pub fn falloff(fog: &ChunkFog) -> FogFalloff {
     let FogShape { sideways, up, down } = fog.shape;
+    cylinder_falloff(Vec3::new(sideways, up, down) * fog.scale, FOG_START)
+}
+
+/// The [`DistanceFog`] falloff for fog that's clear up to `start` blocks
+/// from the camera and thick from `end`, in every direction.
+pub fn falloff_between(start: f32, end: f32) -> FogFalloff {
+    cylinder_falloff(Vec3::splat(end), start / end)
+}
+
+/// The falloff for fog ending at a cylinder `end` blocks out sideways, up
+/// and down, and starting `start` of the way there. Bevy passes the
+/// atmospheric falloff's two vectors to the shader unchanged, where they're
+/// read as `be` and `bi` (see `assets/shaders/voxel.wesl`): this is that
+/// encoding, not Bevy's atmospheric fog.
+fn cylinder_falloff(end: Vec3, start: f32) -> FogFalloff {
     FogFalloff::Atmospheric {
-        // Where the fog ends, sideways, up and down.
-        extinction: Vec3::new(sideways, up, down) * fog.scale,
-        // Where it starts, as a fraction of that.
-        inscattering: Vec3::new(FOG_START, 0.0, 0.0),
+        extinction: end,
+        inscattering: Vec3::new(start, 0.0, 0.0),
     }
 }
 
 /// Puts [`ChunkFog`] on the cameras, in the sky's colour.
-pub fn apply_fog(
+fn apply_fog(
     fog: Res<ChunkFog>,
     sky: Res<ClearColor>,
     mut views: Query<&mut DistanceFog, With<EyeView>>,

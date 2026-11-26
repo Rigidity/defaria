@@ -394,7 +394,8 @@ pub struct Fluid {
     pub fall: u16,
     /// The thinnest layer that spreads onto dry ground.
     pub film: u16,
-    /// The smallest difference that flows between two cells, at least 1.
+    /// The smallest difference that flows between two cells, at least
+    /// [`SHARE`](crate::fluid::flow::SHARE).
     pub ripple: u16,
     /// How fast the player moves in it, as a fraction of walking.
     pub move_speed: f32,

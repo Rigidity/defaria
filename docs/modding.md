@@ -330,10 +330,12 @@ A voxel of a fluid holds an amount of it, from a sliver to a full block,
 and is drawn that high, at one of 16 heights (a full block with the same
 fluid above it). Fluid flows: it only ever moves between voxels, so none
 is made or lost. Each step, a voxel's fluid first falls into the voxel
-below, as much as fits; then, if that's full, it spreads to its four sides
-toward an even level. Fluid only flows into air and into the same fluid:
-two different fluids that touch stop there. Model a fluid as a `"cube"`;
-its faces are cut to its height.
+below, as much as fits; then, if that's full, it spreads to its four
+sides, giving each lower side an eighth of the difference, and half of
+itself over any edge it can run off. Levels only ever move toward each
+other, so a draining pond goes down smoothly. Fluid only flows into air
+and into the same fluid: two different fluids that touch stop there.
+Model a fluid as a `"cube"`; its faces are cut to its height.
 
 `fluid` says how it flows and what it's like to be in, with amounts in
 blocks (1 is a full block):
@@ -349,7 +351,7 @@ blocks (1 is a full block):
     rate: 10,          // flow steps a second
     fall: 1,           // the most that falls into the voxel below in a step
     film: 0.0625,      // the thinnest layer that spreads onto dry ground
-    ripple: 0.005,     // the smallest difference that flows sideways
+    ripple: 0.008,     // the smallest difference that flows sideways
     move_speed: 0.5,   // how fast you move in it, as a fraction of walking
     view: { color: "#1d3f73", distance: 14 }, // the fog with your eyes in it
   },
@@ -363,13 +365,13 @@ blocks (1 is a full block):
   sliver to 1. Under 1, a stream poured off a ledge falls as a thin
   column.
 - **`film`**: fluid thinner than this stays where it is on dry ground
-  (it still runs off an edge). A full block of water with a sixteenth for
-  its film spreads over a dozen or so voxels; lava's quarter keeps it in a
-  thick blob.
+  (it still runs off an edge). Water's sixteenth lets a block of it spread
+  thin over a wide puddle; lava's quarter keeps it in a thick blob.
 - **`ripple`**: two voxels of it closer than this count as level, so
-  nothing flows between them. Small, and surfaces settle flat; bigger,
-  and flow settles sooner, but surfaces can be left sloping by up to
-  this much a voxel.
+  nothing flows between them. At least 0.008, since a voxel gives an
+  eighth of the difference and anything less would move nothing. Small,
+  and surfaces settle flat; bigger, and flow settles sooner, but surfaces
+  can be left sloping by up to this much a voxel.
 - **`move_speed`**: how fast the player walks and swims in it, from 0 to
   1 of walking speed. It also scales swimming up and sinking.
 - **`view`**: the fog's `color` (`#rrggbb`) and how far you can see
