@@ -415,26 +415,23 @@ lit the same way as the world, redrawn when the texture or shader changes.
 animated textures), or for entity or held-item models, which will need a
 3D renderer for items anyway.
 
-## UI hit testing is our own, not `bevy_picking` (2026-11-24)
+## The HUD is kept from picking by a camera marker (2026-11-25)
 
-**Decision.** `src/ui/pointer.rs` finds the node under the cursor itself,
-from each `Hoverable` node's laid-out rectangle, stack order and clipping,
-and triggers its own `Clicked` event, rather than using `bevy_picking`.
+**Decision.** The UI uses `bevy_picking` (`src/ui/pointer.rs`). While no
+screen is open, `UiPickingSettings::require_markers` is turned on, and no
+camera carries `UiPickingCamera`, so the UI backend finds nothing under the
+pointer and the HUD can't be hovered or clicked through a locked cursor.
 
-**What's wrong with it.** It duplicates what Bevy's picking does, without
-its extras (drag, press and release events, touch, several pointers), and
-the stock `bevy_ui_widgets` that rely on picking won't respond to it.
-Bevy's mouse pointer always targets the window, while headless runs draw
-into an image, so picking would never hit anything there, and UI couldn't
-be tested.
+**What's wrong with it.** It leans on a setting meant for something else
+(opting nodes and cameras into picking), so a camera that ever gets
+`UiPickingCamera` would make the HUD clickable while playing.
 
-**What should replace it.** `bevy_picking` with a pointer the headless
-runner drives at the image target (writing `PointerInput` itself and
-turning off the mouse input plugin there), once that's worked out; then
-`Clicked` can become picking's `Pointer<Click>`.
+**What should replace it.** One owner of the cursor (see the next entry)
+that also says whether the UI has the pointer, and a picking input filter
+there: while the game has the mouse, the mouse pointer gets no input at all.
 
-**When to revisit.** When the UI needs dragging (moving stacks), text
-input, or Bevy's widgets.
+**When to revisit.** With the cursor's single owner, or when anything needs
+`UiPickingCamera`.
 
 ## The cursor has two owners (2026-11-24)
 

@@ -32,6 +32,11 @@
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
 //!
+//! The mouse commands (`cursor`, mouse buttons, `scroll`) also drive
+//! `bevy_picking`'s mouse pointer, aimed at the image the frame renders
+//! into (the primary window without rendering), so UI responds to them as
+//! it does to a real mouse: hovering, clicking and dragging nodes.
+//!
 //! Buttons are Bevy [`KeyCode`] names (`KeyW`, `Space`, `ShiftLeft`,
 //! `Escape`, …) or `MouseLeft`, `MouseRight`, `MouseMiddle`. Components are
 //! reflected type names, short (`FlyCamera`, `Transform`) or full
@@ -81,12 +86,17 @@ use std::{
 
 use bevy::{
     app::PluginGroupBuilder,
-    camera::RenderTarget,
+    camera::{NormalizedRenderTarget, RenderTarget},
     input::{
         ButtonState, InputSystems,
         keyboard::{Key, KeyboardInput, NativeKey},
         mouse::{MouseButtonInput, MouseMotion, MouseScrollUnit, MouseWheel},
         touch::TouchPhase,
+    },
+    picking::{
+        PickingSystems,
+        input::PointerInputSettings,
+        pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput},
     },
     prelude::*,
     reflect::enums::{DynamicEnum, DynamicVariant},
@@ -98,7 +108,7 @@ use bevy::{
     },
     shader::ShaderCacheError,
     time::TimeUpdateStrategy,
-    window::{CursorMoved, ExitCondition, PrimaryWindow, WindowResolution},
+    window::{CursorMoved, ExitCondition, PrimaryWindow, WindowRef, WindowResolution},
     winit::WinitPlugin,
 };
 
@@ -175,11 +185,18 @@ impl Plugin for HeadlessPlugin {
                 rendering: self.rendering,
                 ..default()
             })
+            // There's no OS window for Bevy's mouse picking input to read:
+            // the script drives the mouse pointer itself.
+            .insert_resource(PointerInputSettings {
+                is_mouse_enabled: false,
+                ..default()
+            })
             .add_systems(
                 PreUpdate,
                 (run_script, apply_world_commands)
                     .chain()
-                    .before(InputSystems),
+                    .before(InputSystems)
+                    .before(PickingSystems::ProcessInput),
             )
             .add_systems(Last, (record_frame_time, observe, exit_when_done).chain());
         if self.rendering {
@@ -424,6 +441,9 @@ struct ScriptRunner {
     /// [`SETTLE_TIMEOUT_FRAMES`], but tests can wait less.
     settle_timeout: u32,
     rendering: bool,
+    /// Where the `cursor` command last put the pointer, in the frame's
+    /// pixels.
+    cursor: Vec2,
 }
 
 impl ScriptRunner {
@@ -467,8 +487,15 @@ fn render_to_image(add: On<Add<Camera>>, target: Res<HeadlessTarget>, mut comman
 
 /// Runs this frame's commands, up to the next `wait`. Runs before Bevy's input
 /// systems so injected input is seen this frame.
+///
+/// Mouse input goes to picking too, as [`PointerInput`] for the mouse
+/// pointer, aimed at what the cameras draw into: the offscreen image, or
+/// without rendering the primary window. That's what Bevy's own mouse
+/// input does with a real window's events.
 fn run_script(
     mut runner: ResMut<ScriptRunner>,
+    image: Option<Res<HeadlessTarget>>,
+    mut pointer: MessageWriter<PointerInput>,
     status: Option<Res<StreamingStatus>>,
     fog: Option<Res<ChunkFog>>,
     mut window: Option<Single<(Entity, &mut Window), With<PrimaryWindow>>>,
@@ -510,7 +537,14 @@ fn run_script(
     let window_entity = window
         .as_ref()
         .map_or(Entity::PLACEHOLDER, |window| window.0);
+    let target = pointer_target(image.as_deref(), window_entity);
     while let Some(command) = runner.commands.pop_front() {
+        let point = |action, position| {
+            target.clone().map(|target| {
+                let location = Location { target, position };
+                PointerInput::new(PointerId::Mouse, location, action)
+            })
+        };
         match command {
             Command::Wait(frames) => {
                 runner.waiting = frames;
@@ -541,6 +575,19 @@ fn run_script(
                             state,
                             window: window_entity,
                         });
+                        let button = match button {
+                            MouseButton::Right => PointerButton::Secondary,
+                            MouseButton::Middle => PointerButton::Middle,
+                            _ => PointerButton::Primary,
+                        };
+                        let action = if state == ButtonState::Pressed {
+                            PointerAction::Press(button)
+                        } else {
+                            PointerAction::Release(button)
+                        };
+                        if let Some(input) = point(action, runner.cursor) {
+                            pointer.write(input);
+                        }
                     }
                 }
             }
@@ -559,6 +606,11 @@ fn run_script(
                     position,
                     delta: None,
                 });
+                let delta = position - runner.cursor;
+                runner.cursor = position;
+                if let Some(input) = point(PointerAction::Move { delta }, position) {
+                    pointer.write(input);
+                }
             }
             Command::Scroll(lines) => {
                 mouse_wheel.write(MouseWheel {
@@ -568,6 +620,15 @@ fn run_script(
                     window: window_entity,
                     phase: TouchPhase::Moved,
                 });
+                let action = PointerAction::Scroll {
+                    unit: MouseScrollUnit::Line,
+                    x: 0.0,
+                    y: lines,
+                    phase: TouchPhase::Moved,
+                };
+                if let Some(input) = point(action, runner.cursor) {
+                    pointer.write(input);
+                }
             }
             Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
             Command::Grain => runner.captures.push(Capture::Grain),
@@ -582,6 +643,18 @@ fn run_script(
                 break;
             }
         }
+    }
+}
+
+/// What the mouse pointer points at: the image the cameras render into,
+/// or with no renderer the primary window.
+fn pointer_target(
+    image: Option<&HeadlessTarget>,
+    window: Entity,
+) -> Option<NormalizedRenderTarget> {
+    match image {
+        Some(image) => RenderTarget::Image(image.0.clone().into()).normalize(None),
+        None => RenderTarget::Window(WindowRef::Primary).normalize(Some(window)),
     }
 }
 
