@@ -129,9 +129,8 @@ use crate::{
     player::{EYE_HEIGHT, LocalPlayer, Player},
     script::random_tick::RandomTicks,
     streaming::StreamingStatus,
-    terrain::Voxels,
     view_bob::ViewBob,
-    voxel::Chunk,
+    world::{Chunk, Voxels},
 };
 
 /// Fixed time step for every headless frame.
@@ -1539,7 +1538,7 @@ mod tests {
     use crate::{
         fly_camera::FlyCamera,
         light::{ChunkLight, Light},
-        terrain::{ChunkCoord, ChunkMap},
+        world::{ChunkCoord, ChunkMap},
     };
 
     #[test]
@@ -1746,7 +1745,7 @@ mod tests {
         let joined = |world: &mut World, pos: IVec3| {
             let (coord, local) = ChunkCoord::split(pos);
             let entity = world.resource::<ChunkMap>().get(coord).unwrap();
-            let state = world.get::<crate::voxel::Chunk>(entity).unwrap().at(local);
+            let state = world.get::<crate::world::Chunk>(entity).unwrap().at(local);
             Direction::ALL
                 .into_iter()
                 .filter(|&side| content.joined(state, side))

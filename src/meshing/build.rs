@@ -1,0 +1,688 @@
+//! Building a chunk's meshes, one custom mesh per render (opaque, cut-out
+//! and translucent). `light` lights the chunks, and `voxel_material`
+//! draws the meshes.
+//!
+//! Meshing copies each block state's baked model faces into the chunk mesh,
+//! leaving out the faces covered by the neighbour on their `cull` side,
+//! including across chunk borders. It reads a [`Neighborhood`]: a copy of the
+//! chunk's blocks and light plus the one-voxel layer around it from the
+//! neighbouring chunks, so meshing never looks anything up in other chunks.
+//! Greedy meshing is the next step if vertex counts become a problem.
+//!
+//! # Lighting in the mesh
+//!
+//! Each corner of a face gets an ambient occlusion level and a light level
+//! per channel, Minecraft's "smooth lighting":
+//!
+//! - **Ambient occlusion** looks at the three voxels touching the corner in
+//!   the layer in front of the face: the two along its edges and the one
+//!   diagonally across. Each opaque one darkens the corner a step; with both
+//!   edges blocked the corner is fully dark, whatever the diagonal is.
+//! - **Light** is the average of those voxels and the one right in front of
+//!   the face, leaving out opaque ones (they hold no light) and the
+//!   diagonal when both edges are blocked (light can't get through there).
+//!
+//! The shader blends the four corners bilinearly across the face, rather
+//! than letting the GPU interpolate across the quad's two triangles. That
+//! interpolation depends on which way the diagonal runs and shows up as
+//! diagonal bands and creases; bilinear blending is symmetric, so every
+//! arrangement of light and shadow comes out smooth. So every vertex of a
+//! face carries all four corners' values ([`ATTRIBUTE_LIGHT`],
+//! [`ATTRIBUTE_FACE`]) plus where it sits on the face ([`ATTRIBUTE_CORNER`]).
+//!
+//! Faces of blocks that give off light are drawn at full brightness, so
+//! light sources glow.
+
+use bevy::{
+    asset::RenderAssetUsages,
+    mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexFormat},
+    prelude::*,
+};
+
+use crate::{
+    content::{BakedFace, BlockState, Content, Direction, MAX_LIGHT, Render, Vertex},
+    light::{ChunkLight, Light},
+    world::{CHUNK_SIZE, Chunk, FLUID_STEPS, axis_of, fluid_surface},
+};
+
+/// Where a vertex sits on its face, for blending the corners: `(0, 0)` at
+/// the first vertex, `(1, 0)` at the second, `(1, 1)` at the third and
+/// `(0, 1)` at the fourth.
+pub const ATTRIBUTE_CORNER: MeshVertexAttribute =
+    MeshVertexAttribute::new("Corner", 0x0DEF_A41A_0001, VertexFormat::Float32x2);
+/// The light at each of the face's four corners, in the order of
+/// [`ATTRIBUTE_CORNER`]: sky, red, green and blue, one byte each from the
+/// lowest, where 255 is [`MAX_LIGHT`]. The same on every vertex of a face.
+pub const ATTRIBUTE_LIGHT: MeshVertexAttribute =
+    MeshVertexAttribute::new("Light", 0x0DEF_A41A_0002, VertexFormat::Uint32x4);
+/// The face's layer in the block texture array (with [`BACK_FACE`] set on
+/// a double-sided block's back faces), then its four corners' ambient
+/// occlusion, one byte each from the lowest: 3 is open, 0 is fully
+/// occluded. The same on every vertex of a face.
+pub const ATTRIBUTE_FACE: MeshVertexAttribute =
+    MeshVertexAttribute::new("Face", 0x0DEF_A41A_0003, VertexFormat::Uint32x2);
+
+/// Set in [`ATTRIBUTE_FACE`]'s layer on a back face, which the shader
+/// draws a hair farther away than it is. Must match `BACK_FACE` in the
+/// shader.
+pub const BACK_FACE: u32 = 1 << 31;
+
+/// What lies outside every loaded chunk, as the mesh sees it: open air in
+/// full sky light, so faces at the edge of the world are lit.
+const OPEN_SKY: Light = Light::new(MAX_LIGHT, [0; 3]);
+
+/// `high` up the block, with its texture cut off rather than squashed: a
+/// vertex keeps the texture coordinate it had at its new height, along the
+/// face's vertical edge.
+fn cut_face(face: &BakedFace, low: f32, high: f32) -> BakedFace {
+    let vertices = face
+        .vertices
+        .iter()
+        .map(|vertex| {
+            let y = low + vertex.pos.y * (high - low);
+            let partner = face
+                .vertices
+                .iter()
+                .find(|other| other.pos.xz() == vertex.pos.xz() && other.pos.y != vertex.pos.y);
+            let uv = partner.map_or(vertex.uv, |other| {
+                let along = (y - vertex.pos.y) / (other.pos.y - vertex.pos.y);
+                vertex.uv.lerp(other.uv, along)
+            });
+            Vertex {
+                pos: vertex.pos.with_y(y),
+                uv,
+            }
+        })
+        .collect();
+    BakedFace {
+        vertices,
+        ..face.clone()
+    }
+}
+
+/// Voxels along each axis of a [`Neighborhood`].
+const PADDED: usize = CHUNK_SIZE + 2;
+
+/// A chunk's blocks, fluid and light and the layer of voxels around it,
+/// copied out for meshing. Positions are chunk-local, from -1 to
+/// [`CHUNK_SIZE`].
+#[derive(Debug, Clone)]
+pub(super) struct Neighborhood {
+    blocks: Vec<BlockState>,
+    light: Vec<Light>,
+    /// The height each voxel's fluid is drawn at (see
+    /// [`Chunk::fluid_step_at`]), for the voxels that are fluid.
+    steps: Vec<u16>,
+}
+
+impl Neighborhood {
+    /// Copies the chunk at offset zero from `chunk` and the edges of the
+    /// chunks around it, by their offset (each coordinate -1, 0 or 1). A
+    /// chunk that isn't there reads as open sky.
+    pub fn gather<'a>(chunk: impl Fn(IVec3) -> Option<(&'a Chunk, &'a ChunkLight)>) -> Self {
+        let chunks: [_; 27] = std::array::from_fn(|i| {
+            let i = i as i32;
+            chunk(IVec3::new(i % 3, i / 3 % 3, i / 9) - IVec3::ONE)
+        });
+        let size = IVec3::splat(CHUNK_SIZE as i32);
+        Self::with_steps(|pos| {
+            let offset = pos.div_euclid(size) + IVec3::ONE;
+            match chunks[(offset.x + offset.y * 3 + offset.z * 9) as usize] {
+                Some((chunk, light)) => {
+                    let local = pos.rem_euclid(size);
+                    (chunk.at(local), light.at(local), chunk.fluid_step_at(local))
+                }
+                None => (BlockState::AIR, OPEN_SKY, FLUID_STEPS),
+            }
+        })
+    }
+
+    /// Fills every position from `voxel`, with any fluid full.
+    #[cfg(test)]
+    pub fn from_fn(voxel: impl Fn(IVec3) -> (BlockState, Light)) -> Self {
+        Self::with_fluid(|pos| {
+            let (block, light) = voxel(pos);
+            (block, light, None)
+        })
+    }
+
+    /// Fills every position from `voxel`: its block, light and the amount
+    /// of fluid kept for it (see [`Chunk::partial_at`]), drawn at the
+    /// amount's own height.
+    #[cfg(test)]
+    pub fn with_fluid(voxel: impl Fn(IVec3) -> (BlockState, Light, Option<u16>)) -> Self {
+        Self::with_steps(|pos| {
+            let (block, light, kept) = voxel(pos);
+            (
+                block,
+                light,
+                kept.map_or(FLUID_STEPS, crate::world::fluid_step),
+            )
+        })
+    }
+
+    /// Fills every position from `voxel`: its block, light and the height
+    /// its fluid is drawn at.
+    fn with_steps(voxel: impl Fn(IVec3) -> (BlockState, Light, u16)) -> Self {
+        let mut blocks = Vec::with_capacity(PADDED.pow(3));
+        let mut light = Vec::with_capacity(PADDED.pow(3));
+        let mut steps = Vec::with_capacity(PADDED.pow(3));
+        let range = -1..=CHUNK_SIZE as i32;
+        for y in range.clone() {
+            for z in range.clone() {
+                for x in range.clone() {
+                    let (block, level, step) = voxel(IVec3::new(x, y, z));
+                    blocks.push(block);
+                    light.push(level);
+                    steps.push(step);
+                }
+            }
+        }
+        Self {
+            blocks,
+            light,
+            steps,
+        }
+    }
+
+    fn index(pos: IVec3) -> usize {
+        let p = (pos + IVec3::ONE).as_uvec3();
+        debug_assert!(
+            p.cmplt(UVec3::splat(PADDED as u32)).all(),
+            "{pos} is outside"
+        );
+        ((p.y as usize * PADDED) + p.z as usize) * PADDED + p.x as usize
+    }
+
+    pub fn block(&self, pos: IVec3) -> BlockState {
+        self.blocks[Self::index(pos)]
+    }
+
+    pub fn light(&self, pos: IVec3) -> Light {
+        self.light[Self::index(pos)]
+    }
+
+    /// How high the fluid of block `fluid` at `pos` is drawn (see
+    /// [`fluid_surface`]); 0 where there's none.
+    fn fluid_height(&self, fluid: BlockState, pos: IVec3) -> f32 {
+        if self.block(pos) != fluid {
+            return 0.0;
+        }
+        let above = pos + IVec3::Y;
+        let inside = above.cmple(IVec3::splat(CHUNK_SIZE as i32)).all();
+        let step = self.steps[Self::index(pos)];
+        fluid_surface(step, inside && self.block(above) == fluid)
+    }
+
+    /// The faces of the fluid voxel at `pos`, and their backs if it's
+    /// double-sided, cut to the height it's drawn at:
+    ///
+    /// - its top at its height, unless the same fluid is above it; below a
+    ///   full block, the top is hidden as any face is ([`Content::hides`]);
+    /// - each side from the height of the same fluid next to it (none if
+    ///   that's as high), or from the bottom against anything else, which
+    ///   hides it as usual;
+    /// - its bottom, unless the same fluid is below it.
+    fn fluid_faces(
+        &self,
+        content: &Content,
+        pos: IVec3,
+        builder: &mut MeshBuilder,
+        opaque: &impl Fn(IVec3) -> bool,
+    ) {
+        let voxel = self.block(pos);
+        let state = content.state(voxel);
+        let height = self.fluid_height(voxel, pos);
+        for face in &state.faces {
+            let Some(side) = face.cull else {
+                continue;
+            };
+            let next = pos + side.normal();
+            let neighbour = self.block(next);
+            let same = neighbour == voxel;
+            let low = match side {
+                Direction::Up | Direction::Down if same => continue,
+                Direction::Up if height < 1.0 => None,
+                Direction::Up | Direction::Down => Some(0.0),
+                _ if same => {
+                    let low = self.fluid_height(voxel, next);
+                    if low >= height {
+                        continue;
+                    }
+                    Some(low)
+                }
+                _ => Some(0.0),
+            };
+            let face = match low {
+                // A lowered top lies inside the voxel, so it's shaded from
+                // the voxel itself, and nothing beside it can hide it.
+                None => BakedFace {
+                    cull: None,
+                    ..cut_face(face, 0.0, height)
+                },
+                Some(low) => {
+                    if !same && content.hides(voxel, neighbour, side) {
+                        continue;
+                    }
+                    cut_face(face, low, height)
+                }
+            };
+            let shading = self.shade_face(pos, &face, state.emits_light(), opaque);
+            builder.push(pos.as_vec3(), &face, &shading, false);
+            if state.double_sided {
+                builder.push(pos.as_vec3(), &face, &shading, true);
+            }
+        }
+    }
+
+    /// Builds the meshes of every voxel's model faces in the middle chunk,
+    /// one per way faces are drawn (see [`Render`]), leaving out each face
+    /// its neighbour on its `cull` side hides (see [`Content::hides`]),
+    /// with ambient occlusion and light at every corner.
+    pub fn meshes(&self, content: &Content) -> ChunkMeshes {
+        let opaque: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|&block| content.state(block).is_opaque())
+            .collect();
+        let opaque_at = |pos: IVec3| opaque[Self::index(pos)];
+
+        let mut builders: [MeshBuilder; 3] = Default::default();
+        // Only translucent faces are sorted.
+        builders[Render::Translucent as usize].sorted = true;
+        for (x, y, z) in Chunk::positions() {
+            let pos = IVec3::new(x as i32, y as i32, z as i32);
+            let voxel = self.block(pos);
+            if voxel.is_air() {
+                continue;
+            }
+            let state = content.state(voxel);
+            let glows = state.emits_light();
+            let builder = &mut builders[state.render as usize];
+            if state.is_fluid() {
+                self.fluid_faces(content, pos, builder, &opaque_at);
+                continue;
+            }
+            for face in &state.faces {
+                if face
+                    .hidden_by(|side| content.hides(voxel, self.block(pos + side.normal()), side))
+                {
+                    continue;
+                }
+                let shading = self.shade_face(pos, face, glows, &opaque_at);
+                builder.push(pos.as_vec3(), face, &shading, false);
+                if state.double_sided {
+                    builder.push(pos.as_vec3(), face, &shading, true);
+                }
+            }
+        }
+        let [opaque, cutout, mut translucent] = builders;
+        let faces = TranslucentFaces::new(std::mem::take(&mut translucent.sort_faces));
+        ChunkMeshes {
+            opaque: opaque.build(),
+            cutout: cutout.build(),
+            translucent: translucent.build(),
+            translucent_faces: faces,
+        }
+    }
+
+    /// The opaque mesh alone, for tests of meshes with nothing see-through.
+    #[cfg(test)]
+    pub fn mesh(&self, content: &Content) -> Mesh {
+        self.meshes(content).opaque
+    }
+
+    /// The light and ambient occlusion at a face's corners, packed for the
+    /// vertex attributes.
+    fn shade_face(
+        &self,
+        pos: IVec3,
+        face: &BakedFace,
+        glows: bool,
+        opaque: &impl Fn(IVec3) -> bool,
+    ) -> FaceShading {
+        let mut corners = [CornerShading::default(); 4];
+        let normal = face.normal.as_ivec3();
+        let axis_aligned = normal.abs().element_sum() == 1 && normal.as_vec3() == face.normal;
+        // A face on the block's boundary sees the voxel it faces; one inside
+        // the block (no `cull`) sees the block's own voxel.
+        let front = if face.cull.is_some() {
+            pos + normal
+        } else {
+            pos
+        };
+        for (i, vertex) in face.vertices.iter().enumerate() {
+            let corner = if face.vertices.len() == 3 && i == 2 {
+                3
+            } else {
+                i
+            };
+            corners[corner] = if axis_aligned {
+                self.shade_corner(front, normal, vertex.pos, opaque)
+            } else {
+                CornerShading::from_light(self.light(pos), 1, OPEN)
+            };
+        }
+        if face.vertices.len() == 3 {
+            // Extend the triangle's blend to the made-up corner, so it stays
+            // flat (affine) over the triangle.
+            corners[2] = corners[1].extend(corners[3], corners[0]);
+        }
+        if glows {
+            for corner in &mut corners {
+                corner.light[1..].fill(u8::MAX);
+                corner.occlusion = OPEN;
+            }
+        }
+        FaceShading {
+            light: corners.map(|c| u32::from_le_bytes(c.light)),
+            occlusion: u32::from_le_bytes(corners.map(|c| c.occlusion)),
+        }
+    }
+
+    /// The light and ambient occlusion at one corner of a face whose front
+    /// layer is at `front` (the voxel right in front of it), facing along
+    /// the axis-aligned `normal`. `vertex` is the corner's position in its
+    /// block.
+    fn shade_corner(
+        &self,
+        front: IVec3,
+        normal: IVec3,
+        vertex: Vec3,
+        opaque: &impl Fn(IVec3) -> bool,
+    ) -> CornerShading {
+        let axis = axis_of(normal);
+        // Toward the corner along each of the face's two directions.
+        let toward = |along: usize| {
+            let mut step = IVec3::ZERO;
+            step[along] = if vertex[along] < 0.5 { -1 } else { 1 };
+            step
+        };
+        let (a, b) = (toward((axis + 1) % 3), toward((axis + 2) % 3));
+        let (side_a, side_b, diagonal) = (front + a, front + b, front + a + b);
+        let (blocked_a, blocked_b) = (opaque(side_a), opaque(side_b));
+        let blocked_diagonal = opaque(diagonal);
+        let occlusion = if blocked_a && blocked_b {
+            0
+        } else {
+            OPEN - blocked_a as u8 - blocked_b as u8 - blocked_diagonal as u8
+        };
+        let lit = [
+            (front, !opaque(front)),
+            (side_a, !blocked_a),
+            (side_b, !blocked_b),
+            (diagonal, !blocked_diagonal && !(blocked_a && blocked_b)),
+        ];
+        let mut sum = [0u32; 4];
+        let mut count = 0;
+        for (voxel, _) in lit.iter().filter(|(_, open)| *open) {
+            let light = self.light(*voxel);
+            for (channel, total) in sum.iter_mut().enumerate() {
+                *total += light.get(channel) as u32;
+            }
+            count += 1;
+        }
+        if count == 0 {
+            // Every voxel around the corner is opaque: use the one in front.
+            return CornerShading::from_light(self.light(front), 1, occlusion);
+        }
+        CornerShading::from_sum(sum, count, occlusion)
+    }
+}
+
+/// A chunk's meshes, one per [`Render`]. A mesh with no vertices has
+/// nothing to draw.
+pub(super) struct ChunkMeshes {
+    pub opaque: Mesh,
+    pub cutout: Mesh,
+    /// Its faces are in no particular order until sorted with
+    /// `translucent_faces`.
+    pub translucent: Mesh,
+    pub translucent_faces: TranslucentFaces,
+}
+
+#[cfg(test)]
+impl ChunkMeshes {
+    /// The mesh drawn the way `render` says.
+    pub fn get(&self, render: Render) -> &Mesh {
+        match render {
+            Render::Opaque => &self.opaque,
+            Render::Cutout => &self.cutout,
+            Render::Translucent => &self.translucent,
+        }
+    }
+}
+
+/// A translucent mesh's faces, for drawing them back to front: blended
+/// faces only look right drawn over everything behind them.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub(super) struct TranslucentFaces {
+    faces: Vec<SortFace>,
+    /// Whether the order can matter: false when every face lies in one
+    /// plane (open water's surface, front and back), where no face is ever
+    /// behind another.
+    needs_sorting: bool,
+}
+
+/// One face of a translucent mesh.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SortFace {
+    /// The middle of the face, chunk-local.
+    center: Vec3,
+    /// Where it sorts from: its middle, or a back's a little inside its
+    /// block.
+    sort_at: Vec3,
+    /// Its plane's normal, either way round (pointing toward +X, or +Y,
+    /// or +Z, whichever it has first), so a face and its back match.
+    normal: Vec3,
+    /// Its first vertex in the mesh.
+    first: u32,
+    /// Its triangles, from its first vertex.
+    indices: &'static [u32],
+}
+
+impl TranslucentFaces {
+    fn new(faces: Vec<SortFace>) -> Self {
+        let plane = |face: &SortFace| (face.normal, face.normal.dot(face.center));
+        let needs_sorting = faces.first().is_some_and(|first| {
+            let (normal, offset) = plane(first);
+            faces.iter().any(|face| {
+                let (n, d) = plane(face);
+                n.distance(normal) > 1e-4 || (d - offset).abs() > 1e-4
+            })
+        });
+        Self {
+            // Open water would keep hundreds of faces it never sorts.
+            faces: if needs_sorting { faces } else { Vec::new() },
+            needs_sorting,
+        }
+    }
+
+    /// Whether the faces' order can matter: see `needs_sorting`.
+    pub fn needs_sorting(&self) -> bool {
+        self.needs_sorting
+    }
+
+    /// The mesh's indices with its faces ordered farthest first from
+    /// `eye`, chunk-local.
+    pub fn indices_from(&self, eye: Vec3) -> Vec<u32> {
+        let mut order: Vec<(f32, &SortFace)> = self
+            .faces
+            .iter()
+            .map(|face| (face.sort_at.distance_squared(eye), face))
+            .collect();
+        order.sort_by(|a, b| b.0.total_cmp(&a.0));
+        order
+            .into_iter()
+            .flat_map(|(_, face)| face.indices.iter().map(move |i| face.first + i))
+            .collect()
+    }
+}
+
+/// `normal` or its opposite, whichever points toward +X, or failing that
+/// +Y, or failing that +Z.
+fn either_way(normal: Vec3) -> Vec3 {
+    let first = [normal.x, normal.y, normal.z]
+        .into_iter()
+        .find(|c| c.abs() > 1e-6)
+        .unwrap_or(1.0);
+    normal * first.signum()
+}
+
+/// The vertex data of one chunk mesh, as it's built.
+#[derive(Default)]
+struct MeshBuilder {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    corners: Vec<[f32; 2]>,
+    lights: Vec<[u32; 4]>,
+    faces: Vec<[u32; 2]>,
+    indices: Vec<u32>,
+    /// Whether to record `sort_faces`, for a translucent mesh.
+    sorted: bool,
+    sort_faces: Vec<SortFace>,
+}
+
+impl MeshBuilder {
+    /// Adds a face of the block at `origin`, or its back: the same face
+    /// facing the other way, with the front's light and shading, flagged
+    /// with [`BACK_FACE`] so the shader draws it a hair farther away. A
+    /// neighbour's face in the same plane (a slab's side beside water or
+    /// lava) then wins the depth test, where they'd flicker otherwise.
+    fn push(&mut self, origin: Vec3, face: &BakedFace, shading: &FaceShading, back: bool) {
+        let base = self.positions.len() as u32;
+        let count = face.vertices.len();
+        let triangle = count == 3;
+        let (normal, light, occlusion, layer) = if back {
+            let (light, occlusion) = (shading.back_light(), shading.back_occlusion());
+            (-face.normal, light, occlusion, face.layer | BACK_FACE)
+        } else {
+            (face.normal, shading.light, shading.occlusion, face.layer)
+        };
+        let mut center = Vec3::ZERO;
+        for i in 0..count {
+            // The back runs the other way round: the first vertex, then the
+            // rest in reverse, which swaps the second and fourth corners.
+            let vertex = &face.vertices[if back && i > 0 { count - i } else { i }];
+            let pos = origin + vertex.pos;
+            center += pos;
+            self.positions.push(pos.to_array());
+            self.normals.push(normal.to_array());
+            self.uvs.push(vertex.uv.to_array());
+            // A triangle's third vertex is the fourth corner; the third is
+            // made up so the blend is flat across it.
+            let corner = if triangle && i == 2 { 3 } else { i };
+            self.corners.push(CORNERS[corner]);
+            self.lights.push(light);
+            self.faces.push([layer, occlusion]);
+        }
+        self.indices.extend(face.indices().iter().map(|i| base + i));
+        if self.sorted {
+            let center = center / count as f32;
+            self.sort_faces.push(SortFace {
+                center,
+                // A back sorts as if a little inside its block, nearer than
+                // a neighbour's face in its plane, as the block's inside is
+                // to someone in it: water blends over the glass it touches.
+                sort_at: if back {
+                    center - face.normal * BACK_SORT_DEPTH
+                } else {
+                    center
+                },
+                normal: either_way(face.normal),
+                first: base,
+                indices: face.indices(),
+            });
+        }
+    }
+
+    fn build(self) -> Mesh {
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs)
+        .with_inserted_attribute(ATTRIBUTE_CORNER, self.corners)
+        .with_inserted_attribute(ATTRIBUTE_LIGHT, self.lights)
+        .with_inserted_attribute(ATTRIBUTE_FACE, self.faces)
+        .with_inserted_indices(Indices::U32(self.indices))
+    }
+}
+
+/// How far into its block a back face sorts from, in blocks (see
+/// [`MeshBuilder::push`]).
+const BACK_SORT_DEPTH: f32 = 0.01;
+
+/// [`ATTRIBUTE_CORNER`] for each corner.
+const CORNERS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+/// The ambient occlusion level of a corner with nothing around it.
+const OPEN: u8 = 3;
+/// A light level's step in the packed bytes: [`MAX_LIGHT`] packs to 255.
+const LEVEL_STEP: f32 = u8::MAX as f32 / MAX_LIGHT as f32;
+
+/// One face's [`ATTRIBUTE_LIGHT`] and the occlusion half of its
+/// [`ATTRIBUTE_FACE`].
+struct FaceShading {
+    light: [u32; 4],
+    occlusion: u32,
+}
+
+impl FaceShading {
+    /// The light for the face's back, whose second and fourth corners are
+    /// swapped (see [`MeshBuilder::push`]). The made-up third corner of a
+    /// triangle is the same either way round.
+    fn back_light(&self) -> [u32; 4] {
+        let [a, b, c, d] = self.light;
+        [a, d, c, b]
+    }
+
+    fn back_occlusion(&self) -> u32 {
+        let [a, b, c, d] = self.occlusion.to_le_bytes();
+        u32::from_le_bytes([a, d, c, b])
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct CornerShading {
+    /// Sky, red, green and blue, 255 at [`MAX_LIGHT`].
+    light: [u8; 4],
+    occlusion: u8,
+}
+
+impl CornerShading {
+    fn from_light(light: Light, count: u32, occlusion: u8) -> Self {
+        Self::from_sum(
+            std::array::from_fn(|channel| light.get(channel) as u32),
+            count,
+            occlusion,
+        )
+    }
+
+    /// The average of `count` voxels' light, from each channel's total.
+    fn from_sum(sum: [u32; 4], count: u32, occlusion: u8) -> Self {
+        Self {
+            light: sum.map(|total| (total as f32 / count as f32 * LEVEL_STEP).round() as u8),
+            occlusion,
+        }
+    }
+
+    /// `self + other - opposite`, clamped: the fourth corner of a
+    /// parallelogram.
+    fn extend(self, other: Self, opposite: Self) -> Self {
+        let extend = |a: u8, b: u8, c: u8, max: u8| {
+            (a as i32 + b as i32 - c as i32).clamp(0, max as i32) as u8
+        };
+        Self {
+            light: std::array::from_fn(|i| {
+                extend(self.light[i], other.light[i], opposite.light[i], u8::MAX)
+            }),
+            occlusion: extend(self.occlusion, other.occlusion, opposite.occlusion, OPEN),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

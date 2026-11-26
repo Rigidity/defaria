@@ -39,8 +39,7 @@ use super::{NetworkId, NetworkSystems, Networks};
 use crate::{
     content::{BlockState, Content, Solver},
     machine::{EnergyBuffer, MachineActive, MachinePorts},
-    terrain::{ChunkCoord, ChunkMap},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap},
 };
 
 /// Network ticks a second: the energy solver's rate. Fluid and item

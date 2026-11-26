@@ -593,7 +593,7 @@ pub(crate) mod tests {
     use bevy::platform::collections::HashMap;
 
     use super::*;
-    use crate::voxel::fluid_step;
+    use crate::world::fluid_step;
 
     pub(crate) const WATER: BlockState = BlockState(1);
     const LAVA: BlockState = BlockState(2);

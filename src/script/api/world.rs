@@ -27,7 +27,7 @@ use crate::{
     machine::{EnergyBuffer, MachineActive, Ports, Slots, Tanks},
     network::{Networks, energy::EnergyReport},
     script::{CallError, Caller, ScriptRuntime},
-    terrain::{ChunkCoord, ChunkMap, Voxels},
+    world::{ChunkCoord, ChunkMap, Voxels},
 };
 
 /// The running call's world function, as app data: looked up on every
@@ -159,8 +159,8 @@ pub(super) type MachineParts = (
 
 /// The world as hooks see it: blocks to read and change through
 /// [`Voxels`] (so every change is an ordinary edit, with its
-/// [`VoxelChanged`](crate::terrain::VoxelChanged) or
-/// [`PropertiesUpdated`](crate::terrain::PropertiesUpdated)), the content,
+/// [`VoxelChanged`](crate::world::VoxelChanged) or
+/// [`PropertiesUpdated`](crate::world::PropertiesUpdated)), the content,
 /// the [`BlockData`] of block entities, a scripted block's `data`, and
 /// the light. A machine's hooks also reach its own energy buffer, tanks
 /// and slots, through the same methods the engine's solvers use.

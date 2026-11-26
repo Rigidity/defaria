@@ -59,11 +59,11 @@ use crate::{
     },
     player::LocalPlayer,
     recipe::{RecipeProgress, RecipeStatus},
-    terrain::Voxels,
     ui::{
         Bar, ItemSlot, PointerTravel, Tooltip, UiScreen, UiTheme, bar, item_slot,
         scroll::Scrollable, scroll_panel, typing,
     },
+    world::Voxels,
 };
 
 /// Space between the panel and the hotbar, in logical pixels.

@@ -27,9 +27,9 @@ use crate::{
     block_edit::BlockEditSystems,
     block_entity::{BlockEntities, BlockEntity, BlockEntityPart, Value},
     content::{BlockState, Content, Direction},
+    meshing::RemeshChunks,
     mining::MiningSystems,
-    terrain::{ChunkCoord, ChunkMap, PropertiesUpdated, RemeshChunks, VoxelChanged, Voxels},
-    voxel::{CHUNK_SIZE, Chunk},
+    world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged, Voxels},
 };
 
 pub struct ConnectionsPlugin;
@@ -305,7 +305,7 @@ mod tests {
     use super::*;
     use crate::{
         content::{BlockState, base, block},
-        terrain::{FluidChanged, PropertiesUpdated, VoxelChanged},
+        world::{FluidChanged, PropertiesUpdated, VoxelChanged},
     };
 
     /// Connections on their own, over chunks spawned by hand.

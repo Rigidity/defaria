@@ -1219,7 +1219,7 @@ them, so they must be drawn back to front.
 
 **Decision.** Each chunk's translucent faces are one mesh on a child
 entity, which Bevy sorts against other meshes by its centre. Inside it,
-`sort_translucent_faces` (`src/terrain.rs`) orders the faces farthest
+`sort_translucent_faces` (`src/meshing.rs`) orders the faces farthest
 first from the camera by their centres, rewriting the index buffer when
 the camera has moved a block (near chunks) or a chunk (far ones).
 
@@ -1444,7 +1444,7 @@ shading the ground start to matter, or when worlds get an atmosphere top.
 **Context.** The ground's height in each column comes from
 continentalness, erosion and ridged peaks noise, each mapped through a
 spline as Minecraft's terrain is, with the old rolling hills on top
-(`src/terrain/shape.rs`). The land near the origin is kept to the old hills.
+(`src/worldgen/shape.rs`). The land near the origin is kept to the old hills.
 
 **Decision.** Keep it a heightmap: one height per column, stone below,
 air above.

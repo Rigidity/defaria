@@ -41,8 +41,7 @@ use bevy::{
 use super::{CHANNELS, ChunkLight, Light, MAX_LIGHT, SKY, sky::OutsideSky};
 use crate::{
     content::{BlockState, Content, Direction},
-    terrain::ChunkCoord,
-    voxel::{CHUNK_SIZE, CHUNK_VOLUME, Chunk, axis_of, touching_offsets},
+    world::{CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCoord, axis_of, touching_offsets},
 };
 
 /// Access to the loaded chunks, one at a time.

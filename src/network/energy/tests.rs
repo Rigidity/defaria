@@ -13,7 +13,7 @@ use crate::{
     content::{base, block},
     machine::MachinePlugin,
     network::NetworkPlugin,
-    terrain::{FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
+    world::{FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
 };
 
 fn producer(offer: u64) -> Member {

@@ -35,7 +35,7 @@
 //! the chunks around it, except that sky light falls straight down through
 //! any number of open chunks.
 //!
-//! Chunk meshes bake the light into their vertices (see `voxel`), so a chunk
+//! Chunk meshes bake the light into their vertices (see `meshing`), so a chunk
 //! is remeshed when its light, or the light just across its border,
 //! changes. Its `ChunkLight` is marked changed for that.
 //!
@@ -53,10 +53,10 @@ use bevy::{platform::collections::HashSet, prelude::*};
 pub use crate::content::MAX_LIGHT;
 use crate::{
     content::Content,
-    terrain::{
-        ChunkCoord, ChunkMap, PropertiesUpdated, RemeshChunks, VoxelChanged, remesh_changed_chunks,
+    meshing::{RemeshChunks, remesh_changed_chunks},
+    world::{
+        CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged,
     },
-    voxel::{CHUNK_SIZE, CHUNK_VOLUME, Chunk},
 };
 pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
 use sky::Sky;
@@ -295,12 +295,11 @@ mod tests {
     use super::*;
     use crate::{
         content::{BlockState, base, block},
-        terrain::{
-            TerrainPlugin, Voxels,
-            testing::{finish_meshing, spawn_patch},
-        },
-        voxel::CHUNK_SIZE,
+        meshing::MeshingPlugin,
+        meshing::testing::finish_meshing,
         voxel_material::BlockMaterial,
+        world::{CHUNK_SIZE, Voxels, WorldPlugin},
+        worldgen::testing::spawn_patch,
     };
     use bevy::ecs::system::RunSystemOnce;
 
@@ -309,7 +308,12 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(base().clone())
-            .add_plugins((AssetPlugin::default(), TerrainPlugin, LightPlugin))
+            .add_plugins((
+                AssetPlugin::default(),
+                WorldPlugin,
+                MeshingPlugin,
+                LightPlugin,
+            ))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()));
         spawn_patch(app.world_mut());
@@ -395,7 +399,12 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(content.clone())
-            .add_plugins((AssetPlugin::default(), TerrainPlugin, LightPlugin))
+            .add_plugins((
+                AssetPlugin::default(),
+                WorldPlugin,
+                MeshingPlugin,
+                LightPlugin,
+            ))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()));
         spawn_patch(app.world_mut());

@@ -16,7 +16,7 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use crate::{
     block_entity::{BlockEntityData, SavedPart, read_text, read_value, write_text, write_value},
     content::{BlockState, Content, FULL_FLUID},
-    voxel::{CHUNK_VOLUME, Chunk},
+    world::{CHUNK_VOLUME, Chunk},
 };
 
 /// The chunk format this build writes.

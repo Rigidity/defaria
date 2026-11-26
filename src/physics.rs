@@ -39,8 +39,7 @@ use bevy::{ecs::system::SystemParam, math::DVec3, prelude::*};
 
 use crate::{
     content::{BlockBox, Content},
-    terrain::{ChunkCoord, ChunkMap},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap},
 };
 
 /// Physics steps per second.

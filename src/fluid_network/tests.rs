@@ -10,14 +10,15 @@ use crate::{
     fluid::FluidPlugin,
     light::LightPlugin,
     machine::{MachinePlugin, Tank, Tanks},
+    meshing::MeshingPlugin,
     network::{
         NetworkChanged, NetworkId, NetworkMap, NetworkPlugin, NetworkState, Networks, Share,
         energy::{EnergyClock, EnergyPlugin, TICKS_PER_SECOND},
     },
     save::{WorldFolder, tests::temp_folder},
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    terrain::{TerrainPlugin, Voxels},
     voxel_material::BlockMaterial,
+    world::{Voxels, WorldPlugin},
 };
 
 const WATER: &str = "defaria:water";
@@ -223,7 +224,8 @@ fn app_with(content: Content, folder: Option<&Path>) -> App {
             50,
         )))
         .add_plugins((
-            TerrainPlugin,
+            WorldPlugin,
+            MeshingPlugin,
             LightPlugin,
             StreamingPlugin,
             BlockEntityPlugin,
@@ -329,7 +331,7 @@ fn totals(app: &mut App) -> (u64, u64, u64) {
                     for z in -12..=12 {
                         let pos = IVec3::new(x, y, z);
                         if let Some((state, partial)) = voxels.get_with_fluid(pos) {
-                            total += crate::voxel::fluid_amount(&content, state, partial) as u64;
+                            total += crate::world::fluid_amount(&content, state, partial) as u64;
                         }
                     }
                 }
@@ -481,7 +483,7 @@ fn an_outlet_pours_a_tank_into_a_pit() {
                 for z in 1..=3 {
                     for y in Y - 1..=Y {
                         let (state, partial) = voxels.get_with_fluid(IVec3::new(x, y, z)).unwrap();
-                        total += crate::voxel::fluid_amount(&content, state, partial) as u64;
+                        total += crate::world::fluid_amount(&content, state, partial) as u64;
                     }
                 }
             }
@@ -962,8 +964,8 @@ fn pipes_keep_their_fluid_when_the_game_exits_as_chunks_unload() {
             app.world().resource::<Networks>().at(line(10)).is_some()
                 && !app
                     .world()
-                    .resource::<crate::terrain::ChunkMap>()
-                    .get(crate::terrain::ChunkCoord(IVec3::new(1, 3, 1)))
+                    .resource::<crate::world::ChunkMap>()
+                    .get(crate::world::ChunkCoord(IVec3::new(1, 3, 1)))
                     .is_some(),
             "the east chunk unloaded, the west one didn't"
         );
@@ -1009,17 +1011,17 @@ fn a_network_waits_while_its_chunk_unloads() {
     step(&mut app);
     assert_ne!(held(&mut app), before, "it runs while it's whole");
     // The west chunk is gone from the map, as unloading does.
-    let west = crate::terrain::ChunkCoord(IVec3::new(-1, 3, 0));
+    let west = crate::world::ChunkCoord(IVec3::new(-1, 3, 0));
     let entity = app
         .world_mut()
-        .resource_mut::<crate::terrain::ChunkMap>()
+        .resource_mut::<crate::world::ChunkMap>()
         .remove(west)
         .unwrap();
     let before = held(&mut app);
     step(&mut app);
     assert_eq!(held(&mut app), before);
     app.world_mut()
-        .resource_mut::<crate::terrain::ChunkMap>()
+        .resource_mut::<crate::world::ChunkMap>()
         .insert(west, entity);
 }
 
@@ -1048,9 +1050,9 @@ fn a_pipe_broken_as_its_networks_chunk_unloads_spills_its_share() {
         .resource_mut::<NetworkMap<FluidNet>>()
         .get_mut(id)
         .add(WATER, 400);
-    let west = crate::terrain::ChunkCoord(IVec3::new(-1, 3, 0));
+    let west = crate::world::ChunkCoord(IVec3::new(-1, 3, 0));
     app.world_mut()
-        .resource_mut::<crate::terrain::ChunkMap>()
+        .resource_mut::<crate::world::ChunkMap>()
         .remove(west)
         .unwrap();
     // Broken, and spilled before the networks see either.
@@ -1241,7 +1243,7 @@ fn water_in(app: &mut App, from: IVec3, to: IVec3) -> u64 {
                     for z in from.z..=to.z {
                         let (state, partial) = voxels.get_with_fluid(IVec3::new(x, y, z)).unwrap();
                         if content.block_of(state).id == WATER {
-                            total += crate::voxel::fluid_amount(&content, state, partial) as u64;
+                            total += crate::world::fluid_amount(&content, state, partial) as u64;
                         }
                     }
                 }

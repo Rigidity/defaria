@@ -38,7 +38,7 @@ use crate::{
     connections::ConnectionSystems,
     content::Content,
     network::NetworkSystems,
-    terrain::{PropertiesUpdated, VoxelChanged, Voxels},
+    world::{PropertiesUpdated, VoxelChanged, Voxels},
 };
 
 pub struct MachinePlugin;

@@ -38,8 +38,7 @@ use crate::{
     fluid_network::FluidSystems,
     game_mode::{GameMode, use_up},
     inventory::Inventory,
-    terrain::{ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
 };
 
 pub const ON_USED: &str = "on_used";

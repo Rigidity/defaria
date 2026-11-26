@@ -25,8 +25,8 @@ use crate::{
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     machine::screen::open_machine_screen,
     player::{LocalPlayer, Player},
-    terrain::Voxels,
     ui::playing,
+    world::Voxels,
     wrench::use_wrench,
 };
 

@@ -26,8 +26,10 @@ use std::f32::consts::SQRT_2;
 
 use crate::{
     perlin::Perlin,
-    spline::{Spline, knot},
-    terrain::TerrainSettings,
+    worldgen::{
+        TerrainSettings,
+        spline::{Spline, knot},
+    },
 };
 
 /// How much the continentalness, erosion and peaks noise are stretched:

@@ -1,6 +1,6 @@
 //! Cubic Hermite splines: smooth curves through points, each with the
 //! slope the curve has there. The terrain maps its noise through them
-//! (see `terrain::shape`), as Minecraft's terrain does, so the shape of the
+//! (see `worldgen::shape`), as Minecraft's terrain does, so the shape of the
 //! land (where plains turn into foothills, how sharp a peak is) is a few
 //! numbers rather than formulas. Pure math, no Bevy.
 

@@ -12,8 +12,7 @@ use crate::{
     content::{ItemState, base, block, block_with},
     machine::MachinePlugin,
     network::{NetworkPlugin, energy::EnergyPlugin},
-    terrain::{ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
 };
 
 /// A machine as its block entity starts, held by hand.

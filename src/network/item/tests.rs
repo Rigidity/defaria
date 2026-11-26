@@ -12,10 +12,11 @@ use crate::{
     },
     light::LightPlugin,
     machine::MachinePlugin,
+    meshing::MeshingPlugin,
     network::NetworkPlugin,
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    terrain::{TerrainPlugin, Voxels},
     voxel_material::BlockMaterial,
+    world::{Voxels, WorldPlugin},
 };
 
 /// The base game, and mod `test` with filtered bins: `wood_bin` takes
@@ -396,7 +397,8 @@ fn app() -> App {
     app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
         .insert_resource(content().clone())
         .add_plugins((
-            TerrainPlugin,
+            WorldPlugin,
+            MeshingPlugin,
             LightPlugin,
             StreamingPlugin,
             BlockEntityPlugin,

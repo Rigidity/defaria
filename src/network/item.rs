@@ -39,8 +39,7 @@ use crate::{
     content::{BlockState, Content, ItemFilter, Machine, PortRole, Solver},
     inventory::ItemStack,
     machine::{MachinePortRef, MachinePorts, SlotGroup, Slots},
-    terrain::{ChunkCoord, ChunkMap},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap},
 };
 
 /// The most items one network moves in one tick, however fast its tubes.

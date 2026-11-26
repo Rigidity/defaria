@@ -9,11 +9,12 @@ use crate::{
     content::{base, block},
     headless::{SETTLE_TIMEOUT_FRAMES, Script, test_game},
     light::LightPlugin,
+    meshing::MeshingPlugin,
     network::{NetworkPlugin, Networks},
     save::{WorldFolder, tests::temp_folder},
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    terrain::TerrainPlugin,
     voxel_material::BlockMaterial,
+    world::WorldPlugin,
 };
 
 const E: Direction = Direction::East;
@@ -131,7 +132,8 @@ fn app(folder: Option<&Path>) -> App {
     app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
         .insert_resource(base().clone())
         .add_plugins((
-            TerrainPlugin,
+            WorldPlugin,
+            MeshingPlugin,
             LightPlugin,
             StreamingPlugin,
             BlockEntityPlugin,
@@ -324,13 +326,13 @@ fn open_wires_save_no_block_entity() {
     let saved = app
         .world_mut()
         .run_system_once(
-            move |saver: crate::block_entity::ChunkSaver, map: Res<crate::terrain::ChunkMap>| {
-                let (coord, _) = crate::terrain::ChunkCoord::split(open);
+            move |saver: crate::block_entity::ChunkSaver, map: Res<crate::world::ChunkMap>| {
+                let (coord, _) = crate::world::ChunkCoord::split(open);
                 let mut chunk = saver.chunk(map.get(coord).unwrap()).unwrap();
                 let mut at: Vec<IVec3> = chunk
                     .take_block_entities()
                     .keys()
-                    .map(|&index| coord.origin() + crate::voxel::Chunk::position_of(index as usize))
+                    .map(|&index| coord.origin() + crate::world::Chunk::position_of(index as usize))
                     .collect();
                 at.sort_by_key(|pos| pos.to_array());
                 at

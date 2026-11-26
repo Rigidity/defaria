@@ -25,8 +25,7 @@ use crate::{
     content::{BlockState, Content, FULL_FLUID, Solver},
     network::{NetworkChanged, NetworkId, NetworkMap, Networks},
     streaming::ChunksSaving,
-    terrain::{ChunkCoord, ChunkMap, VoxelChanged, Voxels},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged, Voxels},
 };
 
 /// What a fluid pipe's block entity holds of its network's fluid: nothing

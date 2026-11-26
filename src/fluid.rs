@@ -2,7 +2,7 @@
 //!
 //! A fluid is a block with `fluid` set (see `docs/modding.md`). A voxel of
 //! one also holds an amount of it, up to [`FULL_FLUID`] (see
-//! [`Chunk`](crate::voxel::Chunk)), and flow only moves those amounts
+//! [`Chunk`](crate::world::Chunk)), and flow only moves those amounts
 //! between voxels: fluid is never made, and only destroyed when a block is
 //! placed into it. How it moves, and which voxels step when, is in [`flow`];
 //! this plugin runs that on the loaded chunks, in [`FixedUpdate`].
@@ -35,8 +35,10 @@ use crate::{
     content::{BlockState, Content, FULL_FLUID, Fluid},
     fly_camera::EyeView,
     fog::{self, FogSystems},
-    terrain::{ChunkCoord, ChunkMap, FluidChanged, VoxelChanged, Voxels},
-    voxel::{CHUNK_SIZE, Chunk, fluid_amount, fluid_surface},
+    world::{
+        CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, FluidChanged, VoxelChanged, Voxels, fluid_amount,
+        fluid_surface,
+    },
 };
 use flow::{AROUND, Cell, CellView, Cells, Simulation};
 
@@ -379,8 +381,7 @@ mod tests {
     use super::*;
     use crate::{
         content::{base, block},
-        terrain::FluidChanged,
-        voxel::FLUID_STEPS,
+        world::{FLUID_STEPS, FluidChanged},
     };
 
     /// The flow systems alone, on chunks spawned by the test.
@@ -396,7 +397,7 @@ mod tests {
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .add_message::<VoxelChanged>()
-            .add_message::<crate::terrain::PropertiesUpdated>()
+            .add_message::<crate::world::PropertiesUpdated>()
             .add_message::<FluidChanged>()
             .add_systems(Update, (wake_around_edits, wake_loaded_chunks).chain())
             .add_systems(FixedUpdate, run_flow);

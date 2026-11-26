@@ -422,8 +422,7 @@ pub(crate) mod tests {
     use crate::{
         content::{BlockState, base, block},
         physics::{PhysicsPlugin, STEP},
-        terrain::{ChunkCoord, ChunkMap},
-        voxel::{CHUNK_VOLUME, Chunk},
+        world::{CHUNK_VOLUME, Chunk, ChunkCoord, ChunkMap},
     };
 
     /// The player and its systems in a world of the chunks around
