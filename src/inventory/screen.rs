@@ -1,32 +1,35 @@
-//! The inventory screen: every item the mods define, in a scrolling grid.
+//! The inventory screen (E): what the player carries, and the creative
+//! catalog of every item.
 //!
 //! - E opens and closes it, while no other screen is open; Escape closes it
 //!   too (see [`crate::ui::screen`]).
-//! - Clicking an item puts it in the active hotbar slot. The number keys
-//!   and clicks on the hotbar pick which slot that is, so filling the
-//!   hotbar is: pick a slot, click an item.
-//! - The item in the active slot is framed in the grid.
-//! - The wheel scrolls the grid when there are more items than fit.
-//!
-//! Items show in [`Content::items`] order: blocks' items first, then the
-//! rest, each in load order.
+//! - The catalog, on top, lists every item the mods define, scrolling when
+//!   there are more than fit.
+//! - Under it, the player's inventory lists what they carry, sorted, with
+//!   how many of each and the weight they carry out of what they can.
+//! - The hotbar below stays where it is and takes part: items are dragged
+//!   onto it, and its slots dragged around.
+//! - Items move between the two lists with the mouse as `gesture`
+//!   describes. Moving them into the catalog throws them away.
 
-use bevy::{
-    picking::{events::PointerPress, pointer::PointerButton},
-    prelude::*,
+use bevy::prelude::*;
+
+use super::{
+    Inventory,
+    gesture::ScreenLists,
+    list::{ListSource, Owner, item_list},
 };
-
 use crate::{
-    content::{Content, ItemState},
-    hotbar::{ActiveSlot, Hotbar, hotbar_height},
+    content::Content,
+    hotbar::hotbar_height,
     player::LocalPlayer,
-    ui::{ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel, typing},
+    ui::{UiScreen, UiTheme, typing},
 };
 
-/// Slots in a row of the grid.
-pub const COLUMNS: usize = 9;
-/// The most rows that show at once; more scroll.
-pub const VISIBLE_ROWS: usize = 5;
+/// The catalog's rows that show at once; more scroll.
+pub const CATALOG_ROWS: usize = 4;
+/// The inventory's rows that show at once; more scroll.
+pub const INVENTORY_ROWS: usize = 3;
 /// Space between the inventory's room and the hotbar, in logical pixels.
 const ABOVE_HOTBAR: f32 = 12.0;
 
@@ -34,21 +37,10 @@ pub struct ScreenPlugin;
 
 impl Plugin for ScreenPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<CatalogSlot>()
-            .register_type::<InventoryScreen>()
-            .register_type::<InventoryGrid>()
-            .add_observer(pick_item)
-            .add_systems(
-                Update,
-                (toggle_inventory.run_if(not(typing)), frame_active_item),
-            );
+        app.register_type::<InventoryScreen>()
+            .add_systems(Update, (toggle_inventory.run_if(not(typing)), show_weight));
     }
 }
-
-/// A slot of the inventory grid, showing its item.
-#[derive(Component, Reflect, Debug, Clone, Copy)]
-#[reflect(Component)]
-pub struct CatalogSlot(pub ItemState);
 
 /// The inventory screen's root; despawning it closes the inventory.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
@@ -56,10 +48,9 @@ pub struct CatalogSlot(pub ItemState);
 #[require(UiScreen)]
 pub struct InventoryScreen;
 
-/// The scrolling grid of slots.
-#[derive(Component, Reflect, Debug, Clone, Copy)]
-#[reflect(Component)]
-pub struct InventoryGrid;
+/// The line showing how much the player carries.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct WeightLabel;
 
 fn toggle_inventory(
     mut commands: Commands,
@@ -67,8 +58,6 @@ fn toggle_inventory(
     inventories: Query<Entity, With<InventoryScreen>>,
     screens: Query<(), With<UiScreen>>,
     theme: Res<UiTheme>,
-    content: Res<Content>,
-    player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
 ) {
     if !keys.just_pressed(KeyCode::KeyE) {
         return;
@@ -77,39 +66,40 @@ fn toggle_inventory(
         // Escape may close it this frame too.
         commands.entity(inventory).try_despawn();
     } else if screens.is_empty() {
-        let framed = player.and_then(|player| player.0.item(*player.1));
-        spawn_inventory(&mut commands, &theme, &content, framed);
+        spawn_inventory(&mut commands, &theme);
     }
 }
 
-/// Spawns the inventory, with `framed` (the active hotbar slot's item)
-/// framed from its first frame.
-fn spawn_inventory(
-    commands: &mut Commands,
-    theme: &UiTheme,
-    content: &Content,
-    framed: Option<ItemState>,
-) {
-    let slot = theme.slot_size;
-    let gap = theme.slot_gap;
-    let width = COLUMNS as f32 * slot + (COLUMNS - 1) as f32 * gap;
-    // As many rows as there are items for, up to the most that show.
-    let rows = content
-        .item_states
-        .len()
-        .div_ceil(COLUMNS)
-        .clamp(1, VISIBLE_ROWS);
-    let height = rows as f32 * slot + (rows - 1) as f32 * gap;
+/// A section's heading row: its title, and `extra` at its right, with
+/// `above` logical pixels of space above it.
+fn heading(theme: &UiTheme, title: &str, extra: impl Bundle, above: f32) -> impl Bundle {
+    (
+        Node {
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            margin: UiRect::top(px(above)),
+            ..default()
+        },
+        children![
+            (Text::new(title), theme.title_font(), TextColor(theme.text)),
+            extra
+        ],
+    )
+}
+
+fn spawn_inventory(commands: &mut Commands, theme: &UiTheme) {
+    let player = ListSource::Inventory(Owner::LocalPlayer);
     commands
         .spawn((
             Name::new("Inventory"),
             InventoryScreen,
+            ScreenLists(ListSource::Catalog, player),
             Node {
                 position_type: PositionType::Absolute,
                 width: percent(100),
                 height: percent(100),
                 justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
+                align_items: AlignItems::FlexEnd,
                 padding: UiRect::bottom(px(hotbar_height(theme) + ABOVE_HOTBAR)),
                 ..default()
             },
@@ -130,82 +120,67 @@ fn spawn_inventory(
                 BorderColor::all(theme.panel_border),
             ))
             .with_children(|panel| {
-                panel.spawn((
-                    Text::new("Items"),
-                    theme.title_font(),
-                    TextColor(theme.text),
-                ));
-                scroll_panel(
+                panel.spawn(heading(theme, "Items", (), 0.0));
+                item_list(
                     panel,
                     theme,
-                    Node {
-                        width: px(width),
-                        height: px(height),
-                        flex_wrap: FlexWrap::Wrap,
-                        align_content: AlignContent::FlexStart,
-                        column_gap: px(gap),
-                        row_gap: px(gap),
-                        ..default()
-                    },
-                    slot + gap,
-                    (InventoryGrid, Name::new("Inventory grid")),
-                    |grid| {
-                        for index in 0..content.item_states.len() {
-                            let item = ItemState(index as u32);
-                            grid.spawn((
-                                CatalogSlot(item),
-                                item_slot(
-                                    theme,
-                                    ItemSlot {
-                                        selected: framed == Some(item),
-                                        ..ItemSlot::item(item)
-                                    },
-                                ),
-                            ));
-                        }
-                    },
+                    ListSource::Catalog,
+                    CATALOG_ROWS,
+                    Name::new("Catalog"),
                 );
-                panel.spawn((
-                    Text::new("Click an item to put it in the selected hotbar slot"),
-                    theme.text_font(),
-                    TextColor(theme.text_dim),
+                panel.spawn(heading(
+                    theme,
+                    "Inventory",
+                    (
+                        WeightLabel,
+                        Text::default(),
+                        theme.text_font(),
+                        TextColor(theme.text_dim),
+                    ),
+                    6.0,
                 ));
+                item_list(
+                    panel,
+                    theme,
+                    player,
+                    INVENTORY_ROWS,
+                    Name::new("Inventory list"),
+                );
             });
         });
 }
 
-/// Clicking an item puts it in the active hotbar slot.
-fn pick_item(
-    click: On<PointerPress>,
-    slots: Query<&CatalogSlot>,
-    player: Option<Single<(&mut Hotbar, &ActiveSlot), With<LocalPlayer>>>,
-) {
-    if click.button != PointerButton::Primary {
-        return;
-    }
-    if let (Ok(&CatalogSlot(item)), Some(player)) = (slots.get(click.entity), player) {
-        let (mut hotbar, active) = player.into_inner();
-        hotbar.assign(active.0, Some(item));
+/// A weight for people: kilograms, or tonnes from a thousand.
+pub fn format_weight(kilograms: f32) -> String {
+    if kilograms < 1000.0 {
+        format!("{} kg", kilograms.round())
+    } else {
+        let tonnes = format!("{:.1}", kilograms / 1000.0);
+        format!("{} t", tonnes.trim_end_matches(".0"))
     }
 }
 
-/// Frames the grid slot holding the active hotbar slot's item.
-fn frame_active_item(
-    player: Option<Single<(Ref<Hotbar>, Ref<ActiveSlot>), With<LocalPlayer>>>,
-    mut slots: Query<(&CatalogSlot, &mut ItemSlot)>,
+/// What the weight line says for `carried` of `max` kilograms.
+pub fn weight_text(carried: f32, max: Option<f32>) -> String {
+    match max {
+        Some(max) => format!("{} of {}", format_weight(carried), format_weight(max)),
+        None => format_weight(carried),
+    }
+}
+
+/// Keeps the weight line up to date.
+fn show_weight(
+    content: Res<Content>,
+    player: Option<Single<&Inventory, With<LocalPlayer>>>,
+    mut labels: Query<&mut Text, With<WeightLabel>>,
 ) {
-    let Some(player) = player else {
+    let Some(inventory) = player else {
         return;
     };
-    let (hotbar, active) = player.into_inner();
-    if !hotbar.is_changed() && !active.is_changed() {
-        return;
-    }
-    let item = hotbar.item(*active);
-    for (&CatalogSlot(id), mut slot) in &mut slots {
-        let selected = item == Some(id);
-        if slot.selected != selected {
-            slot.selected = selected;
+    let text = weight_text(inventory.weight(&content), inventory.max_weight);
+    for mut label in &mut labels {
+        if label.0 != text {
+            label.0.clone_from(&text);
         }
     }
 }
@@ -214,9 +189,15 @@ fn frame_active_item(
 mod tests {
     use super::*;
     use crate::{
+        content::ItemState,
         fly_camera::FlyCamera,
         headless::{Script, run_more, settle, test_game},
-        hotbar::HotbarSlot,
+        hotbar::{ActiveSlot, Hotbar, HotbarSlot},
+        inventory::{
+            gesture::{CATALOG_BATCH, CATALOG_HALF},
+            list::{ItemList, ListEntry},
+            player::STARTING_COUNT,
+        },
         player::Player,
     };
     use bevy::{
@@ -225,12 +206,18 @@ mod tests {
         window::{CursorGrabMode, CursorOptions},
     };
 
-    /// The item in the local player's hotbar slot `index`.
-    fn slot_item(app: &mut App, index: usize) -> Option<ItemState> {
+    fn inventory(app: &mut App) -> Inventory {
+        let mut players = app
+            .world_mut()
+            .query_filtered::<&Inventory, With<LocalPlayer>>();
+        players.single(app.world()).unwrap().clone()
+    }
+
+    fn hotbar(app: &mut App) -> Hotbar {
         let mut players = app
             .world_mut()
             .query_filtered::<&Hotbar, With<LocalPlayer>>();
-        players.single(app.world()).unwrap().0[index]
+        players.single(app.world()).unwrap().clone()
     }
 
     fn active(app: &mut App) -> ActiveSlot {
@@ -250,18 +237,23 @@ mod tests {
         cursors.single(app.world()).unwrap().grab_mode
     }
 
-    /// Where on screen the grid slot showing `item` is, in the script's
-    /// pixels (the first, if several show it).
-    fn slot_at(app: &mut App, item: ItemState) -> Vec2 {
-        let mut slots = app
-            .world_mut()
-            .query::<(&CatalogSlot, &UiGlobalTransform)>();
-        slots
+    /// Where on screen the entry for `item` in the list of `source` is.
+    fn entry_at(app: &mut App, source: ListSource, item: ItemState) -> Vec2 {
+        let mut entries = app.world_mut().query::<(&ListEntry, &UiGlobalTransform)>();
+        entries
             .iter(app.world())
-            .find(|(slot, _)| slot.0 == item)
-            .expect("no slot for the item")
+            .find(|(entry, _)| entry.source == source && entry.stack.item == item)
+            .expect("no entry for the item")
             .1
             .translation
+    }
+
+    fn catalog_at(app: &mut App, item: ItemState) -> Vec2 {
+        entry_at(app, ListSource::Catalog, item)
+    }
+
+    fn mine_at(app: &mut App, item: ItemState) -> Vec2 {
+        entry_at(app, ListSource::Inventory(Owner::LocalPlayer), item)
     }
 
     fn hotbar_slot_at(app: &mut App, index: usize) -> Vec2 {
@@ -274,28 +266,32 @@ mod tests {
             .translation
     }
 
-    /// The grid slots framed as the active hotbar slot's item.
-    fn framed(app: &mut App) -> Vec<ItemState> {
-        let mut slots = app.world_mut().query::<(&CatalogSlot, &ItemSlot)>();
-        let mut framed: Vec<ItemState> = slots
+    /// The middle of the player's inventory list.
+    fn my_list_at(app: &mut App) -> Vec2 {
+        let mut lists = app.world_mut().query::<(&ItemList, &UiGlobalTransform)>();
+        lists
             .iter(app.world())
-            .filter(|(_, slot)| slot.selected)
-            .map(|(catalog, _)| catalog.0)
-            .collect();
-        framed.dedup();
-        framed
+            .find(|(list, _)| list.source == ListSource::Inventory(Owner::LocalPlayer))
+            .unwrap()
+            .1
+            .translation
     }
 
     fn scrolled(app: &mut App) -> f32 {
-        let mut grids = app
-            .world_mut()
-            .query_filtered::<&ScrollPosition, With<InventoryGrid>>();
-        grids.single(app.world()).unwrap().y
+        let mut lists = app.world_mut().query::<(&ItemList, &ScrollPosition)>();
+        lists
+            .iter(app.world())
+            .find(|(list, _)| list.source == ListSource::Catalog)
+            .unwrap()
+            .1
+            .y
     }
 
-    fn scrollbar_shown(app: &mut App) -> bool {
+    fn scrollbars_shown(app: &mut App) -> usize {
         let mut bars = app.world_mut().query_filtered::<&Node, With<Scrollbar>>();
-        bars.single(app.world()).unwrap().display != Display::None
+        bars.iter(app.world())
+            .filter(|node| node.display != Display::None)
+            .count()
     }
 
     fn camera(app: &mut App) -> Vec3 {
@@ -303,10 +299,6 @@ mod tests {
             .world_mut()
             .query_filtered::<&Transform, With<FlyCamera>>();
         cameras.single(app.world()).unwrap().translation
-    }
-
-    fn theme_half_slot(app: &App) -> f32 {
-        app.world().resource::<UiTheme>().slot_size / 2.0
     }
 
     fn flying(app: &mut App) -> bool {
@@ -318,21 +310,53 @@ mod tests {
         format!("cursor {} {}\nwait 1\nhold {button} 1\nwait 1", at.x, at.y)
     }
 
-    /// Through the real game and input: E opens the inventory and frees the
-    /// cursor, the player stops moving, clicking an item fills the active
-    /// slot, the wheel scrolls the grid, and E closes it again.
-    #[test]
-    fn the_inventory_fills_the_active_hotbar_slot() {
+    /// Pressing at `from`, moving to `to` and letting go there.
+    fn drag(button: &str, from: Vec2, to: Vec2) -> String {
+        format!(
+            "cursor {} {}\nwait 1\npress {button}\nwait 1\ncursor {} {}\nwait 1\ncursor {} {}\nwait 1\nrelease {button}\nwait 2",
+            from.x,
+            from.y,
+            (from.x + to.x) / 2.0,
+            (from.y + to.y) / 2.0,
+            to.x,
+            to.y
+        )
+    }
+
+    /// A game with the inventory open, the cursor locked first so closing
+    /// it locks it again.
+    fn open_inventory() -> App {
         let mut app = test_game(Script::parse("camera 64.5 70 92.5 0 0\nwait 2").unwrap());
-        // Plenty of items, so the grid scrolls: the base game's, then
+        settle(&mut app);
+        run_more(&mut app, "hold MouseLeft 1\nwait 1\nhold KeyE 1\nwait 3");
+        assert!(is_open(&mut app));
+        app
+    }
+
+    fn item(app: &App, id: &str) -> ItemState {
+        app.world().resource::<Content>().default_item(id).unwrap()
+    }
+
+    /// The item for plain soil of `material` (`defaria:sand`, say).
+    fn soil(app: &App, material: &str) -> ItemState {
+        let content = app.world().resource::<Content>();
+        let soil = content.item("defaria:soil").unwrap();
+        soil.state(&[("soil", material)]).unwrap()
+    }
+
+    /// E opens it and frees the cursor, the player stops moving, the
+    /// catalog scrolls under the wheel, and E closes it again.
+    #[test]
+    fn e_opens_and_closes_the_inventory() {
+        let mut app = test_game(Script::parse("camera 64.5 70 92.5 0 0\nwait 2").unwrap());
+        // Plenty of items, so the catalog scrolls: the base game's, then
         // copies of planks.
-        let (planks, stone) = {
+        {
             let mut content = app.world_mut().resource_mut::<Content>();
             let planks = content.default_item("defaria:planks").unwrap();
             let copy = content.item_state(planks).unwrap().clone();
             content.item_states.extend(std::iter::repeat_n(copy, 100));
-            (planks, content.default_item("defaria:stone").unwrap())
-        };
+        }
         settle(&mut app);
         run_more(&mut app, "hold MouseLeft 1\nwait 1");
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
@@ -341,9 +365,7 @@ mod tests {
         run_more(&mut app, "hold KeyE 1\nwait 3");
         assert!(is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::None);
-        // Slot 1 holds stone, so stone is framed in the grid.
-        assert_eq!(framed(&mut app), [stone]);
-        assert!(scrollbar_shown(&mut app));
+        assert!(scrollbars_shown(&mut app) >= 1);
 
         // Walking keys and double-tapping Space do nothing now.
         let before = camera(&mut app);
@@ -354,28 +376,10 @@ mod tests {
         assert_eq!(camera(&mut app), before);
         assert!(flying(&mut app));
 
-        // Slot 3, then right click planks: nothing. Left click: it goes in
-        // slot 3, and the frame moves to it.
-        let at = slot_at(&mut app, planks);
-        run_more(&mut app, "hold Digit3 1\nwait 1");
-        run_more(&mut app, &click("MouseRight", at));
-        assert_ne!(slot_item(&mut app, 2), Some(planks));
-        run_more(&mut app, &click("MouseLeft", at));
-        assert_eq!(slot_item(&mut app, 2), Some(planks));
-        assert_eq!(active(&mut app), ActiveSlot(2));
-        assert_eq!(framed(&mut app), [planks]);
-        // Clicking in the inventory didn't lock the cursor.
-        assert_eq!(cursor(&mut app), CursorGrabMode::None);
-
-        // Clicking a hotbar slot makes it active; right clicking empties it.
-        let slot_5 = hotbar_slot_at(&mut app, 4);
-        run_more(&mut app, &click("MouseLeft", slot_5));
-        assert_eq!(active(&mut app), ActiveSlot(4));
-        run_more(&mut app, &click("MouseRight", slot_5));
-        assert_eq!(slot_item(&mut app, 4), None);
-        assert_eq!(framed(&mut app), []);
-
-        // The wheel over the grid scrolls it, and the slots move with it.
+        // The wheel over the catalog scrolls it, and leaves the hotbar's
+        // active slot alone.
+        let stone = item(&app, "defaria:stone");
+        let at = catalog_at(&mut app, stone);
         run_more(
             &mut app,
             &format!("cursor {} {}\nscroll -2\nwait 2", at.x, at.y),
@@ -383,66 +387,118 @@ mod tests {
         let theme = app.world().resource::<UiTheme>();
         let row = theme.slot_size + theme.slot_gap;
         assert_eq!(scrolled(&mut app), 2.0 * row);
-        assert!(slot_at(&mut app, planks).y < at.y);
-        // The wheel over the grid leaves the hotbar slot alone.
-        assert_eq!(active(&mut app), ActiveSlot(4));
-
-        // At the bottom: the row just above the view is scrolled out of
-        // it, behind the panel's title. Clicking there does nothing; the
-        // last item (a copy) can be clicked.
-        let last = ItemState(app.world().resource::<Content>().item_states.len() as u32 - 1);
-        run_more(&mut app, "scroll -100\nwait 2");
-        let rows_scrolled = (scrolled(&mut app) / row).round() as usize;
-        let hidden = slot_at(&mut app, ItemState(((rows_scrolled - 1) * COLUMNS) as u32));
-        let grid_top = slot_at(&mut app, ItemState((rows_scrolled * COLUMNS) as u32)).y
-            - theme_half_slot(&app);
-        assert!(
-            hidden.y > 0.0 && hidden.y < grid_top,
-            "{hidden} above {grid_top}"
-        );
-        run_more(&mut app, &click("MouseLeft", hidden));
-        assert_eq!(slot_item(&mut app, 4), None);
-        let bottom = slot_at(&mut app, last);
-        run_more(&mut app, &click("MouseLeft", bottom));
-        assert_eq!(slot_item(&mut app, 4), Some(last));
+        assert_eq!(active(&mut app), ActiveSlot(0));
 
         run_more(&mut app, "hold KeyE 1\nwait 3");
         assert!(!is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
-        let mut grids = app.world_mut().query::<&InventoryGrid>();
-        assert_eq!(grids.iter(app.world()).count(), 0);
     }
 
-    /// Escape closes it too and locks the cursor again. With few enough
-    /// items to fit there's no scrollbar.
+    /// Clicks move items between the catalog and the inventory: one, a
+    /// batch with Shift, a few with the right button; and back into the
+    /// catalog, which throws them away.
+    #[test]
+    fn clicks_move_items_in_and_out() {
+        let mut app = open_inventory();
+        let sand = soil(&app, "defaria:sand");
+        let glass = item(&app, "defaria:glass");
+        let start = inventory(&mut app).count(sand);
+        let at = catalog_at(&mut app, sand);
+        run_more(&mut app, &click("MouseLeft", at));
+        assert_eq!(inventory(&mut app).count(sand), start + 1);
+        run_more(&mut app, &click("MouseRight", at));
+        assert_eq!(inventory(&mut app).count(sand), start + 1 + CATALOG_HALF);
+        run_more(&mut app, "press ShiftLeft\nwait 1");
+        run_more(&mut app, &click("MouseLeft", at));
+        run_more(&mut app, "release ShiftLeft\nwait 1");
+        let have = start + 1 + CATALOG_HALF + CATALOG_BATCH;
+        assert_eq!(inventory(&mut app).count(sand), have);
+
+        // Something new shows up in the list.
+        let at = catalog_at(&mut app, glass);
+        run_more(&mut app, &click("MouseLeft", at));
+        assert_eq!(inventory(&mut app).count(glass), 1);
+
+        // From the inventory: one, half, then all, into the catalog.
+        let mine = mine_at(&mut app, sand);
+        run_more(&mut app, &click("MouseLeft", mine));
+        assert_eq!(inventory(&mut app).count(sand), have - 1);
+        run_more(&mut app, &click("MouseRight", mine));
+        let left = have - 1 - (have - 1).div_ceil(2);
+        assert_eq!(inventory(&mut app).count(sand), left);
+        let mine = mine_at(&mut app, sand);
+        run_more(&mut app, "press ShiftLeft\nwait 1");
+        run_more(&mut app, &click("MouseLeft", mine));
+        run_more(&mut app, "release ShiftLeft\nwait 1");
+        assert_eq!(inventory(&mut app).count(sand), 0);
+        // Out of sand: its hotbar slot stays, at 0.
+        assert_eq!(hotbar(&mut app).0[3], Some(sand));
+    }
+
+    /// Dragging: catalog items onto the inventory list (a batch) and onto a
+    /// hotbar slot (it goes there); hotbar slots onto each other (they
+    /// swap) and off the hotbar (cleared); and the number keys over an
+    /// entry put it in the hotbar.
+    #[test]
+    fn dragging_moves_items_and_fills_the_hotbar() {
+        let mut app = open_inventory();
+        let (glass, stone, dirt) = (
+            item(&app, "defaria:glass"),
+            item(&app, "defaria:stone"),
+            soil(&app, "defaria:dirt"),
+        );
+        let (from, to) = (catalog_at(&mut app, glass), my_list_at(&mut app));
+        run_more(&mut app, &drag("MouseLeft", from, to));
+        assert_eq!(inventory(&mut app).count(glass), CATALOG_BATCH);
+
+        let slot_9 = hotbar_slot_at(&mut app, 8);
+        run_more(&mut app, &drag("MouseLeft", from, slot_9));
+        assert_eq!(hotbar(&mut app).0[8], Some(glass));
+        assert_eq!(inventory(&mut app).count(glass), CATALOG_BATCH);
+
+        let (slot_1, slot_2) = (hotbar_slot_at(&mut app, 0), hotbar_slot_at(&mut app, 1));
+        run_more(&mut app, &drag("MouseLeft", slot_1, slot_2));
+        assert_eq!(hotbar(&mut app).0[..2], [Some(dirt), Some(stone)]);
+        run_more(&mut app, &drag("MouseLeft", slot_1, to));
+        assert_eq!(hotbar(&mut app).0[0], None);
+        assert_eq!(inventory(&mut app).count(dirt), STARTING_COUNT);
+
+        // Digit 1 over the glass in the inventory: slot 1 gets glass (and
+        // slot 9 loses it), and the active slot stays.
+        let mine = mine_at(&mut app, glass);
+        run_more(
+            &mut app,
+            &format!(
+                "cursor {} {}\nwait 1\nhold Digit1 1\nwait 2",
+                mine.x, mine.y
+            ),
+        );
+        assert_eq!(hotbar(&mut app).0[0], Some(glass));
+        assert_eq!(hotbar(&mut app).0[8], None);
+        assert_eq!(active(&mut app), ActiveSlot(0));
+    }
+
+    /// Escape closes it too and locks the cursor again.
     #[test]
     fn escape_closes_the_inventory() {
-        let mut app = test_game(Script::parse("wait 1").unwrap());
-        app.world_mut()
-            .resource_mut::<Content>()
-            .item_states
-            .truncate(COLUMNS * 2);
-        settle(&mut app);
-        run_more(&mut app, "hold MouseLeft 1\nwait 1\nhold KeyE 1\nwait 2");
-        assert!(is_open(&mut app));
-        assert!(!scrollbar_shown(&mut app));
+        let mut app = open_inventory();
         run_more(&mut app, "hold Escape 1\nwait 2");
         assert!(!is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
     }
 
     /// While playing, the pointer doesn't reach the HUD: right clicking
-    /// with the cursor over a hotbar slot (it was left there when the
-    /// inventory closed) doesn't empty it.
+    /// with the cursor over a hotbar slot doesn't clear it.
     #[test]
     fn the_hotbar_isnt_clicked_while_playing() {
         let mut app = test_game(Script::parse("wait 1").unwrap());
         settle(&mut app);
+        let before = hotbar(&mut app);
         let slot_2 = hotbar_slot_at(&mut app, 1);
         run_more(&mut app, &click("MouseLeft", slot_2));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
         run_more(&mut app, &click("MouseRight", slot_2));
-        assert!(slot_item(&mut app, 1).is_some());
+        assert_eq!(hotbar(&mut app), before);
         let mut slots = app
             .world_mut()
             .query::<(&HotbarSlot, &bevy::picking::hover::Hovered)>();
@@ -457,5 +513,15 @@ mod tests {
         app.world_mut().spawn(UiScreen);
         run_more(&mut app, "hold KeyE 1\nwait 2");
         assert!(!is_open(&mut app));
+    }
+
+    #[test]
+    fn weights_read_naturally() {
+        assert_eq!(format_weight(0.4), "0 kg");
+        assert_eq!(format_weight(950.0), "950 kg");
+        assert_eq!(format_weight(2500.0), "2.5 t");
+        assert_eq!(format_weight(10_000_000.0), "10000 t");
+        assert_eq!(weight_text(2500.0, Some(10_000.0)), "2.5 t of 10 t");
+        assert_eq!(weight_text(2500.0, None), "2.5 t");
     }
 }

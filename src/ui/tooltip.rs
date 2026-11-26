@@ -1,6 +1,7 @@
 //! Tooltips: text shown beside the pointer while it's over a node with a
 //! [`Tooltip`]. One tooltip box exists, drawn above everything, and moves
-//! to whatever is hovered. Picking passes through it.
+//! to whatever is hovered. Picking passes through it. It hides while a
+//! mouse button is held, so it doesn't get in the way of a drag.
 
 use bevy::{picking::hover::Hovered, prelude::*, window::PrimaryWindow};
 
@@ -53,14 +54,17 @@ fn spawn_tooltip(mut commands: Commands, theme: Res<UiTheme>) {
 
 fn show_tooltip(
     pointer: UiPointer,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
     tips: Query<(&Tooltip, &Hovered)>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     mut boxes: Query<(&mut Node, &mut Text, &mut Visibility, &ComputedNode), With<TooltipBox>>,
 ) {
+    let held = mouse.is_some_and(|mouse| mouse.get_pressed().next().is_some());
     let tip = tips
         .iter()
         .find(|(tip, hovered)| hovered.get() && !tip.0.is_empty())
-        .map(|(tip, _)| tip);
+        .map(|(tip, _)| tip)
+        .filter(|_| !held);
     let screen = window.map_or(Vec2::INFINITY, |window| window.size());
     for (mut node, mut text, mut visibility, computed) in &mut boxes {
         let (Some(tip), Some(at)) = (tip, pointer.position()) else {
@@ -145,7 +149,11 @@ mod tests {
         assert_eq!(*visibility, Visibility::Inherited);
         assert_eq!((node.left, node.top), (px(at.x + 14.0), px(at.y + 14.0)));
 
-        run_more(&mut app, "cursor 5 5\nwait 2");
+        // Hidden while a button is held.
+        run_more(&mut app, "press MouseRight\nwait 2");
+        let (_, _, visibility) = boxes.single(app.world()).unwrap();
+        assert_eq!(*visibility, Visibility::Hidden);
+        run_more(&mut app, "release MouseRight\nwait 2\ncursor 5 5\nwait 2");
         let (_, _, visibility) = boxes.single(app.world()).unwrap();
         assert_eq!(*visibility, Visibility::Hidden);
     }

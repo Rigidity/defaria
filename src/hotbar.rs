@@ -12,7 +12,8 @@
 //!   is the slot to the left, toward you the one to the right, wrapping.
 //! - Switching slots shows the item's name above the hotbar for a moment.
 //! - With a screen open, clicking a slot makes it active and right clicking
-//!   clears it. The inventory screen puts items in slots.
+//!   clears it. Items are dragged onto slots from the inventory screen, and
+//!   slots dragged onto each other (see `inventory::gesture`).
 //!
 //! The slots ([`Hotbar`]) and [`ActiveSlot`] are components of the player
 //! (the entity with [`LocalPlayer`]), so every player or mob has its own;
@@ -66,7 +67,9 @@ impl Plugin for HotbarPlugin {
                 Update,
                 (
                     (
-                        select_with_keys.run_if(not(typing)),
+                        select_with_keys
+                            .run_if(not(typing))
+                            .run_if(not(crate::inventory::gesture::over_entry)),
                         cycle_with_wheel.run_if(playing),
                     )
                         .in_set(HotbarInput),

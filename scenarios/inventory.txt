@@ -1,5 +1,6 @@
 # The hotbar and the inventory: switch slots with the wheel, open the
-# inventory, put an item in the active slot, and place it.
+# inventory, take items from the catalog, put one on the hotbar, and
+# place it.
 # Run: cargo headless scenarios/inventory.txt
 camera 64 56 92 0 -37.9          # the start's view, flying
 fill 61 48 86 67 58 86 planks    # a wall in reach, to place against
@@ -9,31 +10,47 @@ wait 1
 screenshot target/scenarios/inventory/0-hotbar.png
 wait 1
 
-scroll -2                        # two slots right: dirt with grass
+scroll -2                        # two slots right: grass
 wait 1
-screenshot target/scenarios/inventory/1-wheel.png
 inspect ActiveSlot
 wait 1
 
 hold KeyE 1                      # open the inventory
 wait 3
-hold Digit9 1                    # pick the last slot
-cursor 575 424                   # hover the stone slab, fifth row
-wait 2
-screenshot target/scenarios/inventory/2-open.png
+screenshot target/scenarios/inventory/1-open.png
 wait 1
-hold MouseLeft 1                 # put it in slot 9
-wait 2
-screenshot target/scenarios/inventory/3-picked.png
-inspect ActiveSlot
+cursor 515 160                   # the catalog's glass
 wait 1
-scroll -3                        # over the grid: scrolls toward the tools
+press ShiftLeft                  # shift-click: a hundred of it
+wait 1
+hold MouseLeft 1
+wait 1
+release ShiftLeft
+wait 1
+hold MouseLeft 1                 # and one more
 wait 2
-screenshot target/scenarios/inventory/3b-scrolled.png
+screenshot target/scenarios/inventory/2-taken.png
+wait 1
+
+press MouseLeft                  # drag the glass onto hotbar slot 9
+wait 1
+cursor 700 500
+wait 1
+cursor 880 676
+wait 2
+screenshot target/scenarios/inventory/3-dragging.png
+wait 1
+release MouseLeft
+wait 2
+inspect Hotbar
+inspect Inventory
+screenshot target/scenarios/inventory/4-on-the-hotbar.png
 wait 1
 
 hold KeyE 1                      # close: back to playing
 wait 3
-hold MouseRight 1                # place a stone slab on the wall
+hold Digit9 1                    # the glass
+wait 1
+hold MouseRight 1                # place one on the wall
 wait 2
-screenshot target/scenarios/inventory/4-placed.png
+screenshot target/scenarios/inventory/5-placed.png
