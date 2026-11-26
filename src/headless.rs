@@ -1594,7 +1594,7 @@ mod tests {
         assert_eq!(FOV, 70.0);
         // Near enough to see a water surface the eyes are just off.
         assert_eq!(projection.near, NEAR);
-        assert!(NEAR <= 0.01);
+        const { assert!(NEAR <= 0.01) };
         assert_eq!(view.get::<Tonemapping>(), Some(&Tonemapping::None));
         assert_eq!(view.get::<DebandDither>(), Some(&DebandDither::Disabled));
     }
