@@ -5,13 +5,14 @@
 //! There's no arranging: a list is always sorted, under a heading per
 //! category in the categories' order (items in none last, under Other),
 //! and in item order within one, with an entry per kind of item showing
-//! how many. When it changes, its entries and headings are updated in
-//! place, spawning or despawning only the difference, so the list never
-//! draws half-built.
+//! how many. Only what matches its filter ([`ListFilter`], set by its
+//! screen's search box) shows. When it changes, its entries and headings
+//! are updated in place, spawning or despawning only the difference, so
+//! the list never draws half-built.
 
 use bevy::prelude::*;
 
-use super::{Inventory, ItemStack, model::ItemData};
+use super::{Inventory, ItemStack, model::ItemData, search::ItemQuery};
 use crate::{
     content::{Content, ItemState},
     player::LocalPlayer,
@@ -25,6 +26,7 @@ impl Plugin for ListPlugin {
         app.register_type::<ItemList>()
             .register_type::<ListEntry>()
             .register_type::<ListHeading>()
+            .register_type::<ListFilter>()
             // In Update, not just before the UI's own systems: an entry
             // spawned in PostUpdate draws faded for its first frame.
             .add_systems(Update, refresh_lists.in_set(ListSystems));
@@ -110,7 +112,7 @@ pub fn item_list(
             ..default()
         },
         slot + gap,
-        (list, extra),
+        (list, ListFilter::default(), extra),
         |_| {},
     )
 }
@@ -156,7 +158,12 @@ fn headed(sections: &[Section]) -> bool {
     sections.len() > 1 || sections.iter().any(|section| section.category.is_some())
 }
 
-/// A category's heading in a list.
+/// What a list shows of its items: those that match, all by default.
+#[derive(Component, Reflect, Debug, Clone, Default, PartialEq, Eq)]
+#[reflect(Component)]
+pub struct ListFilter(#[reflect(ignore)] pub ItemQuery);
+
+/// A category's heading in a list (or the line saying nothing matches).
 #[derive(Component, Reflect, Debug, Clone, Copy)]
 #[reflect(Component)]
 pub struct ListHeading;
@@ -179,14 +186,15 @@ fn refresh_lists(
     content: Res<Content>,
     player: Option<Single<Entity, With<LocalPlayer>>>,
     inventories: Query<Ref<Inventory>>,
-    lists: Query<(Entity, Ref<ItemList>, Option<&Children>)>,
+    lists: Query<(Entity, Ref<ItemList>, Ref<ListFilter>, Option<&Children>)>,
     mut entries: Query<(&mut ListEntry, &mut ItemSlot)>,
     mut headings: Query<&mut Text, With<ListHeading>>,
 ) {
     let player = player.map(|player| *player);
-    for (list, item_list, children) in &lists {
-        let wanted = match item_list.source {
-            ListSource::Catalog if item_list.is_added() => catalog_entries(&content),
+    for (list, item_list, filter, children) in &lists {
+        let fresh = item_list.is_added() || filter.is_changed();
+        let mut wanted = match item_list.source {
+            ListSource::Catalog if fresh => catalog_entries(&content),
             ListSource::Catalog => continue,
             ListSource::Inventory(owner) => {
                 let Some(inventory) = owner
@@ -195,14 +203,17 @@ fn refresh_lists(
                 else {
                     continue;
                 };
-                if !inventory.is_changed() && !item_list.is_added() {
+                if !inventory.is_changed() && !fresh {
                     continue;
                 }
                 sorted_entries(&inventory)
             }
         };
+        wanted.retain(|stack| filter.0.matches(&content, stack.item));
         let grouped = sections(&content, wanted);
         let headed = headed(&grouped);
+        // A filter that leaves nothing says so, in a heading.
+        let nothing = grouped.is_empty() && !filter.0.is_empty();
         let children: Vec<Entity> = children.map(|c| c.iter().collect()).unwrap_or_default();
         // What's there now, to reuse in order.
         let spare: Vec<Entity> = children
@@ -219,24 +230,27 @@ fn refresh_lists(
         let mut spare_headings = spare.into_iter();
         let source = item_list.source;
         let mut order = Vec::new();
+        let mut heading = |name: &str, commands: &mut Commands| match spare_headings.next() {
+            Some(heading) => {
+                if let Ok(mut text) = headings.get_mut(heading)
+                    && text.0 != name
+                {
+                    text.0 = name.to_owned();
+                }
+                heading
+            }
+            None => commands.spawn(list_heading(&theme, name)).id(),
+        };
+        if nothing {
+            order.push(heading("No items match", &mut commands));
+        }
         for section in grouped {
             if headed {
                 let name = section
                     .category
                     .and_then(|index| content.categories.get(index))
                     .map_or("Other", |category| category.name.as_str());
-                let heading = match spare_headings.next() {
-                    Some(heading) => {
-                        if let Ok(mut text) = headings.get_mut(heading)
-                            && text.0 != name
-                        {
-                            text.0 = name.to_owned();
-                        }
-                        heading
-                    }
-                    None => commands.spawn(list_heading(&theme, name)).id(),
-                };
-                order.push(heading);
+                order.push(heading(name, &mut commands));
             }
             for stack in section.entries {
                 let entry = match spare_entries.next() {
@@ -257,6 +271,7 @@ fn refresh_lists(
                 order.push(entry);
             }
         }
+        drop(heading);
         for unused in spare_entries.chain(spare_headings) {
             commands.entity(unused).despawn();
         }

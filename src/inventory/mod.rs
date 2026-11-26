@@ -8,6 +8,7 @@
 //! - [`transfer`]: moving items between inventories and the catalog.
 //! - [`list`]: lists of items on screen, sorted ([`list::ItemList`]).
 //! - [`gesture`]: the mouse on lists and the hotbar.
+//! - [`search`]: search queries for item lists.
 //! - [`screen`]: the inventory screen (E).
 
 pub mod gesture;
@@ -15,6 +16,7 @@ pub mod list;
 pub mod model;
 pub mod player;
 pub mod screen;
+pub mod search;
 pub mod transfer;
 
 use bevy::prelude::*;

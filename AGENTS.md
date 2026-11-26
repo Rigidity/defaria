@@ -275,7 +275,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   each item, limited only by weight), a component any entity can have;
   `player.rs` the local player's (on the entity with `LocalPlayer`, saved
   in `player.json5`); `transfer.rs` moving items between inventories and
-  the creative catalog; `list.rs` sorted item lists on screen;
+  the creative catalog; `list.rs` sorted item lists on screen, grouped
+  by category and filtered by the search; `search.rs` search queries;
   `gesture.rs` the mouse on lists and the hotbar (clicks, drags, binding
   the hotbar); `screen.rs` the inventory screen (E).
   `src/hotbar.rs`: the hotbar (`Hotbar`, nine slots naming kinds of item,

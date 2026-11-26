@@ -3,8 +3,8 @@
 //!
 //! [`scroll_panel`] spawns both. The scrollbar is Bevy's
 //! (`bevy::ui_widgets::Scrollbar`), which sizes and places its thumb from
-//! the scrolled node, and can be dragged; it's left out while everything
-//! fits. Only vertical scrolling for now.
+//! the scrolled node, and can be dragged; it's hidden (keeping its space)
+//! while everything fits. Only vertical scrolling for now.
 //!
 //! The wheel arrives as picking's `PointerScroll`, bubbling up from the
 //! node under the pointer to the [`Scrollable`] holding it. It isn't
@@ -83,14 +83,16 @@ pub fn scroll_panel(
                     ControlOrientation::Vertical,
                     theme.scrollbar_min_thumb,
                 ),
-                // Stretched to the row's height. Left out until the first
+                // Stretched to the row's height. Hidden until the first
                 // layout shows the content doesn't fit, so it never flashes
-                // up on a list that fits.
+                // up on a list that fits. Hidden, it keeps its space, so
+                // the panel doesn't change width as a list grows or
+                // shrinks (filtering it, say).
                 Node {
                     width: px(theme.scrollbar_width),
-                    display: Display::None,
                     ..default()
                 },
+                Visibility::Hidden,
                 BackgroundColor(theme.scrollbar_track),
                 children![(
                     ScrollbarThumb::default(),
@@ -143,24 +145,21 @@ fn keep_scroll_in_range(mut nodes: Query<(&mut ScrollPosition, &ComputedNode), W
     }
 }
 
-/// Takes a scrollbar out of the layout while everything it scrolls fits
-/// in view.
+/// Hides a scrollbar while everything it scrolls fits in view.
 fn hide_idle_scrollbars(
-    mut bars: Query<(&Scrollbar, &mut Node)>,
+    mut bars: Query<(&Scrollbar, &mut Visibility)>,
     targets: Query<&ComputedNode, With<Scrollable>>,
 ) {
-    for (bar, mut style) in &mut bars {
+    for (bar, mut visibility) in &mut bars {
         let Ok(node) = targets.get(bar.target) else {
             continue;
         };
         let wanted = if max_scroll(node) > 0.0 {
-            Display::Flex
+            Visibility::Inherited
         } else {
-            Display::None
+            Visibility::Hidden
         };
-        if style.display != wanted {
-            style.display = wanted;
-        }
+        visibility.set_if_neq(wanted);
     }
 }
 
@@ -277,25 +276,25 @@ mod tests {
     }
 
     #[test]
-    fn the_scrollbar_is_left_out_while_everything_fits() {
+    fn the_scrollbar_is_hidden_while_everything_fits() {
         let (mut app, list) = app();
         let bar = app
             .world_mut()
             .spawn((
                 Scrollbar::new(list, ControlOrientation::Vertical, 10.0),
-                Node::default(),
+                Visibility::Hidden,
             ))
             .id();
-        let display = |app: &App| app.world().get::<Node>(bar).unwrap().display;
+        let display = |app: &App| *app.world().get::<Visibility>(bar).unwrap();
         app.update();
-        assert_eq!(display(&app), Display::Flex);
+        assert_eq!(display(&app), Visibility::Inherited);
         app.world_mut()
             .get_mut::<ComputedNode>(list)
             .unwrap()
             .content_size
             .y = 80.0;
         app.update();
-        assert_eq!(display(&app), Display::None);
+        assert_eq!(display(&app), Visibility::Hidden);
     }
 
     #[test]
