@@ -60,7 +60,8 @@ impl Plugin for PlayerInventoryPlugin {
 /// [`STARTING_COUNT`] of each of its items. An item that didn't load is
 /// reported and leaves its slot empty.
 pub fn new_player(content: &Content) -> (Inventory, Hotbar) {
-    let mut inventory = Inventory::new().with_max_weight(PLAYER_MAX_WEIGHT);
+    // The weight limit comes with the game mode (`game_mode`).
+    let mut inventory = Inventory::new();
     let mut hotbar = Hotbar::default();
     for (slot, (id, values)) in DEFAULT_HOTBAR.into_iter().enumerate() {
         match content.item(id).and_then(|item| item.state(values)) {
@@ -139,7 +140,6 @@ pub fn load(saved: &PlayerFile, content: &Content) -> (Inventory, Hotbar, Active
             ),
         }
     }
-    inventory.max_weight = Some(PLAYER_MAX_WEIGHT);
     let mut hotbar = Hotbar::default();
     for (slot, name) in saved.hotbar.iter().take(HOTBAR_SLOTS).enumerate() {
         hotbar.0[slot] = name.as_deref().and_then(|name| names.item(name));
@@ -225,7 +225,6 @@ mod tests {
     fn a_new_player_starts_with_the_default_hotbar_and_some_of_each() {
         let content = base();
         let (inventory, hotbar) = new_player(content);
-        assert_eq!(inventory.max_weight, Some(PLAYER_MAX_WEIGHT));
         let ids: Vec<&str> = hotbar
             .0
             .iter()
@@ -312,6 +311,7 @@ mod tests {
                 &Inventory::new(),
                 &Hotbar::default(),
                 ActiveSlot(0),
+                GameMode::Creative,
                 content,
             )
         };
@@ -349,14 +349,19 @@ mod tests {
             }
             let mut players = app
                 .world_mut()
-                .query_filtered::<(&Inventory, &Hotbar, &ActiveSlot), With<LocalPlayer>>();
-            let (inventory, hotbar, active) = players.single(app.world()).unwrap();
-            (inventory.clone(), hotbar.clone(), *active)
+                .query_filtered::<(&Inventory, &Hotbar, &ActiveSlot, &GameMode), With<LocalPlayer>>(
+                );
+            let (inventory, hotbar, active, mode) = players.single(app.world()).unwrap();
+            (inventory.clone(), hotbar.clone(), *active, *mode)
         };
-        let first = run("hold Digit3 1\nwait 1");
+        // Slot 3, and survival (C, with the cursor locked to play).
+        let first = run("hold Digit3 1\nwait 1\nhold MouseLeft 1\nwait 1\nhold KeyC 1\nwait 2");
         assert_eq!(first.2, ActiveSlot(2));
+        assert_eq!(first.3, GameMode::Survival);
         let second = run("wait 1");
         assert_eq!(second, first);
+        // Back in survival, with survival's weight limit.
+        assert_eq!(second.0.max_weight, Some(PLAYER_MAX_WEIGHT));
         assert!(folder.join(file::PLAYER_FILE).exists());
     }
 
