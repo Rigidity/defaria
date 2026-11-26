@@ -280,8 +280,8 @@ impl TerrainBlocks {
         Self::STATES.map(|(id, values)| content.block_state(id, values))
     }
 
-    /// The states the terrain needs that didn't load, named as saves name
-    /// them (`defaria:soil[soil=defaria:sand]`).
+    /// The states the terrain needs that didn't load: each block's id with
+    /// the values it sets, in brackets (`defaria:soil[soil=defaria:sand]`).
     pub fn missing(content: &Content) -> Vec<String> {
         Self::STATES
             .iter()

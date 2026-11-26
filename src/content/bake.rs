@@ -622,13 +622,16 @@ impl Textures {
                 (name, materials)
             })
             .collect();
-        let count: usize = choices.iter().map(|(_, m)| m.len()).product();
         let room = MAX_TILES.saturating_sub(content.textures.len());
-        if count > room {
-            return Err(format!(
-                "it makes {count} tiles, and there's room for {room} more of the game's {MAX_TILES}"
-            ));
-        }
+        let count = choices
+            .iter()
+            .try_fold(1usize, |n, (_, m)| n.checked_mul(m.len()))
+            .filter(|&count| count <= room)
+            .ok_or_else(|| {
+                format!(
+                    "its combinations make more tiles than there's room for: {room} more of the game's {MAX_TILES}"
+                )
+            })?;
         // Each combination, the last input changing fastest.
         let combinations: Vec<BTreeMap<String, String>> = (0..count)
             .map(|n| {
@@ -2453,22 +2456,37 @@ mod tests {
         );
     }
 
+    /// 46 materials tagged `a` and 46 tagged `b`: 2116 combinations, more
+    /// than [`MAX_TILES`].
+    fn many_materials() -> Vec<(String, String)> {
+        (0..46)
+            .flat_map(|i| {
+                ["a", "b"].map(|tag| {
+                    (
+                        format!("materials/{tag}{i}.json5"),
+                        format!(
+                            r##"{{ tags: ["{tag}"], palette: ["#000000", "#ffffff"], hardness: 1, weight: 1 }}"##
+                        ),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn load_with(files: &[(String, String)]) -> Content {
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        Content::from_mods(vec![soil_mod(&refs)])
+    }
+
     /// Tags whose combinations would make more tiles than the game has
     /// room for are reported against the texture, which is left out, and
     /// what uses it fails rather than making the tiles one at a time.
     #[test]
     fn too_many_combinations_are_reported() {
-        let mut files: Vec<(String, String)> = Vec::new();
-        for i in 0..46 {
-            for tag in ["a", "b"] {
-                files.push((
-                    format!("materials/{tag}{i}.json5"),
-                    format!(
-                        r##"{{ tags: ["{tag}"], palette: ["#000000", "#ffffff"], hardness: 1, weight: 1 }}"##
-                    ),
-                ));
-            }
-        }
+        let mut files = many_materials();
         files.push((
             "textures/x.json5".into(),
             r##"{ layers: [
@@ -2484,19 +2502,44 @@ mod tests {
             } } }"##
                 .into(),
         ));
-        let refs: Vec<(&str, &str)> = files
-            .iter()
-            .map(|(p, t)| (p.as_str(), t.as_str()))
-            .collect();
-        let content = Content::from_mods(vec![soil_mod(&refs)]);
+        let content = load_with(&files);
         let all = errors(&content);
         assert!(
-            all.contains("mods/base/textures/x.json5: it makes 2116 tiles"),
+            all.contains("mods/base/textures/x.json5: its combinations make more tiles"),
             "{all}"
         );
         assert!(all.contains("mods/base/blocks/x.json5"), "{all}");
         assert!(content.textures.iter().all(|t| t.template != "base:x"));
         assert!(content.textures.len() < MAX_TILES);
+    }
+
+    /// Tiles made as blocks use `$name` inputs stop at [`MAX_TILES`]: the
+    /// block that would go past it fails, and the tiles fit the GPU.
+    #[test]
+    fn tiles_made_on_use_stop_at_the_limit() {
+        let mut files = many_materials();
+        files.push((
+            "textures/y.json5".into(),
+            r##"{ layers: [
+                { image: "overhang", material: "$a" },
+                { image: "overhang", material: "$b" },
+            ] }"##
+                .into(),
+        ));
+        files.push((
+            "blocks/y.json5".into(),
+            r##"{
+                properties: { a: { materials: "#a" }, b: { materials: "#b" } },
+                model: "quad",
+                textures: { all: { texture: "y", materials: { a: "{a}", b: "{b}" } } },
+            }"##
+            .into(),
+        ));
+        let content = load_with(&files);
+        let all = errors(&content);
+        assert!(all.contains("no room for more than 2048 tiles"), "{all}");
+        assert!(content.block("base:y").is_none());
+        assert_eq!(content.textures.len(), MAX_TILES);
     }
 
     /// Mistakes with `#tag` inputs are reported.
