@@ -1,0 +1,41 @@
+# A stained-glass wall: a column of each color, three wide, side by side
+# on a grass platform in the air, with plain glass at its ends, and a band
+# of red glass behind the green, cyan and blue columns and a stone pillar
+# behind that, to see colors blend in front of each other and the terrain.
+# Between two colors a seam shows; within one color the faces between
+# blocks are hidden, so each column reads as one pane.
+# Run: cargo headless scenarios/stained-glass.txt
+wait 5
+fill 10 45 20 54 45 44 soil[turf=defaria:grass]
+fill 13 46 32 13 50 32 glass
+fill 14 46 32 16 50 32 stained_glass[color=defaria:white_glass]
+fill 17 46 32 19 50 32 stained_glass[color=defaria:gray_glass]
+fill 20 46 32 22 50 32 stained_glass[color=defaria:black_glass]
+fill 23 46 32 25 50 32 stained_glass[color=defaria:red_glass]
+fill 26 46 32 28 50 32 stained_glass[color=defaria:orange_glass]
+fill 29 46 32 31 50 32 stained_glass[color=defaria:yellow_glass]
+fill 32 46 32 34 50 32 stained_glass[color=defaria:green_glass]
+fill 35 46 32 37 50 32 stained_glass[color=defaria:cyan_glass]
+fill 38 46 32 40 50 32 stained_glass[color=defaria:blue_glass]
+fill 41 46 32 43 50 32 stained_glass[color=defaria:purple_glass]
+fill 44 46 32 46 50 32 stained_glass[color=defaria:pink_glass]
+fill 47 46 32 49 50 32 stained_glass[color=defaria:brown_glass]
+fill 50 46 32 50 50 32 glass
+# Behind the green, cyan and blue columns: a red band, then a stone pillar.
+fill 32 47 29 40 48 29 stained_glass[color=defaria:red_glass]
+fill 35 46 26 36 51 26 stone
+camera 32 48.5 52 0 -2          # the whole wall, from in front
+wait 2
+screenshot target/scenarios/stained-glass/0-wall.png
+wait 1
+camera 36 48.5 38 0 -4          # close: colors in front of each other
+wait 2
+screenshot target/scenarios/stained-glass/1-overlap.png
+wait 1
+camera 50 49 40 50 -6           # along the wall at an angle: seams between colors
+wait 2
+screenshot target/scenarios/stained-glass/2-angle.png
+wait 1
+camera 32 49 20 180 -4          # from behind, looking south out at the terrain
+wait 2
+screenshot target/scenarios/stained-glass/3-behind.png

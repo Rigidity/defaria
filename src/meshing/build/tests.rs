@@ -1,5 +1,7 @@
 use super::*;
-use crate::content::{Direction, FULL_FLUID, Render, base, block, grass, sand, test_mod};
+use crate::content::{
+    Direction, FULL_FLUID, Render, base, block, block_with, grass, sand, test_mod,
+};
 use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
 
 /// A completely full chunk: stone, topped with dirt, topped with grass.
@@ -832,6 +834,26 @@ fn faces_between_the_same_translucent_block_are_culled() {
     assert_eq!(split(&[(A, "glass"), (B, "water")]), [0, 0, 6 + 12]);
     assert_eq!(split(&[(A, "stone"), (B, "glass")]), [6, 0, 5]);
     assert_eq!(split(&[(A, "leaves"), (B, "glass")]), [0, 6, 6]);
+}
+
+/// Stained glass of one color is one pane, but between two colors
+/// both faces show, and between stained and plain glass too.
+#[test]
+fn a_seam_shows_between_two_colors_of_stained_glass() {
+    let split = |a: &str, b: &str| {
+        let stained = |color: &str| match color {
+            "plain" => block("glass"),
+            color => block_with("stained_glass", &[("color", color)]),
+        };
+        let blocks = [(A, stained(a)), (B, stained(b))];
+        let meshes = neighborhood(&blocks, |_| OPEN_SKY).meshes(base());
+        [Render::Opaque, Render::Cutout, Render::Translucent].map(|r| faces(meshes.get(r)))
+    };
+    let red = "defaria:red_glass";
+    let blue = "defaria:blue_glass";
+    assert_eq!(split(red, red), [0, 0, 10], "one color: one pane");
+    assert_eq!(split(red, blue), [0, 0, 12], "two colors: a seam");
+    assert_eq!(split("plain", red), [0, 0, 12], "plain and stained");
 }
 
 /// See-through blocks cast no ambient occlusion and don't hide light

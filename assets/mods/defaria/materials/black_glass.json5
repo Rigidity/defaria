@@ -1,0 +1,8 @@
+// Nearly black, like smoked glass. A color of stained glass.
+{
+  name: "Black",
+  tags: ["stained_glass"],
+  palette: ["#101214", "#1e2024", "#2e3034", "#44464a"],
+  hardness: 0.3,
+  weight: 2500,
+}

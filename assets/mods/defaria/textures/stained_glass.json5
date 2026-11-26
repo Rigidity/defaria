@@ -1,0 +1,4 @@
+// A pane of any color: `$color` is the material.
+{
+  layers: [{ image: "stained_glass", material: "$color" }],
+}

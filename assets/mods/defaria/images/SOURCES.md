@@ -27,14 +27,18 @@ update the row when a layer is replaced.
 
 ## Drawn by script
 
-`glass.png`, `water.png`, `lava.png`, `tuft.png`, `items/ingot.png`,
-`moss.png` and `items/bucket.png` were drawn procedurally by
-`scripts/draw-layers.py` (no Retro Diffusion), 2026-11-25 (the ingot and
-moss 2026-11-26, the bucket 2026-11-26). Re-run the script to redraw them.
+`glass.png`, `stained_glass.png`, `water.png`, `lava.png`, `tuft.png`,
+`items/ingot.png`, `moss.png` and `items/bucket.png` were drawn
+procedurally by `scripts/draw-layers.py` (no Retro Diffusion), 2026-11-25
+(the ingot, moss, stained glass and the bucket 2026-11-26). Re-run the
+script to redraw them.
 
 - `glass.png`: a solid one-pixel frame, lit from the top left, two short
   highlight streaks, and a nearly clear middle (alpha 40). Partly
   transparent, for translucent glass.
+- `stained_glass.png`: the same pane with a fuller middle (alpha 150, one
+  level darker) and brighter streaks (alpha 200), so the material's color
+  shows through. Colored by the `stained_glass` materials.
 - `water.png`: soft, wrapping ripples, fully solid; the water material's
   palette carries its alpha.
 - `lava.png`: dark crust plates with bright molten seams between them,

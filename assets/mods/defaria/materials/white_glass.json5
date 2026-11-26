@@ -1,0 +1,8 @@
+// Milky white. A color of stained glass.
+{
+  name: "White",
+  tags: ["stained_glass"],
+  palette: ["#8c9294", "#c4c8c8", "#e4e6e6", "#fafafa"],
+  hardness: 0.3,
+  weight: 2500,
+}

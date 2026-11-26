@@ -417,6 +417,10 @@ pub struct State {
     /// Bit per [`Direction`]: sides this state covers completely, which
     /// is the sides any of its parts covers.
     occludes: u8,
+    /// Per [`Direction`], by its number: the textures of the faces it
+    /// culls against that side. A translucent face hides only against a
+    /// face with the same texture (see [`Content::hides`]).
+    side_textures: [SideTexture; 6],
     /// The models the state is made of, in order: its own model, then each
     /// of the block's `parts` that matches it. Meshing, light and physics
     /// use the union in `faces`, `collision` and `occludes`; this keeps
@@ -554,6 +558,37 @@ impl State {
     /// face against it.
     pub fn occludes(&self, side: Direction) -> bool {
         self.occludes & side.bit() != 0
+    }
+
+    /// The textures of the faces it culls against `side`.
+    pub fn side_texture(&self, side: Direction) -> SideTexture {
+        self.side_textures[side as usize]
+    }
+}
+
+/// The textures of the faces a state culls against one of its sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SideTexture {
+    /// It has no faces there.
+    #[default]
+    None,
+    /// They all have this texture layer.
+    One(u32),
+    /// They have different textures.
+    Mixed,
+}
+
+impl SideTexture {
+    /// Whether faces with these textures meeting would look like one
+    /// body, so the translucent faces between them can be hidden: the
+    /// same texture on both, or no faces on one side to make a seam with.
+    /// Mixed textures never match.
+    pub fn matches(self, other: SideTexture) -> bool {
+        match (self, other) {
+            (SideTexture::Mixed, _) | (_, SideTexture::Mixed) => false,
+            (SideTexture::None, _) | (_, SideTexture::None) => true,
+            (SideTexture::One(a), SideTexture::One(b)) => a == b,
+        }
     }
 }
 
@@ -782,8 +817,10 @@ impl Content {
     ///   (water, glass, leaves) is hidden, so only one face is drawn there,
     ///   and between two different opaque fluids the one with the higher
     ///   block number keeps its face;
-    /// - a translucent one hides only the same block's translucent faces
-    ///   (water against water, glass against glass);
+    /// - a translucent one hides only the same block's translucent faces,
+    ///   and only where the faces that meet have the same texture (water
+    ///   against water, red glass against red glass), so a seam shows
+    ///   between red and blue stained glass (see [`SideTexture::matches`]);
     /// - a cut-out one hides nothing.
     pub fn hides(&self, block: BlockState, neighbour: BlockState, side: Direction) -> bool {
         let (own, next) = (self.state(block), self.state(neighbour));
@@ -796,7 +833,13 @@ impl Content {
                         || (own.is_fluid() && own.block < next.block)
                 }
                 Render::Cutout => false,
-                Render::Translucent => next.block == own.block && own.render == Render::Translucent,
+                Render::Translucent => {
+                    next.block == own.block
+                        && own.render == Render::Translucent
+                        && own
+                            .side_texture(side)
+                            .matches(next.side_texture(side.opposite()))
+                }
             }
     }
 

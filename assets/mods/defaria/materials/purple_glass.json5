@@ -1,0 +1,8 @@
+// A violet purple. A color of stained glass.
+{
+  name: "Purple",
+  tags: ["stained_glass"],
+  palette: ["#34145a", "#5a2694", "#7e40be", "#a46ade"],
+  hardness: 0.3,
+  weight: 2500,
+}

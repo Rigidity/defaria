@@ -1,0 +1,8 @@
+// A sea-water cyan. A color of stained glass.
+{
+  name: "Cyan",
+  tags: ["stained_glass"],
+  palette: ["#0e4a52", "#1a7c86", "#2ea8b2", "#62d0d6"],
+  hardness: 0.3,
+  weight: 2500,
+}

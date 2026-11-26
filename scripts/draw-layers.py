@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Draw the procedural layer images: glass, water, lava, a grass tuft, an
-ingot, moss and a bucket.
+"""Draw the procedural layer images: glass, stained glass, water, lava, a
+grass tuft, an ingot, moss and a bucket.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
 src/block_texture/layer.rs checks) into OUT_DIR:
@@ -8,6 +8,8 @@ src/block_texture/layer.rs checks) into OUT_DIR:
 - glass.png: a pane. A solid one-pixel frame, faint highlight streaks
   running diagonally, and a nearly clear middle. Partly transparent, so
   the glass blends (`render: "translucent"`).
+- stained_glass.png: the same pane with a fuller middle (alpha 150), so
+  its material's color shows, and the streaks brighter.
 - water.png: soft ripples, wider than tall, fully solid; the water
   material's palette carries the transparency.
 - lava.png: dark crust plates with bright molten seams between them.
@@ -84,13 +86,13 @@ def wrapping_noise(rng, cells):
     return at
 
 
-def glass():
-    rows = [[px(5, 40) for _ in range(SIZE)] for _ in range(SIZE)]
+def glass(middle=px(5, 40), streak=px(7, 120)):
+    rows = [[middle for _ in range(SIZE)] for _ in range(SIZE)]
     # Two short parallel streaks, from bottom left to top right, in the
     # upper left of the pane: (where x + y is, which x they cover).
     for diagonal, xs in ((9, range(3, 8)), (12, range(5, 9))):
         for x in xs:
-            rows[diagonal - x][x] = px(7, 120)
+            rows[diagonal - x][x] = streak
     for i in range(SIZE):
         for x, y in ((i, 0), (i, SIZE - 1), (0, i), (SIZE - 1, i)):
             rows[y][x] = px(6, 255)
@@ -261,6 +263,7 @@ def main():
     rng = random.Random(0xDEFA41A)
     images = {
         "glass": glass(),
+        "stained_glass": glass(px(4, 150), px(7, 200)),
         "water": water(rng),
         "lava": lava(rng),
         "tuft": tuft(rng),
