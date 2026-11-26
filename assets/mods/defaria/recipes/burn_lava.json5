@@ -1,0 +1,7 @@
+// A tenth of a block of lava burns for 20 seconds at 1 kW.
+{
+  type: "combustion",
+  inputs: [{ fluid: "lava", amount: 0.1 }],
+  outputs: [{ energy: 20000 }],
+  time: 20,
+}

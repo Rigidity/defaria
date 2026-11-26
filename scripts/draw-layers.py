@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Draw the procedural layer images: glass, water, lava and a grass tuft.
+"""Draw the procedural layer images: glass, water, lava, a grass tuft and
+an ingot.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
 src/block_texture/layer.rs checks) into OUT_DIR:
@@ -12,6 +13,8 @@ src/block_texture/layer.rs checks) into OUT_DIR:
 - lava.png: dark crust plates with bright molten seams between them.
 - tuft.png: blades of grass rising from the bottom edge, transparent
   around them, for the crossed-quad plant model.
+- items/ingot.png: a metal bar seen from above and in front, its top
+  lit, outlined, transparent around it: the ingot item's icon.
 
 Each tiles with itself where it needs to (water and lava wrap at the
 edges). Deterministic: the same seed always draws the same images.
@@ -152,6 +155,38 @@ def tuft(rng):
     return rows
 
 
+INGOT = [
+    "................",
+    "................",
+    "................",
+    "................",
+    "....11111111....",
+    "...1677777761...",
+    "..166666666661..",
+    ".15555555555551.",
+    ".14444444444441.",
+    ".14444444444441.",
+    ".13333333333331.",
+    "..111111111111..",
+    "................",
+    "................",
+    "................",
+    "................",
+]
+
+
+def ingot():
+    rows = [[CLEAR for _ in range(SIZE)] for _ in range(SIZE)]
+    for y, line in enumerate(INGOT):
+        for x, c in enumerate(line):
+            if c != ".":
+                rows[y][x] = px(int(c))
+    # A glint on the front face.
+    rows[8][3] = px(6)
+    rows[8][4] = px(5)
+    return rows
+
+
 def preview(path, images):
     scale, gap = 8, 8
     width = len(images) * (SIZE * scale + gap) + gap
@@ -180,10 +215,12 @@ def main():
         "water": water(rng),
         "lava": lava(rng),
         "tuft": tuft(rng),
+        "items/ingot": ingot(),
     }
-    os.makedirs(args.out_dir, exist_ok=True)
     for name, rows in images.items():
-        write_png(os.path.join(args.out_dir, f"{name}.png"), rows)
+        path = os.path.join(args.out_dir, f"{name}.png")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_png(path, rows)
     if args.preview:
         preview(args.preview, list(images.values()))
 

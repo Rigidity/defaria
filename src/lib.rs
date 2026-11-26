@@ -26,6 +26,7 @@ pub mod network;
 mod perlin;
 mod physics;
 mod player;
+pub mod recipe;
 pub mod save;
 pub mod script;
 mod spline;
@@ -76,6 +77,7 @@ impl Plugin for GamePlugin {
             block_entity::BlockEntityPlugin,
             machine::MachinePlugin,
             network::energy::EnergyPlugin,
+            recipe::RecipePlugin,
             script::ScriptPlugin,
         ));
     }

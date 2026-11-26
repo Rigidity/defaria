@@ -1,0 +1,12 @@
+// Every ore with an ingot of its own smelts into it, whatever rock it's
+// in: one recipe for each `#ore` material, skipping those (coal) that
+// have no ingot.
+{
+  type: "smelting",
+  materials: { ore: "#ore" },
+  inputs: [{ item: "stone", when: { ore: "{ore}" } }],
+  outputs: [{ item: "ingot", properties: { metal: "{ore}" } }],
+  // Joules over seconds: 500 W.
+  energy: 2000,
+  time: 4,
+}

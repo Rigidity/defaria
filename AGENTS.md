@@ -97,7 +97,9 @@ changes.
    fluid in a voxel) and `fluids` (each fluid's total in the loaded world
    and how much of it is active), `network` (the network the conduit at a
    voxel is part of: kind, size, frozen or running, its ports and their
-   roles, and on an energy network what it stored, produced and consumed), `camera` (put the
+   roles, and on an energy network what it stored, produced and consumed),
+   `put` (put items in a machine's slot group or fluid in its tank, as a
+   tube or pipe would), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -324,6 +326,12 @@ documented in `docs/modding.md`; keep that file, the serde types in
   `MachineActive` (which puts the voxel in its `active_state`), and
   `MachinePorts` lists each network's machine ports and their roles for
   the solvers.
+- `src/recipe.rs` (and `src/recipe/`): recipe machines (a `machine` with
+  `recipes`), in `FixedUpdate` on network ticks: start a recipe on what's
+  in their input slots and tanks, draw its energy (or make a generator's)
+  a tick at a time, and put out its outputs; `RecipeProgress` is the saved
+  part. Recipes are data (`recipes/` in a mod), baked in
+  `src/content/recipe.rs`, templated ones once per material combination.
 - `src/save.rs` (and `src/save/`): the world's folder on disk and its region
   and chunk formats, documented in `docs/world-format.md`. Keep the two in
   step, and bump a format's version when it changes.

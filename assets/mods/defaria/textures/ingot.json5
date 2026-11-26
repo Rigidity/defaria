@@ -1,0 +1,4 @@
+// An ingot of any metal; see images/SOURCES.md.
+{
+  layers: [{ image: "items/ingot", material: "$metal" }],
+}

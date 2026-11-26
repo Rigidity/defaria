@@ -28,6 +28,7 @@
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). Like any edit, it's followed by the engine setting connection properties, so `pipe` joins the pipes next to it. |
 //! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
 //! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to, each with its role (`produce`, `store`, `input`, ...); or `none`. On an energy network, also what its storage holds and could, what producers gave and consumers took in the last second, and its throughput (its weakest wire's). |
+//! | `put <x> <y> <z> <name> <amount> <what>` | Put something in the machine at that voxel: `amount` of an item (named as blocks are for `fill`, `stone[ore=defaria:iron]`) into its slot group `name`, or `amount` blocks of a fluid (`lava`) into its tank `name`, as a tube or a pipe would. The run fails if there's no machine there, it has no such slot group or tank, or not all of it fits. |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
@@ -115,10 +116,12 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockState, Content, FULL_FLUID},
+    block_entity::BlockEntities,
+    content::{BlockState, Content, FULL_FLUID, ItemState},
     fluid::FluidStats,
     fly_camera::{FlyCamera, MAX_PITCH},
     fog::ChunkFog,
+    machine::{Slots, Tanks},
     physics::Body,
     player::{EYE_HEIGHT, Player},
     streaming::StreamingStatus,
@@ -239,6 +242,16 @@ pub enum Command {
     },
     Fluids,
     Network(IVec3),
+    /// Put items in a machine's slot group, or fluid in its tank.
+    Put {
+        pos: IVec3,
+        /// The slot group or tank.
+        name: String,
+        /// Items, or blocks of fluid.
+        amount: f32,
+        /// The item or fluid, named as for `fill`.
+        what: String,
+    },
     Camera {
         position: Vec3,
         /// Degrees left of north.
@@ -374,6 +387,19 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
                 ),
                 fluid: args[3].to_string(),
                 amount: parse_number(args[4])?,
+            });
+        }
+        "put" => {
+            expect(6)?;
+            commands.push(Command::Put {
+                pos: IVec3::new(
+                    parse_number(args[0])?,
+                    parse_number(args[1])?,
+                    parse_number(args[2])?,
+                ),
+                name: args[3].to_string(),
+                amount: parse_number(args[4])?,
+                what: args[5].to_string(),
             });
         }
         "fluids" => {
@@ -659,9 +685,10 @@ fn run_script(
             Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
             Command::Grain => runner.captures.push(Capture::Grain),
             Command::Inspect(name) => runner.inspections.push(name),
-            Command::Fill { .. } | Command::Pour { .. } | Command::Camera { .. } => {
-                runner.world_commands.push(command)
-            }
+            Command::Fill { .. }
+            | Command::Pour { .. }
+            | Command::Put { .. }
+            | Command::Camera { .. } => runner.world_commands.push(command),
             Command::Fluids => runner.fluid_report = true,
             Command::Network(pos) => runner.network_reports.push(pos),
             Command::Type(text) => {
@@ -787,6 +814,15 @@ fn apply_world_commands(world: &mut World) {
                 .run_system_cached_with(pour, (pos, fluid, amount))
                 .map_err(|error| error.to_string())
                 .and_then(|result| result),
+            Command::Put {
+                pos,
+                name,
+                amount,
+                what,
+            } => world
+                .run_system_cached_with(put, (pos, name, amount, what))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
             Command::Camera {
                 position,
                 yaw,
@@ -875,6 +911,93 @@ fn pour(
     voxels.set(pos, state);
     voxels.set_fluid(pos, units as u16);
     Ok(())
+}
+
+/// The item `name` means: an item id (the base game's without
+/// `defaria:`), with `[property=value,…]` setting some of its properties.
+fn item_named(content: &Content, name: &str) -> Result<ItemState, String> {
+    let (id, values) = match name.split_once('[') {
+        Some((id, rest)) => {
+            let values = rest
+                .strip_suffix(']')
+                .ok_or_else(|| format!("`{name}` has a `[` with no `]`"))?;
+            (id, values)
+        }
+        None => (name, ""),
+    };
+    let id = if id.contains(':') {
+        id.to_owned()
+    } else {
+        format!("defaria:{id}")
+    };
+    let item = content.item(&id).ok_or_else(|| format!("no item `{id}`"))?;
+    let pairs = values
+        .split(',')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            pair.split_once('=')
+                .ok_or_else(|| format!("`{pair}` isn't `property=value`"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    item.state(&pairs)
+        .ok_or_else(|| format!("item `{id}` has no state `{name}`"))
+}
+
+fn put(
+    In((pos, name, amount, what)): In<(IVec3, String, f32, String)>,
+    content: Res<Content>,
+    index: Res<BlockEntities>,
+    mut machines: Query<(Option<&mut Slots>, Option<&mut Tanks>)>,
+) -> Result<(), String> {
+    let at = |error: String| format!("put at {} {} {}: {error}", pos.x, pos.y, pos.z);
+    let (slots, tanks) = index
+        .get(pos)
+        .and_then(|entity| machines.get_mut(entity).ok())
+        .ok_or_else(|| at("there's no machine here".into()))?;
+    // A fluid goes in a tank, anything else in a slot group: a machine
+    // may have both by one name (a generator's `fuel`).
+    let fluid = fill_state(&content, &what)
+        .ok()
+        .filter(|&state| content.state(state).is_fluid());
+    if let (Some(fluid), Some(tank)) = (
+        fluid,
+        tanks
+            .map(|tanks| tanks.into_inner())
+            .and_then(|tanks| tanks.get_mut(&name)),
+    ) {
+        let id = content.block_of(fluid).id.clone();
+        let units = (amount * FULL_FLUID as f32).round();
+        if units < 1.0 {
+            return Err(at(format!("{amount} blocks is too little")));
+        }
+        let units = units as u64;
+        if !tank.takes(&id) || tank.room() < units {
+            return Err(at(format!(
+                "{amount} blocks of `{id}` don't fit in `{name}`"
+            )));
+        }
+        tank.fill(&id, units);
+        return Ok(());
+    }
+    if let Some(group) = slots
+        .map(|slots| slots.into_inner())
+        .and_then(|slots| slots.group_mut(&name))
+    {
+        let item = item_named(&content, &what).map_err(at)?;
+        if amount < 1.0 || amount.fract() != 0.0 {
+            return Err(at(format!("{amount} isn't a whole number of items")));
+        }
+        let stack = crate::inventory::ItemStack::new(item, amount as u32);
+        let room = group.room_for(&content, &stack);
+        if room < stack.count {
+            return Err(at(format!("only {room} of `{what}` fit in `{name}`")));
+        }
+        group.insert(&content, stack);
+        return Ok(());
+    }
+    Err(at(format!(
+        "the machine has no slot group, or tank for `{what}`, called `{name}`"
+    )))
 }
 
 /// The `fluids` report: each fluid's total in the loaded world, in
@@ -1340,6 +1463,7 @@ mod tests {
              pour 4 -5 6 water 0.25\n\
              fluids\n\
              network 1 -2 3\n\
+             put 1 2 3 input 4 stone[ore=defaria:iron]\n\
              type  Iron ore 2 \n",
         )
         .unwrap();
@@ -1377,6 +1501,12 @@ mod tests {
                 },
                 Command::Fluids,
                 Command::Network(IVec3::new(1, -2, 3)),
+                Command::Put {
+                    pos: IVec3::new(1, 2, 3),
+                    name: "input".into(),
+                    amount: 4.0,
+                    what: "stone[ore=defaria:iron]".into(),
+                },
                 Command::Type("Iron ore 2".into()),
             ]
         );
@@ -1740,6 +1870,68 @@ mod tests {
             ),
             "{line}"
         );
+    }
+
+    /// The slots of the machine at `pos`.
+    fn machine_slots(app: &App, pos: IVec3) -> Slots {
+        let entity = app.world().resource::<BlockEntities>().get(pos).unwrap();
+        app.world().get::<Slots>(entity).unwrap().clone()
+    }
+
+    /// `put` fills a machine's slots and tanks as a tube or pipe would: a
+    /// powered furnace given an ore smelts it, and a generator's tank takes
+    /// lava.
+    #[test]
+    fn put_fills_machines_and_a_powered_furnace_smelts() {
+        let (app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 50 20 50 creative_generator\n\
+             fill 50 20 51 50 20 51 wire\n\
+             fill 50 20 52 50 20 52 electric_furnace[facing=south]\n\
+             fill 52 20 52 52 20 52 combustion_generator\n\
+             wait 1\n\
+             put 50 20 52 input 1 stone[rock=defaria:granite,ore=defaria:gold]\n\
+             put 52 20 52 fuel 0.5 lava\n\
+             wait 360\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let content = app.world().resource::<Content>();
+        let gold = content
+            .item("defaria:ingot")
+            .unwrap()
+            .state(&[("metal", "defaria:gold")])
+            .unwrap();
+        let output = machine_slots(&app, IVec3::new(50, 20, 52));
+        assert_eq!(
+            output.group("output").unwrap().slots[0],
+            Some(crate::inventory::ItemStack::new(gold, 1))
+        );
+        let entity = app
+            .world()
+            .resource::<BlockEntities>()
+            .get(IVec3::new(52, 20, 52))
+            .unwrap();
+        // Its first tenth is burning.
+        assert_eq!(app.world().get::<Tanks>(entity).unwrap().0[0].amount, 400);
+    }
+
+    /// `put` fails the run where there's no machine, no such slot group or
+    /// tank, or not room for it all.
+    #[test]
+    fn putting_what_doesnt_fit_fails_the_run() {
+        for line in [
+            "put 50 20 50 input 1 stone",
+            "fill 50 20 50 50 20 50 electric_furnace\nput 50 20 50 fuel 1 stone",
+            "fill 50 20 50 50 20 50 electric_furnace\nput 50 20 50 input 65 stone",
+            "fill 50 20 50 50 20 50 electric_furnace\nput 50 20 50 input 1 nothing",
+            "fill 50 20 50 50 20 50 combustion_generator\nput 50 20 50 fuel 5 lava",
+            "fill 50 20 50 50 20 50 combustion_generator\nput 50 20 50 fuel 1 water",
+        ] {
+            let (_, exit) = run_game(&format!(
+                "wait 2\nfill 50 20 50 50 20 50 air\n{line}\nwait 1\n"
+            ));
+            assert!(exit.is_error(), "{line}");
+        }
     }
 
     /// The `fluids` report counts each fluid in the loaded world: deep

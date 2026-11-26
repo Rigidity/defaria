@@ -1,6 +1,6 @@
 //! Parses the definition files and resolves the references between them,
 //! in dependency order: categories, network kinds, materials, textures,
-//! models, blocks, items.
+//! models, blocks, items, recipes.
 //!
 //! Each definition that fails is reported once, naming its file, and left
 //! out; definitions referring to it then fail with "no such …".
@@ -25,6 +25,7 @@ use super::{
     load::LoadedMod,
     machine::{MachineMix, check_tank_fluids},
     qualify,
+    recipe::bake_recipe,
     schema::*,
     state_count,
 };
@@ -40,10 +41,11 @@ enum Kind {
     Models,
     Blocks,
     Items,
+    Recipes,
 }
 
 impl Kind {
-    const ALL: [Kind; 7] = [
+    const ALL: [Kind; 8] = [
         Kind::Categories,
         Kind::Networks,
         Kind::Materials,
@@ -51,6 +53,7 @@ impl Kind {
         Kind::Models,
         Kind::Blocks,
         Kind::Items,
+        Kind::Recipes,
     ];
 
     fn folder(self) -> &'static str {
@@ -62,6 +65,7 @@ impl Kind {
             Kind::Models => "models",
             Kind::Blocks => "blocks",
             Kind::Items => "items",
+            Kind::Recipes => "recipes",
         }
     }
 }
@@ -87,6 +91,7 @@ struct Defs {
     models: Vec<Def<ModelDef>>,
     blocks: Vec<Def<BlockDef>>,
     items: Vec<Def<ItemDef>>,
+    recipes: Vec<Def<RecipeDef>>,
 }
 
 pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
@@ -142,12 +147,16 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         item_states: Vec::new(),
         categories: Vec::new(),
         networks: Vec::new(),
+        recipes: Vec::new(),
         errors: Vec::new(),
         category_index: HashMap::new(),
         network_index: HashMap::new(),
         texture_index: HashMap::new(),
         block_index: HashMap::new(),
         item_index: HashMap::new(),
+        recipe_index: HashMap::new(),
+        recipe_types: HashMap::new(),
+        recipe_items: HashMap::new(),
     };
     content.block_index.insert(AIR.into(), 0);
 
@@ -219,6 +228,12 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         }
     }
     add_items(&defs, &mut content, &textures, &mut report);
+    for def in &defs.recipes {
+        match bake_recipe(&def.id, &def.namespace, &def.def, &content) {
+            Ok(recipes) => content.add_recipes(recipes),
+            Err(error) => report(&def.file, Err(error)),
+        }
+    }
     content
 }
 
@@ -316,6 +331,7 @@ fn parse_file(
         Kind::Models => defs.models.push(def(id, namespace, file, text)?),
         Kind::Blocks => defs.blocks.push(def(id, namespace, file, text)?),
         Kind::Items => defs.items.push(def(id, namespace, file, text)?),
+        Kind::Recipes => defs.recipes.push(def(id, namespace, file, text)?),
     }
     Ok(())
 }
@@ -1447,10 +1463,10 @@ fn named_values(properties: &[Property], index: &[usize]) -> Vec<(String, String
 
 /// A variant's `when`, worked out: for each property it names, which of
 /// its values match.
-struct When(Vec<(usize, Vec<bool>)>);
+pub(super) struct When(Vec<(usize, Vec<bool>)>);
 
 impl When {
-    fn new(
+    pub(super) fn new(
         when: &BTreeMap<String, Condition>,
         properties: &[Property],
         namespace: &str,
@@ -1488,14 +1504,14 @@ impl When {
         Ok(Self(out))
     }
 
-    fn matches(&self, index: &[usize]) -> bool {
+    pub(super) fn matches(&self, index: &[usize]) -> bool {
         self.0.iter().all(|(p, values)| values[index[*p]])
     }
 }
 
 /// Which of a property's values `pattern` matches: a value, or for a
 /// material property, `none`, a material or `#tag`.
-fn pattern_matches(
+pub(super) fn pattern_matches(
     property: &Property,
     pattern: &str,
     namespace: &str,

@@ -169,11 +169,13 @@ The parts the game saves, each at version 1:
 | `energy` | machines with `energy` | the integer energy stored |
 | `tanks` | machines with `tanks` | a table by tank name of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block; an empty tank is left out |
 | `slots` | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`) |
+| `recipe` | machines with `recipes` | `{ recipe, ticks }` while one is running: the recipe's id (`defaria:smelt_ore[ore=defaria:iron]` for one of a templated recipe's materials) and how many of its network ticks have run; `{}` when none is. Its inputs were taken when it started, so they're in no slot |
 
 A machine's ports and whether it's working aren't saved: they're worked
 out from the voxel's state. A tank or slot group the block doesn't have
 any more is dropped, as are slots past a group's count and items that no
-longer exist.
+longer exist. A running recipe that doesn't exist any more is dropped, and
+the inputs it took with it.
 
 A fluid voxel (a block with `fluid` set, such as water) holds an amount of
 its fluid, in thousandths of a block. Most fluid is full, so only the

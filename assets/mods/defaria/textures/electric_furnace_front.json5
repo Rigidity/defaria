@@ -1,0 +1,5 @@
+// The electric furnace's front, cold: the iron casing around a dark
+// firebox; see images/SOURCES.md.
+{
+  layers: [{ image: "furnace_front", material: "iron" }],
+}

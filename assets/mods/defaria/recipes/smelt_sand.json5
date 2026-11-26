@@ -1,0 +1,8 @@
+// Sand melts into glass.
+{
+  type: "smelting",
+  inputs: [{ item: "soil", when: { soil: "sand", turf: "none" } }],
+  outputs: [{ item: "glass" }],
+  energy: 1500,
+  time: 3,
+}

@@ -1,0 +1,8 @@
+// The electric furnace's front while it smelts: fire in the firebox and a
+// glowing vent, in lava's colours.
+{
+  layers: [
+    { image: "furnace_front", material: "iron" },
+    { image: "furnace_fire", material: "lava" },
+  ],
+}
