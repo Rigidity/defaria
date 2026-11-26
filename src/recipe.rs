@@ -3,7 +3,7 @@
 //! input slots and tanks, whoever put it there (a player, a tube, a pipe,
 //! a script).
 //!
-//! On each network tick ([`EnergyClock`], after the energy solver), a
+//! On each network tick ([`NetworkClock`], after the solvers), a
 //! machine that isn't running a recipe tries its type's recipes in order
 //! and starts the first whose inputs it holds, whose outputs fit and whose
 //! first tick it can pay for: it takes the inputs then. A running recipe
@@ -27,7 +27,11 @@ use crate::{
     content::{BlockState, Content, MachineRecipes, Recipe, RecipeInput, RecipeOutput, share},
     inventory::ItemStack,
     machine::{EnergyBuffer, MachineActive, Slots, Tanks},
-    network::energy::{EnergyClock, EnergyNeed, EnergyReport, EnergySystems},
+    network::{
+        NetworkTick,
+        energy::{EnergyNeed, EnergyReport},
+        on_network_tick,
+    },
 };
 
 pub struct RecipePlugin;
@@ -38,23 +42,25 @@ impl Plugin for RecipePlugin {
             FixedUpdate,
             ask_for_energy
                 .after(run_recipes)
+                .in_set(NetworkTick::Machines)
                 .in_set(RecipeSystems)
-                .run_if(|clock: Res<EnergyClock>| clock.due),
+                .run_if(on_network_tick),
         );
         app.register_block_entity_part::<RecipeProgress>()
             .add_message::<RecipeFinished>()
             .add_systems(
                 FixedUpdate,
                 run_recipes
-                    .after(EnergySystems)
+                    .in_set(NetworkTick::Machines)
                     .in_set(RecipeSystems)
-                    .run_if(|clock: Res<EnergyClock>| clock.due),
+                    .run_if(on_network_tick),
             );
     }
 }
 
 /// Where recipe machines run and say what energy they need next, in
-/// `FixedUpdate`: after the energy solver, on network ticks.
+/// `FixedUpdate`: in [`NetworkTick::Machines`], after the solvers, on
+/// network ticks.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RecipeSystems;
 

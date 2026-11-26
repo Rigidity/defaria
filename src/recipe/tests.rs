@@ -10,8 +10,8 @@ use crate::{
     block_entity::{BlockEntities, BlockEntityPlugin},
     connections::ConnectionsPlugin,
     content::{ItemState, base, block, block_with},
-    machine::MachinePlugin,
-    network::{NetworkPlugin, energy::EnergyPlugin},
+    machine::MachineCorePlugin,
+    network::{NetworkClock, NetworkCorePlugin, energy::EnergyPlugin},
     world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
 };
 
@@ -400,9 +400,9 @@ fn app() -> App {
         .add_message::<PropertiesUpdated>()
         .add_plugins((
             ConnectionsPlugin,
-            NetworkPlugin,
+            NetworkCorePlugin,
             BlockEntityPlugin,
-            MachinePlugin,
+            MachineCorePlugin,
             EnergyPlugin,
             RecipePlugin,
         ));
@@ -437,8 +437,8 @@ fn get(app: &mut App, pos: IVec3) -> BlockState {
 
 /// Runs frames until `n` more network ticks have run.
 fn ticks(app: &mut App, n: u64) {
-    let until = app.world().resource::<EnergyClock>().ticks + n;
-    while app.world().resource::<EnergyClock>().ticks < until {
+    let until = app.world().resource::<NetworkClock>().ticks + n;
+    while app.world().resource::<NetworkClock>().ticks < until {
         app.update();
     }
     app.update();

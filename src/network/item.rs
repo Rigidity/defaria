@@ -3,9 +3,9 @@
 //!
 //! Items move instantly (see `docs/decisions.md`): a network moves up to
 //! its rate in items a second, the throughput of its slowest tube, and
-//! nothing is ever in a tube. Each network tick (20 a second, the energy
-//! solver's [`EnergyClock`], after it) it gets its share of that rate as
-//! credit, and moves one item for each whole one:
+//! nothing is ever in a tube. Each network tick (20 a second,
+//! [`NetworkClock`], after the energy solver) it gets its share of that
+//! rate as credit, and moves one item for each whole one:
 //!
 //! - from a port that gives ([`PortRole::gives`]: `output` and `store`)
 //!   to one that takes (`input` and `store`), never between two `store`s
@@ -32,7 +32,7 @@ use bevy::{platform::collections::HashMap, prelude::*};
 
 use super::{
     NetworkAppExt, NetworkId, NetworkMap, NetworkState, NetworkSystems, Networks, Share,
-    energy::{EnergyClock, EnergySystems},
+    tick::{NetworkClock, NetworkTick, on_network_tick},
 };
 use crate::{
     block_entity::{BlockEntityPart, RegisterBlockEntityPart, Value},
@@ -57,18 +57,19 @@ impl Plugin for ItemNetworkPlugin {
                 FixedUpdate,
                 (move_items, emit_items)
                     .chain()
-                    .after(EnergySystems)
                     // So items that arrive in a machine are there for its
-                    // recipe on the same tick.
-                    .before(crate::recipe::run_recipes)
-                    .run_if(|clock: Res<EnergyClock>| clock.due)
+                    // recipe on the same tick: recipes run in
+                    // `NetworkTick::Machines`, after this.
+                    .in_set(NetworkTick::Solve)
+                    .run_if(on_network_tick)
                     .in_set(ItemSystems),
             );
     }
 }
 
-/// Where the item solver runs, in `FixedUpdate`: after the energy solver
-/// and before recipe machines, on network ticks.
+/// Where the item solver runs, in `FixedUpdate`: in
+/// [`NetworkTick::Solve`], after the energy solver and before recipe
+/// machines, on network ticks.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ItemSystems;
 
@@ -78,7 +79,7 @@ pub struct ItemSystems;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemRouting {
     /// Items it may move, in thousandths, counted out a tick at a time as
-    /// energy is ([`EnergyClock::share`]), so a rate holds exactly over
+    /// energy is ([`NetworkClock::share`]), so a rate holds exactly over
     /// each second.
     pub credit: u64,
     pub cursor: Cursor,
@@ -192,7 +193,7 @@ fn emit_items(content: Res<Content>, mut sources: Query<(&ItemSource, &mut Slots
 /// goes.
 fn move_items(
     content: Res<Content>,
-    clock: Res<EnergyClock>,
+    clock: Res<NetworkClock>,
     networks: Res<Networks>,
     ports: Res<MachinePorts>,
     rates: Res<ItemRates>,

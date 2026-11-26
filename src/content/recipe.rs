@@ -18,7 +18,7 @@ use super::{
     schema::{Condition, OneOrMany, RecipeDef, RecipeInputDef, RecipeOutputDef},
     state_count,
 };
-use crate::{machine::SLOT_SIZE, network::energy::TICKS_PER_SECOND};
+use crate::{machine::SLOT_SIZE, network::TICKS_PER_SECOND};
 
 /// A recipe, baked: for a templated one, one combination of its materials.
 #[derive(Debug, Clone, PartialEq)]

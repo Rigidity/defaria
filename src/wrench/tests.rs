@@ -10,7 +10,7 @@ use crate::{
     headless::{SETTLE_TIMEOUT_FRAMES, Script, test_game},
     light::LightPlugin,
     meshing::MeshingPlugin,
-    network::{NetworkPlugin, Networks},
+    network::{NetworkCorePlugin, Networks},
     save::{WorldFolder, tests::temp_folder},
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
     voxel_material::BlockMaterial,
@@ -138,7 +138,7 @@ fn app(folder: Option<&Path>) -> App {
             StreamingPlugin,
             BlockEntityPlugin,
             ConnectionsPlugin,
-            NetworkPlugin,
+            NetworkCorePlugin,
         ))
         .register_block_entity_part::<BlockedFaces>()
         .init_asset::<Mesh>()

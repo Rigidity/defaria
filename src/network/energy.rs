@@ -5,8 +5,8 @@
 //! `docs/decisions.md`. It lives only in machines' [`EnergyBuffer`]s:
 //! wires hold none, so a network merging or splitting moves no energy.
 //!
-//! Each network tick ([`TICKS_PER_SECOND`] a second, counted in
-//! `FixedUpdate`):
+//! Each network tick ([`NetworkClock`], [`TICKS_PER_SECOND`] a second,
+//! counted in `FixedUpdate`):
 //!
 //! 1. Machines that `generate` fill their buffers by that much.
 //! 2. Each running network balances its machines' ports ([`balance`]):
@@ -28,89 +28,43 @@
 //! machines that use it. [`EnergyReport`] keeps what each network stored,
 //! produced and consumed, for the headless `network` command.
 
-use std::time::Duration;
-
 use bevy::{
     platform::collections::{HashMap, HashSet},
     prelude::*,
 };
 
-use super::{NetworkId, NetworkSystems, Networks};
+use super::{
+    NetworkId, NetworkSystems, Networks,
+    tick::{NetworkClock, NetworkTick, TICKS_PER_SECOND, on_network_tick},
+};
 use crate::{
     content::{BlockState, Content, Solver},
     machine::{EnergyBuffer, MachineActive, MachinePorts},
     world::{Chunk, ChunkCoord, ChunkMap},
 };
 
-/// Network ticks a second: the energy solver's rate. Fluid and item
-/// networks run at the same rate (see `docs/decisions.md`).
-pub const TICKS_PER_SECOND: u32 = 20;
-
-/// How long a network tick is.
-pub const TICK: Duration = Duration::from_millis(1000 / TICKS_PER_SECOND as u64);
-
 pub struct EnergyPlugin;
 
 impl Plugin for EnergyPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EnergyClock>()
-            .init_resource::<EnergyLimits>()
+        app.init_resource::<EnergyLimits>()
             .init_resource::<EnergyReport>()
             .add_systems(Update, find_limits.after(NetworkSystems))
             .add_systems(
                 FixedUpdate,
-                (
-                    advance_clock,
-                    (generate, solve, use_energy)
-                        .chain()
-                        .run_if(|clock: Res<EnergyClock>| clock.due),
-                )
+                (generate, solve, use_energy)
                     .chain()
+                    .run_if(on_network_tick)
+                    .in_set(NetworkTick::Solve)
                     .in_set(EnergySystems),
             );
     }
 }
 
-/// Where the energy solver runs, in `FixedUpdate`.
+/// Where the energy solver runs, in `FixedUpdate`: in
+/// [`NetworkTick::Solve`], before the fluid and item solvers.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EnergySystems;
-
-/// Counts network ticks out of fixed time.
-#[derive(Resource, Debug, Default)]
-pub struct EnergyClock {
-    /// Fixed time not yet spent on a tick.
-    since: Duration,
-    /// Network ticks so far, counting the one due now.
-    pub ticks: u64,
-    /// Whether a network tick runs on this fixed step.
-    pub due: bool,
-}
-
-impl EnergyClock {
-    /// What a rate of `per_second` gives on the current tick: whole units
-    /// that add up to exactly `per_second` over each second's ticks.
-    pub fn share(&self, per_second: u64) -> u64 {
-        per_tick(per_second, self.ticks.saturating_sub(1))
-    }
-}
-
-/// What a rate of `per_second` gives on network tick `tick`: the ticks of
-/// each second add up to exactly `per_second`.
-pub fn per_tick(per_second: u64, tick: u64) -> u64 {
-    let n = TICKS_PER_SECOND as u128;
-    let t = (tick % TICKS_PER_SECOND as u64) as u128;
-    let rate = per_second as u128;
-    (rate * (t + 1) / n - rate * t / n) as u64
-}
-
-fn advance_clock(time: Res<Time>, mut clock: ResMut<EnergyClock>) {
-    clock.since += time.delta();
-    clock.due = clock.since >= TICK;
-    if clock.due {
-        clock.since -= TICK;
-        clock.ticks += 1;
-    }
-}
 
 /// Each energy network's throughput, in watts: its weakest conduit's.
 #[derive(Resource, Debug, Default)]
@@ -350,7 +304,7 @@ pub struct EnergyNeed(pub u64);
 
 /// Fills machines that generate.
 fn generate(
-    clock: Res<EnergyClock>,
+    clock: Res<NetworkClock>,
     mut buffers: Query<&mut EnergyBuffer>,
     mut report: ResMut<EnergyReport>,
 ) {
@@ -366,7 +320,7 @@ fn generate(
 
 /// Balances every running energy network.
 fn solve(
-    clock: Res<EnergyClock>,
+    clock: Res<NetworkClock>,
     networks: Res<Networks>,
     content: Res<Content>,
     ports: Res<MachinePorts>,
@@ -480,7 +434,7 @@ fn solve(
 
 /// Machines that use energy pay for the tick, and work while they can.
 fn use_energy(
-    clock: Res<EnergyClock>,
+    clock: Res<NetworkClock>,
     mut machines: Query<(&mut EnergyBuffer, Option<&mut MachineActive>)>,
     mut report: ResMut<EnergyReport>,
 ) {

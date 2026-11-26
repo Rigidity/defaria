@@ -41,9 +41,19 @@ use crate::{
     world::{PropertiesUpdated, VoxelChanged, Voxels},
 };
 
+/// Machines and the screen using one opens.
 pub struct MachinePlugin;
 
 impl Plugin for MachinePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins((MachineCorePlugin, screen::MachineScreenPlugin));
+    }
+}
+
+/// Machines without their screen, for tests that have no UI.
+pub struct MachineCorePlugin;
+
+impl Plugin for MachineCorePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MachinePorts>()
             .register_block_entity_part::<Ports>()

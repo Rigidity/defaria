@@ -16,8 +16,8 @@ use crate::{
     },
     inventory::ItemStack,
     light::{ChunkLight, Light},
-    machine::{EnergyBuffer, MachinePlugin, Slots, Tanks},
-    network::{NetworkPlugin, energy::EnergyPlugin, energy::EnergyReport},
+    machine::{EnergyBuffer, MachineCorePlugin, Slots, Tanks},
+    network::{NetworkCorePlugin, energy::EnergyPlugin, energy::EnergyReport},
     recipe::RecipePlugin,
     script::{BlockUsed, ScriptPlugin, ScriptSettings, source::ScriptSources},
     world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
@@ -234,9 +234,9 @@ fn app() -> App {
         .add_message::<PropertiesUpdated>()
         .add_plugins((
             ConnectionsPlugin,
-            NetworkPlugin,
+            NetworkCorePlugin,
             BlockEntityPlugin,
-            MachinePlugin,
+            MachineCorePlugin,
             EnergyPlugin,
             RecipePlugin,
             ScriptPlugin,
@@ -287,20 +287,20 @@ fn set(app: &mut App, voxels: &[(IVec3, BlockState)]) {
 /// fixed steps after it). A frame is less than a fixed step, so it stops
 /// on the step it means to.
 fn ticks(app: &mut App, n: u64) {
-    let until = app.world().resource::<EnergyClock>().ticks + n;
-    while app.world().resource::<EnergyClock>().ticks < until
+    let until = app.world().resource::<NetworkClock>().ticks + n;
+    while app.world().resource::<NetworkClock>().ticks < until
         || !app.world().resource::<MachineTickPhase>().tick_done()
     {
         app.update();
     }
-    assert_eq!(app.world().resource::<EnergyClock>().ticks, until);
+    assert_eq!(app.world().resource::<NetworkClock>().ticks, until);
 }
 
 /// Runs frames until network tick `n` more is due, stopping on its own
 /// fixed step: only the machines in its first slot have ticked.
 fn to_network_tick(app: &mut App, n: u64) {
-    let until = app.world().resource::<EnergyClock>().ticks + n;
-    while app.world().resource::<EnergyClock>().ticks < until {
+    let until = app.world().resource::<NetworkClock>().ticks + n;
+    while app.world().resource::<NetworkClock>().ticks < until {
         app.update();
     }
 }

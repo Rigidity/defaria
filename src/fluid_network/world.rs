@@ -16,7 +16,7 @@ use crate::{
     block_entity::BlockEntity,
     content::{BlockState, Content, Direction, FULL_FLUID},
     machine::Tanks,
-    network::energy::EnergyClock,
+    network::NetworkClock,
     world::Voxels,
 };
 
@@ -192,7 +192,7 @@ pub fn take(
 
 /// Runs the pumps and outlets for this network tick.
 pub(super) fn run_pumps_and_outlets(
-    clock: Res<EnergyClock>,
+    clock: Res<NetworkClock>,
     content: Res<Content>,
     mut machines: Query<(&BlockEntity, &mut Tanks)>,
     mut voxels: Voxels,

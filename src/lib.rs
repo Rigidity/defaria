@@ -80,11 +80,7 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins((
             machine::MachinePlugin,
-            machine::screen::MachineScreenPlugin,
-            network::energy::EnergyPlugin,
-            fluid_network::FluidNetworkPlugin,
             recipe::RecipePlugin,
-            network::ItemNetworkPlugin,
             script::ScriptPlugin,
             script::machine::MachineScriptPlugin,
             wrench::WrenchPlugin,

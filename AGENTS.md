@@ -316,8 +316,15 @@ documented in `docs/modding.md`; keep that file, the serde types in
   network that reaches into an unloaded chunk. Solvers keep what each
   network holds in a `NetworkMap` (`NetworkState`), which merges and
   splits with it. Network kinds are data (`networks/` in a mod).
-  `src/network/energy.rs`: the `energy` solver, in `FixedUpdate` at 20
-  network ticks a second: moves energy between machines' `EnergyBuffer`s
+  `NetworkPlugin` adds the solvers too (energy, fluid, items);
+  `NetworkCorePlugin` is the networks and clock alone, for tests.
+  `src/network/tick.rs`: the network clock (`NetworkClock`), 20 network
+  ticks a second counted out of `FixedUpdate`; every ticked system runs
+  in a phase of `NetworkTick` (`Clock`, then `Solve` for the solvers,
+  then `Machines` for recipes and machine scripts) under the
+  `on_network_tick` run condition.
+  `src/network/energy.rs`: the `energy` solver, first in
+  `NetworkTick::Solve`: moves energy between machines' `EnergyBuffer`s
   by their ports' roles, capped by the network's weakest wire, makes it
   in generators and uses it up in machines with `use`, and reports each
   network's (`EnergyReport`).
@@ -361,9 +368,11 @@ documented in `docs/modding.md`; keep that file, the serde types in
   entities get `Ports`, `EnergyBuffer`, `Tanks`, `Slots` and
   `MachineActive` (which puts the voxel in its `active_state`), and
   `MachinePorts` lists each network's machine ports and their roles for
-  the solvers. `src/machine/screen.rs`: the screen using a machine
-  opens, laid out from its definition; `src/machine/exchange.rs`: moving
-  items between the player and a machine. Using a block (right click) is
+  the solvers. `MachinePlugin` adds the screen; `MachineCorePlugin` is
+  machines without it, for tests. `src/machine/screen.rs`: the screen
+  using a machine opens, laid out from its definition;
+  `src/machine/exchange.rs`: moving items between the player and a
+  machine. Using a block (right click) is
   handled in `block_edit::BlockUseSystems`, before placing.
 - `src/recipe.rs` (and `src/recipe/`): recipe machines (a `machine` with
   `recipes`), in `FixedUpdate` on network ticks: start a recipe on what's
