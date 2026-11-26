@@ -1,0 +1,3 @@
+{
+  layers: [{ image: "items/stick", material: "$wood" }],
+}

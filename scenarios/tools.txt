@@ -1,0 +1,40 @@
+# Tools with rock heads and sticks of every wood, in the inventory:
+# sticks, then the tools (knapped stone heads next to metal ones) and a
+# tooltip on a granite axe. A stone pickaxe, a granite axe, a granite
+# shovel and a slate knife are on the hotbar.
+# Run: cargo headless scenarios/tools.txt
+camera 64 56 92 0 -37.9          # the start's view, flying
+hotbar 2 axe[head=defaria:granite,handle=defaria:birch]
+hotbar 3 shovel[head=defaria:granite,handle=defaria:spruce]
+hotbar 4 knife[head=defaria:slate]
+hotbar 1 pickaxe[head=defaria:stone]
+wait 2
+hold MouseLeft 1                 # lock the cursor
+wait 1
+hold KeyE 1                      # open the inventory
+wait 3
+cursor 640 73                    # the search box, at the top
+wait 1
+hold MouseLeft 1
+wait 1
+type stick
+wait 2
+screenshot target/scenarios/tools/0-sticks.png
+wait 1
+hold Backspace 1
+wait 1
+hold Backspace 1
+wait 1
+hold Backspace 1
+wait 1
+hold Backspace 1
+wait 1
+hold Backspace 1
+wait 1
+type category:tools
+wait 2
+screenshot target/scenarios/tools/1-tools.png
+wait 1
+cursor 575 183                   # a granite axe on a birch handle
+wait 3
+screenshot target/scenarios/tools/2-tooltip.png

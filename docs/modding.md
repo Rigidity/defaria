@@ -804,9 +804,9 @@ Log and a Birch Log item, but no item per axis. Set `item: false` on a
 property to leave it out, or on the block to have no item at all.
 
 The item is as hard and as heavy as the block state it places. To change
-the item (its name, icon, uniqueness, hardness, weight or stats), add an item file with
-the same name: what it leaves out comes from the block. It can't add
-properties or a `block`.
+the item (its name, icon, variants, uniqueness, hardness, weight or
+stats), add an item file with the same name: what it leaves out comes
+from the block. It can't add properties or a `block`.
 
 ### Block entities
 
@@ -997,6 +997,7 @@ an item or material that doesn't exist, is an error.
   },
   // The icon.
   texture: { texture: "pickaxe", materials: { head: "{head}", handle: "{handle}" } },
+  variants: [],          // optional: other names and icons (see below)
   unique: true,          // each one its own entry; default false
   block: "stone",        // optional: the block it places
   // As for blocks: a number, or a base times its materials' average.
@@ -1071,9 +1072,36 @@ its own (such as wear). Tools are unique.
 Items have properties as blocks do, plain or material, and every
 combination is a separate item state: an item carries its property values
 in the hotbar and the inventory. `{property}` works in the name and the
-texture as it does for blocks. An item that places a block passes on the
-values of the properties the block has too (by name), and leaves the rest
-at their defaults.
+texture as it does for blocks.
+
+`variants` change the name or icon of the states a `when` matches (see
+[Conditions](#conditions)). Every variant that matches applies, in order,
+so a later one wins; what no variant sets is the item's own. A tool takes
+a rock or a metal head, and a rock head has its own, chunkier image:
+
+```json5
+// items/pickaxe.json5
+{
+  name: "{head} Pickaxe",
+  properties: {
+    head: { materials: ["#metal", "#rock"], default: "iron" },
+    handle: { materials: "#wood", default: "oak" },
+  },
+  texture: { texture: "pickaxe", materials: { head: "{head}", handle: "{handle}" } },
+  variants: [
+    {
+      when: { head: "#rock" },
+      texture: { texture: "pickaxe_rock", materials: { head: "{head}", handle: "{handle}" } },
+    },
+  ],
+}
+```
+
+A block's item file can have variants too. Their `when` names the item's
+properties, so not a block property with `item: false`.
+
+An item that places a block passes on the values of the properties the
+block has too (by name), and leaves the rest at their defaults.
 
 The icon (in the hotbar and the inventory) is the `texture` tile, drawn
 flat and scaled up. An item with no `texture` that places a block shows

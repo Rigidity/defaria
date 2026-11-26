@@ -1170,6 +1170,82 @@ mod tests {
         );
     }
 
+    /// Pickaxes, axes, shovels and knives take a rock head as well as a
+    /// metal one, drawn as knapped stone; swords and wrenches stay metal.
+    /// Sticks come in every wood. Names, hardness and weight come from the
+    /// materials.
+    #[test]
+    fn tools_take_rock_heads_and_sticks_any_wood() {
+        let content = base();
+        let info = |item: &str, values: &[(&str, &str)]| {
+            let item = content.item(item).unwrap();
+            content.item_state(item.state(values).unwrap()).unwrap()
+        };
+        for tool in ["pickaxe", "axe", "shovel", "knife"] {
+            let id = format!("defaria:{tool}");
+            let granite = info(
+                &id,
+                &[("head", "defaria:granite"), ("handle", "defaria:birch")],
+            );
+            assert_eq!(
+                granite.texture,
+                content.texture(&format!(
+                    "defaria:{tool}_rock(handle=defaria:birch,head=defaria:granite)"
+                )),
+                "{tool}"
+            );
+            assert!(granite.name.starts_with("Granite "), "{}", granite.name);
+            let iron = info(&id, &[("head", "defaria:iron")]);
+            assert_eq!(
+                iron.texture,
+                content.texture(&format!(
+                    "defaria:{tool}(handle=defaria:oak,head=defaria:iron)"
+                )),
+                "{tool}"
+            );
+            // Metal or rock heads, by wood handles.
+            let item = content.item(&id).unwrap();
+            let count = |tag: &str| {
+                content
+                    .materials
+                    .values()
+                    .filter(|m| m.has_tag(tag))
+                    .count()
+            };
+            assert_eq!(
+                item.state_count as usize,
+                (count("metal") + count("rock")) * count("wood"),
+                "{tool}"
+            );
+        }
+        let pickaxe = info(
+            "defaria:pickaxe",
+            &[("head", "defaria:granite"), ("handle", "defaria:oak")],
+        );
+        assert_eq!(pickaxe.name, "Granite Pickaxe");
+        // Stone is softer and lighter than iron, so a stone pickaxe is
+        // softer and lighter than an iron one.
+        let stone = info("defaria:pickaxe", &[("head", "defaria:stone")]);
+        let iron = info("defaria:pickaxe", &[("head", "defaria:iron")]);
+        assert_eq!(stone.hardness, (3.0 * 1.5 + 1.0) / 4.0);
+        assert!(stone.weight < iron.weight);
+        assert!(
+            content
+                .item("defaria:sword")
+                .unwrap()
+                .state(&[("head", "defaria:stone")])
+                .is_none()
+        );
+
+        let stick = info("defaria:stick", &[("wood", "defaria:spruce")]);
+        assert_eq!(stick.name, "Spruce Stick");
+        assert_eq!(
+            stick.texture,
+            content.texture("defaria:stick(wood=defaria:spruce)")
+        );
+        assert!(!content.item("defaria:stick").unwrap().unique);
+    }
+
     #[test]
     fn states_count_properties_last_fastest() {
         let content = base();

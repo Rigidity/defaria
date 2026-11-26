@@ -1,0 +1,10 @@
+// A stick of any wood.
+{
+  name: "{wood} Stick",
+  properties: { wood: { materials: "#wood", default: "oak" } },
+  texture: { texture: "stick", materials: { wood: "{wood}" } },
+  hardness: { materials: { wood: 1 } },
+  // A tenth of a litre of the wood.
+  weight: { base: 0.0001, materials: { wood: 1 } },
+  category: "materials",
+}

@@ -1,0 +1,8 @@
+// An axe with a knapped stone head, for rock heads: chunkier than the
+// metal one, which looks wrong recoloured as rock.
+{
+  layers: [
+    { image: "items/axe_handle", material: "$handle" },
+    { image: "items/axe_head_rock", material: "$head" },
+  ],
+}

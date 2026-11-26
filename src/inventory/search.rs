@@ -203,7 +203,10 @@ mod tests {
         // Birch is a material of logs and planks, and tool handles.
         let birch = names("material:birch");
         assert!(birch.contains(&"Birch Log".to_owned()), "{birch:?}");
-        assert!(birch.iter().all(|name| !name.contains("Stone")));
+        // Stone itself isn't birch, though a stone pickaxe on a birch
+        // handle is.
+        assert!(!birch.contains(&"Stone".to_owned()), "{birch:?}");
+        assert!(birch.contains(&"Stone Pickaxe".to_owned()), "{birch:?}");
         // Both filters, and a word.
         let birch_tools = names("category:tools material:birch axe");
         assert!(!birch_tools.is_empty());

@@ -159,3 +159,116 @@ fn a_block_items_file_fills_in_its_values() {
         "test:bark"
     );
 }
+
+/// An item's variants change the name and icon of the states their
+/// `when` matches, by tag; the others keep the item's own, and a later
+/// variant wins.
+#[test]
+fn item_variants_change_matching_states() {
+    let content = materials(&[(
+        "items/tool.json5",
+        r##"{
+            name: "{head} Tool",
+            properties: { head: { materials: ["#metal", "#rock"], default: "iron" } },
+            texture: { texture: "bark", materials: { wood: "{head}" } },
+            variants: [
+                {
+                    when: { head: "#rock" },
+                    texture: { texture: "ore", materials: { rock: "{head}", ore: "{head}" } },
+                },
+                { when: { head: "rock" }, name: "Rough {head} Tool" },
+                // Matches too, after the others, so it wins.
+                {
+                    when: { head: "#rock" },
+                    name: "Rocky {head} Tool",
+                    texture: { texture: "ore", materials: { rock: "{head}", ore: "iron" } },
+                },
+            ],
+        }"##,
+    )]);
+    assert!(content.errors.is_empty(), "{}", errors(&content));
+    let tool = content.item("test:tool").unwrap();
+    assert_eq!(tool.state_count, 2);
+    let state = |head: &str| {
+        content
+            .item_state(tool.state(&[("head", head)]).unwrap())
+            .unwrap()
+    };
+    let iron = state("test:iron");
+    assert_eq!(iron.name, "Iron Tool");
+    assert_eq!(iron.texture, content.texture("test:bark(wood=test:iron)"));
+    let rock = state("test:rock");
+    assert_eq!(rock.name, "Rocky Rock Tool");
+    assert_eq!(
+        rock.texture,
+        content.texture("test:ore(ore=test:iron,rock=test:rock)")
+    );
+    // Only the tiles states use are made: not the first rock variant's
+    // (which the last replaced), nor the rock look for the metal head.
+    assert!(
+        content
+            .texture("test:ore(ore=test:rock,rock=test:rock)")
+            .is_none()
+    );
+    assert!(
+        content
+            .texture("test:ore(ore=test:iron,rock=test:iron)")
+            .is_none()
+    );
+}
+
+/// A block's item file takes variants too, over the item's properties,
+/// and a variant naming a property the item hasn't got is an error.
+#[test]
+fn item_variants_work_on_block_items_and_report_mistakes() {
+    let content = materials(&[
+        (
+            "blocks/log.json5",
+            r##"{ properties: { wood: { materials: "#wood" } }, model: "quad", textures: { all: "a" } }"##,
+        ),
+        (
+            "items/log.json5",
+            r##"{ variants: [{
+                when: { wood: "#pale" },
+                name: "Pale {wood} Log",
+                texture: { texture: "bark", materials: { wood: "{wood}" } },
+            }] }"##,
+        ),
+    ]);
+    assert!(content.errors.is_empty(), "{}", errors(&content));
+    let item = content.item("test:log").unwrap();
+    let name = |wood: &str| {
+        &content
+            .item_state(item.state(&[("wood", wood)]).unwrap())
+            .unwrap()
+            .name
+    };
+    assert_eq!(name("test:birch"), "Pale Birch Log");
+    assert_eq!(name("test:oak"), "Log");
+    let texture = |wood: &str| {
+        content
+            .item_state(item.state(&[("wood", wood)]).unwrap())
+            .unwrap()
+            .texture
+    };
+    assert_eq!(
+        texture("test:birch"),
+        content.texture("test:bark(wood=test:birch)")
+    );
+    // Oak's icon is still the block, drawn in 3D.
+    assert_eq!(texture("test:oak"), None);
+
+    let content = materials(&[(
+        "items/tool.json5",
+        r##"{
+            properties: { head: { materials: "#metal" } },
+            variants: [{ when: { handle: "#wood" }, name: "x" }],
+        }"##,
+    )]);
+    let all = errors(&content);
+    assert!(
+        all.contains("items/tool.json5") && all.contains("variant 1: no property `handle`"),
+        "{all}"
+    );
+    assert!(content.item("test:tool").is_none());
+}

@@ -1,11 +1,18 @@
-// A metal head on a wooden handle; each pair is its own item.
+// A metal or rock head on a wooden handle; each pair is its own item. A
+// rock head is knapped stone, drawn chunkier than a metal one.
 {
   name: "{head} Knife",
   properties: {
-    head: { materials: "#metal", default: "iron" },
+    head: { materials: ["#metal", "#rock"], default: "iron" },
     handle: { materials: "#wood", default: "oak" },
   },
   texture: { texture: "knife", materials: { head: "{head}", handle: "{handle}" } },
+  variants: [
+    {
+      when: { head: "#rock" },
+      texture: { texture: "knife_rock", materials: { head: "{head}", handle: "{handle}" } },
+    },
+  ],
   unique: true,
   // Mostly as hard as its head.
   hardness: { materials: { head: 3, handle: 1 } },

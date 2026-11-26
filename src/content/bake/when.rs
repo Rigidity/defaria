@@ -8,6 +8,23 @@ use crate::content::{Content, NONE, Property, qualify, schema::Condition};
 /// its values match.
 pub(in crate::content) struct When(Vec<(usize, Vec<bool>)>);
 
+/// Each of a list of `when`s worked out, an error naming the one at fault
+/// by `label` and its place in the list ("variant 2: ...").
+pub(in crate::content) fn all_whens<'d>(
+    label: &str,
+    list: impl Iterator<Item = &'d BTreeMap<String, Condition>>,
+    properties: &[Property],
+    namespace: &str,
+    content: &Content,
+) -> Result<Vec<When>, String> {
+    list.enumerate()
+        .map(|(i, when)| {
+            When::new(when, properties, namespace, content)
+                .map_err(|error| format!("{label} {}: {error}", i + 1))
+        })
+        .collect()
+}
+
 impl When {
     pub(in crate::content) fn new(
         when: &BTreeMap<String, Condition>,
