@@ -419,14 +419,7 @@ fn generating_is_capped_by_max_generate_and_only_in_on_tick() {
 
 fn fluid_at(app: &mut App, pos: IVec3) -> u64 {
     app.world_mut()
-        .run_system_once(move |voxels: Voxels, content: Res<Content>| {
-            let (state, partial) = voxels.get_with_fluid(pos).unwrap();
-            if content.state(state).is_fluid() {
-                partial.unwrap_or(FULL_FLUID) as u64
-            } else {
-                0
-            }
-        })
+        .run_system_once(move |voxels: Voxels| voxels.fluid_amount(pos) as u64)
         .unwrap()
 }
 

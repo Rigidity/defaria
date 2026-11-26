@@ -69,7 +69,7 @@ impl TestWorld {
         let mut chunk = Chunk::default();
         for index in 0..CHUNK_VOLUME {
             let local = Chunk::position_of(index);
-            chunk.set_at(local, fill(coord * CHUNK_SIZE as i32 + local));
+            chunk.put(local, fill(coord * CHUNK_SIZE as i32 + local));
         }
         queue.chunk_loaded(coord, &chunk, &Self::table(), &*self.sky, |c| {
             self.chunks.get(&c).map(|(chunk, light)| (chunk, light))
@@ -88,7 +88,7 @@ impl TestWorld {
         let mut chunk = Chunk::default();
         for index in 0..CHUNK_VOLUME {
             let local = Chunk::position_of(index);
-            chunk.set_at(local, fill(coord * CHUNK_SIZE as i32 + local));
+            chunk.put(local, fill(coord * CHUNK_SIZE as i32 + local));
         }
         let light = light_alone(&[(coord, &chunk)], &Self::table(), &*self.sky)
             .pop()
@@ -112,14 +112,27 @@ impl TestWorld {
         remesh
     }
 
-    fn block(&self, pos: IVec3) -> Option<BlockState> {
+    /// What light sees at `pos`: its block and its fluid.
+    fn voxel(&self, pos: IVec3) -> Option<Lit> {
         let (coord, local) = split(pos);
-        self.chunks.get(&coord).map(|(chunk, _)| chunk.at(local))
+        let (chunk, _) = self.chunks.get(&coord)?;
+        Some(Lit::at(chunk, Chunk::index_of(local)))
     }
 
     fn set(&mut self, queue: &mut LightQueue, pos: IVec3, state: BlockState) {
         let (coord, local) = split(pos);
-        self.chunks.get_mut(&coord).unwrap().0.set_at(local, state);
+        self.chunks.get_mut(&coord).unwrap().0.put(local, state);
+        queue.voxel_changed(pos);
+    }
+
+    /// Puts a full voxel of the fluid `kind` in with the block at `pos`.
+    fn pour(&mut self, queue: &mut LightQueue, pos: IVec3, kind: BlockState) {
+        let (coord, local) = split(pos);
+        self.chunks
+            .get_mut(&coord)
+            .unwrap()
+            .0
+            .fill_fluid_at(local, kind);
         queue.voxel_changed(pos);
     }
 
@@ -152,7 +165,7 @@ impl TestWorld {
                 }
             };
             for &pos in &positions {
-                let state = self.block(pos).unwrap();
+                let state = self.voxel(pos).unwrap();
                 let emitted = table.emits(state, channel);
                 let (coord, local) = split(pos);
                 let sky = channel == SKY
@@ -183,9 +196,9 @@ impl TestWorld {
                             value - 1
                         };
                         let n = pos + direction;
-                        let from = self.block(pos).unwrap();
+                        let from = self.voxel(pos).unwrap();
                         let next = self
-                            .block(n)
+                            .voxel(n)
                             .map_or(0, |to| table.passing(from, to, i, channel, next));
                         if next > 0 && level(&mut light, n, next) {
                             buckets[next as usize].push(n);
@@ -401,12 +414,22 @@ fn base_light_filters() {
     let table = TestWorld::table();
     for (name, filter) in [("water", 2), ("leaves", 1), ("glass", 0), ("tuft", 0)] {
         assert_eq!(
-            table.entering(block(name), MAX_LIGHT),
+            table.entering(Lit::from(block(name)), MAX_LIGHT),
             MAX_LIGHT - filter,
             "{name}"
         );
     }
-    assert_eq!(table.entering(block("water"), 1), 0, "never below 0");
+    assert_eq!(
+        table.entering(Lit::from(block("water")), 1),
+        0,
+        "never below 0"
+    );
+    // Water in with a slab dims light as water alone does.
+    let slab_in_water = Lit {
+        block: block("stone_slab"),
+        fluid: block("water"),
+    };
+    assert_eq!(table.entering(slab_in_water, MAX_LIGHT), MAX_LIGHT - 2);
     assert!(
         !table.same_light(block("water"), block("glass")),
         "light treats them differently, by their filters alone"
@@ -560,11 +583,12 @@ fn covered_sides_stop_light_across_chunk_borders() {
     let table = LightTable::new(&content);
     let lid = content.default_state("test:lid").unwrap();
     // Covers its top only.
-    assert!(table.closed(lid, UP) && !table.closed(lid, DOWN));
+    let (lit, air) = (Lit::from(lid), Lit::from(BlockState::AIR));
+    assert!(table.closed(lit, UP) && !table.closed(lit, DOWN));
     let through = |from, to, direction| table.passing(from, to, direction, SKY, 9);
-    assert_eq!(through(BlockState::AIR, lid, DOWN + 1), 9);
-    assert_eq!(through(BlockState::AIR, lid, DOWN), 0);
-    assert_eq!(through(lid, BlockState::AIR, UP), 0);
+    assert_eq!(through(air, lit, DOWN + 1), 9);
+    assert_eq!(through(air, lit, DOWN), 0);
+    assert_eq!(through(lit, air, UP), 0);
 
     let mut store = TestWorld::new(1);
     let mut queue = LightQueue::default();
@@ -994,7 +1018,7 @@ fn chunks_lit_alone_join_the_world_right() {
                 let mut chunk = Chunk::default();
                 for index in 0..CHUNK_VOLUME {
                     let local = Chunk::position_of(index);
-                    chunk.set_at(local, fill(coord * CHUNK_SIZE as i32 + local));
+                    chunk.put(local, fill(coord * CHUNK_SIZE as i32 + local));
                 }
                 chunk
             })
@@ -1120,4 +1144,34 @@ fn random_loads_unloads_and_edits_under_open_sky_keep_the_light_right() {
         }));
         assert!(checked.is_ok(), "seed {seed}, all loaded again");
     }
+}
+
+/// Light treats a voxel as its block and its fluid: lava in with a slab
+/// shines as lava does, and lava in with a tuft shuts out the sky as lava
+/// alone does.
+#[test]
+fn a_voxel_is_lit_as_its_block_and_its_fluid() {
+    let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, |pos| {
+        if pos.y <= 3 {
+            block("stone")
+        } else {
+            BlockState::AIR
+        }
+    });
+    world.run(&mut queue);
+    let slab = IVec3::new(3, 4, 4);
+    world.set(&mut queue, slab, block("stone_slab"));
+    world.pour(&mut queue, slab, block("lava"));
+    let tuft = IVec3::new(8, 10, 8);
+    world.set(&mut queue, tuft, block("tuft"));
+    world.pour(&mut queue, tuft, block("lava"));
+    world.run(&mut queue);
+    let lava = base().state(block("lava")).light;
+    assert_eq!(world.light(slab + IVec3::Y).block()[0], lava[0] - 1);
+    assert!(
+        world.light(tuft - IVec3::Y).sky() < MAX_LIGHT,
+        "the sky is shut out"
+    );
+    world.assert_matches_reference();
 }

@@ -6,7 +6,9 @@
 //! palette of the names it uses and stores every voxel as a bit-packed
 //! index into it, using as few bits as the palette needs (none for a chunk
 //! of one block, such as all air or all stone). That's then
-//! zlib-compressed.
+//! zlib-compressed. Each voxel's fluid is saved the same way: a palette of
+//! the fluids the chunk holds, after "none", an index per voxel into it,
+//! and then the amounts of the fluid that isn't a full block.
 //!
 //! The blob starts with a format byte, so a future format can still read
 //! chunks saved by this one.
@@ -16,11 +18,11 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use crate::{
     block_entity::{BlockEntityData, SavedPart, read_text, read_value, write_text, write_value},
     content::{BlockState, Content, FULL_FLUID, StateName},
-    world::{CHUNK_VOLUME, Chunk},
+    world::{CHUNK_VOLUME, Chunk, VoxelFluid},
 };
 
 /// The chunk format this build writes.
-pub const CHUNK_FORMAT: u8 = 3;
+pub const CHUNK_FORMAT: u8 = 4;
 /// How hard zlib tries: 0 (store) to 10. 6 is its usual default; it's
 /// nearly as small as the slowest levels on voxel data and much faster.
 const COMPRESSION_LEVEL: u8 = 6;
@@ -34,6 +36,10 @@ pub struct StateNames {
     /// Each block's default state, by block id, for a saved state whose
     /// properties don't exist any more.
     by_block: HashMap<String, BlockState>,
+    /// Whether each state is a fluid's, by state index.
+    fluids: Vec<bool>,
+    /// Each state's `fluid_room`, by state index.
+    rooms: Vec<u16>,
 }
 
 impl StateNames {
@@ -63,7 +69,27 @@ impl StateNames {
             names,
             by_name,
             by_block,
+            fluids: content
+                .states
+                .iter()
+                .map(|state| state.is_fluid())
+                .collect(),
+            rooms: content
+                .states
+                .iter()
+                .map(|state| state.fluid_room)
+                .collect(),
         }
+    }
+
+    /// How much fluid `state` leaves room for (see `fluid_room`).
+    pub fn fluid_room(&self, state: BlockState) -> u16 {
+        self.rooms.get(state.0 as usize).copied().unwrap_or(0)
+    }
+
+    /// Whether `state` is a fluid's.
+    pub fn is_fluid(&self, state: BlockState) -> bool {
+        self.fluids.get(state.0 as usize).copied().unwrap_or(false)
     }
 
     /// Whether a block with this id is defined.
@@ -118,10 +144,29 @@ pub fn encode(chunk: &Chunk, names: &StateNames) -> Vec<u8> {
     }
     pack(&mut payload, &indices, bits_for(palette.len()));
 
-    // Fluid that isn't full, in voxel order so the same chunk always
-    // encodes the same.
-    let mut partial: Vec<(usize, u16)> = chunk.partial_fluid().collect();
-    partial.sort_unstable();
+    // Fluid: its palette, after "none" at 0, and an index per voxel into
+    // it; then the amounts that aren't full, in voxel order.
+    let mut fluids: Vec<BlockState> = Vec::new();
+    let mut fluid_indices = vec![0; CHUNK_VOLUME];
+    let mut partial = Vec::new();
+    for (index, fluid) in chunk.fluids() {
+        let entry = match fluids.iter().position(|&kind| kind == fluid.kind) {
+            Some(entry) => entry,
+            None => {
+                fluids.push(fluid.kind);
+                fluids.len() - 1
+            }
+        };
+        fluid_indices[index] = entry as u32 + 1;
+        if fluid.amount < FULL_FLUID {
+            partial.push((index, fluid.amount));
+        }
+    }
+    write_varint(&mut payload, fluids.len() as u64);
+    for &kind in &fluids {
+        write_text(&mut payload, names.name(kind));
+    }
+    pack(&mut payload, &fluid_indices, bits_for(fluids.len() + 1));
     write_varint(&mut payload, partial.len() as u64);
     for (index, amount) in partial {
         write_varint(&mut payload, index as u64);
@@ -191,6 +236,24 @@ pub fn decode(blob: &[u8], names: &StateNames) -> Result<Chunk, String> {
     }
     let mut chunk = Chunk::from_voxels(voxels).expect("unpack yields a chunk's worth");
 
+    let fluid_count = reader.length(CHUNK_VOLUME)?;
+    let mut fluids = vec![None];
+    for _ in 0..fluid_count {
+        let name = read_text(&mut reader)?;
+        // A fluid that's gone, or isn't one any more, is gone from the
+        // voxels it was in.
+        let kind = names.state(&name);
+        fluids.push(names.is_fluid(kind).then_some(kind));
+    }
+    let bits = bits_for(fluids.len());
+    let entries: Vec<u32> = unpack(reader.bytes(packed_len(bits))?, bits).collect();
+    let mut amounts: Vec<Option<VoxelFluid>> = Vec::with_capacity(CHUNK_VOLUME);
+    for &entry in &entries {
+        let kind = *fluids
+            .get(entry as usize)
+            .ok_or("a voxel's fluid is off the palette")?;
+        amounts.push(kind.map(VoxelFluid::full));
+    }
     let partial = reader.length(CHUNK_VOLUME)?;
     for _ in 0..partial {
         let index = reader.length(CHUNK_VOLUME - 1)?;
@@ -198,7 +261,36 @@ pub fn decode(blob: &[u8], names: &StateNames) -> Result<Chunk, String> {
         if amount == 0 {
             return Err("a voxel has no fluid in it".into());
         }
-        chunk.start_fluid_at(Chunk::position_of(index), amount as u16);
+        if entries[index] == 0 {
+            return Err("a voxel without fluid has an amount of it".into());
+        }
+        // Nothing to set for a fluid that's gone.
+        if let Some(fluid) = &mut amounts[index] {
+            fluid.amount = amount as u16;
+        }
+    }
+    // A block that's a fluid now (a mod gave it `fluid`) becomes air
+    // holding a full voxel of it, unless the voxel has a fluid already.
+    if palette.iter().any(|&state| names.is_fluid(state)) {
+        for (index, fluid) in amounts.iter_mut().enumerate() {
+            let pos = Chunk::position_of(index);
+            let state = chunk.at(pos);
+            if names.is_fluid(state) {
+                chunk.set_at(pos, BlockState::AIR);
+                fluid.get_or_insert(VoxelFluid::full(state));
+            }
+        }
+    }
+    for (index, fluid) in amounts.into_iter().enumerate() {
+        let Some(fluid) = fluid else {
+            continue;
+        };
+        // No more than its block leaves room for now: a mod may have
+        // given it less since it was saved.
+        let pos = Chunk::position_of(index);
+        let room = names.fluid_room(chunk.at(pos));
+        let fluid = VoxelFluid::of(fluid.kind, fluid.amount.min(room));
+        chunk.start_fluid_at(pos, fluid, room);
     }
 
     let entities = reader.length(CHUNK_VOLUME)?;
@@ -354,17 +446,33 @@ mod tests {
         // Every state there is, so the palette needs several bits.
         let states = base().states.len();
         for (i, pos) in (0..CHUNK_VOLUME).map(Chunk::position_of).enumerate() {
-            busy.set_at(pos, BlockState((i * 7 % states) as u16));
+            // A fluid in the voxel's fluid, in air.
+            busy.put(pos, BlockState((i * 7 % states) as u16));
         }
         let mut sparse = Chunk::default();
         sparse.set(3, 4, 5, block("lamp"));
-        // Water, some of it not full.
+        // Water, some of it not full, and some of it in slabs; lava.
         let mut pond = Chunk::default();
+        let water = |amount| VoxelFluid::of(block("water"), amount);
         for x in 0..16 {
-            pond.set(x, 0, 0, block("water"));
+            pond.fill_fluid_at(IVec3::new(x, 0, 0), block("water"));
         }
-        pond.set_fluid_at(IVec3::new(2, 0, 0), 1);
-        pond.set_fluid_at(IVec3::new(9, 0, 0), FULL_FLUID - 1);
+        pond.set_fluid_at(IVec3::new(2, 0, 0), water(1), FULL_FLUID);
+        pond.set_fluid_at(IVec3::new(9, 0, 0), water(FULL_FLUID - 1), FULL_FLUID);
+        pond.set(4, 0, 0, block("stone_slab"));
+        pond.start_fluid_at(IVec3::new(4, 0, 0), water(FULL_FLUID / 2), FULL_FLUID / 2);
+        pond.fill_fluid_at(IVec3::new(0, 5, 0), block("lava"));
+        // A chunk that once had fluid, and has none now.
+        let mut drained = Chunk::default();
+        drained.fill_fluid_at(IVec3::ONE, block("water"));
+        drained.set_fluid_at(IVec3::ONE, None, FULL_FLUID);
+        let decoded = decode(&encode(&drained, &names), &names).unwrap();
+        assert_eq!(decoded.fluids().count(), 0);
+        assert_eq!(
+            decoded.fluid_layer().heap_bytes(),
+            0,
+            "saved without the layer"
+        );
         for chunk in [
             busy,
             sparse,
@@ -452,18 +560,24 @@ mod tests {
         assert!(decode(&blob, &names).is_err());
     }
 
-    /// A fluid amount out of range, or a voxel off the end, is an error.
+    /// A fluid amount out of range, for a voxel without fluid, or off the
+    /// end, is an error; a fluid that's gone is dropped, and one over the
+    /// room its block leaves now is cut down to it.
     #[test]
     fn bad_fluid_amounts_are_errors() {
         let names = names();
-        let water = |fluid: &[(u64, u64)]| {
+        let in_block = |block: &str, fluid: &str, at: usize, amounts: &[(u64, u64)]| {
             let mut payload = Vec::new();
             write_varint(&mut payload, 1);
-            let name = names.name(block("water")).as_bytes();
-            write_varint(&mut payload, name.len() as u64);
-            payload.extend_from_slice(name);
-            write_varint(&mut payload, fluid.len() as u64);
-            for &(index, amount) in fluid {
+            write_text(&mut payload, block);
+            // One fluid, at voxel `at` (a bit a voxel).
+            write_varint(&mut payload, 1);
+            write_text(&mut payload, fluid);
+            let mut bits = vec![0; CHUNK_VOLUME];
+            bits[at] = 1;
+            pack(&mut payload, &bits, 1);
+            write_varint(&mut payload, amounts.len() as u64);
+            for &(index, amount) in amounts {
                 write_varint(&mut payload, index);
                 write_varint(&mut payload, amount);
             }
@@ -473,11 +587,33 @@ mod tests {
             blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(&payload, 6));
             decode(&blob, &names)
         };
+        let chunk = |fluid: &str, at: usize, amounts: &[(u64, u64)]| {
+            in_block(names.name(BlockState::AIR), fluid, at, amounts)
+        };
+        let water = |amounts: &[(u64, u64)]| chunk("defaria:water", 5, amounts);
         let ok = water(&[(5, 300)]).unwrap();
-        assert_eq!(ok.partial_at(Chunk::position_of(5)), Some(300));
+        let at = Chunk::position_of(5);
+        assert_eq!(ok.fluid_at(at), VoxelFluid::of(block("water"), 300));
+        assert_eq!(water(&[]).unwrap().fluid_amount_at(at), FULL_FLUID);
         assert!(water(&[(5, 0)]).is_err(), "no fluid");
         assert!(water(&[(5, FULL_FLUID as u64)]).is_err(), "full isn't kept");
+        assert!(water(&[(6, 300)]).is_err(), "no fluid there");
         assert!(water(&[(CHUNK_VOLUME as u64, 1)]).is_err(), "off the end");
+        let gone = chunk("gone:goo", 5, &[(5, 300)]).unwrap();
+        assert_eq!(gone.fluids().count(), 0, "a fluid that's gone");
+        let stone = chunk("defaria:stone", 5, &[]).unwrap();
+        assert_eq!(stone.fluids().count(), 0, "not a fluid");
+        let slab = names.name(block("stone_slab"));
+        let capped = in_block(slab, "defaria:water", 5, &[]).unwrap();
+        assert_eq!(capped.fluid_amount_at(at), FULL_FLUID / 2, "a slab's half");
+        let solid = in_block("defaria:stone", "defaria:water", 5, &[]).unwrap();
+        assert_eq!(solid.fluids().count(), 0, "no room in stone");
+        // A block that's a fluid now is air with it in.
+        let lava = in_block("defaria:lava", "defaria:water", 5, &[]).unwrap();
+        let other = Chunk::position_of(6);
+        assert_eq!(lava.at(other), BlockState::AIR);
+        assert_eq!(lava.fluid_at(other), Some(VoxelFluid::full(block("lava"))));
+        assert_eq!(lava.fluid_at(at), Some(VoxelFluid::full(block("water"))));
     }
 
     #[test]

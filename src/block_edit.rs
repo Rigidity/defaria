@@ -29,7 +29,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockBox, BlockState, Content, Direction, FULL_FLUID, ItemState},
+    content::{BlockBox, BlockState, Content, Direction, ItemState},
     fly_camera::FlyCameraSystems,
     game_mode::{GameMode, use_up},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
@@ -38,7 +38,7 @@ use crate::{
     physics::{Aabb, Body},
     player::{Eyes, LocalPlayer},
     ui::{UiScreen, playing},
-    world::{FLUID_STEPS, Voxels, fluid_step},
+    world::{FLUID_STEPS, VoxelFluid, Voxels, filled, fluid_step, fluid_surface},
 };
 
 /// How far away, in blocks, you can break or place.
@@ -253,15 +253,19 @@ const FLUID_BOXES: [BlockBox; FLUID_STEPS as usize] = {
     boxes
 };
 
-/// What the crosshair picks in a voxel of `state` holding `partial` while
-/// aiming at fluid: the fluid there ([`FLUID_BOXES`]), or what it
-/// always picks ([`target_shape`]).
-pub fn fluid_shape(content: &Content, state: BlockState, partial: Option<u16>) -> &[BlockBox] {
-    if !content.state(state).is_fluid() {
+/// What the crosshair picks in a voxel of `state` holding `fluid` while
+/// aiming at fluid: the fluid there, as high as it stands up the room the
+/// block leaves it ([`FLUID_BOXES`]), or what it always picks
+/// ([`target_shape`]).
+pub fn fluid_shape(content: &Content, state: BlockState, fluid: Option<VoxelFluid>) -> &[BlockBox] {
+    let Some(fluid) = fluid else {
         return target_shape(content, state);
-    }
-    let step = fluid_step(partial.unwrap_or(FULL_FLUID)).clamp(1, FLUID_STEPS);
-    std::slice::from_ref(&FLUID_BOXES[step as usize - 1])
+    };
+    let room = content.state(state).fluid_room;
+    let step = fluid_step(filled(fluid.amount, room));
+    let height = fluid_surface(step, room);
+    let sixteenths = (height * FLUID_STEPS as f32).round() as u16;
+    std::slice::from_ref(&FLUID_BOXES[sixteenths.clamp(1, FLUID_STEPS) as usize - 1])
 }
 
 /// The block or fluid under the crosshair of a camera at `transform`,
@@ -339,14 +343,12 @@ fn edit_blocks(
     // Properties such as a log's axis follow the face clicked or the view.
     let block = content.placed(block, face, *camera.forward());
     // Not into the camera, outside the world, over another block (but
-    // over air or a fluid), or where it would overlap someone.
+    // over air, which may hold fluid), or where it would overlap someone.
     let overlaps = content.state(block).collision.iter().any(|b| {
         let b = Aabb::of_block(pos, b);
         bodies.iter().any(|body| body.aabb().intersects(&b))
     });
-    let replaceable = voxels
-        .get(pos)
-        .is_some_and(|there| there.is_air() || content.state(there).is_fluid());
+    let replaceable = voxels.get(pos).is_some_and(BlockState::is_air);
     // Nor where it can't stand (a flower off the grass).
     let supported = !content.needs_support(block)
         || voxels
@@ -466,7 +468,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        content::{base, block, grass, test_mod},
+        content::{FULL_FLUID, base, block, grass, test_mod},
         headless::{Script, settle, test_game},
         hotbar::select_with_keys,
         inventory::player::new_player,
@@ -730,6 +732,12 @@ mod tests {
         app.world().get::<Chunk>(chunk).unwrap().get(x, y, z)
     }
 
+    /// How much fluid the voxel holds.
+    fn fluid(app: &App, chunk: Entity, x: i32, y: i32, z: i32) -> u16 {
+        let chunk = app.world().get::<Chunk>(chunk).unwrap();
+        chunk.fluid_amount_at(IVec3::new(x, y, z))
+    }
+
     fn mesh(app: &App, chunk: Entity) -> Option<AssetId<Mesh>> {
         app.world().get::<Mesh3d>(chunk).map(|mesh| mesh.id())
     }
@@ -823,17 +831,17 @@ mod tests {
         assert_eq!(voxel(&app, left, 11, 1, 5), BlockState::AIR);
     }
 
-    /// The crosshair passes through fluids to the block behind, and placing
-    /// against it replaces the fluid in the way; mining the block behind
-    /// leaves the fluid alone.
+    /// The crosshair passes through fluids to the block behind, and a
+    /// block placed against it into the fluid in the way, leaving no room
+    /// for any, deletes it; mining the block behind leaves the fluid alone.
     #[test]
     fn fluids_are_passed_through_and_replaced() {
         let (mut app, left, _) = app();
         let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
         for x in 12..14 {
-            chunk.set(x, 1, 5, block("water"));
+            chunk.fill_fluid_at(IVec3::new(x, 1, 5), block("water"));
         }
-        chunk.set(13, 2, 5, block("lava"));
+        chunk.fill_fluid_at(IVec3::new(13, 2, 5), block("lava"));
         app.update();
         assert_eq!(target_shape(base(), block("water")), []);
         assert_eq!(target_shape(base(), block("lava")), []);
@@ -842,10 +850,32 @@ mod tests {
         press_key(&mut app, KeyCode::Digit1);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), block("stone"));
-        assert_eq!(voxel(&app, left, 12, 1, 5), block("water"));
+        assert_eq!(fluid(&app, left, 13, 1, 5), 0, "stone leaves no room");
+        assert_eq!(fluid(&app, left, 12, 1, 5), FULL_FLUID);
         mine_target(&mut app);
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
-        assert_eq!(voxel(&app, left, 12, 1, 5), block("water"));
+        assert_eq!(fluid(&app, left, 12, 1, 5), FULL_FLUID);
+    }
+
+    /// A slab placed into water keeps the half of the water it leaves room
+    /// for, and the crosshair picks the slab, not the water; breaking it
+    /// leaves that water behind.
+    #[test]
+    fn a_slab_placed_in_water_keeps_its_share() {
+        let (mut app, left, _) = app();
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        chunk.fill_fluid_at(IVec3::new(13, 1, 5), block("water"));
+        app.update();
+        let mut hotbar = player(&mut app).0;
+        hotbar.assign(0, base().default_item("defaria:stone_slab"));
+        set_hotbar(&mut app, hotbar);
+        press_key(&mut app, KeyCode::Digit1);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("stone_slab"));
+        assert_eq!(fluid(&app, left, 13, 1, 5), FULL_FLUID / 2);
+        mine_target(&mut app);
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+        assert_eq!(fluid(&app, left, 13, 1, 5), FULL_FLUID / 2, "left behind");
     }
 
     /// A log placed against each face of a block runs along that face's

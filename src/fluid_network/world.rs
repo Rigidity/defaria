@@ -58,7 +58,8 @@ pub fn draw(
     if want == 0 {
         return 0;
     }
-    let open = |state: BlockState| state.is_air() || content.state(state).is_fluid();
+    // Fluid reaches through any voxel with room for it.
+    let open = |state: BlockState| content.state(state).fluid_room > 0;
     if !voxels.get(pos).is_some_and(open) {
         return 0;
     }
@@ -82,14 +83,14 @@ pub fn draw(
             }
         }
     }
-    let Some(state) = reached.iter().find_map(|&at| {
-        let state = voxels.get(at)?;
-        (content.state(state).is_fluid() && tank.takes(&content.block_of(state).id))
-            .then_some(state)
+    let Some(kind) = reached.iter().find_map(|&at| {
+        let (_, fluid) = voxels.get_with_fluid(at)?;
+        let kind = fluid?.kind;
+        tank.takes(&content.block_of(kind).id).then_some(kind)
     }) else {
         return 0;
     };
-    let fluid = content.block_of(state).id.clone();
+    let fluid = content.block_of(kind).id.clone();
     // The front first, then from the top down, so a pond drains as it
     // would: its surface falls.
     reached[1..].sort_by_key(|p| (-p.y, (*p - pos).abs().element_sum()));
@@ -98,19 +99,13 @@ pub fn draw(
         if want == 0 {
             break;
         }
-        let Some((here, partial)) = voxels.get_with_fluid(at) else {
-            continue;
-        };
-        if here != state {
+        let here = voxels.get_with_fluid(at).and_then(|(_, fluid)| fluid);
+        if here.is_none_or(|here| here.kind != kind) {
             continue;
         }
-        let amount = partial.unwrap_or(FULL_FLUID) as u64;
-        let taken = amount.min(want);
-        if taken == amount {
-            voxels.set(at, BlockState::AIR);
-        } else {
-            voxels.set_fluid(at, (amount - taken) as u16);
-        }
+        let taken = voxels
+            .drain(at, want.min(FULL_FLUID as u64) as u16)
+            .map_or(0, |taken| taken.amount as u64);
         want -= taken;
         drawn += taken;
     }
@@ -118,9 +113,9 @@ pub fn draw(
     drawn
 }
 
-/// Pours up to `want` of `tank`'s fluid into the world at `pos`: into air,
-/// or onto the same fluid, as much as fits in the voxel. Returns how much
-/// it poured.
+/// Pours up to `want` of `tank`'s fluid into the world at `pos`: into
+/// the room its block leaves (see `fluid_room`), alone or onto the same
+/// fluid, as much as fits in the voxel. Returns how much it poured.
 pub fn pour(
     voxels: &mut Voxels,
     content: &Content,
@@ -131,32 +126,20 @@ pub fn pour(
     let Some(fluid) = tank.fluid.clone() else {
         return 0;
     };
-    let Some(state) = content.default_state(&fluid) else {
+    let Some(kind) = content.default_state(&fluid) else {
         return 0;
     };
-    let Some((here, partial)) = voxels.get_with_fluid(pos) else {
+    let want = want.min(tank.amount).min(FULL_FLUID as u64);
+    let poured = voxels.pour(pos, kind, want as u16) as u64;
+    if poured == 0 {
         return 0;
-    };
-    let want = want.min(tank.amount);
-    if here.is_air() {
-        let amount = want.min(FULL_FLUID as u64);
-        if amount > 0 && voxels.flow_into(pos, state, amount as u16) {
-            return tank.drain(amount);
-        }
-    } else if here == state {
-        let there = partial.unwrap_or(FULL_FLUID) as u64;
-        let amount = want.min(FULL_FLUID as u64 - there);
-        if amount > 0 && voxels.set_fluid(pos, (there + amount) as u16) {
-            return tank.drain(amount);
-        }
     }
-    0
+    tank.drain(poured)
 }
 
 /// Takes up to `want` of the fluid in the voxel at `pos`, and no other,
 /// into `tank`, if the tank takes it: as much as the voxel holds and the
-/// tank has room for. A voxel emptied becomes air. Returns how much it
-/// took.
+/// tank has room for. Returns how much it took.
 pub fn take(
     voxels: &mut Voxels,
     content: &Content,
@@ -164,30 +147,21 @@ pub fn take(
     want: u64,
     tank: &mut crate::machine::Tank,
 ) -> u64 {
-    let Some((here, partial)) = voxels.get_with_fluid(pos) else {
+    let Some((_, Some(here))) = voxels.get_with_fluid(pos) else {
         return 0;
     };
-    if !content.state(here).is_fluid() {
-        return 0;
-    }
-    let fluid = content.block_of(here).id.clone();
+    let fluid = content.block_of(here.kind).id.clone();
     if !tank.takes(&fluid) {
         return 0;
     }
-    let amount = partial.unwrap_or(FULL_FLUID) as u64;
-    let taken = amount.min(want).min(tank.room());
+    let taken = (here.amount as u64).min(want).min(tank.room());
     if taken == 0 {
         return 0;
     }
-    let changed = if taken == amount {
-        voxels.set(pos, BlockState::AIR)
-    } else {
-        voxels.set_fluid(pos, (amount - taken) as u16)
-    };
-    if !changed {
+    let Some(taken) = voxels.drain(pos, taken as u16) else {
         return 0;
-    }
-    tank.fill(&fluid, taken)
+    };
+    tank.fill(&fluid, taken.amount as u64)
 }
 
 /// Runs the pumps and outlets for this network tick.

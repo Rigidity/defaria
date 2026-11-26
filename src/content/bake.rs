@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy::{platform::collections::HashMap, prelude::*};
 
 use super::{
-    AIR, Block, Content, ModInfo, State,
+    AIR, Block, Content, FULL_FLUID, ModInfo, State,
     load::LoadedMod,
     machine::{check_machine_items, check_tank_fluids},
     recipe::bake_recipe,
@@ -129,6 +129,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         }],
         states: vec![State {
             name: "Air".into(),
+            fluid_room: FULL_FLUID,
             ..default()
         }],
         items: Vec::new(),

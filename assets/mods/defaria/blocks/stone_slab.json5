@@ -5,5 +5,7 @@
   textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
   hardness: { materials: { rock: 1 } },
   weight: { base: 0.5, materials: { rock: 1 } },
+  // Water fills the half of its cell it leaves.
+  fluid_room: 0.5,
   category: "building",
 }

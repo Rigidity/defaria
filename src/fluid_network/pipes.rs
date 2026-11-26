@@ -518,8 +518,8 @@ pub(super) fn count_ended_networks(
     }
 }
 
-/// Pours each broken pipe's share into its voxel, if that's now air, for
-/// flow to spread. What doesn't fit (or has nowhere to go) is lost, and
+/// Pours each broken pipe's share into its voxel, as much as the block
+/// there now leaves room for, for flow to spread. What doesn't fit (or has nowhere to go) is lost, and
 /// counted in [`FluidNetworkStats::lost`].
 pub(super) fn pour_spills(
     mut spills: ResMut<Spills>,
@@ -528,15 +528,12 @@ pub(super) fn pour_spills(
     mut stats: ResMut<FluidNetworkStats>,
 ) {
     for (pos, mut share) in std::mem::take(&mut spills.0) {
-        if voxels.get(pos) == Some(BlockState::AIR) {
-            let first = &mut share[0];
-            if let Some(state) = content.default_state(&first.fluid) {
-                let poured = first.amount.min(FULL_FLUID as u64);
-                if voxels.flow_into(pos, state, poured as u16) {
-                    first.amount -= poured;
-                    stats.spilled += poured;
-                }
-            }
+        let first = &mut share[0];
+        if let Some(state) = content.default_state(&first.fluid) {
+            let want = first.amount.min(FULL_FLUID as u64) as u16;
+            let poured = voxels.pour(pos, state, want) as u64;
+            first.amount -= poured;
+            stats.spilled += poured;
         }
         stats.lost += share.iter().map(|held| held.amount).sum::<u64>();
     }

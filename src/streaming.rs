@@ -1030,7 +1030,10 @@ mod tests {
         move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
         assert!(app.world().resource::<Chunks>().loaded[&coord].saved);
         app.world_mut()
-            .run_system_once(move |mut voxels: Voxels| assert!(voxels.set_fluid(pos, 321)))
+            .run_system_once(move |mut voxels: Voxels| {
+                let fluid = crate::world::VoxelFluid::of(block("water"), 321);
+                assert!(voxels.set_fluid(pos, fluid));
+            })
             .unwrap();
         app.update();
         move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
@@ -1038,7 +1041,7 @@ mod tests {
         let (coord, local) = ChunkCoord::split(pos);
         let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
         let chunk = app.world().get::<Chunk>(entity).unwrap();
-        assert_eq!(chunk.partial_at(local), Some(321));
+        assert_eq!(chunk.fluid_amount_at(local), 321);
     }
 
     /// Generated chunks are saved when they unload, edited or not, so the

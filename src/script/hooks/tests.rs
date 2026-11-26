@@ -95,7 +95,8 @@ const READER: &str = r#"
 function on_used(block)
     local below = world.block(block.pos - vector.create(0, 1, 0))
     local glass = world.block_def("defaria:glass")
-    log.info(below.id, glass.name, world.block_def("nowhere") == nil, block:stat("power"))
+    local fluid = below.fluid and (below.fluid.id .. " " .. below.fluid.amount)
+    log.info(below.id, fluid, glass.name, world.block_def("nowhere") == nil, block:stat("power"))
 end
 "#;
 
@@ -111,16 +112,20 @@ end
 "#;
 
 const SETTER: &str = r#"
--- Tries to make fluid, destroy it, replace a block with a block entity,
+-- Tries to make fluid, destroy it (stone where water is leaves it no
+-- room, a slab only half), replace a block with a block entity,
 -- and make one from air; logs whether each worked, and what it was told.
 function on_used(block)
     local up, down, east = block:neighbour("up"), block:neighbour("down"), block:neighbour("east")
     local west = block:neighbour("west")
     local made, said = pcall(up.set, up, "defaria:water")
-    local drained = pcall(down.set, down, "air")
+    local drained = pcall(down.set, down, "defaria:stone")
+    local halved = pcall(down.set, down, "defaria:stone_slab")
+    -- Air keeps all the water: nothing's lost, so it's allowed.
+    local cleared = down:set("air")
     local broke, why = pcall(east.set, east, "air")
     local built, reason = pcall(west.set, west, "test:switch")
-    log.info(made, drained, broke, built, said, why, reason)
+    log.info(made, drained, halved, cleared, broke, built, said, why, reason)
 end
 "#;
 
@@ -514,13 +519,25 @@ fn set_doesnt_make_or_lose_fluid_or_block_entities() {
     assert!(!disabled(&app, AT));
     let lines = app.world().resource::<ScriptRuntime>().log_lines();
     let message = &lines.last().unwrap().message;
-    assert!(message.starts_with("false false false false "), "{message}");
+    assert!(
+        message.starts_with("false false false false false false "),
+        "{message}"
+    );
     assert!(message.contains("tanks pour and draw"), "{message}");
     assert!(message.contains("can't replace `test:switch`"), "{message}");
     assert!(message.contains("can't make `test:switch`"), "{message}");
     assert!(get(&mut app, AT + IVec3::Y).is_air());
     assert!(get(&mut app, AT - IVec3::X).is_air());
-    assert_eq!(get(&mut app, AT - IVec3::Y), water);
+    let below = app
+        .world_mut()
+        .run_system_once(|voxels: Voxels| voxels.get_with_fluid(AT - IVec3::Y).unwrap())
+        .unwrap();
+    let full = crate::world::VoxelFluid::full(water);
+    assert_eq!(
+        below,
+        (BlockState::AIR, Some(full)),
+        "the water is still there"
+    );
     assert_eq!(get(&mut app, AT + IVec3::X), switch);
 }
 
@@ -746,7 +763,31 @@ fn hooks_read_the_world_and_the_content() {
     use_block(&mut app, AT);
     assert!(!disabled(&app, AT));
     let lines = app.world().resource::<ScriptRuntime>().log_lines();
-    assert_eq!(lines.last().unwrap().message, "defaria:planks Glass true 7");
+    assert_eq!(
+        lines.last().unwrap().message,
+        "defaria:planks nil Glass true 7"
+    );
+}
+
+/// A hook sees the fluid in a voxel, beside its block: water is air with
+/// water in it, and a slab in water holds half a block of it.
+#[test]
+fn hooks_read_a_voxels_fluid() {
+    let mut app = app();
+    place(&mut app, AT - IVec3::Y, state("defaria:water", &[]));
+    place(&mut app, AT, state("test:reader", &[]));
+    use_block(&mut app, AT);
+    let message = |app: &App| {
+        let lines = app.world().resource::<ScriptRuntime>().log_lines();
+        lines.last().unwrap().message.clone()
+    };
+    assert_eq!(message(&app), "air defaria:water 1000 Glass true 7");
+    place(&mut app, AT - IVec3::Y, state("defaria:stone_slab", &[]));
+    use_block(&mut app, AT);
+    assert_eq!(
+        message(&app),
+        "defaria:stone_slab defaria:water 500 Glass true 7"
+    );
 }
 
 /// The base game's switched lamp turns on and off, and counts it.
@@ -767,7 +808,8 @@ fn the_switched_lamp_turns_on_and_off() {
 }
 
 /// The base game's mossy stone spreads onto bare stone open to the air,
-/// and nothing else.
+/// and nothing else: not stone under water, whose voxels are air with
+/// water in them.
 #[test]
 fn moss_creeps_onto_bare_stone_open_to_the_air() {
     let mut app = app();
@@ -786,10 +828,16 @@ fn moss_creeps_onto_bare_stone_open_to_the_air() {
     for side in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z] {
         set(&mut app, buried + side, planks);
     }
+    let drowned = AT - IVec3::Z;
+    set(&mut app, drowned, stone);
+    for side in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::NEG_Z] {
+        set(&mut app, drowned + side, state("defaria:water", &[]));
+    }
     place(&mut app, AT, mossy);
     frames(&mut app, 60);
     assert_eq!(get(&mut app, open), mossy);
     assert_eq!(get(&mut app, buried), stone);
+    assert_eq!(get(&mut app, drowned), stone);
     assert_eq!(get(&mut app, with_ore), ore);
 }
 

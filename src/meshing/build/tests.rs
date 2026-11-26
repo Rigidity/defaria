@@ -1,6 +1,7 @@
 use super::*;
-use crate::content::{
-    Direction, FULL_FLUID, Render, base, block, block_with, grass, sand, test_mod,
+use crate::{
+    content::{Direction, FULL_FLUID, Render, base, block, block_with, grass, sand, test_mod},
+    world::split_fluid,
 };
 use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
 
@@ -417,13 +418,16 @@ fn shading(mesh: &Mesh, pos: IVec3, normal: IVec3) -> Shading {
     }
 }
 
+/// `blocks` in the voxels at their positions, and air elsewhere. A fluid
+/// fills its voxel's fluid, with air for its block.
 fn neighborhood(blocks: &[(IVec3, BlockState)], light: impl Fn(IVec3) -> Light) -> Neighborhood {
-    Neighborhood::from_fn(|pos| {
+    Neighborhood::with_fluid(|pos| {
         let block = blocks
             .iter()
             .find(|(p, _)| *p == pos)
             .map_or(BlockState::AIR, |(_, b)| *b);
-        (block, light(pos))
+        let (block, fluid) = split_fluid(base(), block);
+        (block, light(pos), fluid)
     })
 }
 
@@ -628,16 +632,17 @@ fn fluids_keep_solid_faces_and_draw_one_face_elsewhere() {
     assert_eq!(split(&[(A, "leaves"), (B, "lava")]), [12, 5, 0]);
 }
 
-/// The translucent mesh of these blocks, each with the amount of fluid
-/// kept for it.
+/// The translucent mesh of these fluids, each with its amount (`None`
+/// for full), in air.
 fn fluid_mesh(blocks: &[(IVec3, &str, Option<u16>)]) -> Mesh {
     Neighborhood::with_fluid(|pos| {
-        blocks
-            .iter()
-            .find(|(p, _, _)| *p == pos)
-            .map_or((BlockState::AIR, OPEN_SKY, None), |&(_, b, kept)| {
-                (block(b), OPEN_SKY, kept)
-            })
+        blocks.iter().find(|(p, _, _)| *p == pos).map_or(
+            (BlockState::AIR, OPEN_SKY, None),
+            |&(_, b, kept)| {
+                let fluid = VoxelFluid::of(block(b), kept.unwrap_or(FULL_FLUID));
+                (BlockState::AIR, OPEN_SKY, fluid)
+            },
+        )
     })
     .meshes(base())
     .translucent
@@ -755,11 +760,10 @@ fn uneven_fluid_is_closed() {
 fn fluid_heights_come_from_the_chunks_across_borders() {
     let (here, there) = (IVec3::new(15, 5, 5), IVec3::new(0, 5, 5));
     let mut middle = Chunk::default();
-    middle.set_at(here, block("water"));
-    middle.set_fluid_at(here, FULL_FLUID / 2);
+    let water = |amount| VoxelFluid::of(block("water"), amount);
+    middle.set_fluid_at(here, water(FULL_FLUID / 2), FULL_FLUID);
     let mut east = Chunk::default();
-    east.set_at(there, block("water"));
-    east.set_fluid_at(there, FULL_FLUID / 4);
+    east.set_fluid_at(there, water(FULL_FLUID / 4), FULL_FLUID);
     let light = ChunkLight::default();
     let meshes = Neighborhood::gather(|offset| match offset {
         IVec3::ZERO => Some((&middle, &light)),
@@ -778,6 +782,102 @@ fn fluid_heights_come_from_the_chunks_across_borders() {
         .collect();
     assert!(!border.is_empty());
     assert!(border.iter().all(|&y| y == 5.375), "{border:?}");
+}
+
+/// The meshes of a row of three voxels of water along X, from `A`, with
+/// `block_id` in the middle one holding `amount` of it.
+fn waterlogged(block_id: &str, amount: u16) -> ChunkMeshes {
+    let middle = A + IVec3::X;
+    Neighborhood::with_fluid(|pos| {
+        let water = VoxelFluid::full(block("water"));
+        match pos - A {
+            IVec3 {
+                x: 0..=2,
+                y: 0,
+                z: 0,
+            } if pos == middle => (
+                block(block_id),
+                OPEN_SKY,
+                VoxelFluid::of(water.kind, amount),
+            ),
+            IVec3 {
+                x: 0..=2,
+                y: 0,
+                z: 0,
+            } => (BlockState::AIR, OPEN_SKY, Some(water)),
+            _ => (BlockState::AIR, OPEN_SKY, None),
+        }
+    })
+    .meshes(base())
+}
+
+/// The heights of the top corners of a mesh's faces, above `A`'s bottom,
+/// lowest first, without repeats.
+fn top_heights(mesh: &Mesh) -> Vec<f32> {
+    let mut heights: Vec<f32> = positions(mesh)
+        .iter()
+        .map(|p| p.y - A.y as f32)
+        .filter(|&y| y > 0.0)
+        .collect();
+    heights.sort_by(f32::total_cmp);
+    heights.dedup();
+    heights
+}
+
+/// A slab in a pond, its half of the voxel full of water, is drawn under
+/// an unbroken surface: the water's top runs across it flat, a full block
+/// high, with no sides between, and the slab's own faces show. The water
+/// has no face where the slab covers its voxel's bottom.
+#[test]
+fn a_slab_in_water_is_under_an_unbroken_surface() {
+    let row = waterlogged("stone_slab", FULL_FLUID / 2);
+    assert_eq!(top_heights(&row.translucent), [1.0]);
+    // Three tops, two bottoms, two ends and six sides, front and back.
+    assert_eq!(faces(&row.translucent), 2 * 13);
+    assert!(faces(&row.opaque) >= 5, "the slab shows");
+}
+
+/// Water in a slab's voxel slopes like any other: with a quarter block in
+/// its half, its own height is three quarters up the voxel, and the
+/// corners it shares with the full water beside it are halfway between,
+/// counting the slab's water as the same fluid.
+#[test]
+fn water_in_a_slab_slopes_with_the_water_beside_it() {
+    let row = waterlogged("stone_slab", FULL_FLUID / 4);
+    assert_eq!(top_heights(&row.translucent), [0.875, 1.0]);
+}
+
+/// A tuft in water is drawn in the cut-out mesh with the water around it
+/// whole, its surface unbroken.
+#[test]
+fn a_tuft_in_water_keeps_the_surface_whole() {
+    let row = waterlogged("tuft", 900);
+    assert!(faces(&row.cutout) > 0, "the tuft shows");
+    // Three tops, three bottoms, two ends and six sides.
+    assert_eq!(faces(&row.translucent), 2 * 14);
+    assert_eq!(top_heights(&row.translucent), [1.0]);
+}
+
+/// Lava in a slab's voxel hides the face of water beside it, as lava
+/// alone does, so only one face is drawn there.
+#[test]
+fn fluid_in_a_block_hides_faces_as_alone() {
+    let lava = VoxelFluid::of(block("lava"), FULL_FLUID / 2);
+    let meshes = Neighborhood::with_fluid(|pos| match pos {
+        A => (
+            BlockState::AIR,
+            OPEN_SKY,
+            Some(VoxelFluid::full(block("water"))),
+        ),
+        B => (block("stone_slab"), OPEN_SKY, lava),
+        _ => (BlockState::AIR, OPEN_SKY, None),
+    })
+    .meshes(base());
+    assert_eq!(
+        faces(&meshes.translucent),
+        2 * 5,
+        "water's face against the lava goes"
+    );
 }
 
 /// A sliver of water on a pond's surface is drawn on top of it, and the
@@ -962,9 +1062,10 @@ fn only_faces_in_several_planes_need_sorting() {
             } else {
                 BlockState::AIR
             });
-            (state, OPEN_SKY)
+            let (state, fluid) = split_fluid(base(), state);
+            (state, OPEN_SKY, fluid)
         };
-        Neighborhood::from_fn(ground)
+        Neighborhood::with_fluid(ground)
             .meshes(base())
             .translucent_faces
             .needs_sorting()

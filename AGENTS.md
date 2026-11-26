@@ -395,8 +395,9 @@ documented in `docs/modding.md`; keep that file, the serde types in
   body, pitch the head). Gameplay aims from the player's `Eyes`, never
   from the camera. `src/fly_camera.rs`: the camera, a child of the local
   player at its eyes, and the mouse turning its `Look`.
-- `src/fluid.rs` (and `src/fluid/`): fluid flow. A fluid voxel holds an
-  amount (`Chunk::partial_at`), and `src/fluid/flow.rs` moves amounts
+- `src/fluid.rs` (and `src/fluid/`): fluid flow. A voxel holds a fluid
+  and its amount beside its block (`Chunk::fluid_at`, as much as the
+  block's `fluid_room` leaves), and `src/fluid/flow.rs` moves amounts
   between voxels, never making or losing any. Also what the player
   swims in and the fog inside fluid.
 - `src/streaming.rs`: loading, unloading and saving chunks around the

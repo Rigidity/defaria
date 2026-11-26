@@ -290,12 +290,19 @@ pub struct BlockDef {
     /// translucent.
     #[serde(default)]
     pub render: Option<Render>,
-    /// A fluid: nothing bumps into it, the crosshair passes through it, and
-    /// placing a block replaces it. It flows, and the player swims in it,
+    /// A fluid: nothing bumps into it, and the crosshair passes through it.
+    /// A voxel holds it beside its block, and a block placed into it keeps
+    /// as much as its `fluid_room`. It flows, and the player swims in it,
     /// as this says. It has no `model`: it's drawn as a box as high as it's
     /// full.
     #[serde(default)]
     pub fluid: Option<FluidDef>,
+    /// How much fluid can share a voxel with the block, in blocks, from 0
+    /// to 1: half for a slab, nearly all for a tuft of grass. A block
+    /// placed into fluid keeps that much of it, and fluid flows into the
+    /// room it leaves. Left out, 0: it fills its voxel.
+    #[serde(default)]
+    pub fluid_room: Option<f32>,
     /// Its faces show from behind as well as in front.
     #[serde(default)]
     pub double_sided: bool,

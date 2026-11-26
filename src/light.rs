@@ -52,10 +52,12 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 pub use crate::content::MAX_LIGHT;
 use crate::{
-    content::Content,
+    content::{BlockState, Content},
     meshing::{RemeshChunks, remesh_changed_chunks},
     world::ChunkArray,
-    world::{Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
+    world::{
+        Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, VoxelFluid,
+    },
 };
 pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
 use sky::Sky;
@@ -220,10 +222,11 @@ fn queue_unloaded_chunk(
 }
 
 /// Queues the light around every voxel that changed, and every one whose
-/// properties were updated in a way light sees.
+/// properties or fluid changed in a way light sees.
 fn queue_changed_voxels(
     mut changes: MessageReader<VoxelChanged>,
     mut updates: MessageReader<PropertiesUpdated>,
+    mut fluid_changes: MessageReader<FluidChanged>,
     table: Res<LightTable>,
     mut queue: ResMut<LightQueue>,
 ) {
@@ -231,7 +234,18 @@ fn queue_changed_voxels(
         .read()
         .filter(|update| !table.same_light(update.before, update.after))
         .map(|update| update.pos);
-    for pos in changes.read().map(|change| change.pos).chain(updated) {
+    // Only another fluid matters to light, not more or less of one.
+    let kind = |fluid: Option<VoxelFluid>| fluid.map_or(BlockState::AIR, |fluid| fluid.kind);
+    let fluids = fluid_changes
+        .read()
+        .filter(|change| !table.same_light(kind(change.before), kind(change.after)))
+        .map(|change| change.pos);
+    for pos in changes
+        .read()
+        .map(|change| change.pos)
+        .chain(updated)
+        .chain(fluids)
+    {
         queue.voxel_changed(pos);
     }
 }
@@ -322,6 +336,73 @@ mod tests {
     fn mesh(app: &App, coord: IVec3) -> Option<AssetId<Mesh>> {
         let entity = app.world().resource::<ChunkMap>().get(ChunkCoord(coord))?;
         app.world().get::<Mesh3d>(entity).map(|mesh| mesh.id())
+    }
+
+    /// Lava arriving in a voxel's fluid, as flow moves it with no block
+    /// changing, lights what's around it, and its light goes when it
+    /// drains away.
+    #[test]
+    fn fluid_coming_and_going_relights() {
+        let mut app = app();
+        // High in the air, where the terrain doesn't reach.
+        let pos = IVec3::new(40, 56, 40);
+        let set_fluid = |app: &mut App, fluid: Option<VoxelFluid>| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| {
+                    assert!(voxels.flow_fluid(pos, fluid));
+                })
+                .unwrap();
+            app.update();
+            let (coord, local) = ChunkCoord::split(pos + IVec3::X);
+            let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+            app.world()
+                .get::<ChunkLight>(entity)
+                .unwrap()
+                .at(local)
+                .block()[0]
+        };
+        let lava = base().state(block("lava")).light[0];
+        assert_eq!(
+            set_fluid(&mut app, VoxelFluid::of(block("lava"), 300)),
+            lava - 1
+        );
+        assert_eq!(set_fluid(&mut app, None), 0);
+    }
+
+    /// Only a change of fluid that light sees queues light work: another
+    /// fluid, or water coming or going, since it dims light (its
+    /// `light_filter`), but not more or less of one.
+    #[test]
+    fn fluid_changes_queue_light_only_for_another_fluid() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(LightTable::new(base()))
+            .init_resource::<ChunkMap>()
+            .init_resource::<Sky>()
+            .init_resource::<LightQueue>()
+            .add_message::<VoxelChanged>()
+            .add_message::<PropertiesUpdated>()
+            .add_message::<FluidChanged>()
+            .add_systems(Update, queue_changed_voxels);
+        let mut send = |before: Option<(&str, u16)>, after: Option<(&str, u16)>| {
+            let fluid = |f: Option<(&str, u16)>| f.and_then(|(id, n)| VoxelFluid::of(block(id), n));
+            app.world_mut().write_message(FluidChanged {
+                pos: IVec3::ZERO,
+                by_flow: true,
+                before: fluid(before),
+                after: fluid(after),
+            });
+            app.update();
+            let queued = !app.world().resource::<LightQueue>().is_empty();
+            app.world_mut().insert_resource(LightQueue::default());
+            queued
+        };
+        assert!(send(None, Some(("lava", 300))));
+        assert!(send(Some(("lava", 300)), Some(("water", 300))));
+        assert!(send(Some(("lava", 300)), None));
+        assert!(!send(Some(("lava", 300)), Some(("lava", 900))));
+        assert!(!send(Some(("water", 300)), Some(("water", 900))));
+        assert!(send(None, Some(("water", 1000))), "water dims light");
     }
 
     /// A lamp's light reaching into a chunk its edit didn't touch remeshes
@@ -418,6 +499,9 @@ mod tests {
             .add_plugins(ChunkMapPlugin)
             .init_resource::<Sky>()
             .init_resource::<LightQueue>()
+            .add_message::<VoxelChanged>()
+            .add_message::<PropertiesUpdated>()
+            .add_message::<FluidChanged>()
             .add_systems(Update, queue_changed_voxels);
         let mut send = |before, after| {
             app.world_mut().write_message(PropertiesUpdated {

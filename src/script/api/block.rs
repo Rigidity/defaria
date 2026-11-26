@@ -123,8 +123,8 @@ impl Located for BlockRef {
     }
 }
 
-/// A block handle's fields: `pos`, `id`, `name`, `state`, `data` and
-/// `light`.
+/// A block handle's fields: `pos`, `id`, `name`, `state`, `data`, `light`
+/// and `fluid`.
 pub(super) fn add_block_fields<T: Located, F: UserDataFields<T>>(fields: &mut F) {
     fields.add_field_method_get("pos", |_, block| Ok(vector(block.pos())));
     fields.add_field_method_get("id", |lua, block| block.op(lua, Op::Id, ()));
@@ -132,6 +132,7 @@ pub(super) fn add_block_fields<T: Located, F: UserDataFields<T>>(fields: &mut F)
     fields.add_field_method_get("state", |lua, block| block.op(lua, Op::State, ()));
     fields.add_field_method_get("data", |lua, block| block.op(lua, Op::Data, ()));
     fields.add_field_method_get("light", |lua, block| block.op(lua, Op::Light, ()));
+    fields.add_field_method_get("fluid", |lua, block| block.op(lua, Op::Fluid, ()));
 }
 
 /// A block handle's methods: `stat`, `set_state`, `set`, `neighbour`, and

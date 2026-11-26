@@ -3,7 +3,6 @@
 
 use bevy::prelude::*;
 
-use super::chunk::fluid_surface;
 use crate::content::BlockState;
 
 /// What one of the voxels around a corner of a fluid's top is to that
@@ -12,7 +11,8 @@ use crate::content::BlockState;
 enum AroundCorner {
     /// Not the same fluid: it doesn't count.
     Other,
-    /// The same fluid, its surface this high (see [`fluid_surface`]).
+    /// The same fluid, its surface this high (see
+    /// [`fluid_surface`](super::fluid_surface)).
     Surface(f32),
     /// The same fluid, with the same fluid above it: a column, which
     /// raises the corner to a full block.
@@ -38,23 +38,26 @@ pub struct FluidTop {
 
 impl FluidTop {
     /// The top of the fluid of block `fluid` at `pos`, with `voxel` giving
-    /// the block at a position and the height its fluid is drawn at (see
-    /// [`Chunk::fluid_step_at`](super::Chunk::fluid_step_at)), or `None` where nothing is loaded, which
-    /// counts as neither the fluid nor anything over it. Meshing and
-    /// swimming both build it here, so they see the same surface.
+    /// the fluid in the voxel at a position and how high it's drawn there,
+    /// up the room its block leaves (see
+    /// [`fluid_surface`](super::fluid_surface)), or `None` where there's no
+    /// fluid or nothing is loaded, which counts as neither the fluid nor
+    /// anything over it. A voxel the fluid shares with a block (a slab in a
+    /// pond) counts like any other. Meshing and swimming both build it
+    /// here, so they see the same surface.
     pub fn of(
         fluid: BlockState,
         pos: IVec3,
-        voxel: impl Fn(IVec3) -> Option<(BlockState, u16)>,
+        voxel: impl Fn(IVec3) -> Option<(BlockState, f32)>,
     ) -> Self {
         Self::around(|offset| {
             let at = pos + IVec3::new(offset.x, 0, offset.y);
             match voxel(at) {
-                Some((here, step)) if here == fluid => {
+                Some((here, height)) if here == fluid => {
                     if voxel(at + IVec3::Y).is_some_and(|(above, _)| above == fluid) {
                         AroundCorner::Covered
                     } else {
-                        AroundCorner::Surface(fluid_surface(step))
+                        AroundCorner::Surface(height)
                     }
                 }
                 _ => AroundCorner::Other,

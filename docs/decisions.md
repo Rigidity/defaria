@@ -1414,28 +1414,42 @@ fast, and it's what pumps drawing from a lake or an oil pool will need
 `film` stay on dry ground for good: see #97 (creeping toward a drop) and
 #98 (evaporation).
 
-## A fluid's kind is its block; only its amount is stored apart (2026-11-25)
+## A voxel's fluid is a layer beside its block, and room is one number (2026-11-26)
 
-**Context.** Water and lava are blocks with `fluid` set. A voxel of one
-also holds an amount, finer than any block property could hold.
+**Context.** A slab placed in a pond replaced the water in its voxel,
+leaving a square hole in the surface (waterlogging, #75). A voxel held one
+block, and a fluid was that block.
 
-**Decision.** The voxel's block says which fluid it is, and the chunk
-keeps the amounts of the fluid voxels that aren't full in a sparse map
-(`Chunk::partial_at`; a fluid voxel not in it is full), saved in the chunk
-format. Generated seas are full, so they cost no extra memory or disk.
+**Decision.** Each voxel holds a fluid, its kind and amount, in a layer
+of its own next to its block state (`Chunk::fluid_at`), rather than a
+"waterlogged" property on blocks: that would multiply every such block's
+states by the number of fluids, flow would have to rewrite blocks to
+move fluid, and it leaves no room for voxels made of parts (double slabs
+#80, Chisel & Bits). A voxel of water is air with water in it. Blocks say
+how much of their voxel fluid can share with them, `fluid_room` in the
+mod format (a slab 0.5, a tuft 0.9, a full block 0); flow sees that room
+as the cell's capacity and compares levels by how high the fluid stands,
+the block's share of the voxel counting as filled. Sloped tops
+(`FluidTop`) count a voxel's fluid by how high it stands up the room its
+block leaves, so a slab in a pond slopes and meets the water around it
+like any voxel. The layer is a `ChunkArray`, so a chunk with no fluid,
+or full of one (the sea), keeps one value; a mixed one keeps 4 bytes a
+voxel. It's saved as a palette of fluids with an index per voxel (chunk
+format 4).
 
-**What's wrong with it.** A voxel holds one block, so it can't hold a
-fluid and a block that doesn't fill it, such as a slab in a pond
-(waterlogging, #75). And a fluid can only flow into air: flow's
-`cell_of` in `src/fluid.rs` gives every other block no room.
+**What's wrong with it.** Room is one number, not a shape: fluid in a
+slab's voxel falls out of its bottom into the voxel below as if the slab
+weren't there, and it's drawn standing on the slab whichever half the
+slab is in. A chunk with a puddle in it keeps the whole layer.
 
-**What should replace it.** Move the fluid's kind into the same per-voxel
-layer as its amount, so a voxel holds a block and a fluid, and let
-`cell_of` give a block that doesn't fill its voxel room for some fluid.
+**What should replace it.** When blocks have shapes the fluid can't pass
+(a slab's solid side, a fence's posts), let `fluid_room` name the faces
+fluid can't cross, and have flow and the mesh read them. If memory gets
+tight in fluid-heavy worlds, store the layer sparsely or as runs.
 
 ## Fluid surfaces slope between corners averaged from the same fluid (2026-11-26)
 
-**Context.** A fluid voxel is drawn at one of 16 heights by its amount.
+**Context.** A voxel's fluid is drawn at one of 16 heights by its amount.
 Its top slopes: each corner is at the average height of the voxels of the
 same fluid around it, or a full block beside a column (`FluidTop`, in
 `src/world/fluid_top.rs`). Swimming and the fog inside fluid use the same

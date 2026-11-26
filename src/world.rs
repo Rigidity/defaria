@@ -17,9 +17,11 @@ mod chunk_array;
 mod fluid_top;
 mod voxels;
 
-pub use chunk::fluid_step;
+#[cfg(test)]
+pub use chunk::split_fluid;
 pub use chunk::{
-    CHUNK_SIZE, CHUNK_VOLUME, Chunk, FLUID_STEPS, axis_of, fluid_amount, touching_offsets,
+    CHUNK_SIZE, CHUNK_VOLUME, Chunk, FLUID_STEPS, VoxelFluid, axis_of, filled, fluid_step,
+    fluid_surface, touching_offsets,
 };
 pub use chunk_array::ChunkArray;
 pub use fluid_top::FluidTop;
@@ -81,8 +83,7 @@ impl ChunkCoord {
     }
 }
 
-/// A voxel was set to a different block through [`Voxels`], or set to the
-/// fluid it held, filling it.
+/// A voxel was set to a different block through [`Voxels`].
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoxelChanged {
     pub pos: IVec3,
@@ -90,19 +91,36 @@ pub struct VoxelChanged {
     pub before: BlockState,
     /// The block it is now.
     pub after: BlockState,
-    /// The amount of fluid its chunk kept for it (see [`Chunk::partial_at`]):
-    /// with `before` a fluid, `None` means it was full.
-    pub partial_before: Option<u16>,
+    /// The fluid it held before.
+    pub fluid_before: Option<VoxelFluid>,
+    /// The fluid it holds now: as much of `fluid_before` as the new block
+    /// leaves room for.
+    pub fluid_after: Option<VoxelFluid>,
 }
 
-/// The amount of fluid in a voxel changed, without its block changing,
-/// through [`Voxels::set_fluid`].
+impl VoxelChanged {
+    /// How much fluid the new block took the place of: what it held
+    /// before that it doesn't now.
+    pub fn displaced(&self) -> Option<VoxelFluid> {
+        let before = self.fluid_before?;
+        let left = self
+            .fluid_after
+            .filter(|after| after.kind == before.kind)
+            .map_or(0, |after| after.amount);
+        VoxelFluid::of(before.kind, before.amount.saturating_sub(left))
+    }
+}
+
+/// The fluid in a voxel changed, without its block changing, through
+/// [`Voxels::set_fluid`] or flow.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FluidChanged {
     pub pos: IVec3,
     /// Whether flow moved it, rather than something else setting it. Flow
     /// wakes the fluid around what it moves itself.
     pub by_flow: bool,
+    pub before: Option<VoxelFluid>,
+    pub after: Option<VoxelFluid>,
 }
 
 /// The engine set some of a voxel's properties from the world around it,

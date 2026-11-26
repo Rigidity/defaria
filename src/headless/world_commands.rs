@@ -20,7 +20,7 @@ use crate::{
     script::random_tick::RandomTicks,
     streaming::{ChunkLoader, StreamingSettings, loader_chunk},
     view_bob::ViewBob,
-    world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, Voxels},
+    world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, VoxelFluid, Voxels},
 };
 
 /// Applies this frame's `fill` and `camera` commands. A mistake in one (an
@@ -176,17 +176,20 @@ fn fill(
     } else {
         fill_state(&content, &id).map_err(|error| format!("fill: {error}"))?
     };
-    // The voxels it changed: not ones already full of `state`, nor ones
-    // in chunks that aren't loaded.
+    // The voxels it changed: not ones already as it leaves them, nor
+    // ones in chunks that aren't loaded.
     let mut set = 0;
     for x in min.x..=max.x {
         for y in min.y..=max.y {
             for z in min.z..=max.z {
                 let pos = IVec3::new(x, y, z);
-                let changes = voxels
-                    .get_with_fluid(pos)
-                    .is_some_and(|before| before != (state, None));
-                if voxels.set(pos, state) && changes {
+                let before = voxels.get_with_fluid(pos);
+                voxels.set(pos, state);
+                // Air clears fluid too.
+                if state.is_air() {
+                    voxels.set_fluid(pos, None);
+                }
+                if before.is_some() && voxels.get_with_fluid(pos) != before {
                     set += 1;
                 }
             }
@@ -210,8 +213,12 @@ fn pour(
             "pour: {amount} blocks is out of range; it must be over 0 and at most 1"
         ));
     }
+    // Filling it first makes room in a block that leaves none, and
+    // replaces any other fluid; then it holds as much as was asked, up to
+    // the room its block leaves.
     voxels.set(pos, state);
-    voxels.set_fluid(pos, units as u16);
+    let room = voxels.fluid_amount(pos);
+    voxels.set_fluid(pos, VoxelFluid::of(state, (units as u16).min(room)));
     Ok(())
 }
 
@@ -342,16 +349,13 @@ pub(super) fn fluid_report(world: &mut World, region: FluidRegion) -> String {
         let whole = bounds.is_none_or(|(min, max)| {
             origin.cmpge(min).all() && (origin + CHUNK_SIZE as i32 - 1).cmple(max).all()
         });
-        for index in 0..chunk.voxels().len() {
+        for (index, fluid) in chunk.fluids() {
             let pos = Chunk::position_of(index);
             if !whole && !contains(origin + pos) {
                 continue;
             }
-            let amount = chunk.fluid_amount_at(pos, content);
-            if amount > 0 {
-                let name = &content.blocks[content.state(chunk.at(pos)).block].id;
-                *in_world.entry(name.clone()).or_default() += amount as u64;
-            }
+            let name = &content.block_of(fluid.kind).id;
+            *in_world.entry(name.clone()).or_default() += fluid.amount as u64;
         }
     }
     let in_pipes = crate::fluid_network::held_in_pipes_within(world, contains);

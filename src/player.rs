@@ -621,7 +621,7 @@ pub(crate) mod tests {
                     let mut chunk = Chunk::default();
                     for index in 0..CHUNK_VOLUME {
                         let local = Chunk::position_of(index);
-                        chunk.set_at(local, fill(coord.origin() + local));
+                        chunk.put(local, fill(coord.origin() + local));
                     }
                     insert_chunk(&mut app, coord.0, chunk);
                 }
