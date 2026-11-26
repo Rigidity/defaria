@@ -24,8 +24,7 @@ use crate::{
     content::{BlockState, Content, FULL_FLUID, PortRole, Solver},
     machine::{MachinePortRef, MachinePorts, Tanks},
     network::{Network, NetworkId, NetworkMap, Networks, energy::EnergyClock},
-    terrain::{ChunkCoord, ChunkMap},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap},
 };
 
 /// What a fluid network's pipes allow: worked out from them when needed,

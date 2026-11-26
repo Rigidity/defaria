@@ -1,5 +1,5 @@
 // The box every fluid is drawn as: the engine's, not a mod's. The mesher
-// cuts each face to the fluid's height (see `src/voxel.rs`). Its slots are a
+// cuts each face to the fluid's height (see `src/meshing/build.rs`). Its slots are a
 // full block's: `all`, `side` and `end`, or each face's own.
 {
   // A block fills slots with textures. A slot it leaves empty takes the

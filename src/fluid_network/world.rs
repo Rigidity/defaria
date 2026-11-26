@@ -17,7 +17,7 @@ use crate::{
     content::{BlockState, Content, Direction, FULL_FLUID},
     machine::Tanks,
     network::energy::EnergyClock,
-    terrain::Voxels,
+    world::Voxels,
 };
 
 /// How many voxels a pump looks through, from the one in front of it, for

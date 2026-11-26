@@ -28,9 +28,10 @@ use crate::{
     fly_camera::{FlyCamera, FlyCameraSystems},
     game_mode::{GameMode, harvest},
     inventory::Inventory,
+    meshing::RemeshChunks,
     player::LocalPlayer,
-    terrain::{RemeshChunks, Voxels},
     ui::{UiScreen, playing},
+    world::Voxels,
 };
 
 /// Seconds of mining per point of hardness. Stone, at a hardness of 1.5,
@@ -197,8 +198,7 @@ mod tests {
     use super::*;
     use crate::{
         content::{base, block},
-        terrain::{ChunkCoord, ChunkMap, VoxelChanged},
-        voxel::Chunk,
+        world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
     };
     use bevy::time::TimeUpdateStrategy;
 
@@ -220,8 +220,8 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
-            .add_message::<crate::terrain::PropertiesUpdated>()
-            .add_message::<crate::terrain::FluidChanged>()
+            .add_message::<crate::world::PropertiesUpdated>()
+            .add_message::<crate::world::FluidChanged>()
             .add_observer(give_the_camera_mining)
             .add_systems(Update, (arm, mine).chain());
         app.world_mut().spawn((

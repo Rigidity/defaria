@@ -32,7 +32,7 @@ use crate::{
     hotbar::{ActiveSlot, Hotbar},
     machine::screen::open_machine_screen,
     player::LocalPlayer,
-    terrain::Voxels,
+    world::Voxels,
 };
 
 pub struct WrenchPlugin;

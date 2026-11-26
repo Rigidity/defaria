@@ -211,7 +211,7 @@ mod tests {
     fn voxel(app: &mut App, pos: IVec3) -> BlockState {
         app.world_mut()
             .run_system_cached_with(
-                |pos: In<IVec3>, voxels: crate::terrain::Voxels| voxels.get(*pos),
+                |pos: In<IVec3>, voxels: crate::world::Voxels| voxels.get(*pos),
                 pos,
             )
             .unwrap()

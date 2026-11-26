@@ -11,7 +11,7 @@ use crate::{
     block_entity::BlockEntity,
     content::{BlockState, Content},
     machine::{Tank, Tanks},
-    terrain::Voxels,
+    world::Voxels,
 };
 
 /// The state of `state`'s block showing `tank`, or `state` itself if its

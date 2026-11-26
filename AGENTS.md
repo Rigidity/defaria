@@ -277,10 +277,21 @@ documented in `docs/modding.md`; keep that file, the serde types in
   parallel work doesn't collide. Touch `lib.rs` only to register the plugin.
 - `src/devtools.rs`: CLI flags, windowed screenshot mode and BRP.
 - `src/headless.rs`: headless mode and the scenario script runner.
-- `src/terrain.rs`: terrain generation, the loaded chunks (`ChunkMap`,
-  `Voxels`) and showing chunk meshes: opaque faces on the chunk's entity,
-  cut-out and translucent ones on child entities (`ChunkParts`), with the
-  translucent faces sorted back to front. `src/voxel.rs` builds the meshes.
+- `src/world.rs` (and `src/world/`): the world's voxels, which
+  everything else reads and writes: `Chunk` (`world/chunk.rs`, with the
+  fluid amounts it keeps), `ChunkCoord`, the loaded chunks (`ChunkMap`,
+  `spawn_chunk`), `Voxels` (`world/voxels.rs`) for reading and writing by
+  world position, and the messages edits send (`VoxelChanged`,
+  `FluidChanged`, `PropertiesUpdated`).
+- `src/meshing.rs` (and `src/meshing/`): drawing chunks. Remeshing the
+  ones that changed (`RemeshChunks`, `MeshTask`, `AwaitingNeighbours`) and
+  showing the meshes: opaque faces on the chunk's entity, cut-out and
+  translucent ones on child entities (`ChunkParts`), with the translucent
+  faces sorted back to front. `meshing/build.rs` builds the meshes from a
+  `Neighborhood` (culling, face shading, the vertex attributes).
+- `src/worldgen.rs` (and `src/worldgen/`): terrain generation (`Terrain`,
+  `TerrainSettings`), with the land's shape and the splines it's made of.
+  Only `streaming`, which runs it, uses it outside tests.
 - `src/ui.rs` (and `src/ui/`): the UI toolkit that the HUD and screens are
   built from: the theme, screens (`UiScreen`, and the `playing` run
   condition gameplay input runs under), the pointer (Bevy's picking),

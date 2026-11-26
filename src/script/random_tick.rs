@@ -22,8 +22,7 @@ use bevy::{platform::collections::HashSet, prelude::*};
 use super::hooks::{Hook, HookSettings, HookSystems, PendingHooks, ScriptIndex};
 use crate::{
     content::Content,
-    terrain::{ChunkCoord, ChunkMap},
-    voxel::{CHUNK_VOLUME, Chunk},
+    world::{CHUNK_VOLUME, Chunk, ChunkCoord, ChunkMap},
 };
 
 pub(super) fn plugin(app: &mut App) {

@@ -3,7 +3,7 @@
 //!
 //! Bevy's lights don't touch it. The shader lights the block texture's pixels
 //! with the light baked into the mesh (sky and block light, and ambient
-//! occlusion; see `voxel` and `light`) and with the dynamic lights in
+//! occlusion; see `meshing` and `light`) and with the dynamic lights in
 //! [`LightingUniform`]. The shader is `assets/shaders/voxel.wesl` and hot
 //! reloads in dev builds. Its vertex stage is our own too, since chunk
 //! meshes carry their light in custom vertex attributes.
@@ -30,7 +30,7 @@ use bevy::{
 use crate::{
     block_texture,
     content::Content,
-    voxel::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT},
+    meshing::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT},
 };
 
 /// The most dynamic lights drawn at once: the ones nearest the camera.
@@ -331,7 +331,10 @@ mod tests {
             "const MAX_DYNAMIC_LIGHTS: u32 = {MAX_DYNAMIC_LIGHTS}u;"
         )));
         assert!(shader.contains("fn vertex("));
-        let back = format!("const BACK_FACE: u32 = 0x{:08x}u;", crate::voxel::BACK_FACE);
+        let back = format!(
+            "const BACK_FACE: u32 = 0x{:08x}u;",
+            crate::meshing::BACK_FACE
+        );
         assert!(shader.contains(&back), "the shader doesn't declare {back}");
         // The vertex inputs at the locations `specialize` feeds them to.
         for (location, (_, declaration)) in VERTEX_INPUTS.iter().enumerate() {

@@ -14,8 +14,7 @@ use crate::{
     block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content, Direction, PortRole},
     network::{NetworkId, Networks, Port},
-    terrain::{ChunkCoord, ChunkMap},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap},
 };
 
 /// A machine port on a network.

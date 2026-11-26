@@ -18,8 +18,7 @@ use crate::{
         random_tick::{RandomTicks, TickingChunks},
         source::ScriptSources,
     },
-    terrain::{ChunkCoord, ChunkMap, FluidChanged, Voxels},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, Voxels},
 };
 
 const SWITCH: &str = r#"

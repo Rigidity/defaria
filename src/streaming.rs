@@ -53,13 +53,12 @@ use crate::{
     content::Content,
     fly_camera::FlyCamera,
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
+    meshing::{AwaitingNeighbours, MeshTask, Meshed, RemeshChunks},
     save::{self, WorldFolder, WorldStore, region},
-    terrain::{
-        AwaitingNeighbours, ChunkCoord, ChunkMap, FluidChanged, MeshTask, Meshed,
-        PropertiesUpdated, RemeshChunks, Terrain, TerrainBlocks, TerrainSettings, VoxelChanged,
-        spawn_chunk,
+    world::{
+        Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, spawn_chunk,
     },
-    voxel::Chunk,
+    worldgen::{Terrain, TerrainBlocks, TerrainSettings},
 };
 
 pub struct StreamingPlugin;
@@ -67,6 +66,7 @@ pub struct StreamingPlugin;
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StreamingSettings>()
+            .init_resource::<TerrainSettings>()
             .init_resource::<Chunks>()
             .init_resource::<StreamingStatus>()
             .init_resource::<ChunksSaving>()
@@ -714,12 +714,12 @@ mod tests {
     use crate::{
         content::{BlockState, base, block},
         light::{LightPlugin, MAX_LIGHT},
+        meshing::MeshingPlugin,
+        meshing::testing::finish_meshing,
         save::tests::temp_folder,
-        terrain::{
-            TerrainPlugin, Voxels,
-            testing::{PATCH, finish_meshing, spawn_patch},
-        },
         voxel_material::BlockMaterial,
+        world::{Voxels, WorldPlugin},
+        worldgen::testing::{PATCH, spawn_patch},
     };
 
     fn settings() -> StreamingSettings {
@@ -741,7 +741,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
             .insert_resource(base().clone())
-            .add_plugins((TerrainPlugin, LightPlugin, StreamingPlugin))
+            .add_plugins((WorldPlugin, MeshingPlugin, LightPlugin, StreamingPlugin))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .insert_resource(settings())
@@ -1032,7 +1032,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
             .insert_resource(crate::content::test_mod(&[]))
-            .add_plugins((TerrainPlugin, LightPlugin, StreamingPlugin))
+            .add_plugins((WorldPlugin, MeshingPlugin, LightPlugin, StreamingPlugin))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .insert_resource(settings())
@@ -1079,7 +1079,7 @@ mod tests {
         patch
             .add_plugins((MinimalPlugins, AssetPlugin::default()))
             .insert_resource(base().clone())
-            .add_plugins((TerrainPlugin, LightPlugin))
+            .add_plugins((WorldPlugin, MeshingPlugin, LightPlugin))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()));
         spawn_patch(patch.world_mut());

@@ -22,6 +22,7 @@ mod hotbar;
 pub mod inventory;
 mod light;
 pub mod machine;
+mod meshing;
 mod mining;
 pub mod network;
 mod perlin;
@@ -30,13 +31,12 @@ mod player;
 pub mod recipe;
 pub mod save;
 pub mod script;
-mod spline;
 pub mod streaming;
-mod terrain;
 pub mod ui;
 mod view_bob;
-mod voxel;
 mod voxel_material;
+mod world;
+mod worldgen;
 mod wrench;
 
 pub use devtools::{Cli, DevToolsPlugin, ScreenshotMode};
@@ -58,9 +58,9 @@ impl Plugin for GamePlugin {
             physics::PhysicsPlugin,
             player::PlayerPlugin,
             view_bob::ViewBobPlugin,
-            voxel::VoxelPlugin,
+            meshing::MeshingPlugin,
             voxel_material::VoxelMaterialPlugin,
-            terrain::TerrainPlugin,
+            world::WorldPlugin,
             block_edit::BlockEditPlugin,
             light::LightPlugin,
             dynamic_light::DynamicLightPlugin,

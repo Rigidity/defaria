@@ -36,7 +36,7 @@ use bevy::{
 
 use crate::{
     content::{BlockState, Content, Direction},
-    terrain::ChunkCoord,
+    world::ChunkCoord,
 };
 
 /// A network, for as long as it lasts: ids are never reused. A network that

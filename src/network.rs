@@ -41,8 +41,7 @@ pub use state::{
 use crate::{
     connections::{ConnectionSystems, face_voxel},
     content::{BlockState, Content, Direction},
-    terrain::{ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
-    voxel::{CHUNK_SIZE, Chunk},
+    world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
 };
 
 pub struct NetworkPlugin;

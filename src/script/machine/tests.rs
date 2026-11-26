@@ -20,8 +20,7 @@ use crate::{
     network::{NetworkPlugin, energy::EnergyPlugin, energy::EnergyReport},
     recipe::RecipePlugin,
     script::{BlockUsed, ScriptPlugin, ScriptSettings, source::ScriptSources},
-    terrain::{ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
-    voxel::Chunk,
+    world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
 };
 
 const COUNTER: &str = r#"

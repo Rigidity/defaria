@@ -9,14 +9,15 @@ use crate::{
         load::{ModFiles, read_mods},
     },
     light::LightPlugin,
+    meshing::MeshingPlugin,
     save::{
         WorldFolder,
         chunk::{StateNames, decode, encode},
         tests::temp_folder,
     },
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    terrain::{TerrainPlugin, Voxels},
     voxel_material::BlockMaterial,
+    world::{Voxels, WorldPlugin},
 };
 
 /// A test part, saved as an int, that only `test:counter` blocks have:
@@ -101,7 +102,8 @@ fn app(folder: Option<&Path>, at: Vec3) -> App {
     app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
         .insert_resource(content().clone())
         .add_plugins((
-            TerrainPlugin,
+            WorldPlugin,
+            MeshingPlugin,
             LightPlugin,
             StreamingPlugin,
             BlockEntityPlugin,

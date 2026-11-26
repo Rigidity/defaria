@@ -12,7 +12,7 @@ use super::*;
 use crate::{
     connections::ConnectionsPlugin,
     content::{base, block, test_mod},
-    terrain::FluidChanged,
+    world::FluidChanged,
 };
 
 /// What a test solver keeps: units, divided by share, with what the
@@ -119,7 +119,7 @@ fn unload(app: &mut App, coord: IVec3) {
 fn set(app: &mut App, voxels: &[(IVec3, BlockState)]) {
     let voxels = voxels.to_vec();
     app.world_mut()
-        .run_system_once(move |mut world: crate::terrain::Voxels| {
+        .run_system_once(move |mut world: crate::world::Voxels| {
             for &(pos, state) in &voxels {
                 assert!(world.set(pos, state), "{pos} isn't loaded");
             }

@@ -23,7 +23,7 @@ use bevy::{
 use crate::{
     content::{BlockState, Content, Direction},
     mining::{Mining, MiningSystems},
-    terrain::Voxels,
+    world::Voxels,
 };
 
 /// Crack images, from a hairline crack to one about to break.
@@ -218,8 +218,7 @@ mod tests {
     use super::*;
     use crate::{
         content::{base, block},
-        terrain::{ChunkCoord, ChunkMap, VoxelChanged},
-        voxel::Chunk,
+        world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
     };
 
     #[test]
@@ -325,8 +324,8 @@ mod tests {
             .insert_resource(base().clone())
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
-            .add_message::<crate::terrain::PropertiesUpdated>()
-            .add_message::<crate::terrain::FluidChanged>()
+            .add_message::<crate::world::PropertiesUpdated>()
+            .add_message::<crate::world::FluidChanged>()
             .add_systems(Startup, spawn_cracks)
             .add_systems(Update, show_cracks);
         let mut chunk = Chunk::default();

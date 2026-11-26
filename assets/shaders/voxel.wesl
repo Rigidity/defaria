@@ -46,7 +46,7 @@ const AMBIENT: f32 = 0.025;
 // is open and fully bright.
 const OCCLUDED: f32 = 0.3;
 // Set on the layer of a double-sided block's back face (see BACK_FACE in
-// src/voxel.rs). A back is drawn this much farther away, as a share of its
+// src/meshing/build.rs). A back is drawn this much farther away, as a share of its
 // distance, so a neighbour's face in the same plane (a slab's side beside
 // water or lava) wins the depth test instead of flickering with it.
 const BACK_FACE: u32 = 0x80000000u;

@@ -29,9 +29,9 @@ use bevy::{pbr::FogFalloff, prelude::*};
 
 use crate::{
     fly_camera::{EyeView, FlyCamera},
+    meshing::Meshed,
     streaming::StreamingSettings,
-    terrain::{ChunkCoord, ChunkMap, Meshed},
-    voxel::CHUNK_SIZE,
+    world::{CHUNK_SIZE, ChunkCoord, ChunkMap},
 };
 
 /// The fog starts this far out as a fraction of how far it reaches.

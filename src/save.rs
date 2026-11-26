@@ -33,7 +33,7 @@ use std::{
 use bevy::{platform::collections::HashMap, prelude::*};
 use serde::Deserialize;
 
-use crate::{content::Content, voxel::Chunk};
+use crate::{content::Content, world::Chunk};
 use chunk::StateNames;
 
 /// The `world.json5` format this build writes.

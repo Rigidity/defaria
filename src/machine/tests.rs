@@ -12,11 +12,12 @@ use crate::{
     },
     inventory::ItemStack,
     light::LightPlugin,
+    meshing::MeshingPlugin,
     network::{NetworkPlugin, Networks},
     save::{WorldFolder, tests::temp_folder},
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    terrain::TerrainPlugin,
     voxel_material::BlockMaterial,
+    world::WorldPlugin,
 };
 
 /// The base game, and mod `test` with an `oven`: a machine facing a way,
@@ -72,7 +73,8 @@ fn app(folder: Option<&Path>) -> App {
     app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
         .insert_resource(content().clone())
         .add_plugins((
-            TerrainPlugin,
+            WorldPlugin,
+            MeshingPlugin,
             LightPlugin,
             StreamingPlugin,
             BlockEntityPlugin,

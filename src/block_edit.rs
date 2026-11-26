@@ -32,10 +32,11 @@ use crate::{
     game_mode::{GameMode, use_up},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     inventory::Inventory,
+    meshing::RemeshChunks,
     physics::{Aabb, Body},
     player::LocalPlayer,
-    terrain::{RemeshChunks, Voxels},
     ui::{UiScreen, playing},
+    world::Voxels,
 };
 
 /// How far away, in blocks, you can break or place.
@@ -391,6 +392,7 @@ mod tests {
         headless::{Script, settle, test_game},
         hotbar::select_with_keys,
         inventory::player::new_player,
+        meshing::{apply_finished_meshes, remesh_changed_chunks, testing::finish_meshing},
         mining::{Mining, MiningPlugin},
         player::Player,
         player::SIZE,
@@ -398,12 +400,9 @@ mod tests {
             BlockUsed, ItemUsed, ScriptIndex,
             using::{use_scripted_block, use_scripted_item},
         },
-        terrain::{
-            ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, apply_finished_meshes,
-            remesh_changed_chunks, testing::finish_meshing,
-        },
-        voxel::Chunk,
         voxel_material::BlockMaterial,
+        world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
+        worldgen::{Terrain, TerrainBlocks},
     };
     use bevy::{math::DVec3, time::TimeUpdateStrategy};
     use std::time::Duration;
@@ -616,8 +615,8 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
-            .add_message::<crate::terrain::PropertiesUpdated>()
-            .add_message::<crate::terrain::FluidChanged>()
+            .add_message::<crate::world::PropertiesUpdated>()
+            .add_message::<crate::world::FluidChanged>()
             .add_message::<BlockUsed>()
             .add_message::<ItemUsed>()
             .add_systems(
