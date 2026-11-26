@@ -1,0 +1,9 @@
+// Bundled straw, for roofs: soft and light.
+{
+  name: "Thatch",
+  model: "cube",
+  textures: { all: "thatch" },
+  hardness: 0.4,
+  weight: 250,
+  category: "building",
+}

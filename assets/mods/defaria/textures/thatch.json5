@@ -1,0 +1,4 @@
+// Bundles of straw in overlapping rows.
+{
+  layers: [{ image: "thatch", material: "thatch" }],
+}

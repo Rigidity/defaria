@@ -147,6 +147,23 @@ chunk storage now.
   server keeping several players' areas): the palette;
 - the meshes' main-world copy is already due, and tracked in #161.
 
+## Shale and loam don't generate in the terrain yet (2026-11-26)
+
+**Context.** #39 added shale (a `#rock`) and loam (a `#soil`) to the
+base mod. The terrain is made of one rock and one soil: every rock
+column is stone and every soil is dirt or, at the shore, sand, chosen in
+`TerrainBlocks` (`src/worldgen.rs`). Granite and slate don't generate
+either.
+
+**Decision.** Shale and loam are only placeable, like granite and slate.
+Generating them means choosing where each rock and soil goes (by noise,
+depth or height), which is a terrain feature of its own, not a material.
+
+**When to revisit.** When the terrain gets variety in its rocks and
+soils: layers or patches of granite, slate and shale underground, and
+loam in lowlands or under forests, with `TerrainBlocks` holding a state
+for each.
+
 ## Beyond the loaded area: chunk loaders first, then networks that remember unloaded conduits (2026-11-26)
 
 **Context.** Machines run only in loaded chunks, and a network that
