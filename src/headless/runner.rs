@@ -96,7 +96,7 @@ pub(super) struct ScriptRunner {
     /// Whether a `timing` report is due at the end of this frame.
     pub(super) timing: bool,
     /// Whether a `fluids` report is due at the end of this frame.
-    pub(super) fluid_report: bool,
+    pub(super) fluid_reports: Vec<Option<(IVec3, IVec3)>>,
     /// Whether a `memory` report is due at the end of this frame.
     pub(super) memory_report: bool,
     /// When the current settle began.
@@ -130,7 +130,7 @@ impl ScriptRunner {
             && self.inspections.is_empty()
             && self.world_commands.is_empty()
             && !self.timing
-            && !self.fluid_report
+            && self.fluid_reports.is_empty()
             && !self.memory_report
             && self.network_reports.is_empty()
     }
@@ -304,7 +304,7 @@ fn run_script(
             | Command::Give { .. }
             | Command::RandomTicks(_)
             | Command::Lookups { .. } => runner.world_commands.push(command),
-            Command::Fluids => runner.fluid_report = true,
+            Command::Fluids(region) => runner.fluid_reports.push(region),
             Command::Memory => runner.memory_report = true,
             Command::Network(pos) => runner.network_reports.push(pos),
             Command::Type(text) => {

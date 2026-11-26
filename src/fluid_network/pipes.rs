@@ -545,9 +545,23 @@ pub(super) fn pour_spills(
 /// How much of each fluid is in the pipes, by fluid block id: what the
 /// networks hold and what loaded pipes are waiting to give back.
 pub fn held_in_pipes(world: &World) -> std::collections::BTreeMap<String, u64> {
+    held_in_pipes_within(world, |_| true)
+}
+
+/// [`held_in_pipes`], for the networks with a pipe where `within` says
+/// and the loaded pipes there.
+pub fn held_in_pipes_within(
+    world: &World,
+    within: impl Fn(IVec3) -> bool,
+) -> std::collections::BTreeMap<String, u64> {
     let mut totals = std::collections::BTreeMap::new();
+    let networks = world.get_resource::<Networks>();
     if let Some(nets) = world.get_resource::<NetworkMap<FluidNet>>() {
-        for (_, net) in nets.iter() {
+        for (id, net) in nets.iter() {
+            let network = networks.and_then(|networks| networks.get(id));
+            if !network.is_none_or(|network| network.conduits().iter().any(|&pos| within(pos))) {
+                continue;
+            }
             for held in &net.held {
                 *totals.entry(held.fluid.clone()).or_default() += held.amount;
             }
@@ -558,6 +572,12 @@ pub fn held_in_pipes(world: &World) -> std::collections::BTreeMap<String, u64> {
         .map(|reclaim| reclaim.0.iter().copied().collect())
         .unwrap_or_default();
     for entity in pending {
+        if world
+            .get::<BlockEntity>(entity)
+            .is_some_and(|block_entity| !within(block_entity.pos))
+        {
+            continue;
+        }
         if let Some(pipe) = world.get::<PipeFluid>(entity) {
             for held in &pipe.0 {
                 *totals.entry(held.fluid.clone()).or_default() += held.amount;

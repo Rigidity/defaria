@@ -36,7 +36,9 @@ pub enum Command {
         /// In blocks.
         amount: f32,
     },
-    Fluids,
+    /// Count the fluid in a box, by its corners (min, max), or the camera's
+    /// window.
+    Fluids(Option<(IVec3, IVec3)>),
     Hotbar {
         /// From 0.
         slot: usize,
@@ -179,17 +181,10 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
         }
         "fill" => {
             expect(7)?;
-            let corner = |at: usize| -> Result<IVec3, String> {
-                Ok(IVec3::new(
-                    parse_number(args[at])?,
-                    parse_number(args[at + 1])?,
-                    parse_number(args[at + 2])?,
-                ))
-            };
-            let (a, b) = (corner(0)?, corner(3)?);
+            let (min, max) = parse_box(&args[..6])?;
             commands.push(Command::Fill {
-                min: a.min(b),
-                max: a.max(b),
+                min,
+                max,
                 block: args[6].to_string(),
             });
         }
@@ -219,8 +214,12 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             });
         }
         "fluids" => {
-            expect(0)?;
-            commands.push(Command::Fluids);
+            let region = match args.len() {
+                0 => None,
+                6 => Some(parse_box(args)?),
+                _ => return Err(format!("`fluids` takes no arguments or 6: {line}")),
+            };
+            commands.push(Command::Fluids(region));
         }
         "hotbar" => {
             expect(2)?;
@@ -287,22 +286,25 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
         }
         "lookups" => {
             expect(6)?;
-            let corner = |at: usize| -> Result<IVec3, String> {
-                Ok(IVec3::new(
-                    parse_number(args[at])?,
-                    parse_number(args[at + 1])?,
-                    parse_number(args[at + 2])?,
-                ))
-            };
-            let (a, b) = (corner(0)?, corner(3)?);
-            commands.push(Command::Lookups {
-                min: a.min(b),
-                max: a.max(b),
-            });
+            let (min, max) = parse_box(args)?;
+            commands.push(Command::Lookups { min, max });
         }
         other => return Err(format!("unknown command `{other}`")),
     }
     Ok(())
+}
+
+/// Two corners, `x0 y0 z0 x1 y1 z1`, as the box's lowest and highest.
+fn parse_box(args: &[&str]) -> Result<(IVec3, IVec3), String> {
+    let corner = |at: usize| -> Result<IVec3, String> {
+        Ok(IVec3::new(
+            parse_number(args[at])?,
+            parse_number(args[at + 1])?,
+            parse_number(args[at + 2])?,
+        ))
+    };
+    let (a, b) = (corner(0)?, corner(3)?);
+    Ok((a.min(b), a.max(b)))
 }
 
 fn parse_number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
@@ -350,6 +352,7 @@ mod tests {
              settle\n\
              pour 4 -5 6 water 0.25\n\
              fluids\n\
+             fluids 4 -5 6 1 2 3\n\
              network 1 -2 3\n\
              put 1 2 3 input 4 stone[ore=defaria:iron]
              type  Iron ore 2 \n\
@@ -392,7 +395,8 @@ mod tests {
                     fluid: "water".into(),
                     amount: 0.25,
                 },
-                Command::Fluids,
+                Command::Fluids(None),
+                Command::Fluids(Some((IVec3::new(1, -5, 3), IVec3::new(4, 2, 6)))),
                 Command::Network(IVec3::new(1, -2, 3)),
                 Command::Put {
                     pos: IVec3::new(1, 2, 3),
@@ -444,6 +448,8 @@ mod tests {
         assert!(Script::parse("pour 1 2 3 water").is_err());
         assert!(Script::parse("pour 1 2 3 water lots").is_err());
         assert!(Script::parse("fluids all").is_err());
+        assert!(Script::parse("fluids 1 2 3").is_err());
+        assert!(Script::parse("fluids 1 2 3 4 5 six").is_err());
         assert!(Script::parse("random-ticks").is_err());
         assert!(Script::parse("random-ticks many").is_err());
         assert!(Script::parse("memory all").is_err());

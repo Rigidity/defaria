@@ -19,7 +19,7 @@ use bevy::{
 use super::{
     RESOLUTION, memory,
     runner::ScriptRunner,
-    world_commands::{fluid_report, network_report},
+    world_commands::{FluidRegion, fluid_report, network_report},
 };
 
 /// The offscreen image the camera renders into.
@@ -115,8 +115,12 @@ pub(super) fn observe(world: &mut World) {
             report_timing(&mut runner, frame);
         }
     }
-    if std::mem::take(&mut world.resource_mut::<ScriptRunner>().fluid_report) {
-        println!("[frame {frame}] {}", fluid_report(world));
+    for region in std::mem::take(&mut world.resource_mut::<ScriptRunner>().fluid_reports) {
+        let region = match region {
+            Some((min, max)) => FluidRegion::Box { min, max },
+            None => FluidRegion::Window,
+        };
+        println!("[frame {frame}] {}", fluid_report(world, region));
     }
     if std::mem::take(&mut world.resource_mut::<ScriptRunner>().memory_report) {
         println!("[frame {frame}] {}", memory::ChunkMemory::measure(world));
