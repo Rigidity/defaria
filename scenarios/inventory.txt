@@ -19,7 +19,7 @@ hold KeyE 1                      # open the inventory
 wait 3
 screenshot target/scenarios/inventory/1-open.png
 wait 1
-cursor 515 160                   # the catalog's glass
+cursor 515 184                   # the catalog's gravel
 wait 1
 press ShiftLeft                  # shift-click: a hundred of it
 wait 1
@@ -32,7 +32,7 @@ wait 2
 screenshot target/scenarios/inventory/2-taken.png
 wait 1
 
-press MouseLeft                  # drag the glass onto hotbar slot 9
+press MouseLeft                  # drag the gravel onto hotbar slot 9
 wait 1
 cursor 700 500
 wait 1
@@ -49,7 +49,7 @@ wait 1
 
 hold KeyE 1                      # close: back to playing
 wait 3
-hold Digit9 1                    # the glass
+hold Digit9 1                    # the gravel
 wait 1
 hold MouseRight 1                # place one on the wall
 wait 2

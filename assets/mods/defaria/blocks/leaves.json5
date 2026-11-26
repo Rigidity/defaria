@@ -10,4 +10,5 @@
   textures: { all: { texture: "leaves", materials: { wood: "{wood}" } } },
   hardness: 0.2,
   weight: 150,
+  category: "natural",
 }

@@ -5,4 +5,5 @@
   textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
   hardness: { materials: { rock: 1 } },
   weight: { base: 0.5, materials: { rock: 1 } },
+  category: "building",
 }

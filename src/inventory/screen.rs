@@ -423,7 +423,7 @@ mod tests {
     fn clicks_move_items_in_and_out() {
         let mut app = open_inventory();
         let sand = soil(&app, "defaria:sand");
-        let glass = item(&app, "defaria:glass");
+        let glass = soil(&app, "defaria:gravel");
         let start = inventory(&mut app).count(sand);
         let at = catalog_at(&mut app, sand);
         run_more(&mut app, &click("MouseLeft", at));
@@ -465,7 +465,7 @@ mod tests {
     fn dragging_moves_items_and_fills_the_hotbar() {
         let mut app = open_inventory();
         let (glass, stone, dirt) = (
-            item(&app, "defaria:glass"),
+            soil(&app, "defaria:gravel"),
             item(&app, "defaria:stone"),
             soil(&app, "defaria:dirt"),
         );
@@ -665,6 +665,37 @@ mod tests {
         let at = mine_at(&mut app, stone);
         run_more(&mut app, &click("MouseLeft", at));
         assert_eq!(inventory(&mut app), before);
+    }
+
+    /// Both lists group their items under headings: the catalog all four
+    /// of the base game's, the inventory those of what's carried.
+    #[test]
+    fn lists_show_category_headings() {
+        let mut app = open_inventory();
+        let mut headings = app
+            .world_mut()
+            .query_filtered::<(&Text, &ChildOf), With<crate::inventory::list::ListHeading>>();
+        let found: Vec<(String, Entity)> = headings
+            .iter(app.world())
+            .map(|(text, parent)| (text.0.clone(), parent.parent()))
+            .collect();
+        let mut lists = app.world_mut().query::<(Entity, &ItemList)>();
+        let catalog = lists
+            .iter(app.world())
+            .find(|(_, list)| list.source == ListSource::Catalog)
+            .unwrap()
+            .0;
+        let names = |of_catalog: bool| -> Vec<&str> {
+            found
+                .iter()
+                .filter(|(_, parent)| (*parent == catalog) == of_catalog)
+                .map(|(name, _)| name.as_str())
+                .collect()
+        };
+        assert_eq!(names(true), ["Natural", "Building", "Lighting", "Tools"]);
+        // The new player's hotbar items: natural blocks, building blocks
+        // and lamps.
+        assert_eq!(names(false), ["Natural", "Building", "Lighting"]);
     }
 
     #[test]

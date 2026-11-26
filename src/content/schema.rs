@@ -283,6 +283,9 @@ pub struct BlockDef {
     /// Whether the block gets an item that places it. On by default.
     #[serde(default = "default_true")]
     pub item: bool,
+    /// The category its item is listed under in the inventory.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 /// How a fluid flows and what it's like to be in. Amounts are in blocks: 1
@@ -406,6 +409,21 @@ pub struct ItemDef {
     /// block it places weighs, or 0.
     #[serde(default)]
     pub weight: Option<Attribute>,
+    /// The category it's listed under in the inventory. Left out, a
+    /// block's item is in the block's.
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
+/// `categories/<name>.json5`: a heading items are listed under in the
+/// inventory.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryDef {
+    pub name: String,
+    /// Where it comes among the categories: lowest first, ties by id.
+    #[serde(default)]
+    pub order: i32,
 }
 
 /// A block's or item's hardness or weight: a number, or a base times a

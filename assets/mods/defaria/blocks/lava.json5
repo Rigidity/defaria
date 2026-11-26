@@ -16,4 +16,5 @@
   textures: { all: "lava" },
   light: [15, 10, 4],
   weight: 3100,
+  category: "natural",
 }

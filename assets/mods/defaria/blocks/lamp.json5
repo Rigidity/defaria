@@ -6,4 +6,5 @@
   light: [15, 14, 12],
   hardness: 0.3,
   weight: 500,
+  category: "lighting",
 }

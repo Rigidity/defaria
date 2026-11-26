@@ -19,4 +19,5 @@
   ],
   hardness: { materials: { wood: 1 } },
   weight: { materials: { wood: 1 } },
+  category: "natural",
 }

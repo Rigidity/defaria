@@ -2,11 +2,12 @@
 //! sorted, or of the creative catalog's every item. `gesture` makes their
 //! entries respond to the mouse.
 //!
-//! There's no arranging: an inventory's list is always sorted (in item
-//! order for now), with an entry per kind of item showing how many. When
-//! the inventory changes its entries are updated in place, spawning or
-//! despawning only as many as the count of kinds changes by, so the list
-//! never draws half-built.
+//! There's no arranging: a list is always sorted, under a heading per
+//! category in the categories' order (items in none last, under Other),
+//! and in item order within one, with an entry per kind of item showing
+//! how many. When it changes, its entries and headings are updated in
+//! place, spawning or despawning only the difference, so the list never
+//! draws half-built.
 
 use bevy::prelude::*;
 
@@ -23,6 +24,7 @@ impl Plugin for ListPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<ItemList>()
             .register_type::<ListEntry>()
+            .register_type::<ListHeading>()
             // In Update, not just before the UI's own systems: an entry
             // spawned in PostUpdate draws faded for its first frame.
             .add_systems(Update, refresh_lists.in_set(ListSystems));
@@ -121,6 +123,44 @@ pub fn sorted_entries(inventory: &Inventory) -> Vec<ItemStack> {
     entries
 }
 
+/// One heading's worth of a list: its category (`None` for items in none)
+/// and its entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub category: Option<usize>,
+    pub entries: Vec<ItemStack>,
+}
+
+/// `entries` (in the order they're in) under their categories, in the
+/// categories' order, then those in none. Empty sections are left out.
+pub fn sections(content: &Content, entries: Vec<ItemStack>) -> Vec<Section> {
+    let other = content.categories.len();
+    let mut sections: Vec<Section> = (0..other)
+        .map(Some)
+        .chain([None])
+        .map(|category| Section {
+            category,
+            entries: Vec::new(),
+        })
+        .collect();
+    for stack in entries {
+        let category = content.item_of(stack.item).and_then(|item| item.category);
+        sections[category.unwrap_or(other)].entries.push(stack);
+    }
+    sections.retain(|section| !section.entries.is_empty());
+    sections
+}
+
+/// Whether a list shows headings: once there's a category to name.
+fn headed(sections: &[Section]) -> bool {
+    sections.len() > 1 || sections.iter().any(|section| section.category.is_some())
+}
+
+/// A category's heading in a list.
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
+pub struct ListHeading;
+
 /// Every item state, each as a catalog entry, in item order.
 pub fn catalog_entries(content: &Content) -> Vec<ItemStack> {
     (0..content.item_states.len() as u32)
@@ -141,6 +181,7 @@ fn refresh_lists(
     inventories: Query<Ref<Inventory>>,
     lists: Query<(Entity, Ref<ItemList>, Option<&Children>)>,
     mut entries: Query<(&mut ListEntry, &mut ItemSlot)>,
+    mut headings: Query<&mut Text, With<ListHeading>>,
 ) {
     let player = player.map(|player| *player);
     for (list, item_list, children) in &lists {
@@ -160,33 +201,83 @@ fn refresh_lists(
                 sorted_entries(&inventory)
             }
         };
-        let shown: Vec<Entity> = children
-            .map(|children| children.iter().filter(|e| entries.contains(*e)).collect())
-            .unwrap_or_default();
+        let grouped = sections(&content, wanted);
+        let headed = headed(&grouped);
+        let children: Vec<Entity> = children.map(|c| c.iter().collect()).unwrap_or_default();
+        // What's there now, to reuse in order.
+        let spare: Vec<Entity> = children
+            .iter()
+            .copied()
+            .filter(|&e| entries.contains(e))
+            .collect();
+        let mut spare_entries = spare.into_iter();
+        let spare: Vec<Entity> = children
+            .iter()
+            .copied()
+            .filter(|&e| headings.contains(e))
+            .collect();
+        let mut spare_headings = spare.into_iter();
         let source = item_list.source;
-        // Reuse what's there, in order; spawn or despawn only the
-        // difference.
-        for (&entity, stack) in shown.iter().zip(&wanted) {
-            if let Ok((mut entry, mut slot)) = entries.get_mut(entity) {
-                entry.set_if_neq(ListEntry {
-                    source,
-                    stack: stack.clone(),
-                });
-                slot.set_if_neq(entry_slot(source, stack));
+        let mut order = Vec::new();
+        for section in grouped {
+            if headed {
+                let name = section
+                    .category
+                    .and_then(|index| content.categories.get(index))
+                    .map_or("Other", |category| category.name.as_str());
+                let heading = match spare_headings.next() {
+                    Some(heading) => {
+                        if let Ok(mut text) = headings.get_mut(heading)
+                            && text.0 != name
+                        {
+                            text.0 = name.to_owned();
+                        }
+                        heading
+                    }
+                    None => commands.spawn(list_heading(&theme, name)).id(),
+                };
+                order.push(heading);
+            }
+            for stack in section.entries {
+                let entry = match spare_entries.next() {
+                    Some(entity) => {
+                        if let Ok((mut entry, mut slot)) = entries.get_mut(entity) {
+                            slot.set_if_neq(entry_slot(source, &stack));
+                            entry.set_if_neq(ListEntry { source, stack });
+                        }
+                        entity
+                    }
+                    None => {
+                        let slot = entry_slot(source, &stack);
+                        commands
+                            .spawn((ListEntry { source, stack }, item_slot(&theme, slot)))
+                            .id()
+                    }
+                };
+                order.push(entry);
             }
         }
-        for &extra in shown.iter().skip(wanted.len()) {
-            commands.entity(extra).despawn();
+        for unused in spare_entries.chain(spare_headings) {
+            commands.entity(unused).despawn();
         }
-        if wanted.len() > shown.len() {
-            commands.entity(list).with_children(|list| {
-                for stack in wanted.into_iter().skip(shown.len()) {
-                    let slot = entry_slot(source, &stack);
-                    list.spawn((ListEntry { source, stack }, item_slot(&theme, slot)));
-                }
-            });
+        if order != children {
+            commands.entity(list).replace_children(&order);
         }
     }
+}
+
+/// A category's heading, on a line of its own.
+fn list_heading(theme: &UiTheme, name: &str) -> impl Bundle {
+    (
+        ListHeading,
+        Text::new(name),
+        theme.text_font(),
+        TextColor(theme.text_dim),
+        Node {
+            width: percent(100),
+            ..default()
+        },
+    )
 }
 
 /// What an entry's slot shows.
@@ -235,5 +326,39 @@ mod tests {
         expected.sort();
         assert_eq!(sorted, expected);
         assert_eq!(catalog_entries(content).len(), content.item_states.len());
+    }
+
+    #[test]
+    fn lists_are_grouped_by_category_in_order() {
+        let content = base();
+        let grouped = sections(content, catalog_entries(content));
+        let names: Vec<&str> = grouped
+            .iter()
+            .map(|section| {
+                section
+                    .category
+                    .map_or("Other", |index| content.categories[index].name.as_str())
+            })
+            .collect();
+        assert_eq!(names, ["Natural", "Building", "Lighting", "Tools"]);
+        // Every item, once, in item order within each.
+        let total: usize = grouped.iter().map(|section| section.entries.len()).sum();
+        assert_eq!(total, content.item_states.len());
+        assert!(grouped.iter().all(|section| {
+            section
+                .entries
+                .windows(2)
+                .all(|pair| pair[0].item < pair[1].item)
+        }));
+        let pickaxe = content.default_item("defaria:pickaxe").unwrap();
+        assert!(grouped[3].entries.iter().any(|stack| stack.item == pickaxe));
+        // An inventory's few: only their sections.
+        let stone = content.default_item("defaria:stone").unwrap();
+        let grouped = sections(content, vec![ItemStack::new(stone, 4)]);
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(
+            grouped[0].category,
+            content.item("defaria:stone").unwrap().category
+        );
     }
 }

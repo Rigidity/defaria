@@ -481,6 +481,8 @@ pub struct Item {
     /// Every one of it is its own entry in an inventory, never counted
     /// together with others.
     pub unique: bool,
+    /// Index into [`Content::categories`]; `None` for an item in none.
+    pub category: Option<usize>,
 }
 
 impl Item {
@@ -517,6 +519,14 @@ pub struct ItemStateInfo {
     pub weight: f32,
 }
 
+/// A heading items are listed under in the inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Category {
+    pub id: String,
+    pub name: String,
+    pub order: i32,
+}
+
 /// Everything the mods define, resolved.
 #[derive(Resource, Debug, Clone)]
 pub struct Content {
@@ -531,8 +541,11 @@ pub struct Content {
     pub states: Vec<State>,
     pub items: Vec<Item>,
     pub item_states: Vec<ItemStateInfo>,
+    /// In the order the inventory lists them.
+    pub categories: Vec<Category>,
     /// What went wrong while loading, one message per problem.
     pub errors: Vec<String>,
+    category_index: HashMap<String, usize>,
     texture_index: HashMap<String, u32>,
     block_index: HashMap<String, usize>,
     item_index: HashMap<String, usize>,
@@ -667,6 +680,11 @@ impl Content {
     /// The item an [`ItemState`] is a state of.
     pub fn item_of(&self, state: ItemState) -> Option<&Item> {
         self.item_state(state).map(|info| &self.items[info.item])
+    }
+
+    /// The category an item state is listed under, if any.
+    pub fn item_category(&self, state: ItemState) -> Option<&Category> {
+        self.categories.get(self.item_of(state)?.category?)
     }
 
     /// The display name of an [`ItemState`].
