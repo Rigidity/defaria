@@ -1,0 +1,3 @@
+{
+  layers: [{ image: "fern", material: "grass" }],
+}

@@ -1,0 +1,8 @@
+// A tulip: a green stem, colored as the grass tufts, under a bloom of any
+// petals.
+{
+  layers: [
+    { image: "tulip_stem", material: "grass" },
+    { image: "tulip_bloom", material: "$petals" },
+  ],
+}

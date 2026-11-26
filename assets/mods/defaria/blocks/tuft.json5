@@ -1,5 +1,5 @@
 // A tuft of grass, drawn as two crossed quads. It grows on grass in the
-// terrain.
+// terrain, and stands on grass or bare dirt.
 {
   name: "Grass Tuft",
   model: "cross",
@@ -8,4 +8,5 @@
   hardness: 0.05,
   weight: 0.05,
   category: "natural",
+  support: [{ block: "soil", when: { soil: "dirt" } }],
 }

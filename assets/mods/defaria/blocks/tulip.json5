@@ -1,0 +1,18 @@
+// A tulip, drawn as two crossed quads like the grass tuft, its bloom in
+// any of several petal colors. It stands on grass or bare dirt.
+{
+  name: "{petals} Tulip",
+  properties: {
+    petals: {
+      materials: ["petals/red", "petals/yellow", "petals/pink", "petals/white"],
+      default: "petals/red",
+    },
+  },
+  model: "cross",
+  render: "cutout",
+  textures: { all: { texture: "tulip", materials: { petals: "{petals}" } } },
+  hardness: 0.05,
+  weight: 0.05,
+  category: "natural",
+  support: [{ block: "soil", when: { soil: "dirt" } }],
+}

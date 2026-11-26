@@ -1,0 +1,12 @@
+// A bluebell, drawn as two crossed quads like the grass tuft. It stands on
+// grass or bare dirt.
+{
+  name: "Bluebell",
+  model: "cross",
+  render: "cutout",
+  textures: { all: "bluebell" },
+  hardness: 0.05,
+  weight: 0.05,
+  category: "natural",
+  support: [{ block: "soil", when: { soil: "dirt" } }],
+}

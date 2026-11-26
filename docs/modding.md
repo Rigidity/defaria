@@ -803,6 +803,38 @@ A `when` gives each property it cares about one of:
 
 Each value must match something the property can be.
 
+### Support
+
+A plant says what it must stand on with `support`: a list of blocks, each
+in all its states or, with a `when` (see [Conditions](#conditions)), only
+those that match.
+
+```json5
+// blocks/tuft.json5 (in part): on grass or bare dirt, not sand.
+support: [{ block: "soil", when: { soil: "dirt" } }],
+
+// blocks/mushroom.json5 (in part): on dirt, any stone or mossy stone.
+support: [
+  { block: "soil", when: { soil: "dirt" } },
+  { block: "stone" },
+  { block: "mossy_stone" },
+],
+```
+
+- A player can place it only on top of one of these; anywhere else the
+  click does nothing, and uses nothing up.
+- When the block under it stops being one (it's broken, or replaced, by
+  anyone: a player, a script, flowing fluid), it breaks, on the same
+  frame, and so does anything standing on it in turn. A player who mines
+  the block under it in survival gets its item too, if it fits; broken
+  any other way, it gives nothing. A block a script or a scenario's
+  `fill` puts where it can't stand breaks the same way.
+- It isn't checked while the block under it is in a chunk that isn't
+  loaded, nor when chunks load: terrain only grows plants where they
+  stand.
+
+A block without `support` stands anywhere, in mid-air too.
+
 ### The block's item
 
 Every block gets an item with the same id. The item has the block's

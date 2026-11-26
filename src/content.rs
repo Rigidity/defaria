@@ -33,6 +33,7 @@ mod place;
 mod recipe;
 pub mod schema;
 mod state_name;
+mod support;
 
 use std::{collections::BTreeMap, ops::Range, path::Path};
 
@@ -369,6 +370,9 @@ pub struct Block {
     pub block_entity: Option<schema::BlockEntityDef>,
     /// The id of the script whose hooks run for it.
     pub script: Option<String>,
+    /// The states it can stand on, sorted, if it needs support (see
+    /// [`Content::supports`]).
+    pub support: Option<Vec<BlockState>>,
 }
 
 impl Block {

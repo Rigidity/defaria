@@ -9,7 +9,8 @@
 //!   placement (a log's axis) comes from that face or your view. The click
 //!   that locks the cursor doesn't edit anything. The active block is the
 //!   active hotbar slot's (see `hotbar`); an item that places no block
-//!   places nothing.
+//!   places nothing. A block that needs support (a plant, see `support`)
+//!   is only placed on a block that supports it.
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
@@ -346,7 +347,12 @@ fn edit_blocks(
     let replaceable = voxels
         .get(pos)
         .is_some_and(|there| there.is_air() || content.state(there).is_fluid());
-    if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps {
+    // Nor where it can't stand (a flower off the grass).
+    let supported = !content.needs_support(block)
+        || voxels
+            .get(pos - IVec3::Y)
+            .is_some_and(|below| content.supports(block, below));
+    if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps || !supported {
         return;
     }
     // In survival, only what you have, and placing uses it up. A fluid
@@ -961,6 +967,39 @@ mod tests {
         press_key(&mut app, KeyCode::Digit5);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), block("stone_slab"));
+    }
+
+    /// A plant is only placed on a block that supports it: a dead bush
+    /// isn't placed on dirt, and in survival isn't used up; a daisy is.
+    #[test]
+    fn plants_are_placed_only_where_they_stand() {
+        let (mut app, left, _) = app();
+        let content = base();
+        let [bush, daisy] =
+            ["defaria:dead_bush", "defaria:daisy"].map(|id| content.default_item(id).unwrap());
+        let mut players = app
+            .world_mut()
+            .query_filtered::<(Entity, &mut Inventory), With<LocalPlayer>>();
+        let (owner, mut inventory) = players.single_mut(app.world_mut()).unwrap();
+        inventory.add(content, crate::inventory::ItemStack::new(bush, 1));
+        inventory.add(content, crate::inventory::ItemStack::new(daisy, 1));
+        app.world_mut().entity_mut(owner).insert(GameMode::Survival);
+        // Over the dirt at (14, 1, 5), looking down.
+        look_at(&mut app, Vec3::new(14.5, 3.5, 5.5), Vec3::NEG_Y);
+        let mut hotbar = player(&mut app).0;
+        hotbar.assign(0, Some(bush));
+        hotbar.assign(1, Some(daisy));
+        set_hotbar(&mut app, hotbar);
+        press_key(&mut app, KeyCode::Digit1);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 14, 2, 5), BlockState::AIR);
+        let inventory = app.world().get::<Inventory>(owner).unwrap();
+        assert_eq!(inventory.count(bush), 1);
+        press_key(&mut app, KeyCode::Digit2);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 14, 2, 5), block("daisy"));
+        let inventory = app.world().get::<Inventory>(owner).unwrap();
+        assert_eq!(inventory.count(daisy), 0);
     }
 
     /// An item that places no block (a tool, or an empty slot) does

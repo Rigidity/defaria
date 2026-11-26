@@ -1,0 +1,7 @@
+{
+  name: "Yellow",
+  tags: ["petals"],
+  palette: ["#6e4a08", "#b88a12", "#e8c834", "#fff28c"],
+  hardness: 0.05,
+  weight: 100,
+}

@@ -191,6 +191,8 @@ pub(super) fn add_block(
             .clone()
             .or_else(|| (block.machine.is_some() || block.conduit.is_some()).then(default)),
         script,
+        // Filled in once every block is in, as it names other blocks.
+        support: None,
     });
     content.block_index.insert(def.id.clone(), index);
     for state in states.iter().filter(|s| s.render == Render::Cutout) {

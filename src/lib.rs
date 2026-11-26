@@ -33,6 +33,7 @@ pub mod recipe;
 pub mod save;
 pub mod script;
 pub mod streaming;
+mod support;
 #[cfg(test)]
 mod testing;
 pub mod ui;
@@ -89,6 +90,7 @@ impl Plugin for GamePlugin {
             script::machine::MachineScriptPlugin,
             wrench::WrenchPlugin,
             fluid_container::FluidContainerPlugin,
+            support::SupportPlugin,
         ));
     }
 }

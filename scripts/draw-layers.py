@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Draw the procedural layer images: glass, stained glass, water, lava, a
-grass tuft, an ingot, moss and a bucket.
+grass tuft, an ingot, moss, a bucket and a dead bush.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
 src/block_texture/layer.rs checks) into OUT_DIR:
@@ -23,6 +23,9 @@ src/block_texture/layer.rs checks) into OUT_DIR:
   a wire handle arching over an open rim, its inside dark, the body
   tapering to the bottom with a hoop around it, lit from the left:
   the bucket item's icon.
+- dead_bush.png: bare twigs, one pixel wide, forking up and out from one
+  point on the bottom edge, transparent around them, for the
+  crossed-quad plant model.
 
 Each tiles with itself where it needs to (water and lava wrap at the
 edges). Deterministic: the same seed always draws the same images.
@@ -238,6 +241,46 @@ def moss(rng):
     return rows
 
 
+# A dead bush's twigs: each a line through these points, from the ground
+# up. Forks start on the twig they leave.
+DEAD_BUSH = [
+    [(7, 15), (7, 12), (5, 9), (3, 6), (2, 3)],
+    [(5, 9), (6, 6), (5, 2)],
+    [(3, 6), (0, 5)],
+    [(8, 15), (8, 12), (10, 9), (12, 6), (14, 4)],
+    [(10, 9), (9, 6), (10, 3)],
+    [(12, 6), (15, 7)],
+    [(8, 12), (11, 13), (14, 11)],
+    [(7, 13), (4, 13), (1, 11)],
+]
+
+
+def line(a, b):
+    """The pixels from a to b, one a step along the longer axis."""
+    (x0, y0), (x1, y1) = a, b
+    steps = max(abs(x1 - x0), abs(y1 - y0))
+    return [
+        (round(x0 + (x1 - x0) * i / steps), round(y0 + (y1 - y0) * i / steps))
+        for i in range(steps + 1)
+    ]
+
+
+def dead_bush():
+    rows = [[CLEAR for _ in range(SIZE)] for _ in range(SIZE)]
+    for twig in DEAD_BUSH:
+        pixels = []
+        for a, b in zip(twig, twig[1:]):
+            pixels += line(a, b)[(1 if pixels else 0):]
+        for i, (x, y) in enumerate(pixels):
+            # Darker at the ground, lighter toward the tips, with a light
+            # pixel every few for the bark catching the sun.
+            t = (SIZE - 1 - y) / (SIZE - 1)
+            level = 2 + round(t * 2) + (1 if i % 3 == 2 else 0)
+            if rows[y][x] == CLEAR:
+                rows[y][x] = px(level)
+    return rows
+
+
 def preview(path, images):
     scale, gap = 8, 8
     width = len(images) * (SIZE * scale + gap) + gap
@@ -270,6 +313,7 @@ def main():
         "items/ingot": ingot(),
         "moss": moss(rng),
         "items/bucket": bucket(),
+        "dead_bush": dead_bush(),
     }
     for name, rows in images.items():
         path = os.path.join(args.out_dir, f"{name}.png")

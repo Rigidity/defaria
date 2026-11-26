@@ -1,0 +1,6 @@
+{
+  layers: [
+    { image: "bluebell_stem", material: "grass" },
+    { image: "bluebell_bloom", material: "petals/blue" },
+  ],
+}

@@ -339,6 +339,20 @@ pub struct BlockDef {
     /// `"name"` for this mod's `scripts/name.luau`. See `docs/scripting.md`.
     #[serde(default)]
     pub script: Option<String>,
+    /// What it must stand on, for a plant: it can only be placed on one of
+    /// these, and it breaks when the block under it stops being one.
+    #[serde(default)]
+    pub support: Option<Vec<SupportDef>>,
+}
+
+/// One kind of block a block can stand on (see [`BlockDef::support`]): a
+/// block, and if `when` is given, only its states that match it.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SupportDef {
+    pub block: String,
+    #[serde(default)]
+    pub when: BTreeMap<String, Condition>,
 }
 
 /// A block's `machine`: what it connects to and what it holds.

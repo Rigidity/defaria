@@ -1,0 +1,16 @@
+// A mushroom, drawn as two crossed quads. It stands on dirt (grassy or
+// not), stone and mossy stone.
+{
+  name: "Mushroom",
+  model: "cross",
+  render: "cutout",
+  textures: { all: "mushroom" },
+  hardness: 0.05,
+  weight: 0.05,
+  category: "natural",
+  support: [
+    { block: "soil", when: { soil: "dirt" } },
+    { block: "stone" },
+    { block: "mossy_stone" },
+  ],
+}

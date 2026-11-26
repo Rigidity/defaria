@@ -42,6 +42,7 @@ use super::{
     machine::{check_machine_items, check_tank_fluids},
     recipe::bake_recipe,
     schema::*,
+    support,
 };
 use block::add_block;
 use categories::add_categories;
@@ -124,6 +125,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             connections: None,
             block_entity: None,
             script: None,
+            support: None,
         }],
         states: vec![State {
             name: "Air".into(),
@@ -210,6 +212,16 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             report(
                 &def.file,
                 check_tank_fluids(machine, &def.namespace, &content),
+            );
+        }
+    }
+    for def in &defs.blocks {
+        if let Some(rules) = &def.def.support
+            && content.block(&def.id).is_some()
+        {
+            report(
+                &def.file,
+                support::bake(&def.id, rules, &def.namespace, &mut content),
             );
         }
     }
