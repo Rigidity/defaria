@@ -1407,6 +1407,68 @@ mod tests {
         }
     }
 
+    /// Cobblestone, bricks and smooth stone, and a slab of each, come in
+    /// every rock: named after it, listed under building, as hard as the
+    /// rock and weighing what it does (half for a slab), with the
+    /// building's own layer colored by the rock all round.
+    #[test]
+    fn rock_building_blocks_come_in_every_rock() {
+        let content = base();
+        let rocks: Vec<&Material> = content
+            .materials
+            .values()
+            .filter(|m| m.has_tag("rock"))
+            .collect();
+        assert!(rocks.len() >= 3, "stone, granite and slate at least");
+        // Block, its name, its texture and layer image, and its weight
+        // as a share of a whole block of the rock.
+        let blocks = [
+            ("cobblestone", "Cobbled {}", "cobblestone", 1.0),
+            ("cobblestone_slab", "Cobbled {} Slab", "cobblestone", 0.5),
+            ("stone_bricks", "{} Bricks", "stone_bricks", 1.0),
+            ("stone_brick_slab", "{} Brick Slab", "stone_bricks", 0.5),
+            ("smooth_stone", "Smooth {}", "smooth_stone", 1.0),
+            ("smooth_stone_slab", "Smooth {} Slab", "smooth_stone", 0.5),
+        ];
+        let shape = |id: &str| &content.state(content.default_state(id).unwrap()).collision;
+        for (name, label, texture_name, share) in blocks {
+            // A slab is the shape of a stone slab, the rest a whole block.
+            let model = if name.ends_with("_slab") {
+                "defaria:stone_slab"
+            } else {
+                "defaria:stone"
+            };
+            let id = format!("defaria:{name}");
+            let block = content.block(&id).unwrap();
+            assert_eq!(block.state_count as usize, rocks.len(), "{id}");
+            for rock in &rocks {
+                let state = block.state(&[("rock", &rock.id)]).unwrap();
+                let info = content.state(state);
+                assert_eq!(info.name, label.replace("{}", &rock.name), "{id}");
+                assert_eq!(info.hardness, rock.hardness, "{id} of {}", rock.id);
+                assert_eq!(info.weight, rock.weight * share, "{id} of {}", rock.id);
+                assert_eq!(&info.collision, shape(model), "{id}");
+                assert_eq!(info.faces.len(), 6, "{id}");
+                let tile = format!("defaria:{texture_name}(rock={})", rock.id);
+                for face in &info.faces {
+                    let texture = &content.textures[face.layer as usize];
+                    assert_eq!(texture.id, tile);
+                    let images: Vec<&str> = texture
+                        .layers
+                        .iter()
+                        .map(|layer| layer.image.rsplit('/').next().unwrap())
+                        .collect();
+                    assert_eq!(images, [format!("{texture_name}.png")]);
+                    assert_eq!(texture.layers[0].palette, rock.palette, "{tile}");
+                }
+                let item = content.item(&id).unwrap().state(&[("rock", &rock.id)]);
+                let item = item.unwrap();
+                assert_eq!(content.item_state(item).unwrap().block, Some(state));
+                assert_eq!(content.item_category(item).unwrap().id, "defaria:building");
+            }
+        }
+    }
+
     /// Every image the base game's textures use is in the image set, once.
     #[test]
     fn image_paths_are_listed_once() {

@@ -1,0 +1,10 @@
+// Cut bricks of any rock, in a running bond.
+{
+  name: "{rock} Bricks",
+  properties: { rock: { materials: "#rock", default: "stone" } },
+  model: "cube",
+  textures: { all: { texture: "stone_bricks", materials: { rock: "{rock}" } } },
+  hardness: { materials: { rock: 1 } },
+  weight: { materials: { rock: 1 } },
+  category: "building",
+}

@@ -1440,8 +1440,8 @@ item state, and every combination of materials a texture is used with is
 baked on the CPU into its own layer of the block texture array.
 
 **Decision.** Keep expanding combinations up front, and keep baking each
-texture's combinations into finished tiles. The base game has 688 block
-states, 187 item states and 206 tiles. Baking stays even when tiles run
+texture's combinations into finished tiles. The base game has 712 block
+states, 211 item states and 218 tiles. Baking stays even when tiles run
 short: coloring in the shader instead (gray layers plus a palette per
 face) doesn't fit layered textures. Each face would need a variable-length
 list of layers to color and blend per pixel, and filtering breaks: mips

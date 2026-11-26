@@ -160,3 +160,26 @@ Background transparency came from the style.
 | `stick.png` | Retro Diffusion, as generated: luminance rounded to the gray levels and remapped like the handles (1→2, 2→4, 3→5) | 2026-11-26 | `rd_fast__mc_item` | a plain wooden stick with a small knot, diagonal from bottom left to top right, on a plain white background | `2488f126-5102-4cc2-97ff-cbd5436fafa5` | 97% |
 | `pickaxe_head_rock.png` | Drawn by hand along the tool axis, as a chunky knapped-stone pick on the pickaxe handle, keeping the generated stone pickaxe's shading (lit from the top left, dark underside); the generated head was a blob, more hammer than pick | 2026-11-26 | `rd_fast__mc_item` (shading only) | a primitive pickaxe with a straight wooden handle and a rough chipped grey stone head lashed on, diagonal from bottom left to top right, on a plain white background | `54a45283-a77a-4ea4-ae50-488e64f37c44` | 97% |
 | `axe_head_rock.png`, `shovel_head_rock.png`, `knife_blade_rock.png` | Drawn by hand along the tool axis, as chunky knapped stones on the existing handles, keeping the generated stone axe's shading: a wedge with a straight, light cutting edge (a rounded lump read as a mallet), a spade along the handle (a round one read as a mace) and a leaf blade | 2026-11-26 | `rd_fast__mc_item` (shading only) | a stone age axe with a straight wooden handle and a sharp chipped flint stone blade head bound with cord on one side, diagonal from bottom left to top right, on a plain white background | `e8bf8c26-4126-4551-97cf-e30397eb3e52` | 97% |
+
+## Rock building blocks
+
+Cobblestone, bricks and smooth stone of any rock (2026-11-26). The
+cobblestone generations were unusable, so cobblestone and smooth stone
+are drawn by `scripts/draw-stone.py` (no Retro Diffusion); re-run it to
+redraw them: `python3 scripts/draw-stone.py assets/mods/defaria/images`.
+
+| File | Source | Date | Style | Prompt | Request id | Plan usage left after |
+|---|---|---|---|---|---|---|
+| `stone_bricks.png` | Retro Diffusion, converted with `scripts/gray-layer.py` (no `--even`, which would erase the mortar), then by hand into a regular running bond: mortar (level 1) across rows 3, 7, 11 and 15 (the source's row 15 was a dark brick edge, so two courses ran together across the tile's top and bottom edges), and the head joints at columns 0 and 8 on rows 0–2 and 8–10, 4 and 12 on rows 4–6 and 12–14 (the source had 8 alone, and 3 and 12), so every brick is 7 by 3 pixels | 2026-11-26 | `rd_lite__default` | close-up of a stone brick wall surface filling the entire frame edge to edge, four rows of large rectangular cut stone bricks in a staggered running bond with thin dark mortar lines between them, slightly chipped edges, no outline, no border, no background, grayscale, even lighting | `c3a8834d-7bd5-4913-b897-b176d32d68b4` | 97% |
+| `cobblestone.png` | Retro Diffusion, unused: a repeating zig-zag pattern, not cobbles; drawn by `scripts/draw-stone.py` instead | 2026-11-26 | `rd_lite__default` | close-up of a cobblestone wall surface filling the entire frame edge to edge, irregular rounded stones of different sizes packed tightly with dark mortar gaps between them, no outline, no border, no background, grayscale, even lighting | `1cdf556b-c753-4047-bb24-7f5b038735e6` | 97% |
+| `cobblestone.png` | Retro Diffusion, unused: plain speckle, no cobbles; drawn by `scripts/draw-stone.py` instead | 2026-11-26 | `rd_plus__mc_texture` | cobblestone made of irregular rounded stones of different sizes packed tightly with dark gaps between them, flat block surface texture, grayscale, even lighting | `2ca376df-d043-4fa5-abcc-b9f5712ad366` | 97% |
+
+- `cobblestone.png`: nine rounded stones of different sizes, the cells
+  of a jittered Voronoi diagram that wraps at the edges, with dark gaps
+  (level 1) between them, wider where three meet. Each stone is lit from
+  the top left (levels up to 6 at its upper-left rim, down to 2 at its
+  lower right, with a darker lip where it turns into the gap), and each,
+  at random, a level lighter or darker than the rest or neither.
+- `smooth_stone.png`: a flat polished face (level 4, a few level-5
+  flecks) inside a one-pixel bevel: level 6 along the top and left, 2
+  along the bottom and right, 4 in the two corners where they meet.
