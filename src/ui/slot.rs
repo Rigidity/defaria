@@ -169,14 +169,20 @@ fn show_slot_items(
 }
 
 /// The frame color (gold when selected, light while hovered), and the
-/// icon faded while dimmed.
+/// icon: faded while dimmed, and invisible with no item.
 fn style_slots(
     theme: Res<UiTheme>,
     mut slots: Query<(&ItemSlot, &Hovered, &mut BorderColor, &Children)>,
     mut icons: Query<&mut ImageNode, With<SlotIcon>>,
 ) {
     for (slot, hovered, mut border, children) in &mut slots {
-        let tint = Color::WHITE.with_alpha(if slot.dimmed { 0.3 } else { 1.0 });
+        // No item: nothing at all. An image node without an image draws a
+        // white box, so it has to be see-through.
+        let tint = match (slot.item, slot.dimmed) {
+            (None, _) => Color::NONE,
+            (Some(_), true) => Color::WHITE.with_alpha(0.3),
+            (Some(_), false) => Color::WHITE,
+        };
         for &child in children {
             if let Ok(mut icon) = icons.get_mut(child)
                 && icon.color != tint
@@ -227,12 +233,25 @@ mod tests {
             .id();
         app.update();
         let icon = app.world().get::<Children>(slot).unwrap()[0];
+        let tint = |app: &App| app.world().get::<ImageNode>(icon).unwrap().color;
         assert_eq!(app.world().get::<ItemIcon>(icon), Some(&ItemIcon(None)));
+        // Empty: nothing drawn, not a white box.
+        assert_eq!(tint(&app), Color::NONE);
 
         app.world_mut().get_mut::<ItemSlot>(slot).unwrap().item = stone;
         app.update();
         assert_eq!(app.world().get::<ItemIcon>(icon), Some(&ItemIcon(stone)));
         assert_eq!(app.world().get::<Tooltip>(slot).unwrap().0, "Stone");
+        assert_eq!(tint(&app), Color::WHITE);
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().dimmed = true;
+        app.update();
+        assert_eq!(tint(&app), Color::WHITE.with_alpha(0.3));
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().dimmed = false;
+        // Emptied again: hidden again.
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().item = None;
+        app.update();
+        assert_eq!(tint(&app), Color::NONE);
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().item = stone;
 
         // Selected and hovered: the selection shows.
         let mut entity = app.world_mut().entity_mut(slot);
