@@ -472,7 +472,9 @@ A block can have **properties**, each with a list of values; the first is
 the default, unless the long form names one (see below). Every
 combination of values is a separate block state, which can look
 different. Chunks store block states, so a block carries its property
-values wherever it is.
+values wherever it is. A state is named `id[property=value,…]` (in saves
+and scenarios), so property names and values can't be empty or contain
+`[`, `]`, `=` or `,`.
 
 ```json5
 // A log: `axis` is the direction the trunk runs.

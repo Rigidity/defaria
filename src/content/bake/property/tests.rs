@@ -157,3 +157,29 @@ fn a_block_with_too_many_states_is_refused() {
         errors(&content)
     );
 }
+
+/// A property's name and values go into state names (`id[name=value]`),
+/// so they can't hold the characters those use.
+#[test]
+fn names_and_values_that_break_state_names_are_errors() {
+    for (properties, expected) in [
+        (r#"{ p: ["a,b", "c"] }"#, "value `a,b` has a `,`"),
+        (r#"{ p: ["a", "b=c"] }"#, "value `b=c` has a `=`"),
+        (r#"{ p: ["", "c"] }"#, "value `` is empty"),
+        (
+            r#"{ "x=y": ["a", "b"] }"#,
+            "property `x=y`: its name has a `=`",
+        ),
+        (
+            r#"{ "x]": ["a", "b"] }"#,
+            "property `x]`: its name has a `]`",
+        ),
+    ] {
+        let block =
+            format!(r#"{{ properties: {properties}, model: "quad", textures: {{ all: "a" }} }}"#);
+        let content = materials(&[("blocks/x.json5", Box::leak(block.into_boxed_str()))]);
+        let all = errors(&content);
+        assert!(all.contains(expected), "{properties}: {all}");
+        assert!(content.block("test:x").is_none());
+    }
+}

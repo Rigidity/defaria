@@ -23,6 +23,8 @@ pub(super) fn properties(
 ) -> Result<Vec<Property>, String> {
     let mut out = Vec::new();
     for (name, def) in defs {
+        check_state_text("its name", name)
+            .map_err(|error| format!("property `{name}`: {error}"))?;
         let made = match def {
             PropertyDef::Full(spec) if spec.connections.is_some() => {
                 connection_properties(spec, for_block)
@@ -221,6 +223,9 @@ fn plain_property(name: &str, values: &[String], item: bool) -> Result<Property,
     if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
         return Err("it lists a value twice".into());
     }
+    for value in values {
+        check_state_text(&format!("value `{value}`"), value)?;
+    }
     Ok(Property {
         name: name.into(),
         values: values.to_vec(),
@@ -228,6 +233,16 @@ fn plain_property(name: &str, values: &[String], item: bool) -> Result<Property,
         item,
         place: None,
     })
+}
+
+/// Checks that a property's name or value can be written in a state's
+/// name (`id[name=value,…]`, see `StateName`) and read back.
+fn check_state_text(what: &str, text: &str) -> Result<(), String> {
+    match text.chars().find(|c| matches!(c, '[' | ']' | '=' | ',')) {
+        Some(c) => Err(format!("{what} has a `{c}`, which state names use")),
+        None if text.is_empty() => Err(format!("{what} is empty")),
+        None => Ok(()),
+    }
 }
 
 /// Checks the number of states properties make.
