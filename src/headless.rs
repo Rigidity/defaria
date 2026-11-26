@@ -30,6 +30,7 @@
 //! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
+//! | `type <text>` | Type the text (the rest of the line), a key press and release per character, into whatever has the keyboard. |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
 //!
 //! The mouse commands (`cursor`, mouse buttons, `scroll`) also drive
@@ -245,6 +246,8 @@ pub enum Command {
     },
     Timing,
     Settle,
+    /// Type this text, a key press and release per character.
+    Type(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -285,6 +288,13 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
         }
     };
     match words[0] {
+        "type" => {
+            let text = line.trim_start()["type".len()..].trim();
+            if text.is_empty() {
+                return Err(format!("`type` takes some text: {line}"));
+            }
+            commands.push(Command::Type(text.to_owned()));
+        }
         "wait" => {
             expect(1)?;
             commands.push(Command::Wait(parse_number(args[0])?));
@@ -560,11 +570,14 @@ fn run_script(
                 };
                 match button {
                     Button::Key(key_code) => {
+                        let (logical_key, text) = logical_key(key_code);
                         keys.write(KeyboardInput {
                             key_code,
-                            logical_key: Key::Unidentified(NativeKey::Unidentified),
+                            logical_key,
                             state,
-                            text: None,
+                            text: text
+                                .filter(|_| state == ButtonState::Pressed)
+                                .map(Into::into),
                             repeat: false,
                             window: window_entity,
                         });
@@ -637,6 +650,27 @@ fn run_script(
                 runner.world_commands.push(command)
             }
             Command::Fluids => runner.fluid_report = true,
+            Command::Type(text) => {
+                for character in text.chars() {
+                    let key_code = key_for(character);
+                    let logical_key = if character == ' ' {
+                        Key::Space
+                    } else {
+                        Key::Character(character.to_string().into())
+                    };
+                    for state in [ButtonState::Pressed, ButtonState::Released] {
+                        keys.write(KeyboardInput {
+                            key_code,
+                            logical_key: logical_key.clone(),
+                            state,
+                            text: (state == ButtonState::Pressed)
+                                .then(|| character.to_string().into()),
+                            repeat: false,
+                            window: window_entity,
+                        });
+                    }
+                }
+            }
             Command::Timing => runner.timing = true,
             Command::Settle => {
                 runner.settling = Some(0);
@@ -644,6 +678,73 @@ fn run_script(
             }
         }
     }
+}
+
+/// What a key means on a US layout, and the text it types, as winit
+/// would report it, so text fields and shortcuts see real keys.
+fn logical_key(key_code: KeyCode) -> (Key, Option<String>) {
+    let named = match key_code {
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Enter | KeyCode::NumpadEnter => Key::Enter,
+        KeyCode::Escape => Key::Escape,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::ArrowLeft => Key::ArrowLeft,
+        KeyCode::ArrowRight => Key::ArrowRight,
+        KeyCode::ArrowUp => Key::ArrowUp,
+        KeyCode::ArrowDown => Key::ArrowDown,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => Key::Shift,
+        KeyCode::ControlLeft | KeyCode::ControlRight => Key::Control,
+        KeyCode::AltLeft | KeyCode::AltRight => Key::Alt,
+        KeyCode::SuperLeft | KeyCode::SuperRight => Key::Super,
+        KeyCode::Space => return (Key::Space, Some(" ".into())),
+        _ => {
+            return match character_for(key_code) {
+                Some(character) => {
+                    let text = character.to_string();
+                    (Key::Character(text.clone().into()), Some(text))
+                }
+                None => (Key::Unidentified(NativeKey::Unidentified), None),
+            };
+        }
+    };
+    (named, None)
+}
+
+/// The letter or digit a key types, unshifted.
+fn character_for(key_code: KeyCode) -> Option<char> {
+    let name = format!("{key_code:?}");
+    let character = name
+        .strip_prefix("Key")
+        .or_else(|| name.strip_prefix("Digit"))
+        .filter(|rest| rest.len() == 1)?
+        .chars()
+        .next()?;
+    Some(character.to_ascii_lowercase())
+}
+
+/// The key that types `character`, for the letters and digits; others
+/// are unidentified.
+fn key_for(character: char) -> KeyCode {
+    use bevy::input::keyboard::NativeKeyCode;
+    let name = if character.is_ascii_alphabetic() {
+        format!("Key{}", character.to_ascii_uppercase())
+    } else if character.is_ascii_digit() {
+        format!("Digit{character}")
+    } else if character == ' ' {
+        return KeyCode::Space;
+    } else {
+        return KeyCode::Unidentified(NativeKeyCode::Unidentified);
+    };
+    parse_button(&name)
+        .ok()
+        .and_then(|button| match button {
+            Button::Key(key) => Some(key),
+            Button::Mouse(_) => None,
+        })
+        .unwrap_or(KeyCode::Unidentified(NativeKeyCode::Unidentified))
 }
 
 /// What the mouse pointer points at: the image the cameras render into,
@@ -1200,7 +1301,8 @@ mod tests {
              timing\n\
              settle\n\
              pour 4 -5 6 water 0.25\n\
-             fluids\n",
+             fluids\n\
+             type  Iron ore 2 \n",
         )
         .unwrap();
         assert_eq!(
@@ -1236,6 +1338,7 @@ mod tests {
                     amount: 0.25,
                 },
                 Command::Fluids,
+                Command::Type("Iron ore 2".into()),
             ]
         );
     }
@@ -1245,6 +1348,7 @@ mod tests {
         let error = Script::parse("wait 1\npress KeyQQ").unwrap_err();
         assert!(error.starts_with("line 2:"), "{error}");
         assert!(Script::parse("jump").is_err());
+        assert!(Script::parse("type").is_err());
         assert!(Script::parse("wait").is_err());
         assert!(Script::parse("wait soon").is_err());
         assert!(Script::parse("grain 3").is_err());

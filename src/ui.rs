@@ -9,6 +9,10 @@
 //! - [`scroll`]: wheel scrolling and scrollbars ([`scroll_panel`]).
 //! - [`icon`]: item icons drawn from the block textures ([`ItemIcon`]).
 //! - [`slot`]: the item slot widget ([`item_slot`]).
+//! - [`button`]: buttons ([`button`](button::button)), on Bevy's.
+//! - [`text_field`]: single-line text fields ([`text_field`]), on Bevy's
+//!   text input, and the [`typing`] run condition.
+//! - [`font`]: the pixel font every text uses.
 //! - [`tooltip`]: text beside the pointer ([`Tooltip`]).
 //!
 //! Widgets are bundle-returning functions (or, where one part needs
@@ -23,21 +27,28 @@
 //! The widgets are meant to stay small and data-driven, so that a later
 //! layout format (UI described in mod files) can map onto them one to one.
 
+pub mod button;
+pub mod font;
+#[cfg(feature = "dev")]
+pub mod gallery;
 pub mod icon;
 pub mod pointer;
 pub mod screen;
 pub mod scroll;
 pub mod slot;
+pub mod text_field;
 pub mod theme;
 pub mod tooltip;
 
 use bevy::prelude::*;
 
+pub use button::{UiButton, button};
 pub use icon::ItemIcon;
 pub use pointer::UiPointer;
 pub use screen::{UiScreen, playing};
 pub use scroll::scroll_panel;
 pub use slot::{ItemSlot, item_slot};
+pub use text_field::{TextField, text_field, typing};
 pub use theme::UiTheme;
 pub use tooltip::Tooltip;
 
@@ -57,12 +68,17 @@ impl Plugin for UiPlugin {
                 UiWidgetSystems.before(bevy::ui::UiSystems::Prepare),
             )
             .add_plugins((
+                font::FontPlugin,
                 screen::ScreenPlugin,
                 pointer::PointerPlugin,
+                button::ButtonPlugin,
+                text_field::TextFieldPlugin,
                 scroll::ScrollPlugin,
                 icon::IconPlugin,
                 slot::SlotPlugin,
                 tooltip::TooltipPlugin,
             ));
+        #[cfg(feature = "dev")]
+        app.add_plugins(gallery::GalleryPlugin);
     }
 }
