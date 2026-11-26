@@ -9,18 +9,20 @@
 //! lower side an eighth of the difference between them ([`SHARE`]):
 //!
 //! - an open side, if the cell holds at least a `film` of fluid;
-//! - a side with the same fluid, if it's at least a `ripple` lower;
-//! - an open side with room below it, however thin the cell: it runs off an
-//!   edge. Half of what it holds goes over its edges in a step, since what
-//!   goes over falls away.
+//! - a side with the same fluid, if it's at least a `ripple` lower (where an
+//!   eighth of the difference rounds down to nothing, a single unit, if
+//!   that can't overshoot);
+//! - a side with room below it, however thin the cell: it runs off an
+//!   edge. Half of what it holds goes over its edges in a step, straight
+//!   into the cell below the edge, since what goes over falls away. (Into
+//!   the edge itself, it would fill and empty the edge step after step.)
 //!
 //! What spreads is worked out from where the fluid is once it has fallen,
 //! and then moved all at once, so the order cells are visited in doesn't
 //! matter and flow has no favourite direction. An eighth is small enough
-//! that a cell never ends up below a neighbour it gave to, even giving to
-//! four at once and with its neighbours giving too: fluid only ever moves
-//! downhill, so levels fall or rise smoothly and never swing back and
-//! forth. Falling lowers fluid and spreading evens it out, so a closed
+//! that what a cell gives never drops it below a neighbour it gives to,
+//! even giving to four at once, so levels drift toward each other rather
+//! than swinging back and forth. Falling lowers fluid and spreading evens it out, so a closed
 //! scene always settles. The `film` and `ripple` say how flat it settles: a
 //! puddle stays put once it's thinner than a film, and a surface counts as
 //! level once its cells are less than a ripple apart.
@@ -38,6 +40,10 @@ use crate::content::{BlockState, FULL_FLUID, Fluid};
 /// them, at most: one over this. Eight is the most that keeps fluid moving
 /// only downhill when a cell gives to four sides at once.
 pub const SHARE: u16 = 8;
+
+/// The smallest `ripple` a fluid can have: a unit flowing between two cells
+/// a unit apart would only swap them.
+pub const MIN_RIPPLE: u16 = 2;
 
 /// What a cell holds, as flow sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,13 +87,29 @@ pub const AROUND: [IVec3; 6] = [
     IVec3::NEG_Z,
 ];
 
+/// Cells in the same layer as a cell whose spreading can depend on it
+/// without touching it: whether a unit trickles between two cells counts
+/// the cells around the one it would go to.
+const NEAR_SIDES: [IVec3; 8] = [
+    IVec3::new(2, 0, 0),
+    IVec3::new(-2, 0, 0),
+    IVec3::new(0, 0, 2),
+    IVec3::new(0, 0, -2),
+    IVec3::new(1, 0, 1),
+    IVec3::new(1, 0, -1),
+    IVec3::new(-1, 0, 1),
+    IVec3::new(-1, 0, -1),
+];
+
 /// The cells whose fluid might move when a cell changes: the cell, the six
-/// around it, and the four diagonally above it, whose fluid can run off an
-/// edge into it from the side.
+/// around it, the four diagonally above it, whose fluid can run off an edge
+/// into it, and the cells two steps away in its layer (see
+/// [`NEAR_SIDES`]).
 pub fn affected_by(pos: IVec3) -> impl Iterator<Item = IVec3> {
     std::iter::once(pos)
         .chain(AROUND.map(|offset| pos + offset))
         .chain(SIDES.map(|side| pos + IVec3::Y + side))
+        .chain(NEAR_SIDES.map(|offset| pos + offset))
 }
 
 /// How much more of `kind` a cell has room for, if any: everything if it's
@@ -111,32 +133,33 @@ fn fill(kind: BlockState, amount: u16) -> Cell {
     }
 }
 
-/// Moves the fluid at `pos` into the cell below, as much as fits, up to
-/// its `fall`.
-fn fall(cells: &mut impl Cells, fluid: &Fluid, pos: IVec3) {
-    let Some(Cell::Fluid(kind, amount)) = cells.cell(pos) else {
-        return;
-    };
-    let below = pos - IVec3::Y;
-    let under = cells.cell(below);
-    if let Some(Cell::Fluid(other, _)) = under
-        && other != kind
-    {
-        cells.meet(pos, below);
-    }
-    let Some(space) = room(kind, under) else {
-        return;
-    };
-    let falls = amount.min(space).min(fluid.fall);
-    let there = match under {
-        Some(Cell::Fluid(_, there)) => there,
-        _ => 0,
-    };
-    cells.set(below, Cell::Fluid(kind, there + falls));
-    cells.set(pos, fill(kind, amount - falls));
+/// How many sides of the cell at `at`, holding `level` of `kind`, hold
+/// `kind` at least a ripple `higher` or lower: the cells it takes from, or
+/// gives to.
+fn differing(
+    cells: &impl CellView,
+    kind: BlockState,
+    fluid: &Fluid,
+    at: IVec3,
+    level: u16,
+    higher: bool,
+) -> u16 {
+    SIDES
+        .iter()
+        .filter(|&&side| match cells.cell(at + side) {
+            Some(Cell::Fluid(k, there)) if k == kind => {
+                if higher {
+                    there >= level.saturating_add(fluid.ripple)
+                } else {
+                    level >= there.saturating_add(fluid.ripple)
+                }
+            }
+            _ => false,
+        })
+        .count() as u16
 }
 
-/// Fluid to move from one cell to another, at the end of a step.
+/// Fluid to move from one cell to another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Transfer {
     from: IVec3,
@@ -144,9 +167,42 @@ struct Transfer {
     amount: u16,
 }
 
+/// What of the fluid at `pos` falls into the cell below: as much as fits,
+/// up to its `fall`. Pushes onto `meetings` if a different fluid is below.
+fn fall(
+    cells: &impl CellView,
+    fluid: &Fluid,
+    pos: IVec3,
+    meetings: &mut Vec<(IVec3, IVec3)>,
+) -> Option<Transfer> {
+    let Some(Cell::Fluid(kind, amount)) = cells.cell(pos) else {
+        return None;
+    };
+    let below = pos - IVec3::Y;
+    let under = cells.cell(below);
+    if let Some(Cell::Fluid(other, _)) = under
+        && other != kind
+    {
+        meetings.push((pos, below));
+    }
+    let space = room(kind, under)?;
+    Some(Transfer {
+        from: pos,
+        to: below,
+        amount: amount.min(space).min(fluid.fall),
+    })
+}
+
 /// Works out what the fluid at `pos` gives to its sides, as the module
-/// docs describe, without moving any.
-fn plan_spread(cells: &mut impl Cells, fluid: &Fluid, pos: IVec3, transfers: &mut Vec<Transfer>) {
+/// docs describe, without moving any. Pushes onto `meetings` for each side
+/// holding a different fluid.
+fn plan_spread(
+    cells: &impl CellView,
+    fluid: &Fluid,
+    pos: IVec3,
+    transfers: &mut Vec<Transfer>,
+    meetings: &mut Vec<(IVec3, IVec3)>,
+) {
     let Some(Cell::Fluid(kind, amount)) = cells.cell(pos) else {
         return;
     };
@@ -161,6 +217,7 @@ fn plan_spread(cells: &mut impl Cells, fluid: &Fluid, pos: IVec3, transfers: &mu
         room(kind, cells.cell(next)).is_some() && room(kind, cells.cell(next - IVec3::Y)).is_some()
     });
     let edges = falling.iter().filter(|&&falling| falling).count() as u16;
+    let lower = differing(cells, kind, fluid, pos, amount, false);
     let mut given = 0;
     for (side, falling) in SIDES.into_iter().zip(falling) {
         let next = pos + side;
@@ -180,14 +237,22 @@ fn plan_spread(cells: &mut impl Cells, fluid: &Fluid, pos: IVec3, transfers: &mu
             }
             Some(Cell::Fluid(k, there)) if k == kind => {
                 let difference = amount.saturating_sub(there);
-                if difference >= fluid.ripple {
+                if difference < fluid.ripple {
+                    0
+                } else if difference >= SHARE {
                     difference / SHARE
+                } else if difference >= lower + differing(cells, kind, fluid, next, there, true) {
+                    // Too close for an eighth to be anything: a unit
+                    // trickles, if every unit this cell gives and that
+                    // one takes still can't put it above this one. Wide
+                    // pools settle flat this way rather than in a slope.
+                    1
                 } else {
                     0
                 }
             }
             Some(Cell::Fluid(..)) => {
-                cells.meet(pos, next);
+                meetings.push((pos, next));
                 0
             }
             _ => 0,
@@ -196,7 +261,9 @@ fn plan_spread(cells: &mut impl Cells, fluid: &Fluid, pos: IVec3, transfers: &mu
         if gives > 0 {
             transfers.push(Transfer {
                 from: pos,
-                to: next,
+                // What goes over an edge goes straight down past it, so the
+                // lip doesn't fill and empty step after step.
+                to: if falling { next - IVec3::Y } else { next },
                 amount: gives,
             });
             given += gives;
@@ -216,24 +283,8 @@ pub fn might_move(cells: &impl CellView, fluid: &Fluid, pos: IVec3) -> bool {
         return true;
     }
     let mut transfers = Vec::new();
-    plan_spread(&mut Peek(cells), fluid, pos, &mut transfers);
+    plan_spread(cells, fluid, pos, &mut transfers, &mut Vec::new());
     !transfers.is_empty()
-}
-
-/// Cells only looked at: flow can't change them, and fluids meeting does
-/// nothing.
-struct Peek<'a, C>(&'a C);
-
-impl<C: CellView> CellView for Peek<'_, C> {
-    fn cell(&self, pos: IVec3) -> Option<Cell> {
-        self.0.cell(pos)
-    }
-}
-
-impl<C: CellView> Cells for Peek<'_, C> {
-    fn set(&mut self, _pos: IVec3, _cell: Cell) {
-        unreachable!("planning only looks");
-    }
 }
 
 /// Which cells step when.
@@ -254,9 +305,12 @@ impl<C: CellView> Cells for Peek<'_, C> {
 /// is dropped and its cells step again.
 #[derive(Debug, Default)]
 pub struct Simulation {
-    /// By fluid block, in order so they share the budget the same way every
-    /// time.
+    /// By fluid block, in order, so runs come out the same every time.
     queues: BTreeMap<BlockState, Queue>,
+    /// Which fluid goes first in the next tick. It turns over every tick,
+    /// so a flood of one fluid can't use up the budget every time before
+    /// the others get any.
+    first: usize,
 }
 
 #[derive(Debug, Default)]
@@ -280,9 +334,8 @@ struct Step {
     /// Visits so far: each cell is visited twice, to fall and then to plan
     /// its spreading.
     visited: usize,
-    /// What the step has changed so far, kept aside: each cell as it was
-    /// and as it is now.
-    changes: HashMap<IVec3, (Option<Cell>, Cell)>,
+    /// What it has changed so far, kept aside.
+    changes: Changes,
     /// What spreads, once everything has fallen.
     transfers: Vec<Transfer>,
     /// Fluids that met, to tell the world about.
@@ -295,34 +348,51 @@ impl Step {
     }
 }
 
+/// What a step has changed so far, kept aside: each cell as it was in the
+/// world and as it is now.
+type Changes = HashMap<IVec3, (Option<Cell>, Cell)>;
+
 /// The world as a step under way sees it: its changes so far on top of
 /// the world.
 struct Layer<'a, C> {
     world: &'a C,
-    step: &'a mut Step,
+    changes: &'a Changes,
 }
 
 impl<C: CellView> CellView for Layer<'_, C> {
     fn cell(&self, pos: IVec3) -> Option<Cell> {
-        match self.step.changes.get(&pos) {
+        match self.changes.get(&pos) {
             Some(&(_, now)) => Some(now),
             None => self.world.cell(pos),
         }
     }
 }
 
-impl<C: CellView> Cells for Layer<'_, C> {
-    fn set(&mut self, pos: IVec3, cell: Cell) {
-        let was = self.world.cell(pos);
-        self.step
-            .changes
+/// Moves fluid as `transfer` says, in `changes` over `world`: as much as
+/// there is, and as the cell it goes to has room for.
+fn apply(world: &impl CellView, changes: &mut Changes, transfer: Transfer) {
+    let Transfer { from, to, amount } = transfer;
+    let layer = Layer { world, changes };
+    let (Some(Cell::Fluid(kind, has)), there) = (layer.cell(from), layer.cell(to)) else {
+        return;
+    };
+    let amount = amount.min(has).min(room(kind, there).unwrap_or(0));
+    if amount == 0 {
+        return;
+    }
+    let there = match there {
+        Some(Cell::Fluid(_, there)) => there,
+        _ => 0,
+    };
+    for (pos, cell) in [
+        (to, Cell::Fluid(kind, there + amount)),
+        (from, fill(kind, has - amount)),
+    ] {
+        let was = world.cell(pos);
+        changes
             .entry(pos)
             .and_modify(|(_, now)| *now = cell)
             .or_insert((was, cell));
-    }
-
-    fn meet(&mut self, from: IVec3, to: IVec3) {
-        self.step.meetings.push((from, to));
     }
 }
 
@@ -368,7 +438,12 @@ impl Simulation {
     ) -> TickReport {
         let mut stepped = 0;
         let mut changed = Vec::new();
-        let kinds: Vec<BlockState> = self.queues.keys().copied().collect();
+        let mut kinds: Vec<BlockState> = self.queues.keys().copied().collect();
+        if !kinds.is_empty() {
+            let first = self.first % kinds.len();
+            kinds.rotate_left(first);
+        }
+        self.first = self.first.wrapping_add(1);
         for kind in kinds {
             let Some(flow) = fluid(kind) else {
                 // Not a fluid any more.
@@ -395,18 +470,17 @@ impl Simulation {
                 }
                 let step = queue.step.as_mut().expect("started");
                 let count = step.cells.len();
-                let visit = step.visited;
-                let pos = step.cells[visit % count];
-                let mut layer = Layer {
+                let pos = step.cells[step.visited % count];
+                let layer = Layer {
                     world: &*cells,
-                    step,
+                    changes: &step.changes,
                 };
-                if visit < count {
-                    fall(&mut layer, flow, pos);
+                if step.visited < count {
+                    if let Some(falls) = fall(&layer, flow, pos, &mut step.meetings) {
+                        apply(&*cells, &mut step.changes, falls);
+                    }
                 } else {
-                    let mut transfers = std::mem::take(&mut layer.step.transfers);
-                    plan_spread(&mut layer, flow, pos, &mut transfers);
-                    layer.step.transfers = transfers;
+                    plan_spread(&layer, flow, pos, &mut step.transfers, &mut step.meetings);
                 }
                 step.visited += 1;
                 left -= 1;
@@ -449,32 +523,13 @@ fn finish_step(
     next: &mut HashSet<IVec3>,
     changed: &mut Vec<IVec3>,
 ) {
-    let transfers = std::mem::take(&mut step.transfers);
-    let meetings = std::mem::take(&mut step.meetings);
-    let mut layer = Layer {
-        world: &*cells,
-        step: &mut step,
-    };
-    for Transfer { from, to, amount } in transfers {
-        let (Some(Cell::Fluid(kind, has)), there) = (layer.cell(from), layer.cell(to)) else {
-            continue;
-        };
-        let space = room(kind, there).unwrap_or(0);
-        let amount = amount.min(has).min(space);
-        if amount == 0 {
-            continue;
-        }
-        let there = match there {
-            Some(Cell::Fluid(_, there)) => there,
-            _ => 0,
-        };
-        layer.set(to, Cell::Fluid(kind, there + amount));
-        layer.set(from, fill(kind, has - amount));
+    for transfer in std::mem::take(&mut step.transfers) {
+        apply(&*cells, &mut step.changes, transfer);
     }
     let stale = step
         .changes
         .iter()
-        .any(|(&pos, &(was, _))| was.is_none() || cells.cell(pos) != was);
+        .any(|(&pos, &(was, _))| cells.cell(pos) != was);
     if stale {
         next.extend(step.cells);
         return;
@@ -487,7 +542,7 @@ fn finish_step(
         // say, and will again.
         changed.push(pos);
     }
-    for (from, to) in meetings {
+    for (from, to) in step.meetings {
         cells.meet(from, to);
     }
 }
@@ -507,7 +562,7 @@ pub(crate) mod tests {
             rate: 10.0,
             fall: FULL_FLUID,
             film: 62,
-            ripple: 10,
+            ripple: 2,
             move_speed: 0.5,
             view_color: Color::BLACK,
             view_distance: 10.0,
@@ -712,24 +767,149 @@ pub(crate) mod tests {
         assert_eq!(grid.amount(hole), 200, "it all ran into the hole");
     }
 
-    /// Cells less than a ripple apart are level, so they don't flow.
+    /// A step shows only once it's done: until then the world is as it
+    /// was. If something changes a cell the step changes before it's done,
+    /// or it unloads, the step is dropped and done again, so the change
+    /// isn't overwritten and no fluid is made or lost.
+    #[test]
+    fn steps_show_whole_and_start_over_when_the_world_changes() {
+        for unload in [false, true] {
+            let mut grid = Grid::default();
+            grid.open(IVec3::ZERO, IVec3::new(9, 1, 0));
+            let mut sim = Simulation::default();
+            for x in 0..10 {
+                pour(&mut grid, &mut sim, IVec3::new(x, 1, 0), WATER, FULL_FLUID);
+            }
+            let before = grid.cells.clone();
+            // Ticks of a hundredth of a second: the first step starts and
+            // is under way, a fifth done.
+            for _ in 0..12 {
+                sim.tick(&mut grid, fluids, 0.01, usize::MAX);
+            }
+            assert!(grid.cells == before, "nothing shows mid-step");
+            // Under a falling cell, the step's target changes.
+            let under = IVec3::new(3, 0, 0);
+            if unload {
+                grid.unloaded.insert(under);
+            } else {
+                grid.cells.insert(under, Cell::Closed);
+            }
+            sim.wake_around(&grid, under);
+            for _ in 0..200 {
+                sim.tick(&mut grid, fluids, 0.01, usize::MAX);
+            }
+            // (The test grid fails if flow writes over the closed cell.)
+            assert_eq!(grid.total(WATER), 10 * FULL_FLUID as u64);
+        }
+    }
+
+    /// Half of a cell goes over its edges in a step, shared between them,
+    /// straight into the cells below the edges.
+    #[test]
+    fn half_goes_over_the_edges_in_a_step() {
+        for edges in [1, 2] {
+            let mut grid = Grid::default();
+            grid.open(IVec3::ZERO, IVec3::X);
+            grid.cells.insert(IVec3::new(1, -1, 0), Cell::Open);
+            if edges == 2 {
+                grid.open(IVec3::new(-1, -1, 0), IVec3::NEG_X);
+            }
+            let mut sim = Simulation::default();
+            pour(&mut grid, &mut sim, IVec3::ZERO, LAVA, 400);
+            sim.tick(&mut grid, fluids, 0.5, usize::MAX);
+            assert_eq!(grid.amount(IVec3::ZERO), 200, "{edges} edges");
+            assert_eq!(grid.amount(IVec3::X), 0, "the lip stays empty");
+            assert_eq!(grid.amount(IVec3::new(1, -1, 0)), 200 / edges);
+        }
+    }
+
+    /// Cells less than a ripple apart are level, so they don't flow; further
+    /// apart, they even out.
     #[test]
     fn ripples_dont_flow() {
         let mut grid = Grid::default();
         grid.open(IVec3::ZERO, IVec3::new(1, 0, 0));
         let mut sim = Simulation::default();
-        pour(&mut grid, &mut sim, IVec3::ZERO, WATER, 504);
+        pour(&mut grid, &mut sim, IVec3::ZERO, WATER, 501);
         pour(&mut grid, &mut sim, IVec3::X, WATER, 500);
         settle(&mut grid, &mut sim, 10);
-        assert_eq!(grid.amount(IVec3::ZERO), 504);
+        assert_eq!(grid.amount(IVec3::ZERO), 501);
 
-        // Ten apart, they even out until they're less than a ripple apart.
-        grid.set(IVec3::ZERO, Cell::Fluid(WATER, 510));
+        grid.set(IVec3::ZERO, Cell::Fluid(WATER, 530));
         sim.wake_around(&grid, IVec3::ZERO);
-        settle(&mut grid, &mut sim, 10);
+        settle(&mut grid, &mut sim, 100);
         let (a, b) = (grid.amount(IVec3::ZERO), grid.amount(IVec3::X));
-        assert_eq!(a + b, 1010);
-        assert!(a > b && a - b < water().ripple, "{a} {b}");
+        assert_eq!(a + b, 1030);
+        assert!(a.abs_diff(b) < water().ripple, "{a} {b}");
+    }
+
+    /// A long channel, half deep and half shallow, levels off flat: less
+    /// than a drawn height from end to end, not a slope of a ripple a cell.
+    #[test]
+    fn a_long_channel_levels_off_flat() {
+        let mut grid = Grid::default();
+        grid.open(IVec3::ZERO, IVec3::new(39, 0, 0));
+        let mut sim = Simulation::default();
+        for x in 0..40 {
+            let amount = if x < 20 { 900 } else { 100 };
+            pour(&mut grid, &mut sim, IVec3::new(x, 0, 0), WATER, amount);
+        }
+        settle(&mut grid, &mut sim, 20_000);
+        let row: Vec<u16> = (0..40).map(|x| grid.amount(IVec3::new(x, 0, 0))).collect();
+        let (low, high) = (row.iter().min().unwrap(), row.iter().max().unwrap());
+        assert!(high - low < FULL_FLUID / 16, "{row:?}");
+    }
+
+    /// Random scenes of open and closed cells with water and lava poured
+    /// in, at random tick lengths and budgets: no fluid is ever made or
+    /// lost, every scene settles, and once settled, waking everything moves
+    /// nothing.
+    #[test]
+    fn random_scenes_keep_their_fluid_and_settle() {
+        let mut seed = 0x0DEF_A41A_u64;
+        let mut random =
+            move |below: u32| (crate::perlin::splitmix64(&mut seed) % below as u64) as u32;
+        for _ in 0..300 {
+            let mut grid = Grid::default();
+            for x in 0..8 {
+                for y in 0..6 {
+                    for z in 0..8 {
+                        if random(4) > 0 {
+                            grid.cells.insert(IVec3::new(x, y, z), Cell::Open);
+                        }
+                    }
+                }
+            }
+            let mut open: Vec<IVec3> = grid.cells.keys().copied().collect();
+            open.sort_by_key(|p| (p.x, p.y, p.z));
+            let mut sim = Simulation::default();
+            for _ in 0..random(12) + 1 {
+                let pos = open[random(open.len() as u32) as usize];
+                let kind = if random(3) == 0 { LAVA } else { WATER };
+                if grid.cell(pos) == Some(Cell::Open) {
+                    let amount = random(FULL_FLUID as u32) as u16 + 1;
+                    pour(&mut grid, &mut sim, pos, kind, amount);
+                }
+            }
+            let totals = [WATER, LAVA].map(|kind| grid.total(kind));
+            let seconds = [0.004, 1.0 / 60.0, 0.05, 0.25][random(4) as usize];
+            let budget = [1, 7, 50, usize::MAX][random(4) as usize];
+            let mut ticks = 0;
+            while sim.active() > 0 {
+                sim.tick(&mut grid, fluids, seconds, budget);
+                assert_eq!([WATER, LAVA].map(|kind| grid.total(kind)), totals);
+                ticks += 1;
+                assert!(ticks < 1_000_000, "never settled");
+            }
+            let before = grid.cells.clone();
+            for &pos in &open {
+                sim.wake(&grid, pos);
+            }
+            for _ in 0..40 {
+                sim.tick(&mut grid, fluids, 0.25, usize::MAX);
+            }
+            assert!(grid.cells == before, "settled, but moved when woken");
+        }
     }
 
     /// Water poured on a slope runs down into the pit at its foot and
@@ -832,6 +1012,32 @@ pub(crate) mod tests {
         assert_eq!(grid.total(WATER), FULL_FLUID as u64);
     }
 
+    /// Fluids take turns going first, so a flood of one that uses up the
+    /// whole budget doesn't stop the others.
+    #[test]
+    fn fluids_take_turns_with_the_budget() {
+        let mut grid = Grid::default();
+        // A wide water flood spreading over a floor and, apart from it, a
+        // column of lava.
+        grid.open(IVec3::new(0, 0, 0), IVec3::new(59, 0, 59));
+        grid.open(IVec3::new(80, 0, 0), IVec3::new(80, 9, 0));
+        let mut sim = Simulation::default();
+        for x in 20..40 {
+            for z in 20..40 {
+                pour(&mut grid, &mut sim, IVec3::new(x, 0, z), WATER, FULL_FLUID);
+            }
+        }
+        pour(&mut grid, &mut sim, IVec3::new(80, 9, 0), LAVA, FULL_FLUID);
+        for _ in 0..180 {
+            sim.tick(&mut grid, fluids, 1.0 / 60.0, 100);
+        }
+        assert!(sim.active() > 400, "the flood is still spreading");
+        // Three seconds of lava at two steps a second falls five cells,
+        // though the water's flood could use up much of every tick's budget.
+        let lava_low: u16 = (0..6).map(|y| grid.amount(IVec3::new(80, y, 0))).sum();
+        assert!(lava_low > 0, "the lava fell too slowly");
+    }
+
     /// A step is shared out over the ticks before the next one, not done
     /// in the first.
     #[test]
@@ -854,7 +1060,7 @@ pub(crate) mod tests {
     }
 
     /// A pond draining through a hole in its floor goes down steadily: no
-    /// voxel ever gains more than a ripple, and its drawn height almost
+    /// voxel ever gains more than a few units, and its drawn height almost
     /// never rises, so the surface doesn't flicker as it empties. (A voxel
     /// that gets too thin to spread onto dry ground can gain a little from
     /// its neighbours before they level off; once in a while that crosses
@@ -879,7 +1085,7 @@ pub(crate) mod tests {
             let now: Vec<u16> = pond.iter().map(|&p| grid.amount(p)).collect();
             for (i, (&before, &after)) in last.iter().zip(&now).enumerate() {
                 assert!(
-                    after < before + water().ripple,
+                    after < before + SHARE,
                     "tick {tick}: {} rose from {before} to {after}",
                     pond[i]
                 );

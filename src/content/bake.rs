@@ -20,7 +20,7 @@ use super::{
     State, Texture, TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*,
     state_count,
 };
-use crate::{block_texture::Palette, fluid::flow::SHARE};
+use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
 
 /// The kinds of definition, each in its own folder.
 #[derive(Debug, Clone, Copy)]
@@ -1482,11 +1482,11 @@ fn bake_fluid(def: &FluidDef) -> Result<Fluid, String> {
         ));
     }
     let ripple = units("ripple", def.ripple)?;
-    if ripple < SHARE {
+    if ripple < MIN_RIPPLE {
         return Err(format!(
-            "fluid `ripple` is {}; it must be at least {}, or nothing would flow",
+            "fluid `ripple` is {}; it must be at least {}, so that levelling off ends",
             def.ripple,
-            SHARE as f32 / FULL_FLUID as f32
+            MIN_RIPPLE as f32 / FULL_FLUID as f32
         ));
     }
     let color = Srgba::hex(&def.view.color)
@@ -2800,7 +2800,7 @@ mod tests {
             (
                 "blocks/x.json5",
                 r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.001, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
-                "fluid `ripple` is 0.001; it must be at least 0.008",
+                "fluid `ripple` is 0.001; it must be at least 0.002",
             ),
             (
                 "blocks/x.json5",

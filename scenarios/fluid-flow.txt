@@ -28,7 +28,8 @@ wait 30
 screenshot target/scenarios/fluid-flow/1-running.png
 wait 90
 screenshot target/scenarios/fluid-flow/2-filling.png
-wait 900
+# The last of it trickles to a stop within half a minute.
+wait 1800
 fluids
 inspect FluidStats
 screenshot target/scenarios/fluid-flow/3-settled.png

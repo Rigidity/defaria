@@ -175,6 +175,9 @@ pub struct VoxelChanged {
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FluidChanged {
     pub pos: IVec3,
+    /// Whether flow moved it, rather than something else setting it. Flow
+    /// wakes the fluid around what it moves itself.
+    pub by_flow: bool,
 }
 
 /// Every loaded chunk's entity, by its coordinate.
@@ -288,6 +291,15 @@ impl Voxels<'_, '_> {
     /// that show it are remeshed only if its drawn height changes (see
     /// [`fluid_step`]). Sends [`FluidChanged`] if the amount changed.
     pub fn set_fluid(&mut self, pos: IVec3, amount: u16) -> bool {
+        self.change_fluid(pos, amount, false)
+    }
+
+    /// [`Voxels::set_fluid`], for flow moving fluid.
+    pub fn flow_fluid(&mut self, pos: IVec3, amount: u16) -> bool {
+        self.change_fluid(pos, amount, true)
+    }
+
+    fn change_fluid(&mut self, pos: IVec3, amount: u16, by_flow: bool) -> bool {
         let (coord, local) = ChunkCoord::split(pos);
         let Some(mut chunk) = self
             .map
@@ -304,7 +316,7 @@ impl Voxels<'_, '_> {
         if fluid_step(before) != fluid_step(amount) {
             self.touched(pos);
         }
-        self.fluid_changes.write(FluidChanged { pos });
+        self.fluid_changes.write(FluidChanged { pos, by_flow });
         true
     }
 

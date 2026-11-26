@@ -12,23 +12,29 @@ most `FluidSettings::cells_per_tick` (4096) of them, a fluid's step is
 spread evenly over the ticks until its next one, and the step's changes
 are made all at once when it's done.
 
-**Decision.** Keep flow local: a voxel only ever looks at its neighbours,
-and gives each lower side at most an eighth of the difference between
-them, so levels never swing back and forth. A surface counts as level once
-neighbours are within the fluid's `ripple`.
+**Decision.** Keep flow local: a voxel only ever looks at the voxels
+near it, and gives each lower side at most an eighth of the difference
+between them, so levels drift together rather than swinging back and
+forth. Where an eighth rounds down to nothing, a single unit trickles if it
+can't overshoot, so a wide pool settles within a drawn height of flat
+rather than in a slope. A surface counts as level once neighbours are
+within the fluid's `ripple`.
 
 **What's wrong with it.** Sideways, local flow is diffusion. Measured in
 `scenarios/sea-breach.txt` (a cut 64 long, 31 wide and 12 deep opened onto
 the sea): the sea pours in slowly, its front creeping rather than
 rushing, and after 20 seconds the cut is still mostly dry. The sea around
-the breach drops in a shallow cone, sloping by up to a ripple a voxel,
-and that disturbance keeps spreading out across the loaded sea: 1,000
+the breach drops in a shallow cone, and that disturbance keeps spreading
+out across the loaded sea: 1,000
 active voxels after one second, 3,900 after twenty, under a microsecond
 each. Frame times stay in budget (mean 3.2 to 3.8 ms, worst under 10 ms,
 against 2.5 to 3 ms with the same cut on `main`, where water doesn't
 flow), but a longer drain wakes more and more of the sea until the budget
 caps it, and then flow slows down. A settled sea costs nothing: flying
-over one is as fast as on `main`. Chunks whose fluid changed are remeshed
+over one is as fast as on `main`. Small scenes take a while to come to
+rest too: the last units trickle for up to half a minute after water
+poured down `scenarios/fluid-flow.txt`'s stairs has visibly stopped,
+though they cost little. Chunks whose fluid changed are remeshed
 on the frame it changes, with no cap of their own; the breach didn't need
 one, but a flood across many chunks at once might.
 

@@ -35,7 +35,7 @@ use crate::{
     content::{BlockState, Content, FULL_FLUID, Fluid},
     fly_camera::EyeView,
     fog::{self, FogSystems},
-    terrain::{ChunkCoord, ChunkMap, VoxelChanged, Voxels},
+    terrain::{ChunkCoord, ChunkMap, FluidChanged, VoxelChanged, Voxels},
     voxel::{CHUNK_SIZE, Chunk, fluid_amount, fluid_surface},
 };
 use flow::{AROUND, Cell, CellView, Cells, Simulation};
@@ -196,7 +196,7 @@ impl Cells for WorldCells<'_, '_> {
                 if self.voxels.get(pos) != Some(kind) {
                     self.voxels.set(pos, kind);
                 }
-                self.voxels.set_fluid(pos, amount);
+                self.voxels.flow_fluid(pos, amount);
             }
             Cell::Closed => unreachable!("flow only opens and fills cells"),
         }
@@ -248,19 +248,25 @@ fn run_flow(
 }
 
 /// Wakes the fluid that might move because a voxel was set to another
-/// block: see [`flow::affected_by`].
+/// block, or its amount of fluid was set by something other than flow: see
+/// [`flow::affected_by`].
 fn wake_around_edits(
     mut changes: MessageReader<VoxelChanged>,
+    mut fluid_changes: MessageReader<FluidChanged>,
     mut sim: ResMut<FluidSim>,
     cells: FluidView,
 ) {
-    for change in changes.read() {
-        sim.sim.wake_around(&cells, change.pos);
+    let set = fluid_changes
+        .read()
+        .filter(|change| !change.by_flow)
+        .map(|change| change.pos);
+    for pos in changes.read().map(|change| change.pos).chain(set) {
+        sim.sim.wake_around(&cells, pos);
     }
 }
 
-/// Notes the fluid each block was placed into, for [`run_flow`] to pass to
-/// [`fluid_displaced`]. Whether a block took fluid's place is read from the
+/// Notes the fluid each block (or other fluid) was put in place of, for
+/// [`run_flow`] to pass to [`fluid_displaced`]. Whether a block took fluid's place is read from the
 /// edit itself, not the voxel now, so fluid that had already flowed away
 /// isn't counted.
 fn note_displaced_fluid(
@@ -270,7 +276,9 @@ fn note_displaced_fluid(
 ) {
     for change in changes.read() {
         let amount = fluid_amount(&content, change.before, change.partial_before);
-        if amount > 0 && cell_of(&content, change.after, None) == Cell::Closed {
+        // Anything but air (fluid emptying) or the same fluid (filling it)
+        // took the fluid's place: a block, or another fluid.
+        if amount > 0 && !change.after.is_air() && change.after != change.before {
             sim.displaced.push((change.pos, change.before, amount));
         }
     }
@@ -595,5 +603,33 @@ mod tests {
         let stats = app.world().resource::<FluidStats>();
         assert!(stats.stepped > 0);
         assert_eq!(stats.most_in_a_tick, 7);
+    }
+
+    /// Fluid that a block or another fluid takes the place of is passed to
+    /// `fluid_displaced` and counted; fluid emptied to air or topped up isn't.
+    #[test]
+    fn fluid_replaced_by_anything_else_is_displaced() {
+        let mut app = app();
+        app.add_systems(Update, note_displaced_fluid.before(wake_around_edits));
+        let mut chunk = Chunk::filled(block("stone"));
+        for x in 0..4 {
+            chunk.set(x, 1, 1, block("water"));
+        }
+        chunk.set_fluid_at(IVec3::new(3, 1, 1), 300);
+        spawn(&mut app, IVec3::ZERO, chunk);
+        let set = |app: &mut App, x: i32, state: BlockState| {
+            let pos = IVec3::new(x, 1, 1);
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| {
+                    voxels.set(pos, state);
+                })
+                .unwrap();
+            run(app, 0.1);
+            app.world().resource::<FluidStats>().displaced
+        };
+        assert_eq!(set(&mut app, 0, block("stone")), 1000);
+        assert_eq!(set(&mut app, 1, block("lava")), 2000);
+        assert_eq!(set(&mut app, 2, BlockState::AIR), 2000);
+        assert_eq!(set(&mut app, 3, block("water")), 2000, "topped up");
     }
 }

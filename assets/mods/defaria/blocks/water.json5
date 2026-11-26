@@ -8,10 +8,10 @@
   render: "translucent",
   double_sided: true,
   fluid: {
-    rate: 10,
+    rate: 20,
     fall: 1,
     film: 0.0625,
-    ripple: 0.008,
+    ripple: 0.002,
     move_speed: 0.5,
     view: { color: "#1d3f73", distance: 14 },
   },

@@ -589,4 +589,19 @@ mod tests {
         assert_eq!(fog.shape, FogShape::new(&further));
         assert!(fog.target < 1.0, "the new ring isn't drawn yet: {fog:?}");
     }
+
+    /// Fog between two distances ends at the far one in every direction,
+    /// and starts the near one's share of the way there.
+    #[test]
+    fn fog_between_two_distances() {
+        let FogFalloff::Atmospheric {
+            extinction,
+            inscattering,
+        } = falloff_between(2.0, 8.0)
+        else {
+            panic!("not the cylinder encoding");
+        };
+        assert_eq!(extinction, Vec3::splat(8.0));
+        assert_eq!(inscattering.x, 0.25);
+    }
 }
