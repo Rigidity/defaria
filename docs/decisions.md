@@ -3,6 +3,110 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Beyond the loaded area: chunk loaders first, then networks that remember unloaded conduits (2026-11-26)
+
+**Context.** Machines run only in loaded chunks, and a network that
+reaches into an unloaded chunk freezes (#111), so a factory stops when
+the player walks away and a power line to an outpost stops whenever any
+stretch of it is out of reach. #123 weighed four ways out: chunk
+loaders, a simulation distance apart from the drawn one, abstract
+simulation of unloaded networks as numbers, and catching up on load;
+and asked how each fits multiplayer (#49, #50, #51), what it costs, and
+how scripted machines (#118) would catch up.
+
+What the code has now: streaming already loads the union of cylinders
+around every `ChunkLoader` entity (the camera has the only one), each
+radius 16 by 12 up and 12 down, and draws them a chunk in. A loaded
+chunk without its mesh is about 16 KB (8 KB of block states, 8 KB of
+light), so the player's area is about 20,000 chunks and 300 MB before
+meshes, and a 3×3×3 patch is 27 chunks and under half a megabyte. Every
+solver (energy, fluid, items, recipes, scripts) runs on whatever is
+loaded, with no idea of time passing outside it; the world keeps no
+clock. Energy networks hold nothing in their wires, fluid networks keep
+their fluid in one pool per network (`FluidNet`) with the unloading
+pipes' share written to their block entities, and item networks hold
+nothing in transit.
+
+**Decision.** Machines run only in loaded chunks, always, and the ways
+to keep more running are, in order:
+
+1. **First step: chunk loaders** (#125, #126). A `ChunkLoader` gets its
+   own area and a flag for whether what it loads is drawn. A chunk-loader
+   block keeps a small patch around it (3×3×3 chunks) loaded and
+   simulated but never meshed, unless a drawing loader also reaches it.
+   The world remembers where its loader blocks are (a file in the world
+   folder), so they load their patches at startup. This needs nothing
+   new in the solvers: a loaded patch is simulated exactly as the
+   player's area is, so it can't disagree with how things run when
+   watched. It's also what a server does anyway: after the split (#50)
+   the server's loaded set is the union of every player's area and every
+   loader's, and "drawn" becomes "sent to a client", so a loader is one
+   more source of wanted chunks and needs no rethinking for #49.
+2. **Next: networks that remember their conduits in unloaded chunks**
+   (#127). Loaders keep compact bases running, but a power line or pipe
+   between two loaded areas still freezes at the gap. Rather than run
+   whole networks as numbers, keep only the *topology* abstract: when a
+   chunk unloads, its conduits stay in `Networks` (position, kind,
+   capacity, throughput, the links between them) and are saved with the
+   world, so a network spanning unloaded stretches keeps running between
+   its loaded parts. Its machines in unloaded chunks are simply absent
+   (their ports don't take part). A network freezes only where a conduit
+   joins a chunk the world has never had loaded. The solvers need no
+   change for energy and items (wires and tubes hold nothing); fluid
+   networks keep their pool whole instead of handing an unloading pipe's
+   share to its block entity.
+3. **Later, and only if wanted: catching up on load** (#128, #129). A
+   world clock, counted in network ticks and saved, is the prerequisite
+   (and day and night will want it). With it, a chunk can record when it
+   was last simulated, and a machine whose behaviour is a closed form
+   (a recipe machine with its inputs and its own buffer, a battery) can
+   be fast-forwarded by the time it missed, capped, when its chunk and
+   every chunk of its networks load. Scripted machines don't catch up:
+   they resume where they were, unless their script opts in with a hook
+   that's handed the seconds missed (to be offered by #118's API, not
+   guessed by the engine).
+
+**Not chosen.** A **simulation distance** larger than the drawn one costs
+in proportion to its area (two more chunks of radius is a quarter more
+chunks, all simulated), keeps running what the player doesn't care about
+and still stops a far outpost; a server can have one as a setting after
+#50, from the same per-loader area #125 adds. **Abstract simulation of
+machines** (a network's machines' rates saved and run as numbers) works
+for steady producers and consumers only: recipe machines run in bursts
+set by their inputs, item networks route by what's in each slot, and
+scripts have no rate at all, so the numbers would disagree with what
+happens when loaded, and the disagreement would show the moment the
+player returns. Catching up covers the useful part of it, per machine,
+with the real rules.
+
+**What's wrong with it.** Loaders are Minecraft's answer, with its
+problems: a player who wants a far base running has to place one, and a
+spread-out base needs several. Each loader's patch is simulated in full
+(fluid, random ticks, scripts) though nobody sees it, so a world with
+many costs CPU every tick; #126 caps how many a world has. A patch is
+a separate island of loaded world, lit and flowing as if its edges were
+the world's edges, as the edge of the player's area already is. Until
+#127, a network crossing the edge of a patch freezes. After #127,
+remembered conduits cost memory and save space per conduit (a few dozen
+bytes each, far less than a chunk), and a network can run between two
+loaded ends through a stretch nobody has seen for days, which is the
+point but means breaking a wire there (when a player reaches it) is the
+only way to cut it. Nothing catches up until #129, so a far furnace
+without a loader simply stops.
+
+**What should replace it.** If loaders feel like chores, a loader could
+be a machine with a cost (fuel or energy) and a configurable area, or
+bases could be loaded automatically around claimed land, which is a
+multiplayer design question (#49). If catching up proves reliable for
+recipe machines, it could replace most loaders: a base far away then
+needs only its networks remembered (#127) and its machines caught up on
+load (#129).
+
+**When to revisit.** With the server split (#50), which moves loaders
+and remembered conduits into the server; if loaders show in frame
+times; and when #118's machine script API settles what a script would
+be told about missed time.
+
 ## Machine scripts only move things, and make energy only up to `max_generate` (2026-11-26)
 
 **Context.** Machines' scripts (#118) need hooks at the network tick and
@@ -371,12 +475,13 @@ every fluid pipe loaded (only changed ones are rewritten). A pipe broken
 where a block takes its place, or holding a second fluid, loses that
 fluid (counted in `FluidNetworkStats::lost`).
 
-**What should replace it.** Networks that keep running unloaded (#123)
-would keep their fluid as numbers and need this only for saving. Energy
+**What should replace it.** Networks that remember their conduits in
+unloaded chunks (#127, as #123 decided) keep their whole pool and need
+this only for saving. Energy
 and items in transit (#112, #120) can use `BeforeChunkSave` the same
 way.
 
-## Machine screens are laid out from the definition, and take any item (2026-11-26)
+## Machine screens are laid out from the definition, and inputs take only what a recipe takes (2026-11-26)
 
 **Context.** Using a machine (#119) opens a screen showing its slots,
 tanks, energy and recipe progress, and the player moves items in and
@@ -723,8 +828,8 @@ changed), so each refresh redoes only those.
 forest (a dynamic connectivity structure) so most breaks are found
 without a search, or spread a search over frames with the network frozen
 meanwhile. Unloading should hand the unloaded share to block entities
-and loading take it back, or networks should run unloaded as numbers
-(#123). Ports get roles and rates from machine definitions (#114).
+and loading take it back, or networks should remember their conduits
+in unloaded chunks (#127, as #123 decided). Ports get roles and rates from machine definitions (#114).
 
 **When to revisit.** When the solvers land (#112, #113, #120), if a
 break or a chunk load shows in frame times, and with #123.
