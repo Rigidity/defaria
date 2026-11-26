@@ -12,6 +12,7 @@
 //! pixels a notch: a slot grid scrolls a row of slots.
 
 use bevy::{
+    camera::visibility::VisibilitySystems,
     input::mouse::MouseScrollUnit,
     picking::events::PointerScroll,
     prelude::*,
@@ -29,7 +30,13 @@ impl Plugin for ScrollPlugin {
             .add_observer(scroll_with_wheel)
             .add_systems(
                 PostUpdate,
-                (keep_scroll_in_range, hide_idle_scrollbars).after(UiSystems::Layout),
+                (
+                    keep_scroll_in_range,
+                    // Before visibility is passed down, so a bar shows or
+                    // hides on the frame its list changes size.
+                    hide_idle_scrollbars.before(VisibilitySystems::VisibilityPropagate),
+                )
+                    .after(UiSystems::Layout),
             );
     }
 }
