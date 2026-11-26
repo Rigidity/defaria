@@ -32,10 +32,12 @@
 //! | `put <x> <y> <z> <name> <amount> <what>` | Put something in the machine at that voxel: `amount` of an item (named as blocks are for `fill`, `stone[ore=defaria:iron]`) into its slot group `name`, or `amount` blocks of a fluid (`lava`) into its tank `name`, as a tube or a pipe would. The run fails if there's no machine there, it has no such slot group or tank, or not all of it fits. |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, fluid networks' pipes and machines' tanks, in thousandths of a block (with where it is, for a fluid that's in pipes or tanks too), and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
-//! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
+//! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start), and if any `fill` ran since, how many voxels they set and how long that took (setting them, not relighting or remeshing, which come in the frames after). |
 //! | `type <text>` | Type the text (the rest of the line), a key press and release per character, into whatever has the keyboard. |
 //! | `random-ticks <n>` | Pick `n` voxels in each loaded chunk for random ticks each tick (1 by default), so blocks that grow or spread on random ticks (see `script::random_tick`) do it quickly enough to watch. |
-//! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
+//! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance, and print how many frames and seconds that took. |
+//! | `memory` | Print what the loaded chunks hold, counted from their data rather than the process's memory, so it's the same every run: how many chunks, how many are air or one other block throughout and how many have one light level throughout, the bytes of block states, light and partial fluid, how much of that is in chunks of one value, and the chunk meshes and the bytes of vertices and indices they keep in the main world. |
+//! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`], a hash and a query per voxel), then a chunk at a time, and print both. |
 //!
 //! The mouse commands (`cursor`, mouse buttons, `scroll`) also drive
 //! `bevy_picking`'s mouse pointer, aimed at the image the frame renders
@@ -132,6 +134,8 @@ use crate::{
     view_bob::ViewBob,
     world::{Chunk, Voxels},
 };
+
+mod memory;
 
 /// Fixed time step for every headless frame.
 pub(crate) const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);
@@ -269,6 +273,11 @@ pub enum Command {
     },
     Timing,
     Settle,
+    Memory,
+    Lookups {
+        min: IVec3,
+        max: IVec3,
+    },
     /// Type this text, a key press and release per character.
     Type(String),
     /// Voxels picked for random ticks in each chunk each tick.
@@ -459,6 +468,25 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             expect(0)?;
             commands.push(Command::Settle);
         }
+        "memory" => {
+            expect(0)?;
+            commands.push(Command::Memory);
+        }
+        "lookups" => {
+            expect(6)?;
+            let corner = |at: usize| -> Result<IVec3, String> {
+                Ok(IVec3::new(
+                    parse_number(args[at])?,
+                    parse_number(args[at + 1])?,
+                    parse_number(args[at + 2])?,
+                ))
+            };
+            let (a, b) = (corner(0)?, corner(3)?);
+            commands.push(Command::Lookups {
+                min: a.min(b),
+                max: a.max(b),
+            });
+        }
         other => return Err(format!("unknown command `{other}`")),
     }
     Ok(())
@@ -502,6 +530,12 @@ struct ScriptRunner {
     timing: bool,
     /// Whether a `fluids` report is due at the end of this frame.
     fluid_report: bool,
+    /// Whether a `memory` report is due at the end of this frame.
+    memory_report: bool,
+    /// When the current settle began.
+    settle_started: Option<Instant>,
+    /// Voxels `fill` has set since the last `timing`, and how long it took.
+    filled: (usize, Duration),
     /// `network` reports due at the end of this frame.
     network_reports: Vec<IVec3>,
     /// Wall-clock frame times since the last `timing`.
@@ -529,6 +563,7 @@ impl ScriptRunner {
             && self.world_commands.is_empty()
             && !self.timing
             && !self.fluid_report
+            && !self.memory_report
             && self.network_reports.is_empty()
     }
 }
@@ -579,8 +614,10 @@ fn run_script(
     mut mouse_wheel: MessageWriter<MouseWheel>,
     mut cursor_moved: MessageWriter<CursorMoved>,
     mut exit: MessageWriter<AppExit>,
+    frame: Option<Res<bevy::diagnostic::FrameCount>>,
 ) {
     if let Some(frames) = runner.settling {
+        let started = *runner.settle_started.get_or_insert_with(Instant::now);
         // Without streaming there's nothing to wait for. The status is last
         // frame's, and a camera moved on the frame of the `settle` only
         // reaches the loading that frame's end (with its global
@@ -591,10 +628,17 @@ fn run_script(
             status.is_none_or(|status| status.settled) && fog.is_none_or(|fog| fog.settled());
         if frames >= 2 && settled {
             runner.settling = None;
+            runner.settle_started = None;
+            let frame = frame.map_or(0, |frame| frame.0);
+            println!(
+                "[frame {frame}] settled in {frames} frames, {:.2} s",
+                started.elapsed().as_secs_f64()
+            );
         } else if frames >= runner.settle_timeout {
             error!("the world didn't finish loading in {frames} frames; giving up");
             exit.write(AppExit::error());
             runner.settling = None;
+            runner.settle_started = None;
             runner.commands.clear();
             return;
         } else {
@@ -715,8 +759,10 @@ fn run_script(
             | Command::Put { .. }
             | Command::Camera { .. }
             | Command::Hotbar { .. }
-            | Command::RandomTicks(_) => runner.world_commands.push(command),
+            | Command::RandomTicks(_)
+            | Command::Lookups { .. } => runner.world_commands.push(command),
             Command::Fluids => runner.fluid_report = true,
+            Command::Memory => runner.memory_report = true,
             Command::Network(pos) => runner.network_reports.push(pos),
             Command::Type(text) => {
                 for character in text.chars() {
@@ -833,10 +879,25 @@ fn apply_world_commands(world: &mut World) {
     let commands = std::mem::take(&mut world.resource_mut::<ScriptRunner>().world_commands);
     for command in commands {
         let result = match command {
-            Command::Fill { min, max, block } => world
-                .run_system_cached_with(fill, (min, max, block))
-                .map_err(|error| error.to_string())
-                .and_then(|result| result),
+            Command::Fill { min, max, block } => {
+                let start = Instant::now();
+                let result = world
+                    .run_system_cached_with(fill, (min, max, block))
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result);
+                let voxels = (max - min + IVec3::ONE).as_uvec3();
+                let filled = &mut world.resource_mut::<ScriptRunner>().filled;
+                filled.0 += (voxels.x * voxels.y * voxels.z) as usize;
+                filled.1 += start.elapsed();
+                result
+            }
+            Command::Lookups { min, max } => world
+                .run_system_cached_with(memory::measure_lookups, (min, max))
+                .map(|cost| {
+                    let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
+                    println!("[frame {frame}] {cost}");
+                })
+                .map_err(|error| error.to_string()),
             Command::Pour { pos, fluid, amount } => world
                 .run_system_cached_with(pour, (pos, fluid, amount))
                 .map_err(|error| error.to_string())
@@ -1136,8 +1197,17 @@ fn record_frame_time(mut last: Local<Option<Instant>>, mut runner: ResMut<Script
 /// Prints the frame times since the last report, and starts over.
 fn report_timing(runner: &mut ScriptRunner, frame: u32) {
     let times = std::mem::take(&mut runner.frame_times);
+    let (voxels, time) = std::mem::take(&mut runner.filled);
     runner.timing = false;
-    println!("[frame {frame}] timing: {}", timing_summary(&times));
+    let mut line = timing_summary(&times);
+    if voxels > 0 {
+        line += &format!(
+            "; fill set {voxels} voxels in {:.2} ms ({:.0} ns each)",
+            time.as_secs_f64() * 1000.0,
+            time.as_nanos() as f64 / voxels as f64
+        );
+    }
+    println!("[frame {frame}] timing: {line}");
 }
 
 /// How many frames, and their mean and worst times.
@@ -1176,6 +1246,9 @@ fn observe(world: &mut World) {
     }
     if std::mem::take(&mut world.resource_mut::<ScriptRunner>().fluid_report) {
         println!("[frame {frame}] {}", fluid_report(world));
+    }
+    if std::mem::take(&mut world.resource_mut::<ScriptRunner>().memory_report) {
+        println!("[frame {frame}] {}", memory::ChunkMemory::measure(world));
     }
     for pos in std::mem::take(&mut world.resource_mut::<ScriptRunner>().network_reports) {
         println!("[frame {frame}] {}", network_report(world, pos));
@@ -1519,7 +1592,9 @@ mod tests {
              network 1 -2 3\n\
              put 1 2 3 input 4 stone[ore=defaria:iron]
              type  Iron ore 2 \n\
-             random-ticks 64\n",
+             random-ticks 64\n\
+             memory\n\
+             lookups 5 0 -1 1 2 3\n",
         )
         .unwrap();
         assert_eq!(
@@ -1564,6 +1639,11 @@ mod tests {
                 },
                 Command::Type("Iron ore 2".into()),
                 Command::RandomTicks(64),
+                Command::Memory,
+                Command::Lookups {
+                    min: IVec3::new(1, 0, -1),
+                    max: IVec3::new(5, 2, 3),
+                },
             ]
         );
     }
@@ -1593,6 +1673,8 @@ mod tests {
         assert!(Script::parse("fluids all").is_err());
         assert!(Script::parse("random-ticks").is_err());
         assert!(Script::parse("random-ticks many").is_err());
+        assert!(Script::parse("memory all").is_err());
+        assert!(Script::parse("lookups 1 2 3 4 5").is_err());
     }
 
     /// Runs the whole game with no GPU until the script ends, and returns
@@ -1837,6 +1919,40 @@ mod tests {
             "{} frames kept after the report",
             runner.frame_times.len()
         );
+    }
+
+    /// `timing` counts the voxels `fill` set since the last one, and
+    /// starts over.
+    #[test]
+    fn timing_counts_filled_voxels() {
+        let (app, exit) = run_game("fill 0 100 0 1 101 1 air\nwait 1\n");
+        assert_eq!(exit, AppExit::Success);
+        assert_eq!(app.world().resource::<ScriptRunner>().filled.0, 8);
+        let (app, exit) = run_game("fill 0 100 0 1 101 1 air\nwait 1\ntiming\nwait 1\n");
+        assert_eq!(exit, AppExit::Success);
+        assert_eq!(app.world().resource::<ScriptRunner>().filled.0, 0);
+    }
+
+    /// `memory` measures the loaded world: its chunks, their light and
+    /// their meshes, which stay in the main world.
+    #[test]
+    fn memory_measures_the_loaded_world() {
+        let (mut app, exit) = run_game("memory\nlookups -32 0 -32 31 31 31\nwait 1\n");
+        assert_eq!(exit, AppExit::Success);
+        assert!(!app.world().resource::<ScriptRunner>().memory_report);
+        let memory = memory::ChunkMemory::measure(app.world_mut());
+        assert!(memory.chunks > 100, "{memory}");
+        // Chunks of one block or light throughout hold none.
+        assert!(memory.air + memory.solid > 0, "{memory}");
+        let dense_blocks = memory.chunks - memory.air - memory.solid;
+        assert_eq!(memory.blocks, dense_blocks * 8192, "{memory}");
+        assert_eq!(
+            memory.light,
+            (memory.chunks - memory.even_light) * 8192,
+            "{memory}"
+        );
+        assert_eq!(memory.uniform_dense, 0, "{memory}");
+        assert!(memory.meshes > 0 && memory.mesh_bytes > 0, "{memory}");
     }
 
     #[test]

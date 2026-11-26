@@ -13,6 +13,7 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use crate::content::BlockState;
 
 mod chunk;
+mod chunk_array;
 mod voxels;
 
 #[cfg(test)]
@@ -21,6 +22,7 @@ pub use chunk::{
     CHUNK_SIZE, CHUNK_VOLUME, Chunk, FLUID_STEPS, axis_of, fluid_amount, fluid_surface,
     touching_offsets,
 };
+pub use chunk_array::ChunkArray;
 pub use voxels::Voxels;
 
 pub struct WorldPlugin;
@@ -30,7 +32,8 @@ impl Plugin for WorldPlugin {
         app.init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
             .add_message::<FluidChanged>()
-            .add_message::<PropertiesUpdated>();
+            .add_message::<PropertiesUpdated>()
+            .add_systems(Last, chunk_array::compact_changed_chunks);
     }
 }
 

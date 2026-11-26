@@ -119,9 +119,14 @@ changes.
    hotbar slot and in hand), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
-   frame time since the last `timing`, for performance comparisons) and
+   frame time since the last `timing`, for performance comparisons, and
+   how long the `fill`s since then took) and
    `settle` (wait for the world around the camera to load and clear of fog,
-   after a `camera` jump somewhere new) and `random-ticks` (pick more
+   after a `camera` jump somewhere new, and print how many frames and
+   seconds that took) and `memory` (what the loaded chunks hold: how many,
+   how many are one block or light throughout, the bytes of their blocks,
+   light, fluid and meshes) and `lookups` (time reading every voxel in a
+   box by world position and a chunk at a time) and `random-ticks` (pick more
    voxels a chunk for random ticks, so scripted blocks grow or spread
    quickly enough to watch). The full format is documented at the top of
    `src/headless.rs`. The world loads around the camera in the background;
@@ -276,13 +281,18 @@ documented in `docs/modding.md`; keep that file, the serde types in
   with its components, systems and tests. Put new features in new modules so
   parallel work doesn't collide. Touch `lib.rs` only to register the plugin.
 - `src/devtools.rs`: CLI flags, windowed screenshot mode and BRP.
-- `src/headless.rs`: headless mode and the scenario script runner.
+- `src/headless.rs`: headless mode and the scenario script runner
+  (`src/headless/memory.rs`: its `memory` and `lookups` commands).
 - `src/world.rs` (and `src/world/`): the world's voxels, which
   everything else reads and writes: `Chunk` (`world/chunk.rs`, with the
   fluid amounts it keeps), `ChunkCoord`, the loaded chunks (`ChunkMap`,
   `spawn_chunk`), `Voxels` (`world/voxels.rs`) for reading and writing by
   world position, and the messages edits send (`VoxelChanged`,
-  `FluidChanged`, `PropertiesUpdated`).
+  `FluidChanged`, `PropertiesUpdated`). `world/chunk_array.rs`:
+  `ChunkArray`, a value per voxel of a chunk, kept as a single value
+  while the chunk is one value throughout; what `Chunk` keeps its block
+  states in and `ChunkLight` its light. Changed chunks are compacted once
+  a frame.
 - `src/meshing.rs` (and `src/meshing/`): drawing chunks. Remeshing the
   ones that changed (`RemeshChunks`, `MeshTask`, `AwaitingNeighbours`) and
   showing the meshes: opaque faces on the chunk's entity, cut-out and

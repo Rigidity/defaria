@@ -1,0 +1,32 @@
+# Chunk storage: what the loaded world holds and what big edits cost.
+# The run prints how long the first view took to load (`settled in`),
+# then the chunks' memory, the cost of finding voxels by position, and
+# frame times while idle, on the frame of each big `fill` (with the time
+# the fill itself took) and in the second after it, while the edit is
+# relit and remeshed. Compare the lines between runs on the same machine.
+# Run: cargo headless scenarios/chunk-storage.txt
+camera 64 56 92 0 -37.9            # the start's view, flying
+settle
+memory                             # the loaded world, as generated
+timing                             # startup
+wait 60
+timing                             # a second of standing still
+wait 1
+fill 0 20 0 127 40 127 air         # a pit 128 by 128, 21 deep: the sky floods in
+timing                             # the fill's frame
+wait 60
+timing                             # relighting and remeshing it
+screenshot target/scenarios/chunk-storage/pit.png
+wait 1
+fill 0 60 0 127 60 127 stone       # a roof over it all: the sky goes out
+timing
+wait 60
+timing
+wait 1
+fill 0 20 0 127 40 127 stone       # the pit filled back in
+timing
+wait 60
+timing
+memory                             # after the edits
+wait 1
+lookups 16 -16 32 111 47 127       # every voxel of a loaded box, two ways
