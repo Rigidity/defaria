@@ -26,6 +26,8 @@ use crate::{
     block_edit::{BlockEditSystems, BlockOutlineSystems, crosshair_target},
     content::{BlockState, Content},
     fly_camera::{FlyCamera, FlyCameraSystems},
+    game_mode::{GameMode, harvest},
+    inventory::Inventory,
     terrain::{RemeshChunks, Voxels},
     ui::{UiScreen, playing},
 };
@@ -129,10 +131,10 @@ fn mine(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     screens: Query<(), With<UiScreen>>,
     content: Res<Content>,
-    camera: Single<(&Transform, &mut Mining), With<FlyCamera>>,
+    camera: Single<(&Transform, &mut Mining, Option<(&mut Inventory, &GameMode)>), With<FlyCamera>>,
     mut voxels: Voxels,
 ) {
-    let (transform, mut mining) = camera.into_inner();
+    let (transform, mut mining, carrier) = camera.into_inner();
     if !(can_mine(&cursor, screens) && mining.armed && mouse.pressed(MouseButton::Left)) {
         mining.set_if_neq(Mining::default());
         return;
@@ -161,6 +163,14 @@ fn mine(
     }
     let needed = Duration::from_secs_f32(seconds);
     if mining.elapsed + TOLERANCE >= needed {
+        // In survival the block's item has to fit in the miner's
+        // inventory, or it stays put.
+        if let Some((mut inventory, mode)) = carrier
+            && !harvest(*mode, &mut inventory, &content, target.1)
+        {
+            mining.progress = 1.0;
+            return;
+        }
         voxels.set(hit.block, BlockState::AIR);
         *mining = Mining {
             armed: true,

@@ -24,7 +24,9 @@ use bevy::{
 use crate::{
     content::{BlockBox, BlockState, Content, Direction},
     fly_camera::{FlyCamera, FlyCameraSystems},
+    game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
+    inventory::Inventory,
     physics::{Aabb, Body},
     player::LocalPlayer,
     terrain::{RemeshChunks, Voxels},
@@ -218,7 +220,17 @@ fn edit_blocks(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
-    player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
+    player: Option<
+        Single<
+            (
+                &Hotbar,
+                &ActiveSlot,
+                Option<&mut Inventory>,
+                Option<&GameMode>,
+            ),
+            With<LocalPlayer>,
+        >,
+    >,
     content: Res<Content>,
     bodies: Query<&Body>,
     mut voxels: Voxels,
@@ -232,10 +244,23 @@ fn edit_blocks(
     let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
         return;
     };
-    let Some((hotbar, active)) = player.as_deref() else {
+    let Some(player) = player else {
         return;
     };
-    let Some(block) = hotbar.block(**active, &content) else {
+    let (hotbar, active, mut inventory, mode) = player.into_inner();
+    let survival = mode.is_some_and(|mode| !mode.is_creative());
+    let Some(item) = hotbar.item(*active) else {
+        return;
+    };
+    // In survival, only what you have.
+    if survival
+        && inventory
+            .as_ref()
+            .is_none_or(|inventory| inventory.count(item) == 0)
+    {
+        return;
+    }
+    let Some(block) = hotbar.block(*active, &content) else {
         return;
     };
     let Some((pos, face)) = hit.place_at() else {
@@ -256,6 +281,10 @@ fn edit_blocks(
         return;
     }
     voxels.set(pos, block);
+    // In survival, placing uses the item up.
+    if survival && let Some(inventory) = &mut inventory {
+        inventory.remove(item, 1);
+    }
 }
 
 /// Outlines the block under the crosshair while the cursor is locked.
@@ -340,7 +369,7 @@ mod tests {
         content::{base, block, grass, test_mod},
         headless::{Script, settle, test_game},
         hotbar::select_with_keys,
-        inventory::{Inventory, player::new_player},
+        inventory::player::new_player,
         mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{

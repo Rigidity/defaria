@@ -1,9 +1,9 @@
 //! The local player's inventory and hotbar.
 //!
-//! The inventory is limited only by weight, [`PLAYER_MAX_WEIGHT`]. A new
-//! player starts with [`DEFAULT_HOTBAR`] in their hotbar and
+//! The inventory is limited only by weight, [`PLAYER_MAX_WEIGHT`] (in
+//! survival; see `game_mode`). A new player starts in creative, with [`DEFAULT_HOTBAR`] in their hotbar and
 //! [`STARTING_COUNT`] of each of those items. In a world on disk, the
-//! inventory, the hotbar and the active slot are read from `player.json5`
+//! inventory, the hotbar, the active slot and the game mode are read from `player.json5`
 //! when the player appears, and written back every
 //! [`StreamingSettings::autosave_seconds`] and when the game exits.
 
@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use super::{Inventory, ItemStack, model::is_unique};
 use crate::{
     content::Content,
+    game_mode::GameMode,
     hotbar::{ActiveSlot, HOTBAR_SLOTS, Hotbar},
     player::LocalPlayer,
     save::{
@@ -94,10 +95,18 @@ fn equip_new_player(
         }
     });
     let player = match saved {
-        Some(saved) => load(&saved, &content),
+        Some(saved) => {
+            let (inventory, hotbar, active) = load(&saved, &content);
+            (inventory, hotbar, active, saved.game_mode)
+        }
         None => {
             let (inventory, hotbar) = new_player(&content);
-            (inventory, hotbar, ActiveSlot::default())
+            (
+                inventory,
+                hotbar,
+                ActiveSlot::default(),
+                GameMode::default(),
+            )
         }
     };
     commands.entity(add.entity).insert_if_new(player);
@@ -144,6 +153,7 @@ pub fn save(
     inventory: &Inventory,
     hotbar: &Hotbar,
     active: ActiveSlot,
+    mode: GameMode,
     content: &Content,
 ) -> PlayerFile {
     let names = ItemNames::new(content);
@@ -159,6 +169,7 @@ pub fn save(
         .map(|item| item.and_then(|item| names.name(item)).map(str::to_owned));
     PlayerFile {
         format: PLAYER_FORMAT,
+        game_mode: mode,
         active_slot: active.0,
         hotbar: hotbar.collect(),
         inventory: stacks.collect(),
@@ -178,7 +189,7 @@ fn save_player(
     folder: Option<Res<WorldFolder>>,
     keep: Option<Res<KeepPlayerFile>>,
     content: Res<Content>,
-    player: Option<Single<(&Inventory, &Hotbar, &ActiveSlot), With<LocalPlayer>>>,
+    player: Option<Single<(&Inventory, &Hotbar, &ActiveSlot, &GameMode), With<LocalPlayer>>>,
     mut since_save: Local<f32>,
 ) {
     if keep.is_some() {
@@ -194,8 +205,8 @@ fn save_player(
         return;
     }
     *since_save = 0.0;
-    let (inventory, hotbar, active) = *player;
-    let file = save(inventory, hotbar, *active, &content);
+    let (inventory, hotbar, active, mode) = *player;
+    let file = save(inventory, hotbar, *active, *mode, &content);
     if let Err(error) = file::write(&folder.0, &file) {
         error!("{error}");
     }
@@ -246,7 +257,14 @@ mod tests {
         inventory.add(content, ItemStack::new(pickaxe, 2));
         hotbar.assign(0, None);
         hotbar.assign(3, Some(pickaxe));
-        let saved = save(&inventory, &hotbar, ActiveSlot(4), content);
+        let saved = save(
+            &inventory,
+            &hotbar,
+            ActiveSlot(4),
+            GameMode::Survival,
+            content,
+        );
+        assert_eq!(saved.game_mode, GameMode::Survival);
         assert_eq!(load(&saved, content), (inventory, hotbar, ActiveSlot(4)));
     }
 
@@ -255,6 +273,7 @@ mod tests {
         let content = base();
         let saved = PlayerFile {
             format: PLAYER_FORMAT,
+            game_mode: GameMode::Creative,
             active_slot: 40,
             hotbar: vec![Some("gone:thing".into()), Some("defaria:lamp".into())],
             inventory: vec![

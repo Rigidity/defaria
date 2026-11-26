@@ -269,6 +269,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   `src/mining.rs`: breaking blocks by holding left click, for a time set
   by their hardness (`Mining`, on the camera, has the target and progress).
   `src/cracks.rs`: the crack overlay on the block being mined.
+- `src/game_mode.rs`: creative and survival (`GameMode` on the player,
+  C switches): whether breaking gives items and placing uses them up.
 - `src/inventory/`: inventories. `model.rs` has `Inventory` (how many of
   each item, limited only by weight), a component any entity can have;
   `player.rs` the local player's (on the entity with `LocalPlayer`, saved
@@ -310,6 +312,11 @@ documented in `docs/modding.md`; keep that file, the serde types in
   `roadmap.sh` for keeping the roadmap project in step with the issues.
 
 ## Conventions
+
+- The game must be playable without function keys (many laptop keyboards
+  need Fn for them): bind gameplay actions to letters, digits and the like
+  (C switches creative and survival, E opens the inventory). F-keys are
+  only for developer tools, such as the widget gallery (F10, dev builds).
 
 - Breaking changes are fine at this stage: to the mod file formats, the
   save formats, saved worlds, Rust APIs, anything. Don't add backwards
