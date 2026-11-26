@@ -6,7 +6,7 @@
 # shimmer away.
 # Run: cargo headless scenarios/see-through.txt
 wait 5
-fill 20 45 20 44 45 44 grass
+fill 20 45 20 44 45 44 soil[turf=defaria:grass]
 # A tree: a trunk with a blob of leaves.
 fill 24 49 24 28 51 28 leaves
 fill 25 52 25 27 52 27 leaves
@@ -17,7 +17,7 @@ fill 32 46 22 34 47 22 glass
 fill 31 46 25 35 48 25 glass
 fill 33 48 25 33 48 25 air
 # A pond two deep, with a sand bottom.
-fill 37 43 26 42 44 31 sand
+fill 37 43 26 42 44 31 soil[soil=defaria:sand]
 fill 38 44 27 41 45 30 water
 # A pool of lava.
 fill 37 44 34 42 44 38 stone
