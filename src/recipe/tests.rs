@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
+use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
 use crate::{
@@ -12,7 +12,8 @@ use crate::{
     content::{ItemState, base, block, block_with},
     machine::MachineCorePlugin,
     network::{NetworkClock, NetworkCorePlugin, energy::EnergyPlugin},
-    world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
+    testing::{chunk_app, insert_chunk, test_content},
+    world::{Chunk, Voxels},
 };
 
 /// A machine as its block entity starts, held by hand.
@@ -213,15 +214,7 @@ fn a_full_output_stops_the_furnace() {
 fn dear_recipes() -> &'static Content {
     static CONTENT: std::sync::OnceLock<Content> = std::sync::OnceLock::new();
     CONTENT.get_or_init(|| {
-        let (mut mods, errors) = crate::content::load::read_mods(
-            std::path::Path::new("assets/mods"),
-            crate::content::MODS_DIR,
-        );
-        assert!(errors.is_empty(), "{errors:?}");
-        mods.push(crate::content::load::ModFiles::new(
-            "mods/test",
-            r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-            &[
+        test_content(&[
                 (
                     "recipes/dear.json5",
                     r#"{ type: "smelting", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], energy: 100000, time: 1 }"#,
@@ -230,11 +223,7 @@ fn dear_recipes() -> &'static Content {
                     "recipes/spark.json5",
                     r#"{ type: "smelting", inputs: [{ item: "defaria:stone", when: { ore: "defaria:iron" } }], outputs: [{ energy: 10 }], energy: 1000, time: 1 }"#,
                 ),
-            ],
-        ));
-        let content = Content::from_mods(mods);
-        assert!(content.errors.is_empty(), "{:?}", content.errors);
-        content
+            ])
     })
 }
 
@@ -388,31 +377,16 @@ fn progress_is_reflected() {
 // On a network.
 
 fn app() -> App {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .insert_resource(base().clone())
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-            10,
-        )))
-        .init_resource::<ChunkMap>()
-        .add_message::<VoxelChanged>()
-        .add_message::<FluidChanged>()
-        .add_message::<PropertiesUpdated>()
-        .add_plugins((
-            ConnectionsPlugin,
-            NetworkCorePlugin,
-            BlockEntityPlugin,
-            MachineCorePlugin,
-            EnergyPlugin,
-            RecipePlugin,
-        ));
-    let world = app.world_mut();
-    let entity = world
-        .spawn((ChunkCoord(IVec3::ZERO), Chunk::default()))
-        .id();
-    world
-        .resource_mut::<ChunkMap>()
-        .insert(ChunkCoord(IVec3::ZERO), entity);
+    let mut app = chunk_app(base().clone(), Duration::from_millis(10));
+    app.add_plugins((
+        ConnectionsPlugin,
+        NetworkCorePlugin,
+        BlockEntityPlugin,
+        MachineCorePlugin,
+        EnergyPlugin,
+        RecipePlugin,
+    ));
+    insert_chunk(&mut app, IVec3::ZERO, Chunk::default());
     app.update();
     app
 }

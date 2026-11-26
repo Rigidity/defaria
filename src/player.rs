@@ -600,6 +600,7 @@ pub(crate) mod tests {
     use crate::{
         content::{BlockState, base, block},
         physics::{PhysicsPlugin, STEP},
+        testing::insert_chunk,
         world::{CHUNK_VOLUME, Chunk, ChunkCoord, ChunkMap},
     };
 
@@ -622,10 +623,7 @@ pub(crate) mod tests {
                         let local = Chunk::position_of(index);
                         chunk.set_at(local, fill(coord.origin() + local));
                     }
-                    let entity = app.world_mut().spawn((coord, chunk)).id();
-                    app.world_mut()
-                        .resource_mut::<ChunkMap>()
-                        .insert(coord, entity);
+                    insert_chunk(&mut app, coord.0, chunk);
                 }
             }
         }

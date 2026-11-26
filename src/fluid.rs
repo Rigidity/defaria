@@ -381,35 +381,19 @@ mod tests {
     use super::*;
     use crate::{
         content::{base, block},
-        world::{FLUID_STEPS, FluidChanged},
+        testing::{chunk_app, insert_chunk},
+        world::FLUID_STEPS,
     };
 
     /// The flow systems alone, on chunks spawned by the test.
     fn app() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-                50,
-            )))
-            .insert_resource(base().clone())
-            .init_resource::<ChunkMap>()
-            .init_resource::<FluidSettings>()
+        let mut app = chunk_app(base().clone(), Duration::from_millis(50));
+        app.init_resource::<FluidSettings>()
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
-            .add_message::<VoxelChanged>()
-            .add_message::<crate::world::PropertiesUpdated>()
-            .add_message::<FluidChanged>()
             .add_systems(Update, (wake_around_edits, wake_loaded_chunks).chain())
             .add_systems(FixedUpdate, run_flow);
         app
-    }
-
-    fn spawn(app: &mut App, coord: IVec3, chunk: Chunk) {
-        let coord = ChunkCoord(coord);
-        let entity = app.world_mut().spawn((coord, chunk)).id();
-        app.world_mut()
-            .resource_mut::<ChunkMap>()
-            .insert(coord, entity);
     }
 
     fn amount(app: &App, pos: IVec3) -> u16 {
@@ -441,13 +425,13 @@ mod tests {
         };
         let mut chunk = Chunk::filled(block("stone"));
         chunk.set(15, 1, 8, block("water"));
-        spawn(&mut app, IVec3::ZERO, chunk);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         run(&mut app, 2.0);
         let near = IVec3::new(15, 1, 8);
         assert_eq!(amount(&app, near), FULL_FLUID, "nowhere to go");
         assert_eq!(app.world().resource::<FluidStats>().active, 0, "settled");
 
-        spawn(&mut app, IVec3::X, tunnel());
+        insert_chunk(&mut app, IVec3::X, tunnel());
         run(&mut app, 3.0);
         let along: Vec<u16> = (15..32)
             .map(|x| amount(&app, IVec3::new(x, 1, 8)))
@@ -476,7 +460,7 @@ mod tests {
                 sea.set(15, y, i, block("stone"));
             }
         }
-        spawn(&mut app, IVec3::ZERO, sea);
+        insert_chunk(&mut app, IVec3::ZERO, sea);
         run(&mut app, 0.5);
         let stats = app.world().resource::<FluidStats>();
         assert_eq!((stats.active, stats.stepped), (0, 0));
@@ -491,7 +475,7 @@ mod tests {
         let mut chunk = Chunk::default();
         chunk.set(4, 4, 4, block("water"));
         chunk.set_fluid_at(IVec3::splat(4), FULL_FLUID / 2);
-        spawn(&mut app, IVec3::ZERO, chunk);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         let fog_at = |app: &mut App, y: f32| {
             let eye = app
                 .world_mut()
@@ -526,7 +510,7 @@ mod tests {
             chunk.set(x, 1, 1, BlockState::AIR);
         }
         chunk.set(0, 1, 1, block("water"));
-        spawn(&mut app, IVec3::ZERO, chunk);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         app.update();
         assert!(app.world().resource::<FluidSim>().sim.active() > 0);
         run(&mut app, 2.0);
@@ -551,7 +535,7 @@ mod tests {
                             }
                         }
                     }
-                    spawn(&mut app, IVec3::new(x, y, z), chunk);
+                    insert_chunk(&mut app, IVec3::new(x, y, z), chunk);
                 }
             }
         }
@@ -605,7 +589,7 @@ mod tests {
         for x in 4..12 {
             chunk.set(x, 3, 8, block("water"));
         }
-        spawn(&mut app, IVec3::ZERO, chunk);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         run(&mut app, 2.0);
         let stats = app.world().resource::<FluidStats>();
         assert!(stats.stepped > 0);
@@ -623,7 +607,7 @@ mod tests {
             chunk.set(x, 1, 1, block("water"));
         }
         chunk.set_fluid_at(IVec3::new(3, 1, 1), 300);
-        spawn(&mut app, IVec3::ZERO, chunk);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         let set = |app: &mut App, x: i32, state: BlockState| {
             let pos = IVec3::new(x, 1, 1);
             app.world_mut()
@@ -674,7 +658,7 @@ mod tests {
                 chunk.set(x, y, 9, BlockState::AIR);
             }
         }
-        spawn(&mut app, IVec3::ZERO, chunk);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         let steps = |app: &App| -> Vec<u16> {
             let entity = app
                 .world()

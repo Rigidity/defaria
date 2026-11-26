@@ -4,20 +4,12 @@ use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
 use crate::{
-    content::{
-        MODS_DIR,
-        load::{ModFiles, read_mods},
-    },
-    light::LightPlugin,
-    meshing::MeshingPlugin,
     save::{
-        WorldFolder,
         chunk::{StateNames, decode, encode},
         tests::temp_folder,
     },
-    streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    voxel_material::BlockMaterial,
-    world::{Voxels, WorldPlugin},
+    testing::{HOME, move_loader, test_content, world_app},
+    world::Voxels,
 };
 
 /// A test part, saved as an int, that only `test:counter` blocks have:
@@ -48,34 +40,25 @@ impl BlockEntityPart for Ticks {
 fn content() -> &'static Content {
     static CONTENT: OnceLock<Content> = OnceLock::new();
     CONTENT.get_or_init(|| {
-        let (mut mods, errors) = read_mods(Path::new("assets/mods"), MODS_DIR);
-        assert!(errors.is_empty(), "{errors:?}");
-        mods.push(ModFiles::new(
-            "mods/test",
-            r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-            &[
-                (
-                    "blocks/counter.json5",
-                    r#"{
-                        properties: { lit: { values: ["false", "true"] } },
-                        model: "defaria:cube",
-                        textures: { all: "defaria:lamp" },
-                        block_entity: { data: { count: 0, name: "counter" } },
-                    }"#,
-                ),
-                (
-                    "blocks/crate.json5",
-                    r#"{
-                        model: "defaria:cube",
-                        textures: { all: "defaria:glass" },
-                        block_entity: {},
-                    }"#,
-                ),
-            ],
-        ));
-        let content = Content::from_mods(mods);
-        assert!(content.errors.is_empty(), "{:#?}", content.errors);
-        content
+        test_content(&[
+            (
+                "blocks/counter.json5",
+                r#"{
+                    properties: { lit: { values: ["false", "true"] } },
+                    model: "defaria:cube",
+                    textures: { all: "defaria:lamp" },
+                    block_entity: { data: { count: 0, name: "counter" } },
+                }"#,
+            ),
+            (
+                "blocks/crate.json5",
+                r#"{
+                    model: "defaria:cube",
+                    textures: { all: "defaria:glass" },
+                    block_entity: {},
+                }"#,
+            ),
+        ])
     })
 }
 
@@ -98,56 +81,15 @@ fn crate_block() -> BlockState {
 /// The terrain, light, streaming and block entities with no rendering,
 /// loading a small world around `at`, saved to `folder` if there is one.
 fn app(folder: Option<&Path>, at: Vec3) -> App {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
-        .insert_resource(content().clone())
-        .add_plugins((
-            WorldPlugin,
-            MeshingPlugin,
-            LightPlugin,
-            StreamingPlugin,
-            BlockEntityPlugin,
-        ))
-        .register_block_entity_part::<Ticks>()
-        .init_asset::<Mesh>()
-        .insert_resource(BlockMaterial::unloaded(Handle::default()))
-        .insert_resource(StreamingSettings {
-            radius: 2,
-            above: 1,
-            below: 1,
-            ..default()
-        });
-    if let Some(folder) = folder {
-        app.insert_resource(WorldFolder(folder.to_path_buf()));
-    }
-    app.world_mut()
-        .spawn((ChunkLoader, Transform::from_translation(at)));
-    settle(&mut app);
-    app
+    world_app(content().clone())
+        .plugins(BlockEntityPlugin)
+        .with(|app| {
+            app.register_block_entity_part::<Ticks>();
+        })
+        .folder(folder)
+        .home(at)
+        .build()
 }
-
-fn settle(app: &mut App) {
-    app.update();
-    app.update();
-    for _ in 0..2000 {
-        app.update();
-        if app.world().resource::<StreamingStatus>().settled {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    panic!("never settled");
-}
-
-fn move_loader(app: &mut App, to: Vec3) {
-    let mut loaders = app
-        .world_mut()
-        .query_filtered::<&mut Transform, With<ChunkLoader>>();
-    loaders.single_mut(app.world_mut()).unwrap().translation = to;
-    settle(app);
-}
-
-const HOME: Vec3 = Vec3::new(8.0, 40.0, 8.0);
 const AWAY: Vec3 = Vec3::new(8.0, 5000.0, 8.0);
 const POS: IVec3 = IVec3::new(3, 50, -5);
 

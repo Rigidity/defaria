@@ -1,4 +1,4 @@
-use std::{path::Path, sync::OnceLock, time::Duration};
+use std::{sync::OnceLock, time::Duration};
 
 use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
 
@@ -6,17 +6,11 @@ use super::*;
 use crate::{
     block_entity::{BlockEntities, BlockEntityPlugin},
     connections::ConnectionsPlugin,
-    content::{
-        ItemState, MODS_DIR,
-        load::{ModFiles, read_mods},
-    },
-    light::LightPlugin,
+    content::ItemState,
     machine::MachineCorePlugin,
-    meshing::MeshingPlugin,
     network::NetworkCorePlugin,
-    streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    voxel_material::BlockMaterial,
-    world::{Voxels, WorldPlugin},
+    testing::{test_content, test_mods, world_app},
+    world::Voxels,
 };
 
 /// The base game, and mod `test` with filtered bins: `wood_bin` takes
@@ -25,8 +19,6 @@ use crate::{
 fn content() -> &'static Content {
     static CONTENT: OnceLock<Content> = OnceLock::new();
     CONTENT.get_or_init(|| {
-        let (mut mods, errors) = read_mods(Path::new("assets/mods"), MODS_DIR);
-        assert!(errors.is_empty(), "{errors:?}");
         let bin = |filter: &str, role: &str| {
             format!(
                 r#"{{ model: "defaria:cube", textures: {{ all: "defaria:crate_side" }},
@@ -54,14 +46,7 @@ fn content() -> &'static Content {
             ),
         ];
         let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
-        mods.push(ModFiles::new(
-            "mods/test",
-            r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-            &files,
-        ));
-        let content = Content::from_mods(mods);
-        assert!(content.errors.is_empty(), "{:#?}", content.errors);
-        content
+        test_content(&files)
     })
 }
 
@@ -328,7 +313,6 @@ fn routing_state_merges_and_splits() {
 /// Every filter mistake is an error naming it.
 #[test]
 fn filter_mistakes_are_reported() {
-    let base = || read_mods(Path::new("assets/mods"), MODS_DIR).0;
     for (machine, error) in [
         (
             r#"{ ports: [{ faces: ["up"], network: "defaria:item", role: "input", filter: {} }], slots: { a: 1 } }"#,
@@ -359,16 +343,10 @@ fn filter_mistakes_are_reported() {
             "say which with `slots`",
         ),
     ] {
-        let mut mods = base();
         let block = format!(
             r#"{{ model: "defaria:cube", textures: {{ all: "defaria:crate_side" }}, machine: {machine} }}"#
         );
-        mods.push(ModFiles::new(
-            "mods/test",
-            r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-            &[("blocks/bad.json5", &block)],
-        ));
-        let content = Content::from_mods(mods);
+        let content = Content::from_mods(test_mods(&[("blocks/bad.json5", &block)]));
         assert!(
             content.errors.iter().any(|e| e.contains(error)),
             "{machine}: {:#?}",
@@ -390,17 +368,9 @@ fn the_item_source_emits_planks() {
 // The solver in a world: tubes, crates and the item source, placed
 // near the loaded world's middle.
 
-const HOME: Vec3 = Vec3::new(8.0, 40.0, 8.0);
-
 fn app() -> App {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
-        .insert_resource(content().clone())
-        .add_plugins((
-            WorldPlugin,
-            MeshingPlugin,
-            LightPlugin,
-            StreamingPlugin,
+    let mut app = world_app(content().clone())
+        .plugins((
             BlockEntityPlugin,
             ConnectionsPlugin,
             NetworkCorePlugin,
@@ -409,29 +379,11 @@ fn app() -> App {
             ItemNetworkPlugin,
             crate::recipe::RecipePlugin,
         ))
-        .init_asset::<Mesh>()
-        .insert_resource(BlockMaterial::unloaded(Handle::default()))
-        .insert_resource(StreamingSettings {
-            radius: 2,
-            above: 1,
-            below: 1,
-            ..default()
-        });
-    app.world_mut()
-        .spawn((ChunkLoader, Transform::from_translation(HOME)));
-    app.update();
-    app.update();
-    for _ in 0..2000 {
-        app.update();
-        if app.world().resource::<StreamingStatus>().settled {
-            app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-                50,
-            )));
-            return app;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    panic!("never settled");
+        .build();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+        50,
+    )));
+    app
 }
 
 fn state(id: &str) -> BlockState {

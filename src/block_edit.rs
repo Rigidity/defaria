@@ -402,11 +402,12 @@ mod tests {
             BlockUsed, ItemUsed, ScriptIndex,
             using::{use_scripted_block, use_scripted_item},
         },
+        testing::{chunk_app, insert_chunk},
         voxel_material::BlockMaterial,
-        world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
+        world::{Chunk, ChunkCoord},
         worldgen::{Terrain, TerrainBlocks},
     };
-    use bevy::{math::DVec3, time::TimeUpdateStrategy};
+    use bevy::math::DVec3;
     use std::time::Duration;
 
     fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> &'static [BlockBox] + '_ {
@@ -605,20 +606,12 @@ mod tests {
     /// [`app`] with `content`, the player's hotbar `hotbar`, and both
     /// chunks empty.
     fn app_with(content: Content, hotbar: Hotbar) -> (App, Entity, Entity) {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), MiningPlugin))
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-                50,
-            )))
+        let mut app = chunk_app(content, Duration::from_millis(50));
+        app.add_plugins((AssetPlugin::default(), MiningPlugin))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()))
-            .insert_resource(content)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
-            .init_resource::<ChunkMap>()
-            .add_message::<VoxelChanged>()
-            .add_message::<crate::world::PropertiesUpdated>()
-            .add_message::<crate::world::FluidChanged>()
             .add_message::<BlockUsed>()
             .add_message::<ItemUsed>()
             .add_systems(
@@ -640,14 +633,7 @@ mod tests {
         ));
         let mut chunks = [Entity::PLACEHOLDER; 2];
         for (i, coord) in [IVec3::ZERO, IVec3::X].into_iter().enumerate() {
-            let entity = app
-                .world_mut()
-                .spawn((ChunkCoord(coord), Chunk::default()))
-                .id();
-            app.world_mut()
-                .resource_mut::<ChunkMap>()
-                .insert(ChunkCoord(coord), entity);
-            chunks[i] = entity;
+            chunks[i] = insert_chunk(&mut app, coord, Chunk::default());
         }
         // Looking along +X at block (14, 1, 5) from three blocks away.
         app.world_mut()

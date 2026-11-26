@@ -300,27 +300,18 @@ fn connect(
 mod tests {
     use std::time::Duration;
 
-    use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
+    use bevy::ecs::system::RunSystemOnce;
 
     use super::*;
     use crate::{
         content::{BlockState, base, block},
-        world::{FluidChanged, PropertiesUpdated, VoxelChanged},
+        testing::{chunk_app, insert_chunk, unload_chunk},
     };
 
     /// Connections on their own, over chunks spawned by hand.
     fn app() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(base().clone())
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-                16,
-            )))
-            .init_resource::<ChunkMap>()
-            .add_message::<VoxelChanged>()
-            .add_message::<FluidChanged>()
-            .add_message::<PropertiesUpdated>()
-            .init_resource::<Unconnected>()
+        let mut app = chunk_app(base().clone(), Duration::from_millis(16));
+        app.init_resource::<Unconnected>()
             .init_resource::<LoadedChunks>()
             .add_observer(note_loaded_chunk)
             .add_systems(
@@ -328,14 +319,6 @@ mod tests {
                 (around_edits, around_updates, in_loaded_chunks, connect).chain(),
             );
         app
-    }
-
-    fn spawn(app: &mut App, coord: IVec3, chunk: Chunk) {
-        let world = app.world_mut();
-        let entity = world.spawn((ChunkCoord(coord), chunk)).id();
-        world
-            .resource_mut::<ChunkMap>()
-            .insert(ChunkCoord(coord), entity);
     }
 
     fn set(app: &mut App, pos: IVec3, state: BlockState) {
@@ -375,7 +358,7 @@ mod tests {
     /// One loaded chunk of air.
     fn one_chunk() -> App {
         let mut app = app();
-        spawn(&mut app, IVec3::ZERO, Chunk::default());
+        insert_chunk(&mut app, IVec3::ZERO, Chunk::default());
         app.update();
         app
     }
@@ -490,7 +473,7 @@ mod tests {
         };
         let mut app = app();
         app.insert_resource(content.clone());
-        spawn(&mut app, IVec3::ZERO, Chunk::default());
+        insert_chunk(&mut app, IVec3::ZERO, Chunk::default());
         app.update();
         let (a, b) = (IVec3::new(4, 4, 4), IVec3::new(5, 4, 4));
         set(&mut app, a, cable("red", &[]));
@@ -530,19 +513,13 @@ mod tests {
         // The chunk to the east loads with a pipe against it.
         let mut next = Chunk::default();
         next.set_at(IVec3::new(0, 4, 4), pipe());
-        spawn(&mut app, IVec3::X, next);
+        insert_chunk(&mut app, IVec3::X, next);
         app.update();
         assert_eq!(joined(&mut app, edge), [E, W]);
         assert_eq!(joined(&mut app, edge + IVec3::X), [W]);
 
         // Unloading it changes nothing: the side keeps its value.
-        let entity = app
-            .world_mut()
-            .resource_mut::<ChunkMap>()
-            .remove(ChunkCoord(IVec3::X))
-            .unwrap();
-        app.world_mut().despawn(entity);
-        app.update();
+        unload_chunk(&mut app, IVec3::X);
         assert_eq!(joined(&mut app, edge), [E, W]);
     }
 
@@ -557,7 +534,7 @@ mod tests {
         let mut next = Chunk::default();
         next.set_at(IVec3::new(1, 4, 4), stale);
         next.set_at(IVec3::new(2, 4, 4), stale);
-        spawn(&mut app, IVec3::X, next);
+        insert_chunk(&mut app, IVec3::X, next);
         app.update();
         let origin = IVec3::X * CHUNK_SIZE as i32;
         assert_eq!(joined(&mut app, origin + IVec3::new(1, 4, 4)), [E]);

@@ -1,21 +1,9 @@
-use std::path::Path;
-
 use super::*;
-use crate::content::{
-    MODS_DIR, base,
-    load::{ModFiles, read_mods},
-};
+use crate::{content::base, testing::test_mods};
 
 /// The base game and mod `test`, with `files`.
 fn with(files: &[(&str, &str)]) -> Content {
-    let (mut mods, errors) = read_mods(Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        files,
-    ));
-    Content::from_mods(mods)
+    Content::from_mods(test_mods(files))
 }
 
 /// The errors loading `recipe` as `recipes/r.json5` gives.

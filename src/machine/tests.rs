@@ -6,18 +6,11 @@ use super::*;
 use crate::{
     block_entity::{BlockEntityPart, BlockEntityPlugin, Value},
     connections::ConnectionsPlugin,
-    content::{
-        BlockState, Direction, MODS_DIR, PortRole,
-        load::{ModFiles, read_mods},
-    },
+    content::{BlockState, Direction, PortRole},
     inventory::ItemStack,
-    light::LightPlugin,
-    meshing::MeshingPlugin,
     network::{NetworkCorePlugin, Networks},
-    save::{WorldFolder, tests::temp_folder},
-    streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    voxel_material::BlockMaterial,
-    world::WorldPlugin,
+    save::tests::temp_folder,
+    testing::{test_content, world_app},
 };
 
 /// The base game, and mod `test` with an `oven`: a machine facing a way,
@@ -25,13 +18,8 @@ use crate::{
 fn content() -> &'static Content {
     static CONTENT: OnceLock<Content> = OnceLock::new();
     CONTENT.get_or_init(|| {
-        let (mut mods, errors) = read_mods(Path::new("assets/mods"), MODS_DIR);
-        assert!(errors.is_empty(), "{errors:?}");
-        mods.push(ModFiles::new(
-            "mods/test",
-            r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-            &[(
-                "blocks/oven.json5",
+        test_content(&[(
+            "blocks/oven.json5",
                 r#"{
                     properties: {
                         lit: ["false", "true"],
@@ -52,11 +40,7 @@ fn content() -> &'static Content {
                         active_state: { lit: "true" },
                     },
                 }"#,
-            )],
-        ));
-        let content = Content::from_mods(mods);
-        assert!(content.errors.is_empty(), "{:#?}", content.errors);
-        content
+        )])
     })
 }
 
@@ -69,45 +53,17 @@ fn oven(facing: &str) -> BlockState {
 }
 
 fn app(folder: Option<&Path>) -> App {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
-        .insert_resource(content().clone())
-        .add_plugins((
-            WorldPlugin,
-            MeshingPlugin,
-            LightPlugin,
-            StreamingPlugin,
+    world_app(content().clone())
+        .plugins((
             BlockEntityPlugin,
             ConnectionsPlugin,
             NetworkCorePlugin,
             MachineCorePlugin,
         ))
-        .init_asset::<Mesh>()
-        .insert_resource(BlockMaterial::unloaded(Handle::default()))
-        .insert_resource(StreamingSettings {
-            radius: 2,
-            above: 1,
-            below: 1,
-            ..default()
-        });
-    if let Some(folder) = folder {
-        app.insert_resource(WorldFolder(folder.to_path_buf()));
-    }
-    app.world_mut()
-        .spawn((ChunkLoader, Transform::from_translation(HOME)));
-    app.update();
-    app.update();
-    for _ in 0..2000 {
-        app.update();
-        if app.world().resource::<StreamingStatus>().settled {
-            return app;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    panic!("never settled");
+        .folder(folder)
+        .build()
 }
 
-const HOME: Vec3 = Vec3::new(8.0, 40.0, 8.0);
 const POS: IVec3 = IVec3::new(3, 50, -5);
 
 fn set(app: &mut App, pos: IVec3, state: BlockState) {

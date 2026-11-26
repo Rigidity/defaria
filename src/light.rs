@@ -304,30 +304,14 @@ mod tests {
     use super::*;
     use crate::{
         content::{BlockState, base, block},
-        meshing::MeshingPlugin,
-        meshing::testing::finish_meshing,
-        voxel_material::BlockMaterial,
-        world::{CHUNK_SIZE, Voxels, WorldPlugin},
-        worldgen::testing::spawn_patch,
+        testing::{ChunkMapPlugin, patch_app, test_content},
+        world::{CHUNK_SIZE, Voxels},
     };
     use bevy::ecs::system::RunSystemOnce;
 
     /// The terrain and its light, with no rendering.
     fn app() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(base().clone())
-            .add_plugins((
-                AssetPlugin::default(),
-                WorldPlugin,
-                MeshingPlugin,
-                LightPlugin,
-            ))
-            .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial::unloaded(Handle::default()));
-        spawn_patch(app.world_mut());
-        finish_meshing(&mut app);
-        app
+        patch_app(base().clone())
     }
 
     fn set(app: &mut App, pos: IVec3, state: BlockState) {
@@ -377,22 +361,12 @@ mod tests {
 
     /// The base game and a lamp lit in one state only.
     fn with_switched_lamp() -> Content {
-        let (mut mods, errors) =
-            crate::content::load::read_mods(std::path::Path::new("assets/mods"), "mods");
-        assert!(errors.is_empty(), "{errors:?}");
-        mods.push(crate::content::load::ModFiles::new(
-            "mods/test",
-            r#"{ id: "test", name: "Test" }"#,
-            &[(
-                "blocks/switched.json5",
-                r#"{ properties: { lit: ["false", "true"], tint: ["a", "b"] },
-                     model: "defaria:cube", textures: { all: "defaria:red_lamp" },
-                     variants: [{ when: { lit: "true" }, light: [15, 15, 15] }] }"#,
-            )],
-        ));
-        let content = Content::from_mods(mods);
-        assert!(content.errors.is_empty(), "{:?}", content.errors);
-        content
+        test_content(&[(
+            "blocks/switched.json5",
+            r#"{ properties: { lit: ["false", "true"], tint: ["a", "b"] },
+                 model: "defaria:cube", textures: { all: "defaria:red_lamp" },
+                 variants: [{ when: { lit: "true" }, light: [15, 15, 15] }] }"#,
+        )])
     }
 
     /// A lamp turned on and off by updating its properties, as the engine
@@ -405,19 +379,7 @@ mod tests {
                 .block_state("test:switched", &[("lit", lit)])
                 .unwrap()
         };
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(content.clone())
-            .add_plugins((
-                AssetPlugin::default(),
-                WorldPlugin,
-                MeshingPlugin,
-                LightPlugin,
-            ))
-            .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial::unloaded(Handle::default()));
-        spawn_patch(app.world_mut());
-        finish_meshing(&mut app);
+        let mut app = patch_app(content.clone());
 
         // High in the air, inside a chunk, where the terrain doesn't reach.
         let lamp = IVec3::new(1, 3, 2) * CHUNK_SIZE as i32 + IVec3::splat(8);
@@ -457,11 +419,9 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(LightTable::new(&content))
-            .init_resource::<ChunkMap>()
+            .add_plugins(ChunkMapPlugin)
             .init_resource::<Sky>()
             .init_resource::<LightQueue>()
-            .add_message::<VoxelChanged>()
-            .add_message::<PropertiesUpdated>()
             .add_systems(Update, queue_changed_voxels);
         let mut send = |before, after| {
             app.world_mut().write_message(PropertiesUpdated {

@@ -200,9 +200,9 @@ mod tests {
     use crate::player::tests::{local_eyes, put_local_eyes};
     use crate::{
         content::{base, block},
-        world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
+        testing::{chunk_app, insert_chunk},
+        world::Chunk,
     };
-    use bevy::time::TimeUpdateStrategy;
 
     /// Seconds per frame in these tests.
     const STEP: f32 = 0.05;
@@ -215,15 +215,8 @@ mod tests {
 
     /// [`app`], with these blocks and this long a frame.
     fn app_with(content: Content, step: Duration) -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(TimeUpdateStrategy::ManualDuration(step))
-            .insert_resource(content)
-            .init_resource::<ButtonInput<MouseButton>>()
-            .init_resource::<ChunkMap>()
-            .add_message::<VoxelChanged>()
-            .add_message::<crate::world::PropertiesUpdated>()
-            .add_message::<crate::world::FluidChanged>()
+        let mut app = chunk_app(content, step);
+        app.init_resource::<ButtonInput<MouseButton>>()
             .add_observer(give_the_player_mining)
             .add_systems(Update, (arm, mine).chain());
         app.world_mut().spawn((
@@ -237,10 +230,7 @@ mod tests {
         let mut chunk = Chunk::default();
         chunk.set(5, 1, 5, block("stone"));
         chunk.set(5, 1, 7, block("soil"));
-        let entity = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), chunk)).id();
-        app.world_mut()
-            .resource_mut::<ChunkMap>()
-            .insert(ChunkCoord(IVec3::ZERO), entity);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         app.world_mut().spawn(crate::player::tests::local_player_at(
             Transform::from_xyz(2.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
         ));

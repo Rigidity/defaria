@@ -8,17 +8,15 @@ use crate::{
     connections::ConnectionsPlugin,
     content::{BlockState, Content, Direction, FULL_FLUID, PortRole, base},
     fluid::FluidPlugin,
-    light::LightPlugin,
     machine::{MachineCorePlugin, Tank, Tanks},
-    meshing::MeshingPlugin,
     network::{
         NetworkChanged, NetworkClock, NetworkCorePlugin, NetworkId, NetworkMap, NetworkState,
         Networks, Share, TICKS_PER_SECOND, energy::EnergyPlugin,
     },
-    save::{WorldFolder, tests::temp_folder},
-    streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    voxel_material::BlockMaterial,
-    world::{Voxels, WorldPlugin},
+    save::tests::temp_folder,
+    streaming::{ChunkLoader, StreamingSettings},
+    testing::{HOME, settle, test_content, world_app},
+    world::Voxels,
 };
 
 const WATER: &str = "defaria:water";
@@ -210,24 +208,16 @@ fn tanks_show_their_level() {
 // The game: terrain, streaming, block entities, networks, machines, flow
 // and fluid networks, on a world of a few chunks.
 
-const HOME: Vec3 = Vec3::new(8.0, 40.0, 8.0);
-
 fn app(folder: Option<&Path>) -> App {
     app_with(base().clone(), folder)
 }
 
 fn app_with(content: Content, folder: Option<&Path>) -> App {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
-        .insert_resource(content)
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+    world_app(content)
+        .resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
             50,
         )))
-        .add_plugins((
-            WorldPlugin,
-            MeshingPlugin,
-            LightPlugin,
-            StreamingPlugin,
+        .plugins((
             BlockEntityPlugin,
             ConnectionsPlugin,
             NetworkCorePlugin,
@@ -236,35 +226,15 @@ fn app_with(content: Content, folder: Option<&Path>) -> App {
             FluidPlugin,
             FluidNetworkPlugin,
         ))
-        .init_asset::<Mesh>()
-        .insert_resource(BlockMaterial::unloaded(Handle::default()))
-        .insert_resource(StreamingSettings {
+        .resource(StreamingSettings {
             radius: 2,
             above: 1,
             below: 1,
             unload_margin: 0,
             ..default()
-        });
-    if let Some(folder) = folder {
-        app.insert_resource(WorldFolder(folder.to_path_buf()));
-    }
-    app.world_mut()
-        .spawn((ChunkLoader, Transform::from_translation(HOME)));
-    settle(&mut app);
-    app
-}
-
-fn settle(app: &mut App) {
-    app.update();
-    app.update();
-    for _ in 0..4000 {
-        app.update();
-        if app.world().resource::<StreamingStatus>().settled {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    panic!("never settled");
+        })
+        .folder(folder)
+        .build()
 }
 
 fn state(id: &str, values: &[(&str, &str)]) -> BlockState {
@@ -660,24 +630,14 @@ fn a_network_ending_with_fluid_in_it_counts_it_as_lost() {
 /// The base game and a hose: a fluid conduit of its own group, so it
 /// doesn't join pipes.
 fn with_hose() -> Content {
-    let (mut mods, errors) =
-        crate::content::load::read_mods(Path::new("assets/mods"), crate::content::MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
-    mods.push(crate::content::load::ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[(
-            "blocks/hose.json5",
-            r#"{
-                model: "defaria:cube", textures: { all: "defaria:machine_side" },
-                properties: { connect: { connections: true } },
-                conduit: { network: "defaria:fluid", group: "hose", capacity: 1, throughput: 1 },
-            }"#,
-        )],
-    ));
-    let content = Content::from_mods(mods);
-    assert!(content.errors.is_empty(), "{:?}", content.errors);
-    content
+    test_content(&[(
+        "blocks/hose.json5",
+        r#"{
+            model: "defaria:cube", textures: { all: "defaria:machine_side" },
+            properties: { connect: { connections: true } },
+            conduit: { network: "defaria:fluid", group: "hose", capacity: 1, throughput: 1 },
+        }"#,
+    )])
 }
 
 /// A one-pipe network with water in it, its pipe replaced by a hose that
@@ -1139,9 +1099,6 @@ fn fluid_limits_follow_the_networks() {
 /// The base game and two test pipes alike but for how hot a fluid they
 /// carry.
 fn with_warm_and_cool_pipes() -> Content {
-    let (mut mods, errors) =
-        crate::content::load::read_mods(Path::new("assets/mods"), crate::content::MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
     let pipe = |max: u32| {
         format!(
             r#"{{
@@ -1153,14 +1110,7 @@ fn with_warm_and_cool_pipes() -> Content {
         )
     };
     let (warm, cool) = (pipe(2000), pipe(300));
-    mods.push(crate::content::load::ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[("blocks/warm.json5", &warm), ("blocks/cool.json5", &cool)],
-    ));
-    let content = Content::from_mods(mods);
-    assert!(content.errors.is_empty(), "{:?}", content.errors);
-    content
+    test_content(&[("blocks/warm.json5", &warm), ("blocks/cool.json5", &cool)])
 }
 
 /// Pipes changed for ones with the same throughput but a lower

@@ -8,13 +8,9 @@ use crate::{
     connections::ConnectionsPlugin,
     content::{base, block},
     headless::{SETTLE_TIMEOUT_FRAMES, Script, test_game},
-    light::LightPlugin,
-    meshing::MeshingPlugin,
     network::{NetworkCorePlugin, Networks},
-    save::{WorldFolder, tests::temp_folder},
-    streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
-    voxel_material::BlockMaterial,
-    world::WorldPlugin,
+    save::tests::temp_folder,
+    testing::world_app,
 };
 
 const E: Direction = Direction::East;
@@ -128,50 +124,14 @@ fn conduits_start_with_every_face_open() {
 /// The world with block entities, connections and networks and no
 /// rendering, loading around `HOME`, saved to `folder` if there is one.
 fn app(folder: Option<&Path>) -> App {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
-        .insert_resource(base().clone())
-        .add_plugins((
-            WorldPlugin,
-            MeshingPlugin,
-            LightPlugin,
-            StreamingPlugin,
-            BlockEntityPlugin,
-            ConnectionsPlugin,
-            NetworkCorePlugin,
-        ))
-        .register_block_entity_part::<BlockedFaces>()
-        .init_asset::<Mesh>()
-        .insert_resource(BlockMaterial::unloaded(Handle::default()))
-        .insert_resource(StreamingSettings {
-            radius: 2,
-            above: 1,
-            below: 1,
-            ..default()
-        });
-    if let Some(folder) = folder {
-        app.insert_resource(WorldFolder(folder.to_path_buf()));
-    }
-    app.world_mut()
-        .spawn((ChunkLoader, Transform::from_translation(HOME)));
-    settle(&mut app);
-    app
+    world_app(base().clone())
+        .plugins((BlockEntityPlugin, ConnectionsPlugin, NetworkCorePlugin))
+        .with(|app| {
+            app.register_block_entity_part::<BlockedFaces>();
+        })
+        .folder(folder)
+        .build()
 }
-
-fn settle(app: &mut App) {
-    app.update();
-    app.update();
-    for _ in 0..2000 {
-        app.update();
-        if app.world().resource::<StreamingStatus>().settled {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    panic!("never settled");
-}
-
-const HOME: Vec3 = Vec3::new(8.0, 40.0, 8.0);
 /// Where a line of pipes runs east, in the air: `LINE` to `LINE + 4X`.
 const LINE: IVec3 = IVec3::new(2, 50, -5);
 

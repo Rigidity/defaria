@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
+use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
 use crate::{
@@ -13,7 +13,8 @@ use crate::{
     content::{base, block},
     machine::MachineCorePlugin,
     network::{NetworkClock, NetworkCorePlugin},
-    world::{FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
+    testing::{chunk_app, insert_chunk, unload_chunk},
+    world::{Chunk, Voxels},
 };
 
 fn producer(offer: u64) -> Member {
@@ -196,47 +197,17 @@ fn balancing_never_makes_or_loses_energy() {
 // Whole networks.
 
 fn app() -> App {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .insert_resource(base().clone())
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-            10,
-        )))
-        .init_resource::<ChunkMap>()
-        .add_message::<VoxelChanged>()
-        .add_message::<FluidChanged>()
-        .add_message::<PropertiesUpdated>()
-        .add_plugins((
-            ConnectionsPlugin,
-            NetworkCorePlugin,
-            BlockEntityPlugin,
-            MachineCorePlugin,
-            EnergyPlugin,
-        ));
-    spawn(&mut app, IVec3::ZERO, Chunk::default());
+    let mut app = chunk_app(base().clone(), Duration::from_millis(10));
+    app.add_plugins((
+        ConnectionsPlugin,
+        NetworkCorePlugin,
+        BlockEntityPlugin,
+        MachineCorePlugin,
+        EnergyPlugin,
+    ));
+    insert_chunk(&mut app, IVec3::ZERO, Chunk::default());
     app.update();
     app
-}
-
-fn spawn(app: &mut App, coord: IVec3, chunk: Chunk) {
-    let world = app.world_mut();
-    let entity = world.spawn((ChunkCoord(coord), chunk)).id();
-    world
-        .resource_mut::<ChunkMap>()
-        .insert(ChunkCoord(coord), entity);
-}
-
-/// Unloads a chunk, returning its voxels.
-fn unload(app: &mut App, coord: IVec3) -> Chunk {
-    let entity = app
-        .world_mut()
-        .resource_mut::<ChunkMap>()
-        .remove(ChunkCoord(coord))
-        .unwrap();
-    let chunk = app.world().get::<Chunk>(entity).unwrap().clone();
-    app.world_mut().despawn(entity);
-    app.update();
-    chunk
 }
 
 fn set(app: &mut App, voxels: &[(IVec3, BlockState)]) {
@@ -471,7 +442,7 @@ fn a_split_leaves_one_half_unpowered() {
 #[test]
 fn a_frozen_network_keeps_its_batterys_charge() {
     let mut app = app();
-    spawn(&mut app, IVec3::X, Chunk::default());
+    insert_chunk(&mut app, IVec3::X, Chunk::default());
     app.update();
     let mut voxels = vec![(BATTERY, block("battery"))];
     voxels.extend(line(v(3, 4, 4), v(20, 4, 4), wire()));
@@ -479,7 +450,7 @@ fn a_frozen_network_keeps_its_batterys_charge() {
     set(&mut app, &voxels);
     charge(&mut app, BATTERY, 1000);
     ticks(&mut app, 2);
-    let saved = unload(&mut app, IVec3::X);
+    let saved = unload_chunk(&mut app, IVec3::X);
     let frozen = buffer(&app, BATTERY).stored;
     assert!(
         app.world()
@@ -494,7 +465,7 @@ fn a_frozen_network_keeps_its_batterys_charge() {
     // Its lamp used up what it had, and is dark.
     assert!(!lit(&app, v(6, 5, 4)));
 
-    spawn(&mut app, IVec3::X, saved);
+    insert_chunk(&mut app, IVec3::X, saved);
     app.update();
     ticks(&mut app, 20);
     assert!(buffer(&app, BATTERY).stored < frozen);

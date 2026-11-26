@@ -218,7 +218,8 @@ mod tests {
     use super::*;
     use crate::{
         content::{base, block},
-        world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
+        testing::{ChunkMapPlugin, insert_chunk},
+        world::Chunk,
     };
 
     #[test]
@@ -322,19 +323,13 @@ mod tests {
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
             .insert_resource(base().clone())
-            .init_resource::<ChunkMap>()
-            .add_message::<VoxelChanged>()
-            .add_message::<crate::world::PropertiesUpdated>()
-            .add_message::<crate::world::FluidChanged>()
+            .add_plugins(ChunkMapPlugin)
             .add_systems(Startup, spawn_cracks)
             .add_systems(Update, show_cracks);
         let mut chunk = Chunk::default();
         chunk.set(5, 1, 5, block("stone_slab"));
         chunk.set(5, 0, 5, block("stone"));
-        let entity = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), chunk)).id();
-        app.world_mut()
-            .resource_mut::<ChunkMap>()
-            .insert(ChunkCoord(IVec3::ZERO), entity);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
         app.world_mut().spawn(Mining::default());
         app
     }

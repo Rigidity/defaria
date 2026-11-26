@@ -87,7 +87,13 @@ changes.
    `TimeUpdateStrategy::ManualDuration`, and call `app.update()`. See the tests
    in `src/fly_camera.rs`, and in `src/player.rs` for systems in
    `FixedUpdate`. `Time<Virtual>` clamps each step to 250ms, so keep manual
-   steps below that.
+   steps below that. Build the usual setups from `src/testing.rs` rather
+   than copying them: `world_app` (the world streaming around a loader,
+   with the feature's plugins added, then `build()`, which waits for it to
+   `settle`), `patch_app` (the fixed test patch of terrain), `chunk_app`
+   or `ChunkMapPlugin` with `insert_chunk` (chunks spawned by hand), and
+   `test_content`/`test_mods` (the base game plus a `test` mod). When a
+   plugin these add starts needing something, add it there once.
 2. **Gameplay and visuals:** write a scenario script and run
    `cargo headless <script>`. It runs the whole game with no window, rendering
    offscreen, feeds it the script's input at a fixed 60 fps, and exits when the
@@ -295,6 +301,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   failing the run on a broken shader; `memory.rs` the `memory` and
   `lookups` commands; `test_app.rs` the test helpers (`test_game`,
   `run_more`, `settle`); `tests.rs` end-to-end tests of whole scripts.
+- `src/testing.rs`: helpers for tests (`#[cfg(test)]`): world, patch
+  and chunk apps, settling streaming, and content with a `test` mod.
 - `src/world.rs` (and `src/world/`): the world's voxels, which
   everything else reads and writes: `Chunk` (`world/chunk.rs`, with the
   fluid amounts it keeps), `ChunkCoord`, the loaded chunks (`ChunkMap`,

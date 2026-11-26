@@ -6,13 +6,13 @@ use std::{
     time::Duration,
 };
 
-use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
+use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
 use crate::{
     connections::ConnectionsPlugin,
     content::{base, block, test_mod},
-    world::FluidChanged,
+    testing::{chunk_app, insert_chunk, unload_chunk},
 };
 
 /// What a test solver keeps: units, divided by share, with what the
@@ -74,17 +74,8 @@ impl<S: Sink> NetworkState for Stored<S> {
 }
 
 fn app_with(content: Content) -> App {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .insert_resource(content)
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-            16,
-        )))
-        .init_resource::<ChunkMap>()
-        .add_message::<VoxelChanged>()
-        .add_message::<FluidChanged>()
-        .add_message::<PropertiesUpdated>()
-        .add_plugins((ConnectionsPlugin, NetworkCorePlugin))
+    let mut app = chunk_app(content, Duration::from_millis(16));
+    app.add_plugins((ConnectionsPlugin, NetworkCorePlugin))
         .add_network_state::<Stored>();
     app
 }
@@ -92,27 +83,9 @@ fn app_with(content: Content) -> App {
 /// The base game, with one loaded chunk of air at the origin.
 fn app() -> App {
     let mut app = app_with(base().clone());
-    spawn(&mut app, IVec3::ZERO, Chunk::default());
+    insert_chunk(&mut app, IVec3::ZERO, Chunk::default());
     app.update();
     app
-}
-
-fn spawn(app: &mut App, coord: IVec3, chunk: Chunk) {
-    let world = app.world_mut();
-    let entity = world.spawn((ChunkCoord(coord), chunk)).id();
-    world
-        .resource_mut::<ChunkMap>()
-        .insert(ChunkCoord(coord), entity);
-}
-
-fn unload(app: &mut App, coord: IVec3) {
-    let entity = app
-        .world_mut()
-        .resource_mut::<ChunkMap>()
-        .remove(ChunkCoord(coord))
-        .unwrap();
-    app.world_mut().despawn(entity);
-    app.update();
 }
 
 /// Sets voxels, then runs a frame.
@@ -381,7 +354,7 @@ fn groups_keep_cables_apart() {
         .unwrap();
     let bare = content.default_state("test:bare").unwrap();
     let mut app = app_with(content);
-    spawn(&mut app, IVec3::ZERO, Chunk::default());
+    insert_chunk(&mut app, IVec3::ZERO, Chunk::default());
     app.update();
     // Red and blue side by side, a bare one across the end of both.
     let mut voxels = line(v(1, 4, 4), v(5, 4, 4), red);
@@ -406,7 +379,7 @@ fn groups_keep_cables_apart() {
 #[test]
 fn a_network_freezes_across_an_unloaded_chunk_and_thaws() {
     let mut app = app();
-    spawn(&mut app, IVec3::X, Chunk::default());
+    insert_chunk(&mut app, IVec3::X, Chunk::default());
     app.update();
     // A line across the border at x = 16.
     set(&mut app, &line(v(12, 4, 4), v(19, 4, 4), pipe()));
@@ -426,7 +399,7 @@ fn a_network_freezes_across_an_unloaded_chunk_and_thaws() {
             .unwrap();
         world.get::<Chunk>(entity).unwrap().clone()
     };
-    unload(&mut app, IVec3::X);
+    unload_chunk(&mut app, IVec3::X);
     let half = network(&app, v(12, 4, 4));
     assert_eq!(half.conduits().len(), 4);
     assert!(half.is_frozen());
@@ -440,7 +413,7 @@ fn a_network_freezes_across_an_unloaded_chunk_and_thaws() {
     assert!(network(&app, v(11, 4, 4)).is_frozen());
 
     // It loads again: whole, and running.
-    spawn(&mut app, IVec3::X, saved);
+    insert_chunk(&mut app, IVec3::X, saved);
     app.update();
     let whole = network(&app, v(12, 4, 4));
     assert_eq!(whole.conduits().len(), 9);
@@ -460,7 +433,7 @@ fn a_pipe_at_the_edge_joins_the_chunk_that_loads_next_to_it() {
     let mut next = Chunk::default();
     next.set_at(v(0, 4, 4), pipe());
     next.set_at(v(1, 4, 4), pipe());
-    spawn(&mut app, IVec3::X, next);
+    insert_chunk(&mut app, IVec3::X, next);
     app.update();
     assert_eq!(count(&app), 1);
     assert_eq!(network(&app, v(15, 4, 4)).conduits().len(), 4);
@@ -475,12 +448,12 @@ fn networks_are_rebuilt_from_chunks_as_they_load() {
         chunk.set_at(v(x, 2, 2), pipe());
     }
     chunk.set_at(v(9, 2, 2), block("wire"));
-    spawn(&mut app, IVec3::ZERO, chunk);
+    insert_chunk(&mut app, IVec3::ZERO, chunk);
     app.update();
     assert_eq!(count(&app), 2);
     assert_eq!(network(&app, v(0, 2, 2)).conduits().len(), 5);
     // Unloading every chunk leaves no networks.
-    unload(&mut app, IVec3::ZERO);
+    unload_chunk(&mut app, IVec3::ZERO);
     assert_eq!(count(&app), 0);
 }
 
@@ -490,7 +463,7 @@ fn networks_are_rebuilt_from_chunks_as_they_load() {
 fn a_long_line_splits_in_the_middle() {
     let mut app = app_with(base().clone());
     for x in 0..8 {
-        spawn(&mut app, IVec3::new(x, 0, 0), Chunk::default());
+        insert_chunk(&mut app, IVec3::new(x, 0, 0), Chunk::default());
     }
     app.update();
     set(&mut app, &line(v(0, 4, 4), v(127, 4, 4), pipe()));
@@ -506,7 +479,7 @@ fn a_long_line_splits_in_the_middle() {
 #[test]
 fn describe_says_what_the_network_is() {
     let mut app = app();
-    spawn(&mut app, IVec3::X, Chunk::default());
+    insert_chunk(&mut app, IVec3::X, Chunk::default());
     app.update();
     set(&mut app, &line(v(14, 4, 4), v(17, 4, 4), pipe()));
     let content = base();
@@ -523,7 +496,7 @@ fn describe_says_what_the_network_is() {
         ),
         "{text}"
     );
-    unload(&mut app, IVec3::X);
+    unload_chunk(&mut app, IVec3::X);
     let text = line(&app, v(14, 4, 4));
     assert!(
         text.ends_with("2 conduits, 1 chunk, capacity 1, frozen (1 open face), no ports"),
@@ -565,7 +538,7 @@ fn partition(networks: &Networks) -> Vec<(Vec<[i32; 3]>, u32, Vec<([i32; 3], u8)
 #[test]
 fn a_port_across_a_chunk_border_opens_when_its_chunk_unloads() {
     let mut app = app();
-    spawn(&mut app, IVec3::X, Chunk::default());
+    insert_chunk(&mut app, IVec3::X, Chunk::default());
     app.update();
     let battery = base()
         .block_state("defaria:battery", &[("facing", "east")])
@@ -584,12 +557,12 @@ fn a_port_across_a_chunk_border_opens_when_its_chunk_unloads() {
         .get(ChunkCoord(IVec3::X))
         .unwrap();
     let saved = app.world().get::<Chunk>(entity).cloned().unwrap();
-    unload(&mut app, IVec3::X);
+    unload_chunk(&mut app, IVec3::X);
     let wire = network(&app, v(15, 4, 4));
     assert!(wire.ports().is_empty());
     assert!(wire.is_frozen());
 
-    spawn(&mut app, IVec3::X, saved);
+    insert_chunk(&mut app, IVec3::X, saved);
     app.update();
     let wire = network(&app, v(15, 4, 4));
     assert_eq!(wire.ports().len(), 1);
@@ -616,7 +589,7 @@ fn incremental_networks_match_a_rebuild() {
     let content = base();
     let mut app = app();
     app.add_network_state::<Fuzzed>();
-    spawn(&mut app, IVec3::X, Chunk::default());
+    insert_chunk(&mut app, IVec3::X, Chunk::default());
     app.update();
     let copper = content
         .block_state("defaria:pipe", &[("metal", "defaria:copper")])
@@ -653,9 +626,9 @@ fn incremental_networks_match_a_rebuild() {
                     .get(ChunkCoord(IVec3::X))
                     .unwrap();
                 saved = app.world().get::<Chunk>(entity).cloned();
-                unload(&mut app, IVec3::X);
+                unload_chunk(&mut app, IVec3::X);
             } else {
-                spawn(&mut app, IVec3::X, saved.take().unwrap());
+                insert_chunk(&mut app, IVec3::X, saved.take().unwrap());
                 app.update();
             }
             x_loaded = !x_loaded;
@@ -798,7 +771,7 @@ fn a_conduit_changed_only_in_its_stats_is_a_change() {
     let cool = content.default_state("test:cool").unwrap();
     assert_eq!(content.conduit(warm), content.conduit(cool));
     let mut app = app_with(content);
-    spawn(&mut app, IVec3::ZERO, Chunk::default());
+    insert_chunk(&mut app, IVec3::ZERO, Chunk::default());
     app.update();
     set(&mut app, &[(v(2, 4, 4), warm)]);
     let id = at(&app, v(2, 4, 4)).unwrap();
