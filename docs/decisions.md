@@ -62,6 +62,7 @@ display's size). If crossings still miss the budget: wake fluid in new
 chunks over several frames, spawn fewer chunks a frame or settle their
 light borders over frames, and draw cut-out faces in the opaque mesh so
 each surface chunk has one entity fewer (the issue's other ideas).
+
 ## Buckets: the hotbar names the kind, and a click picks which one (2026-11-26)
 
 **Context.** Fluid containers (#84) keep their fluid in their item data,

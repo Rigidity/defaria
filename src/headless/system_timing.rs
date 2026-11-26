@@ -19,7 +19,8 @@
 //! commands (spawning, despawning, inserting) are applied between systems,
 //! so they count in neither. A system that runs other systems (the render
 //! world's `render_system` runs the render graph's) counts only its own
-//! time, not theirs. Systems run in parallel, so their times don't
+//! CPU time, not theirs; its wall-clock time still includes waiting for
+//! those that ran on other threads. Systems run in parallel, so their times don't
 //! add up to the frame's. The systems that only run other schedules (the
 //! main schedule's, the fixed loop's and the render world's) aren't timed,
 //! since their time is everything they ran. The render world runs
@@ -325,8 +326,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(3));
         }
         fn busy() {
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_millis(3) {
+            // Until it's used 3 ms of CPU, however often it's preempted.
+            let start = thread_cpu();
+            while thread_cpu() - start < 3_000_000 {
                 std::hint::black_box(0);
             }
         }
@@ -373,8 +375,9 @@ mod tests {
     #[test]
     fn systems_that_run_systems_count_only_their_own_time() {
         fn busy() {
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_millis(3) {
+            // Until it's used 3 ms of CPU, however often it's preempted.
+            let start = thread_cpu();
+            while thread_cpu() - start < 3_000_000 {
                 std::hint::black_box(0);
             }
         }
