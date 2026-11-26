@@ -11,10 +11,11 @@ use super::{
     mix::{Attributes, Numbers},
     property::{check_count, combinations, properties},
     texture::Textures,
+    when::When,
 };
 use crate::content::{
     Block, BlockState, Content, FULL_FLUID, Item, ItemStateInfo, Property, State, qualify,
-    schema::{BlockDef, FluidContainerDef, ItemAction, ItemDef},
+    schema::{BlockDef, FluidContainerDef, ItemAction, ItemDef, TextureRef},
 };
 
 /// Gives each block an item, unless it opts out, then adds the item files.
@@ -101,6 +102,10 @@ fn block_item(
         Some(&block.properties),
         content,
     )?;
+    let whens = match file {
+        Some(file) => item_whens(file, &properties, content)?,
+        None => Vec::new(),
+    };
     let item = content.items.len();
     let mut states = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
@@ -119,10 +124,11 @@ fn block_item(
                 stats: numbers.stats,
             };
             if let Some(file) = file {
-                if let Some(name) = &file.def.name {
+                let (name, texture) = item_look(&file.def, &whens, &index);
+                if let Some(name) = name {
                     info.name = fill_name(name, &properties, &index, content)?;
                 }
-                if let Some(texture) = &file.def.texture {
+                if let Some(texture) = texture {
                     info.texture =
                         Some(textures.bake_ref(texture, &values, &file.namespace, content)?);
                 }
@@ -176,6 +182,7 @@ fn standalone_item(
         }
         None => None,
     };
+    let whens = item_whens(def, &properties, content)?;
     let attributes = Attributes::new(
         item_def.hardness.as_ref(),
         item_def.weight.as_ref(),
@@ -188,11 +195,12 @@ fn standalone_item(
     let mut states = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
         let info = (|| {
-            let name = match &item_def.name {
+            let (name, texture) = item_look(item_def, &whens, &index);
+            let name = match name {
                 Some(name) => fill_name(name, &properties, &index, content)?,
                 None => title_case(&def.id),
             };
-            let texture = match &item_def.texture {
+            let texture = match texture {
                 Some(texture) => {
                     Some(textures.bake_ref(texture, &values, &def.namespace, content)?)
                 }
@@ -241,6 +249,41 @@ fn standalone_item(
         content,
     );
     Ok(())
+}
+
+/// An item file's variants' conditions, over the item's properties.
+fn item_whens(
+    def: &Def<ItemDef>,
+    properties: &[Property],
+    content: &Content,
+) -> Result<Vec<When>, String> {
+    def.def
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, variant)| {
+            When::new(&variant.when, properties, &def.namespace, content)
+                .map_err(|error| format!("variant {}: {error}", i + 1))
+        })
+        .collect()
+}
+
+/// The name and icon an item file gives the state at `index`: its own,
+/// then each matching variant's, a later one winning.
+fn item_look<'d>(
+    def: &'d ItemDef,
+    whens: &[When],
+    index: &[usize],
+) -> (Option<&'d String>, Option<&'d TextureRef>) {
+    let mut name = def.name.as_ref();
+    let mut texture = def.texture.as_ref();
+    for (variant, when) in def.variants.iter().zip(whens) {
+        if when.matches(index) {
+            name = variant.name.as_ref().or(name);
+            texture = variant.texture.as_ref().or(texture);
+        }
+    }
+    (name, texture)
 }
 
 /// The numbers of a block state, which an item placing it falls back to.

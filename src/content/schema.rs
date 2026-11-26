@@ -837,6 +837,26 @@ pub struct ItemDef {
     /// It holds fluid, as a bucket does (see `fluid_container`).
     #[serde(default)]
     pub fluid_container: Option<FluidContainerDef>,
+    /// A name or icon for the states a condition matches, as a block's
+    /// variants change its states.
+    #[serde(default)]
+    pub variants: Vec<ItemVariantDef>,
+}
+
+/// Changes the item states whose properties match `when`: every variant
+/// that matches applies, in order, so a later one wins.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ItemVariantDef {
+    /// What each property must be, as in a block's variant.
+    #[serde(default)]
+    pub when: BTreeMap<String, Condition>,
+    /// Replaces the item's name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Replaces the item's icon.
+    #[serde(default)]
+    pub texture: Option<TextureRef>,
 }
 
 /// `fluid_container` on an item: it holds some of one fluid.

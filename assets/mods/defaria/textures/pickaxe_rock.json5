@@ -1,0 +1,8 @@
+// A pickaxe with a knapped stone head, for rock heads: chunkier than the
+// metal one, which looks wrong recoloured as rock.
+{
+  layers: [
+    { image: "items/pickaxe_handle", material: "$handle" },
+    { image: "items/pickaxe_head_rock", material: "$head" },
+  ],
+}
