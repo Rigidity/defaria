@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use bevy::{platform::collections::HashMap, prelude::*};
 
 use super::{
-    block::Look, fluid::bake_fluid, mix::Numbers, model::rotation, parts::Part, texture::Textures,
+    fluid::bake_fluid, look::Look, mix::Numbers, model::rotation, parts::Part, texture::Textures,
 };
 use crate::content::{
     BakedFace, BlockBox, Content, Direction, MAX_LIGHT, Model, State, StatePart, Vertex,

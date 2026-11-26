@@ -16,6 +16,7 @@ mod conduit;
 mod fill;
 mod fluid;
 mod item;
+mod look;
 mod material;
 mod mix;
 mod model;

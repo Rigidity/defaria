@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{block::Look, fill::fill, when::When};
+use super::{fill::fill, look::Look, when::When};
 use crate::content::{
     Content, Model, qualify,
     schema::{BlockDef, TextureRef},
