@@ -2,7 +2,7 @@
 // brown. Light, soft and quick to break.
 {
   name: "Thatch",
-  palette: ["#55401c", "#8c6e36", "#b0924c", "#ccb470"],
+  palette: ["#6e5428", "#8c6e36", "#b0924c", "#ccb470"],
   hardness: 0.4,
   weight: 250,
 }
