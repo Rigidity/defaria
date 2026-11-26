@@ -3,7 +3,7 @@ use bevy::{ecs::system::RunSystemOnce, platform::collections::HashMap};
 use super::{testing::finish_meshing, *};
 use crate::player::tests::local_player_at;
 use crate::{
-    content::{BlockState, base, block},
+    content::{BlockState, Direction, base, block},
     world::{Voxels, WorldPlugin, spawn_chunk},
     worldgen::{
         Terrain, TerrainBlocks, TerrainSettings,
@@ -16,11 +16,6 @@ fn terrain() -> Terrain {
         TerrainSettings::default(),
         TerrainBlocks::from_content(base()),
     )
-}
-
-/// The voxel columns of the test patch.
-fn columns() -> impl Iterator<Item = (i32, i32)> {
-    (0..PATCH_SIZE.x).flat_map(|x| (0..PATCH_SIZE.z).map(move |z| (x, z)))
 }
 
 /// The world and meshing plugins with the systems they need and the test patch of
@@ -60,7 +55,8 @@ fn meshes(app: &mut App) -> HashMap<ChunkCoord, Option<AssetId<Mesh>>> {
 }
 
 /// Faces between two solid voxels in different chunks are culled, so the
-/// whole world's faces equal the faces of the terrain as one solid.
+/// whole world's faces equal the faces of the terrain as one solid, trees'
+/// trunks included.
 #[test]
 fn no_faces_hidden_between_chunks() {
     let mut app = app();
@@ -72,16 +68,33 @@ fn no_faces_hidden_between_chunks() {
         .map(|&id| assets.get(id).unwrap().count_vertices() / 4)
         .sum();
 
-    // Count exposed faces directly from the heightmap.
+    // Count the exposed faces of the opaque blocks (the ground and tree
+    // trunks) directly from the generated voxels, with nothing outside the
+    // patch.
     let terrain = terrain();
+    let content = base();
+    let chunks: HashMap<_, _> = patch_chunks().map(|c| (c, terrain.chunk(c))).collect();
+    let at = |pos: IVec3| {
+        let (coord, local) = ChunkCoord::split(pos);
+        chunks
+            .get(&coord)
+            .map_or(BlockState::AIR, |chunk| chunk.at(local))
+    };
     let mut expected = 0;
-    for (x, z) in columns() {
-        let h = terrain.height(x, z);
-        expected += 2; // top and bottom of the column
-        for (nx, nz) in [(x + 1, z), (x - 1, z), (x, z + 1), (x, z - 1)] {
-            let outside = nx < 0 || nz < 0 || nx >= PATCH_SIZE.x || nz >= PATCH_SIZE.z;
-            let neighbour = if outside { 0 } else { terrain.height(nx, nz) };
-            expected += (h - neighbour).max(0) as usize;
+    for x in 0..PATCH_SIZE.x {
+        for y in 0..PATCH_SIZE.y {
+            for z in 0..PATCH_SIZE.z {
+                let pos = IVec3::new(x, y, z);
+                let block = at(pos);
+                let state = content.state(block);
+                if block.is_air() || !state.is_opaque() || state.is_fluid() {
+                    continue;
+                }
+                expected += Direction::ALL
+                    .iter()
+                    .filter(|&&side| !content.hides(block, at(pos + side.normal()), side))
+                    .count();
+            }
         }
     }
     assert_eq!(total, expected);

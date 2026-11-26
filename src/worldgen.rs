@@ -4,7 +4,8 @@
 //! plains, mountains, ridges and valleys (see [`shape`]). Below the surface
 //! is stone, then a few layers of dirt, then one layer of dirt with grass on it, except
 //! high up and on cliffs, which are bare stone. Here and there a tuft of
-//! grass grows on the grass. Hollows below [`SEA_LEVEL`] fill with water,
+//! grass grows on the grass, and trees grow on it, in forests and alone
+//! (see [`trees`]). Hollows below [`SEA_LEVEL`] fill with water,
 //! and the ground at and under the water's edge is sand. It goes on
 //! forever in every direction, up and down too: stone all the way down,
 //! air all the way up. `streaming` runs it, generating each chunk the first
@@ -20,8 +21,10 @@ use crate::{
 
 mod shape;
 mod spline;
+pub mod trees;
 
 use shape::{NEIGHBOURS, TerrainShape};
+use trees::{Forests, Part, Tree, Wood};
 
 /// Layers of dirt under the grass.
 const DIRT_DEPTH: i32 = 3;
@@ -80,13 +83,17 @@ pub struct TerrainBlocks {
     pub sand: BlockState,
     pub water: BlockState,
     pub tuft: BlockState,
+    /// Upright logs of each wood, in [`Wood::ALL`] order.
+    pub logs: [BlockState; 3],
+    /// Leaves of each wood, in [`Wood::ALL`] order.
+    pub leaves: [BlockState; 3],
 }
 
 impl TerrainBlocks {
-    /// Each block state the terrain is made of: its block and its property
+    /// Each block state the ground is made of: its block and its property
     /// values, in field order. Soil names every value, so a mod whose soil
     /// sorts before dirt can't change the ground.
-    const STATES: [(&str, &[(&str, &str)]); 6] = [
+    const GROUND: [(&str, &[(&str, &str)]); 6] = [
         (
             "defaria:soil",
             &[("soil", "defaria:dirt"), ("turf", "defaria:grass")],
@@ -104,20 +111,39 @@ impl TerrainBlocks {
         ("defaria:tuft", &[]),
     ];
 
-    /// Each of [`Self::STATES`], if it loaded.
-    fn states(content: &Content) -> [Option<BlockState>; 6] {
-        Self::STATES.map(|(id, values)| content.block_state(id, values))
+    /// The upright log of a wood: its block and property values.
+    fn log(wood: Wood) -> (&'static str, Vec<(&'static str, &'static str)>) {
+        (
+            "defaria:log",
+            vec![("wood", wood.material()), ("axis", "y")],
+        )
+    }
+
+    /// The leaves of a wood: their block and property values.
+    fn leaves(wood: Wood) -> (&'static str, Vec<(&'static str, &'static str)>) {
+        ("defaria:leaves", vec![("wood", wood.material())])
+    }
+
+    /// Every block state the terrain is made of: the ground's, then each
+    /// wood's log and leaves.
+    fn wanted() -> impl Iterator<Item = (&'static str, Vec<(&'static str, &'static str)>)> {
+        let ground = Self::GROUND
+            .iter()
+            .map(|(id, values)| (*id, values.to_vec()));
+        ground.chain(
+            Wood::ALL
+                .into_iter()
+                .flat_map(|wood| [Self::log(wood), Self::leaves(wood)]),
+        )
     }
 
     /// The states the terrain needs that didn't load: each block's id with
     /// the values it sets, in brackets
     /// (`defaria:soil[soil=defaria:sand,turf=none]`).
     pub fn missing(content: &Content) -> Vec<String> {
-        Self::STATES
-            .iter()
-            .zip(Self::states(content))
-            .filter(|(_, state)| state.is_none())
-            .map(|((id, values), _)| StateName::new(*id, values.iter().copied()).to_string())
+        Self::wanted()
+            .filter(|(id, values)| content.block_state(id, values).is_none())
+            .map(|(id, values)| StateName::new(id, values).to_string())
             .collect()
     }
 
@@ -128,8 +154,11 @@ impl TerrainBlocks {
         if !missing.is_empty() {
             error!("the terrain needs {missing:?}, which didn't load; they're left as air");
         }
+        let state = |id: &str, values: &[(&str, &str)]| {
+            content.block_state(id, values).unwrap_or(BlockState::AIR)
+        };
         let [grass, dirt, stone, sand, water, tuft] =
-            Self::states(content).map(|state| state.unwrap_or(BlockState::AIR));
+            Self::GROUND.map(|(id, values)| state(id, values));
         Self {
             grass,
             dirt,
@@ -137,7 +166,47 @@ impl TerrainBlocks {
             sand,
             water,
             tuft,
+            logs: Wood::ALL.map(|wood| {
+                let (id, values) = Self::log(wood);
+                state(id, &values)
+            }),
+            leaves: Wood::ALL.map(|wood| {
+                let (id, values) = Self::leaves(wood);
+                state(id, &values)
+            }),
         }
+    }
+
+    /// The block of a tree's part.
+    fn tree_part(&self, wood: Wood, part: Part) -> BlockState {
+        match part {
+            Part::Log => self.logs[wood.index()],
+            Part::Leaves => self.leaves[wood.index()],
+        }
+    }
+
+    /// Which block wins where trees and the ground meet: a tree's part goes
+    /// where it ranks higher than what's there. Leaves fill only air and
+    /// tufts, trunks go through leaves too, and nothing goes into the
+    /// ground or water. Between two trees' parts of the same rank, the
+    /// first tree's stays.
+    fn rank(&self, state: BlockState) -> u8 {
+        if state.is_air() || state == self.tuft {
+            0
+        } else if self.leaves.contains(&state) {
+            1
+        } else if self.logs.contains(&state) {
+            2
+        } else {
+            3
+        }
+    }
+
+    /// The block of `wood`'s `part`, if it goes where `there` is (see
+    /// [`Self::rank`]).
+    fn planted(&self, wood: Wood, part: Part, there: BlockState) -> Option<BlockState> {
+        let state = self.tree_part(wood, part);
+        (self.rank(state) > self.rank(there)).then_some(state)
     }
 }
 
@@ -146,14 +215,40 @@ impl TerrainBlocks {
 pub struct Terrain {
     blocks: TerrainBlocks,
     shape: TerrainShape,
+    forests: Forests,
 }
 
 impl Terrain {
     pub fn new(settings: TerrainSettings, blocks: TerrainBlocks) -> Self {
         Self {
+            forests: Forests::new(settings.seed, settings.base_height),
             shape: TerrainShape::new(settings),
             blocks,
         }
+    }
+
+    /// The column at `(x, z)`. `surface` gives the unrounded heights
+    /// ([`TerrainShape::surface`]) of it and the columns next to it.
+    fn column(&self, x: i32, z: i32, surface: impl Fn(i32, i32) -> f32) -> Column {
+        let height = surface(x, z).round() as i32;
+        let rock = self
+            .shape
+            .is_rock(height, NEIGHBOURS.map(|(dx, dz)| surface(x + dx, z + dz)));
+        let tuft = hash(self.shape.seed(), x, z) % 1000 < TUFTS_PER_THOUSAND;
+        Column { height, rock, tuft }
+    }
+
+    /// The column at `(x, z)`, worked out on its own.
+    fn column_alone(&self, x: i32, z: i32) -> Column {
+        self.column(x, z, |x, z| self.shape.surface(x, z))
+    }
+
+    /// Every tree reaching into the columns from `min` to `max`, both
+    /// included, in the order they're placed.
+    #[cfg(test)]
+    pub fn trees(&self, min: IVec2, max: IVec2) -> Vec<Tree> {
+        self.forests
+            .reaching(min, max, |x, z| self.column_alone(x, z).grass_height())
     }
 
     /// The height of the ground in the column at `(x, z)`: its top solid
@@ -166,27 +261,28 @@ impl Terrain {
     /// Whether the column at `(x, z)` is bare rock, without soil.
     #[cfg(test)]
     pub fn is_rock(&self, x: i32, z: i32) -> bool {
-        let neighbours = NEIGHBOURS.map(|(dx, dz)| self.shape.surface(x + dx, z + dz));
-        self.shape.is_rock(self.height(x, z), neighbours)
+        self.column_alone(x, z).rock
     }
 
-    /// The voxel at a world position.
+    /// The voxel at a world position, worked out on its own, trees and
+    /// all.
     #[cfg(test)]
     pub fn voxel(&self, pos: IVec3) -> BlockState {
-        let column = self.column(
-            pos.x,
-            pos.z,
-            self.height(pos.x, pos.z),
-            self.is_rock(pos.x, pos.z),
-        );
-        column.voxel(pos.y, &self.blocks)
-    }
-
-    /// What decides a column's voxels, besides its height: whether it's
-    /// bare rock, and whether a tuft grows on it.
-    fn column(&self, x: i32, z: i32, height: i32, rock: bool) -> Column {
-        let tuft = hash(self.shape.seed(), x, z) % 1000 < TUFTS_PER_THOUSAND;
-        Column { height, rock, tuft }
+        let mut voxel = self.column_alone(pos.x, pos.z).voxel(pos.y, &self.blocks);
+        // Trees never go into the ground or water.
+        if self.blocks.rank(voxel) == 3 {
+            return voxel;
+        }
+        for tree in self.trees(pos.xz(), pos.xz()) {
+            for &(at, part) in &tree.parts {
+                if at == pos
+                    && let Some(state) = self.blocks.planted(tree.wood, part, voxel)
+                {
+                    voxel = state;
+                }
+            }
+        }
+        voxel
     }
 
     /// Fills one chunk of the world.
@@ -202,30 +298,60 @@ impl Terrain {
                     .surface(origin.x + i % padded - 1, origin.z + i / padded - 1)
             })
             .collect();
-        let surface = |x: i32, z: i32| surfaces[((z + 1) * padded + x + 1) as usize];
-        let at = |x: i32, z: i32| surface(x, z).round() as i32;
-        let columns = || (0..size * size).map(|i| (i % size, i / size));
-        let (lowest, highest) = columns().fold((i32::MAX, i32::MIN), |(low, high), (x, z)| {
-            (low.min(at(x, z)), high.max(at(x, z)))
-        });
-        // Most chunks are all sky or all stone; skip the voxel loop. (A
-        // tuft can stand on the highest column, at `highest`.)
-        if origin.y > highest && origin.y >= SEA_LEVEL {
-            return Chunk::default();
-        }
+        let (min, max) = (origin.xz(), origin.xz() + IVec2::splat(size - 1));
+        let inside =
+            |x: i32, z: i32| IVec2::new(x, z).cmpge(min).all() && IVec2::new(x, z).cmple(max).all();
+        let surface =
+            |x: i32, z: i32| surfaces[((z - origin.z + 1) * padded + x - origin.x + 1) as usize];
+        // The chunk's columns, `x` fastest; `index` finds one by world
+        // position.
+        let index = |x: i32, z: i32| ((z - origin.z) * size + x - origin.x) as usize;
+        let columns: Vec<Column> = (0..size * size)
+            .map(|i| {
+                let (x, z) = (origin.x + i % size, origin.z + i / size);
+                self.column(x, z, surface)
+            })
+            .collect();
+        let lowest = columns.iter().map(|c| c.height).min().unwrap_or(0);
+        // Most chunks are all sky or all stone; skip the voxel loop. Trees
+        // only fill air, so an all-stone chunk has none.
         if origin.y + size <= lowest - 1 - DIRT_DEPTH {
             return Chunk::filled(self.blocks.stone);
         }
+        // The trees reaching in, with the columns inside from above.
+        let trees = self.forests.reaching(min, max, |x, z| {
+            if inside(x, z) {
+                columns[index(x, z)].grass_height()
+            } else {
+                self.column_alone(x, z).grass_height()
+            }
+        });
+        // A tuft can stand on the highest column, at its height.
+        let top = columns
+            .iter()
+            .map(|c| c.height)
+            .chain(trees.iter().map(Tree::top))
+            .max()
+            .unwrap_or(0);
+        if origin.y > top && origin.y >= SEA_LEVEL {
+            return Chunk::default();
+        }
         let mut chunk = Chunk::default();
-        for (x, z) in columns() {
-            let height = at(x, z);
-            let rock = self
-                .shape
-                .is_rock(height, NEIGHBOURS.map(|(dx, dz)| surface(x + dx, z + dz)));
-            let column = self.column(origin.x + x, origin.z + z, height, rock);
-            let (x, z) = (x as usize, z as usize);
+        for (i, column) in columns.iter().enumerate() {
+            let (x, z) = (i % CHUNK_SIZE, i / CHUNK_SIZE);
             for y in 0..CHUNK_SIZE {
                 chunk.set(x, y, z, column.voxel(origin.y + y as i32, &self.blocks));
+            }
+        }
+        for tree in &trees {
+            for &(pos, part) in &tree.parts {
+                let local = pos - origin;
+                if inside(pos.x, pos.z)
+                    && (0..size).contains(&local.y)
+                    && let Some(state) = self.blocks.planted(tree.wood, part, chunk.at(local))
+                {
+                    chunk.set_at(local, state);
+                }
             }
         }
         chunk
@@ -243,6 +369,12 @@ struct Column {
 }
 
 impl Column {
+    /// The ground's height if it's grass, which is what trees grow on: not
+    /// bare rock, and not at the water's edge or under the water (sand).
+    fn grass_height(&self) -> Option<i32> {
+        (!self.rock && self.height > SEA_LEVEL).then_some(self.height)
+    }
+
     /// The voxel at height `y`.
     fn voxel(&self, y: i32, blocks: &TerrainBlocks) -> BlockState {
         let height = self.height;
@@ -250,7 +382,7 @@ impl Column {
         let shore = height <= SEA_LEVEL;
         match y {
             y if y >= height && y < SEA_LEVEL => blocks.water,
-            y if y == height && self.tuft && !self.rock && !shore => blocks.tuft,
+            y if y == height && self.tuft && self.grass_height().is_some() => blocks.tuft,
             y if y >= height => BlockState::AIR,
             _ if self.rock => blocks.stone,
             y if y >= height - 1 - DIRT_DEPTH && shore => blocks.sand,
@@ -311,6 +443,8 @@ mod tests {
         testing::{PATCH_SIZE, patch_chunks},
         *,
     };
+    use bevy::platform::collections::{HashMap, HashSet};
+
     use crate::content::{self, base, block, grass, sand};
 
     fn terrain() -> Terrain {
@@ -331,6 +465,7 @@ mod tests {
     #[test]
     fn terrain_goes_on_in_every_direction() {
         let terrain = terrain();
+        let blocks = TerrainBlocks::from_content(base());
         for (x0, z0) in [(-200, -200), (100_000, -3_000), (-64, 50)] {
             let mut heights = Vec::new();
             for x in x0..x0 + 64 {
@@ -347,15 +482,13 @@ mod tests {
                     let above = terrain.voxel(IVec3::new(x, h, z0));
                     assert_ne!(above, block("tuft"), "a tuft on {top:?} at ({x}, {z0})");
                 }
+                // Open above the ground, but for trees.
+                let above = terrain.voxel(IVec3::new(x, h, z0));
+                assert!(!content::base().state(above).is_opaque() || is_tree(&blocks, above));
+                let sky = terrain.voxel(IVec3::new(x, h.max(SEA_LEVEL) + 1, z0));
                 assert!(
-                    !content::base()
-                        .state(terrain.voxel(IVec3::new(x, h, z0)))
-                        .is_opaque()
-                );
-                assert!(
-                    terrain
-                        .voxel(IVec3::new(x, h.max(SEA_LEVEL) + 1, z0))
-                        .is_air()
+                    sky.is_air() || is_tree(&blocks, sky),
+                    "{sky:?} at ({x}, {z0})"
                 );
                 if let Some(&last) = heights.last() {
                     let step: i32 = h - last;
@@ -368,18 +501,21 @@ mod tests {
     }
 
     /// Grass over dirt over stone, or sand at and under the water's edge,
-    /// with water up to the sea level, and a tuft on some of the grass.
+    /// with water up to the sea level, a tuft on some of the grass, and
+    /// nothing above but trees.
     #[test]
     fn columns_are_layered_grass_dirt_stone() {
         let terrain = terrain();
-        let (mut tufts, mut grassy, mut ponds) = (0, 0, 0);
+        let blocks = TerrainBlocks::from_content(base());
+        let mut generated = generated(&terrain);
+        let (mut tufts, mut grassy, mut ponds, mut trees) = (0, 0, 0, 0);
         for (x, z) in columns() {
             let height = terrain.height(x, z);
             assert!(
                 (1..=PATCH_SIZE.y).contains(&height),
                 "patch holds the surface"
             );
-            let at = |y| terrain.voxel(IVec3::new(x, y, z));
+            let mut at = |y| generated(IVec3::new(x, y, z));
             let shore = height <= SEA_LEVEL;
             let (top, soil) = if shore {
                 (sand(), sand())
@@ -399,7 +535,12 @@ mod tests {
             ponds += (height < SEA_LEVEL) as u32;
             grassy += !shore as u32;
             for y in above.max(SEA_LEVEL)..height + 100 {
-                assert_eq!(at(y), BlockState::AIR, "({x}, {y}, {z})");
+                let there = at(y);
+                assert!(
+                    there.is_air() || is_tree(&blocks, there),
+                    "{there:?} at ({x}, {y}, {z})"
+                );
+                trees += is_tree(&blocks, there) as u32;
             }
             for y in height - 100..height - 1 {
                 let expected = if y >= height - 1 - DIRT_DEPTH {
@@ -417,6 +558,7 @@ mod tests {
             "{share} of the grass has tufts"
         );
         assert!(ponds > 0, "no water in the patch");
+        assert!(trees > 0, "no trees in the patch");
     }
 
     /// Tufts grow only on grass: never on the bare rock of mountains and
@@ -645,6 +787,221 @@ mod tests {
         for (x, y, z) in [(0, 0, 0), (5, 3, 9), (15, 15, 15)] {
             let world = coord.origin() + IVec3::new(x as i32, y as i32, z as i32);
             assert_eq!(chunk.get(x, y, z), terrain.voxel(world));
+        }
+    }
+
+    /// Whether a block is any wood's log or leaves.
+    fn is_tree(blocks: &TerrainBlocks, state: BlockState) -> bool {
+        blocks.logs.contains(&state) || blocks.leaves.contains(&state)
+    }
+
+    /// The voxels of generated chunks, generating each the first time it's
+    /// asked for.
+    fn generated(terrain: &Terrain) -> impl FnMut(IVec3) -> BlockState + '_ {
+        let mut chunks = HashMap::<ChunkCoord, Chunk>::new();
+        move |pos| {
+            let (coord, local) = ChunkCoord::split(pos);
+            chunks
+                .entry(coord)
+                .or_insert_with(|| terrain.chunk(coord))
+                .at(local)
+        }
+    }
+
+    /// A forest, with trees on hills and by ponds, east of the start.
+    const FOREST: (IVec2, IVec2) = (IVec2::new(160, 48), IVec2::new(287, 143));
+
+    /// Trees split across chunk borders are whole, and each chunk works out
+    /// its share alone: every voxel of every tree, generated chunk by chunk,
+    /// is exactly what that voxel is worked out on its own (from the trees
+    /// around its column), and leaves never take the place of the ground.
+    #[test]
+    fn trees_are_whole_across_chunk_borders() {
+        let terrain = terrain();
+        let blocks = TerrainBlocks::from_content(base());
+        let mut at = generated(&terrain);
+        let trees = terrain.trees(FOREST.0, FOREST.1);
+        let (mut split, mut own_leaves, mut leaves_by_ground, mut on_tufts) = (0, 0, 0, 0);
+        for tree in &trees {
+            let root = terrain.column_alone(tree.root.x, tree.root.z);
+            on_tufts += root.tuft as u32;
+            let chunks: HashSet<_> = tree
+                .parts
+                .iter()
+                .map(|&(p, _)| ChunkCoord::split(p).0)
+                .collect();
+            split += (chunks.len() > 1) as u32;
+            for &(pos, part) in &tree.parts {
+                let there = at(pos);
+                assert_eq!(there, terrain.voxel(pos), "{pos} of {tree:?}");
+                if part == Part::Log {
+                    assert_eq!(there, blocks.tree_part(tree.wood, part), "{pos}");
+                }
+                let column = terrain.column_alone(pos.x, pos.z);
+                let ground = column.voxel(pos.y, &blocks);
+                if pos.y < column.height {
+                    leaves_by_ground += 1;
+                    assert_eq!(there, ground, "leaves in the ground at {pos}");
+                } else if blocks.rank(ground) == 0 {
+                    // Open air or a tuft: a tree is there, this one or another.
+                    assert!(is_tree(&blocks, there), "{there:?} at {pos} of {tree:?}");
+                }
+                own_leaves +=
+                    (part == Part::Leaves && there == blocks.tree_part(tree.wood, part)) as u32;
+            }
+        }
+        assert!(
+            split >= 20,
+            "only {split} of {} trees cross a border",
+            trees.len()
+        );
+        assert!(own_leaves >= 1000, "only {own_leaves} leaves");
+        assert!(
+            leaves_by_ground > 0 && on_tufts > 0,
+            "{leaves_by_ground} leaves meet the ground, {on_tufts} trunks stand on tufts"
+        );
+    }
+
+    /// Trees grow only on grass: never on sand (at or under the water's
+    /// edge) or bare rock, though plenty sprout there, in the forest by the
+    /// ponds and in the mountains. Every trunk in the generated chunks starts
+    /// on grass, where it stands instead of a tuft.
+    #[test]
+    fn trees_grow_only_on_grass() {
+        let terrain = terrain();
+        let blocks = TerrainBlocks::from_content(base());
+        let (mut sand, mut rock, mut grassy) = (0, 0, 0);
+        for (min, max) in [FOREST, (IVec2::new(1500, -400), IVec2::new(1900, 100))] {
+            // Every tree that would sprout if the ground didn't matter.
+            let sprouts = terrain
+                .forests
+                .reaching(min, max, |x, z| Some(terrain.column_alone(x, z).height));
+            let mut expected = Vec::new();
+            for sprout in &sprouts {
+                let column = terrain.column_alone(sprout.root.x, sprout.root.z);
+                sand += (column.height <= SEA_LEVEL) as u32;
+                rock += column.rock as u32;
+                if !column.rock && column.height > SEA_LEVEL {
+                    grassy += 1;
+                    expected.push(sprout.root);
+                }
+            }
+            let grown: Vec<_> = terrain.trees(min, max).iter().map(|t| t.root).collect();
+            assert_eq!(grown, expected);
+        }
+        assert!(
+            sand >= 20 && rock >= 20 && grassy >= 200,
+            "{sand} sprouts on sand, {rock} on rock, {grassy} on grass"
+        );
+
+        let mut at = generated(&terrain);
+        let mut trunks = 0;
+        for x in FOREST.0.x..=FOREST.1.x {
+            for z in FOREST.0.y..=FOREST.1.y {
+                let height = terrain.height(x, z);
+                if blocks.logs.contains(&at(IVec3::new(x, height, z))) {
+                    trunks += 1;
+                    assert_eq!(at(IVec3::new(x, height - 1, z)), grass(), "({x}, {z})");
+                }
+            }
+        }
+        assert!(trunks >= 50, "only {trunks} trees");
+    }
+
+    /// The player starts in a meadow, with no tree nearby, but with forests
+    /// in sight.
+    #[test]
+    fn the_start_is_a_meadow_near_forests() {
+        use crate::player::START_POSITION;
+        let terrain = terrain();
+        let start = START_POSITION.xz();
+        let clearing = trees::START_CLEARING;
+        let reach = clearing as i32 + trees::REACH;
+        let near = terrain.trees(start.as_ivec2() - reach, start.as_ivec2() + reach);
+        // Leaves reach out diagonally from a trunk at the clearing's edge.
+        let leaves = clearing - trees::REACH as f32 * std::f32::consts::SQRT_2;
+        for tree in near {
+            let root = tree.root.xz().as_vec2() + 0.5;
+            assert!(root.distance(start) >= clearing, "{tree:?} by the start");
+            for &(pos, _) in &tree.parts {
+                let distance = (pos.xz().as_vec2() + 0.5).distance(start);
+                assert!(distance >= leaves, "{pos} of {tree:?}");
+            }
+        }
+        let around = terrain.trees(start.as_ivec2() - 160, start.as_ivec2() + 160);
+        assert!(
+            around.len() >= 150,
+            "only {} trees around the start",
+            around.len()
+        );
+    }
+
+    /// Forests, clearings and a tree here and there between them: squares
+    /// of the land hold very different numbers of trees, as the forest
+    /// noise says (on grass everywhere, so lakes don't count as clearings).
+    #[test]
+    fn forests_and_clearings() {
+        let terrain = terrain();
+        let counts: Vec<usize> = (0..12)
+            .flat_map(|i| (0..12).map(move |j| IVec2::new(i * 64 - 2000, j * 64 + 700)))
+            .map(|corner| {
+                let trees = terrain
+                    .forests
+                    .reaching(corner, corner + 47, |_, _| Some(30));
+                trees.len()
+            })
+            .collect();
+        let forests = counts.iter().filter(|&&n| n >= 30).count();
+        let clearings = counts.iter().filter(|&&n| n == 0).count();
+        let sparse = counts.iter().filter(|&&n| (1..=8).contains(&n)).count();
+        assert!(
+            forests >= 10 && clearings >= 10 && sparse >= 10,
+            "{counts:?}"
+        );
+    }
+
+    /// Spruces lean to higher ground than birches.
+    #[test]
+    fn spruces_grow_higher_up() {
+        let terrain = terrain();
+        let trees = terrain.trees(IVec2::splat(-1500), IVec2::splat(1500));
+        let mean = |wood| {
+            let heights: Vec<_> = trees
+                .iter()
+                .filter(|t| t.wood == wood)
+                .map(|t| t.root.y)
+                .collect();
+            heights.iter().sum::<i32>() as f32 / heights.len() as f32
+        };
+        let (spruce, birch) = (mean(Wood::Spruce), mean(Wood::Birch));
+        assert!(
+            spruce > birch + 5.0,
+            "spruces at {spruce}, birches at {birch}"
+        );
+    }
+
+    /// Every wood grows somewhere, of its own logs and leaves.
+    #[test]
+    fn every_wood_grows() {
+        let terrain = terrain();
+        let blocks = TerrainBlocks::from_content(base());
+        let content = base();
+        let trees = terrain.trees(IVec2::splat(-1500), IVec2::splat(1500));
+        for wood in Wood::ALL {
+            assert_eq!(Wood::ALL[wood.index()], wood);
+            let n = trees.iter().filter(|t| t.wood == wood).count();
+            assert!(n * 10 >= trees.len(), "{n} {wood:?} of {}", trees.len());
+            for (part, id) in [(Part::Log, "defaria:log"), (Part::Leaves, "defaria:leaves")] {
+                let state = content.state(blocks.tree_part(wood, part));
+                assert_eq!(content.blocks[state.block].id, id);
+                let material = ("wood".to_string(), wood.material().to_string());
+                assert!(
+                    state.values.contains(&material),
+                    "{wood:?} {part:?}: {state:?}"
+                );
+            }
+            let log = content.state(blocks.tree_part(wood, Part::Log));
+            assert!(log.values.contains(&("axis".into(), "y".into())), "{log:?}");
         }
     }
 }

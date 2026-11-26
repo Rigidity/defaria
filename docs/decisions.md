@@ -1655,6 +1655,48 @@ updates for the loaded chunks below them.
 **When to revisit.** When caves leaking sky light or tall builds not
 shading the ground start to matter, or when worlds get an atmosphere top.
 
+## Trees are planted from cells of the seed, in code (2026-11-26)
+
+**Context.** The terrain grows trees (`src/worldgen/trees.rs`). A tree
+near a chunk's edge reaches into the chunks around it, but chunks are
+generated one at a time, in any order, on loading tasks.
+
+**Decision.** The world is split into 6×6-block cells, each growing at
+most one tree with a chance from a forest noise. Everything about a tree
+comes from the seed and its cell, so a chunk works out every tree that
+reaches it (from the cells within three blocks of it) by itself, and
+places only its own share. Where trees overlap each other, a trunk beats
+leaves and the first tree in cell order keeps a contested voxel; leaves
+fill only air and tufts. The shapes (oak, birch, spruce) are Rust
+functions, and only the base game's three woods grow, picked by a noise
+and leaning to spruce higher up. No tree grows within 40 blocks of the
+start.
+
+**What's wrong with it.** Mods can't add tree shapes or make their woods
+grow; content is otherwise data. Which wood grows where is a stand-in
+for biomes. A chunk recomputes the trees it shares with its neighbours,
+and the trees reaching a column are worked out again for every chunk in
+it (cheap next to the terrain noise, but repeated). A tree can't be
+bigger than the reach every chunk looks within, and nothing can grow
+from more than one cell (no giant trees spanning cells). Leaves are cut-out, and cut-out blocks don't hide each other's
+faces, so a forest chunk meshes every face of every leaf. Measured on
+the combined content stack (a flight from the start through the spruce
+forest and high over it, headless): chunk meshes hold about 265 to
+275 MiB against 120 to 140 MiB without trees, with about 270 more
+meshes. Frame times showed no clear change, but the machine was heavily
+loaded, so that's unconfirmed.
+
+**What should replace it.** Tree shapes as data in mods (a trunk height
+range and canopy layers, or small structure templates), placed by
+biomes with per-biome densities and woods, through a general "feature"
+step that any structure (boulders, ruins) can use with a declared reach.
+
+**When to revisit.** With biomes, when mods want trees of their own,
+when bigger structures than trees need placing across chunks, or when
+forests' leaf faces show up in meshing or drawing times or in memory.
+Culling a leaf face against a leaf of the same wood, as translucent
+faces now cull by texture, would remove most of them.
+
 ## The terrain is a heightmap, shaped by splines (2026-11-25)
 
 **Context.** The ground's height in each column comes from

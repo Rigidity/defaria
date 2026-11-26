@@ -159,7 +159,7 @@ impl TerrainShape {
 }
 
 /// 0 up to `low`, 1 from `high`, and a smooth S between.
-fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+pub(super) fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
     let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
