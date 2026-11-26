@@ -5,7 +5,7 @@
 //! `PointerClick`, `PointerDrag`, `PointerDragDrop`, `PointerScroll`, …),
 //! which bubble up through their ancestors. Widgets and features observe the
 //! ones they care about; a node that wants to know whether it's hovered
-//! carries picking's [`Hovered`].
+//! carries picking's [`Hovered`](bevy::picking::hover::Hovered).
 //!
 //! - The UI only takes the pointer while a screen is open. While playing
 //!   the cursor is locked and the mouse belongs to the game, so nothing is
@@ -20,10 +20,7 @@
 
 use bevy::{
     ecs::system::SystemParam,
-    picking::{
-        hover::{HoverMap, Hovered},
-        pointer::{PointerId, PointerLocation},
-    },
+    picking::pointer::{PointerId, PointerLocation},
     prelude::*,
     ui::picking_backend::UiPickingSettings,
 };
@@ -57,12 +54,11 @@ fn pick_only_in_screens(
     }
 }
 
-/// The mouse pointer: where it is and what it's over.
+/// The mouse pointer's position. What it's over is picking's: observe its
+/// events, or give a node [`Hovered`](bevy::picking::hover::Hovered).
 #[derive(SystemParam)]
 pub struct UiPointer<'w, 's> {
     pointers: Query<'w, 's, (&'static PointerId, &'static PointerLocation)>,
-    hover: Option<Res<'w, HoverMap>>,
-    hovered: Query<'w, 's, &'static Hovered>,
 }
 
 impl UiPointer<'_, '_> {
@@ -75,20 +71,6 @@ impl UiPointer<'_, '_> {
             .find(|(id, _)| id.is_mouse())
             .and_then(|(_, location)| location.location())
             .map(|location| location.position)
-    }
-
-    /// Whether the mouse is directly over `entity`, the topmost node there.
-    pub fn is_directly_over(&self, entity: Entity) -> bool {
-        self.hover
-            .as_ref()
-            .and_then(|hover| hover.get(&PointerId::Mouse))
-            .is_some_and(|hits| hits.contains_key(&entity))
-    }
-
-    /// Whether the mouse is over `entity` or one of its descendants. Only
-    /// for entities with [`Hovered`].
-    pub fn is_over(&self, entity: Entity) -> bool {
-        self.hovered.get(entity).is_ok_and(Hovered::get)
     }
 }
 
