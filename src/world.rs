@@ -14,15 +14,16 @@ use crate::content::BlockState;
 
 mod chunk;
 mod chunk_array;
+mod fluid_top;
 mod voxels;
 
 #[cfg(test)]
 pub use chunk::fluid_step;
 pub use chunk::{
-    CHUNK_SIZE, CHUNK_VOLUME, Chunk, FLUID_STEPS, axis_of, fluid_amount, fluid_surface,
-    touching_offsets,
+    CHUNK_SIZE, CHUNK_VOLUME, Chunk, FLUID_STEPS, axis_of, fluid_amount, touching_offsets,
 };
 pub use chunk_array::ChunkArray;
+pub use fluid_top::FluidTop;
 pub use voxels::Voxels;
 
 pub struct WorldPlugin;

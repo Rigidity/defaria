@@ -1261,8 +1261,7 @@ and tanks (a player, a tube, a pipe, a script), it runs on them the same.
 - Item data that isn't a fixed list of values, such as durability.
 - Variants can't change hardness, weight or stats.
 - Variants can't add or remove parts; a part's `when` does that.
-- Fluids' textures don't move, and their surfaces are flat steps rather
-  than slopes.
+- Fluids' textures don't move.
 - Fluids only flow into air: not into blocks that don't fill their
   voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.

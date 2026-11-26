@@ -673,26 +673,82 @@ fn fluid_is_drawn_at_its_height() {
     assert_eq!(vs, [0.0, 0.5, 1.0]);
 }
 
-/// Between two voxels of the same fluid, only the higher one's side
-/// shows, from the lower one's height up.
+/// Between two voxels of the same fluid, no side shows: the higher
+/// one's top slopes down to meet the lower one's at the corners they
+/// share, halfway between their heights.
 #[test]
-fn fluid_shows_its_side_above_lower_fluid() {
+fn fluid_slopes_down_to_lower_fluid() {
     let mesh = fluid_mesh(&[(A, "water", None), (B, "water", Some(FULL_FLUID / 4))]);
-    // A: top, bottom, three sides and the band over B; B: five faces.
-    assert_eq!(faces(&mesh), 2 * 11);
-    let band: Vec<Vec3> = positions(&mesh)
+    // Each: top, bottom and three sides.
+    assert_eq!(faces(&mesh), 2 * 10);
+    let mut heights: Vec<(f32, f32)> = positions(&mesh)
         .into_iter()
-        .filter(|p| p.x == B.x as f32)
-        .filter(|p| p.y > A.y as f32 + 0.25)
+        .filter(|p| p.y > A.y as f32)
+        .map(|p| (p.x, p.y - A.y as f32))
         .collect();
-    assert!(!band.is_empty());
+    heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    heights.dedup();
+    assert_eq!(heights, [(5.0, 1.0), (6.0, 0.625), (7.0, 0.25)]);
     let level = fluid_mesh(&[(A, "water", Some(490)), (B, "water", Some(500))]);
-    assert_eq!(faces(&level), 2 * 10, "drawn as high: no face between them");
+    assert_eq!(faces(&level), 2 * 10, "drawn as high: flat");
+    let top = positions(&level).iter().map(|p| p.y).fold(0.0, f32::max);
+    assert_eq!(top, A.y as f32 + 0.5);
+}
+
+/// The edges of a mesh's front faces, each as a sorted pair of corners
+/// in 64ths of a block, in no order.
+fn front_edges(mesh: &Mesh) -> Vec<[[i32; 3]; 2]> {
+    let positions = positions(mesh);
+    let faces = faces_of(mesh);
+    // Exact in 1/64ths of a block: heights are sixteenths, averaged.
+    let key = |p: Vec3| (p * 64.0).round().as_ivec3().to_array();
+    let mut edges = Vec::new();
+    for (quad, flags) in positions.chunks(4).zip(faces.chunks(4)) {
+        if flags[0][0] & BACK_FACE != 0 {
+            continue;
+        }
+        for i in 0..4 {
+            let mut edge = [key(quad[i]), key(quad[(i + 1) % 4])];
+            edge.sort();
+            edges.push(edge);
+        }
+    }
+    edges
+}
+
+/// However uneven water is, its faces join without gaps or overlaps:
+/// it's a closed surface, every edge of a face shared with exactly one
+/// other face.
+#[test]
+fn uneven_fluid_is_closed() {
+    let amounts = [None, Some(900), Some(400), Some(120), Some(1)];
+    let mut blocks = Vec::new();
+    for x in 0..4 {
+        for z in 0..3 {
+            let amount = amounts[(x + 2 * z) as usize % amounts.len()];
+            blocks.push((IVec3::new(4 + x, 5, 4 + z), "water", amount));
+        }
+    }
+    // A column falling onto one corner, and a sliver on top of another.
+    blocks.push((IVec3::new(4, 6, 4), "water", Some(300)));
+    blocks.push((IVec3::new(7, 6, 6), "water", Some(1)));
+    let mesh = fluid_mesh(&blocks);
+    let mut edges = front_edges(&mesh);
+    edges.sort();
+    let mut counts: Vec<([[i32; 3]; 2], usize)> = Vec::new();
+    for edge in edges {
+        match counts.last_mut() {
+            Some((last, n)) if *last == edge => *n += 1,
+            _ => counts.push((edge, 1)),
+        }
+    }
+    let odd: Vec<_> = counts.iter().filter(|(_, n)| *n != 2).collect();
+    assert!(odd.is_empty(), "edges not shared by two faces: {odd:?}");
 }
 
 /// Meshing reads the fluid amounts from the chunks themselves, across
 /// a chunk border too: half a block of water against a quarter in the
-/// next chunk shows its side above the quarter.
+/// next chunk slopes down to meet it.
 #[test]
 fn fluid_heights_come_from_the_chunks_across_borders() {
     let (here, there) = (IVec3::new(15, 5, 5), IVec3::new(0, 5, 5));
@@ -712,13 +768,14 @@ fn fluid_heights_come_from_the_chunks_across_borders() {
     let positions = positions(&meshes.translucent);
     let top = positions.iter().map(|p| p.y).fold(0.0, f32::max);
     assert_eq!(top, 5.5);
-    // The side against the east chunk starts a quarter up: only that
-    // band has corners there.
-    let band = positions
+    // The corners on the border are halfway between the two.
+    let border: Vec<f32> = positions
         .iter()
-        .filter(|p| p.x == 16.0 && p.y == 5.25)
-        .count();
-    assert_eq!(band, 4, "front and back, two corners each");
+        .filter(|p| p.x == 16.0 && p.y > 5.0)
+        .map(|p| p.y)
+        .collect();
+    assert!(!border.is_empty());
+    assert!(border.iter().all(|&y| y == 5.375), "{border:?}");
 }
 
 /// A sliver of water on a pond's surface is drawn on top of it, and the

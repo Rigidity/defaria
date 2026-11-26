@@ -36,8 +36,8 @@ use crate::{
     fly_camera::EyeView,
     fog::{self, FogSystems},
     world::{
-        CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, FluidChanged, VoxelChanged, Voxels, fluid_amount,
-        fluid_surface,
+        CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, FluidChanged, FluidTop, VoxelChanged, Voxels,
+        fluid_amount,
     },
 };
 use flow::{AROUND, Cell, CellView, Cells, Simulation};
@@ -139,24 +139,29 @@ impl CellView for FluidView<'_, '_> {
 }
 
 impl FluidView<'_, '_> {
-    /// The fluid in the voxel at `pos`, and how high its surface is above
-    /// the voxel's bottom, as it's drawn (see [`fluid_surface`]).
-    pub fn surface(&self, pos: IVec3) -> Option<(BlockState, f32)> {
+    /// The block at `pos` and the height its fluid is drawn at (see
+    /// [`Chunk::fluid_step_at`]), if it's loaded.
+    fn voxel(&self, pos: IVec3) -> Option<(BlockState, u16)> {
         let (coord, local) = ChunkCoord::split(pos);
         let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
-        let kind = chunk.at(local);
+        Some((chunk.at(local), chunk.fluid_step_at(local)))
+    }
+
+    /// The fluid in the voxel at `pos`, and its surface, as it's drawn
+    /// (see [`FluidTop`]).
+    pub fn surface(&self, pos: IVec3) -> Option<(BlockState, FluidTop)> {
+        let (kind, _) = self.voxel(pos)?;
         if !self.content.state(kind).is_fluid() {
             return None;
         }
-        let covered =
-            matches!(self.cell(pos + IVec3::Y), Some(Cell::Fluid(above, _)) if above == kind);
-        Some((kind, fluid_surface(chunk.fluid_step_at(local), covered)))
+        Some((kind, FluidTop::of(kind, pos, |at| self.voxel(at))))
     }
 
     /// The fluid `point` is in, below its surface.
     pub fn fluid_at(&self, point: Vec3) -> Option<BlockState> {
         let pos = point.floor().as_ivec3();
-        let (kind, height) = self.surface(pos)?;
+        let (kind, top) = self.surface(pos)?;
+        let height = top.at(point.xz() - pos.xz().as_vec2());
         (point.y < pos.y as f32 + height).then_some(kind)
     }
 
@@ -172,9 +177,10 @@ impl FluidView<'_, '_> {
         let mut depths: Vec<(BlockState, f64)> = Vec::new();
         for y in bottom.floor() as i32..=top.floor() as i32 {
             let pos = IVec3::new(x.floor() as i32, y, z.floor() as i32);
-            let Some((kind, height)) = self.surface(pos) else {
+            let Some((kind, surface)) = self.surface(pos) else {
                 continue;
             };
+            let height = surface.at(Vec2::new((x - x.floor()) as f32, (z - z.floor()) as f32));
             let under = (y as f64 + height as f64).min(top) - (y as f64).max(bottom);
             if under <= 0.0 {
                 continue;
@@ -624,8 +630,76 @@ mod tests {
         assert_eq!(set(&mut app, 3, block("water")), 2000, "topped up");
     }
 
+    /// Swimming and the fog find the surface where it's drawn: sloping
+    /// from a full voxel down to a quarter-full one beside it, and full
+    /// height beside a falling column.
+    #[test]
+    fn the_surface_you_swim_at_slopes_as_drawn() {
+        let mut app = app();
+        // A channel along X in stone: full water, a quarter, then air,
+        // with air above them all.
+        let mut chunk = Chunk::filled(block("stone"));
+        let (full, quarter) = (IVec3::new(4, 4, 4), IVec3::new(5, 4, 4));
+        for x in 4..7 {
+            for y in 4..7 {
+                chunk.set_at(IVec3::new(x, y, 4), BlockState::AIR);
+            }
+        }
+        chunk.set_at(full, block("water"));
+        chunk.set_at(quarter, block("water"));
+        chunk.set_fluid_at(quarter, FULL_FLUID / 4);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        let at = |app: &mut App, point: Vec3| {
+            app.world_mut()
+                .run_system_once(move |fluids: FluidView| fluids.fluid_at(point))
+                .unwrap()
+        };
+        let water = Some(block("water"));
+        let q = quarter.as_vec3();
+        // Beside the full voxel the quarter's surface is 0.625 high; at its
+        // far side, 0.25.
+        assert_eq!(at(&mut app, q + Vec3::new(0.02, 0.6, 0.5)), water);
+        assert_eq!(at(&mut app, q + Vec3::new(0.98, 0.3, 0.5)), None);
+        assert_eq!(at(&mut app, q + Vec3::new(0.98, 0.2, 0.5)), water);
+        let top = app
+            .world_mut()
+            .run_system_once(move |fluids: FluidView| fluids.surface(quarter).unwrap().1)
+            .unwrap();
+        assert_eq!(top.corner(0, 0), 0.625);
+        assert_eq!(top.corner(1, 1), 0.25);
+        // Swimming measures the same slope: how much of a block-high body
+        // standing on the floor is under water.
+        let depth = |app: &mut App, x: f64| {
+            app.world_mut()
+                .run_system_once(move |fluids: FluidView| {
+                    fluids.immersion(x, 4.5, 4.0, 5.0).map(|(_, depth)| depth)
+                })
+                .unwrap()
+                .unwrap()
+        };
+        assert!((depth(&mut app, 5.02) - (0.625 - 0.375 * 0.02)).abs() < 1e-4);
+        assert!((depth(&mut app, 5.98) - (0.625 - 0.375 * 0.98)).abs() < 1e-4);
+
+        // Water falling into the quarter's other side raises that edge to
+        // a full block.
+        let (beside, above) = (IVec3::new(6, 4, 4), IVec3::new(6, 5, 4));
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| {
+                voxels.set(beside, block("water"));
+                voxels.set(above, block("water"));
+            })
+            .unwrap();
+        let top = app
+            .world_mut()
+            .run_system_once(move |fluids: FluidView| fluids.surface(quarter).unwrap().1)
+            .unwrap();
+        assert_eq!(top.corner(1, 0), 1.0);
+        assert_eq!(at(&mut app, q + Vec3::new(0.98, 0.9, 0.5)), water);
+    }
+
     /// A pond draining through a gap in its side goes down steadily as it's
-    /// drawn: no voxel's drawn height ever goes back up, so nothing blinks.
+    /// drawn: no voxel's drawn height, nor any corner of its sloped top,
+    /// ever goes back up, so nothing blinks.
     #[test]
     fn a_pond_draining_through_its_side_never_blinks() {
         let mut app = app();
@@ -679,6 +753,36 @@ mod tests {
                 })
                 .collect()
         };
+        // The drawn corners of every pond voxel's top, by corner, each with
+        // which of the four voxels around it are water, and which have
+        // water above them.
+        let corners = |app: &mut App| -> Vec<Option<(f32, u8)>> {
+            let pond = pond.clone();
+            app.world_mut()
+                .run_system_once(move |fluids: FluidView| {
+                    let water =
+                        |pos: IVec3| fluids.voxel(pos).is_some_and(|(b, _)| b == block("water"));
+                    pond.iter()
+                        .flat_map(|&pos| {
+                            let top = fluids.surface(pos).map(|(_, top)| top);
+                            [(0, 0), (0, 1), (1, 0), (1, 1)].map(|(x, z)| {
+                                let top = top?;
+                                let mut around = 0;
+                                for (bit, (dx, dz)) in
+                                    [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate()
+                                {
+                                    let at = pos + IVec3::new(x + dx - 1, 0, z + dz - 1);
+                                    around |= (water(at) as u8) << bit;
+                                    around |= (water(at + IVec3::Y) as u8) << (bit + 4);
+                                }
+                                Some((top.corner(x as usize, z as usize), around))
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        let mut drawn = corners(&mut app);
         let mut last = steps(&app);
         for frame in 0..900 {
             app.update();
@@ -691,6 +795,26 @@ mod tests {
                 );
             }
             last = now;
+            // Nor does any corner of the drawn surface, while the same
+            // voxels around it hold water: averaging heights that don't rise
+            // never raises a corner. (One that empties stops counting,
+            // which can.) Corners beside the gap are left
+            // out: the water pouring out through it sloshes by more than a
+            // step, so its own height goes back and forth.
+            let now = corners(&mut app);
+            for (i, (before, after)) in drawn.iter().zip(&now).enumerate() {
+                let (pos, corner) = (pond[i / 4], i % 4);
+                if let (Some((before, around)), Some((after, around_now))) = (before, after)
+                    && around == around_now
+                    && pos.z + (corner % 2) as i32 <= 8
+                {
+                    assert!(
+                        after <= before,
+                        "frame {frame}: corner {corner} of {pos} rose from {before} to {after}",
+                    );
+                }
+            }
+            drawn = now;
         }
         assert!(last.iter().sum::<u16>() < 72 * FLUID_STEPS, "it drained");
     }
