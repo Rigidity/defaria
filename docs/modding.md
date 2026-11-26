@@ -369,7 +369,8 @@ blocks (1 is a full block):
   (it still runs off an edge). Water's sixteenth lets a block of it spread
   thin over a wide puddle; lava's quarter keeps it in a thick blob.
 - **`ripple`**: two voxels of it closer than this count as level, so
-  nothing flows between them. At least 0.002. Small, and surfaces settle
+  nothing flows between them (nor between voxels a few thousandths apart,
+  where a trickle could overshoot). At least 0.002. Small, and surfaces settle
   flat; bigger, and flow settles sooner, but surfaces can be left sloping
   by up to this much a voxel, which adds up across a wide pool.
 - **`move_speed`**: how fast the player walks and swims in it, from 0 to

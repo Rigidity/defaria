@@ -24,8 +24,9 @@
 //! even giving to four at once, so levels drift toward each other rather
 //! than swinging back and forth. Falling lowers fluid and spreading evens it out, so a closed
 //! scene always settles. The `film` and `ripple` say how flat it settles: a
-//! puddle stays put once it's thinner than a film, and a surface counts as
-//! level once its cells are less than a ripple apart.
+//! puddle stays put once it's thinner than a film, and neighbours stop
+//! flowing once they're less than a ripple apart, or so close that a unit
+//! trickling between them could overshoot (a few units at most).
 //!
 //! Different fluids that touch don't flow into each other: they stop, like
 //! fluid against a wall, through [`Cells::meet`].
@@ -165,6 +166,9 @@ struct Transfer {
     from: IVec3,
     to: IVec3,
     amount: u16,
+    /// The edge it goes over, for fluid running off one into the cell
+    /// below it, which must still be open when it moves.
+    over: Option<IVec3>,
 }
 
 /// What of the fluid at `pos` falls into the cell below: as much as fits,
@@ -190,6 +194,7 @@ fn fall(
         from: pos,
         to: below,
         amount: amount.min(space).min(fluid.fall),
+        over: None,
     })
 }
 
@@ -217,7 +222,7 @@ fn plan_spread(
         room(kind, cells.cell(next)).is_some() && room(kind, cells.cell(next - IVec3::Y)).is_some()
     });
     let edges = falling.iter().filter(|&&falling| falling).count() as u16;
-    let lower = differing(cells, kind, fluid, pos, amount, false);
+    let lower = std::cell::OnceCell::new();
     let mut given = 0;
     for (side, falling) in SIDES.into_iter().zip(falling) {
         let next = pos + side;
@@ -241,7 +246,10 @@ fn plan_spread(
                     0
                 } else if difference >= SHARE {
                     difference / SHARE
-                } else if difference >= lower + differing(cells, kind, fluid, next, there, true) {
+                } else if difference
+                    >= *lower.get_or_init(|| differing(cells, kind, fluid, pos, amount, false))
+                        + differing(cells, kind, fluid, next, there, true)
+                {
                     // Too close for an eighth to be anything: a unit
                     // trickles, if every unit this cell gives and that
                     // one takes still can't put it above this one. Wide
@@ -265,6 +273,7 @@ fn plan_spread(
                 // lip doesn't fill and empty step after step.
                 to: if falling { next - IVec3::Y } else { next },
                 amount: gives,
+                over: falling.then_some(next),
             });
             given += gives;
         }
@@ -371,11 +380,20 @@ impl<C: CellView> CellView for Layer<'_, C> {
 /// Moves fluid as `transfer` says, in `changes` over `world`: as much as
 /// there is, and as the cell it goes to has room for.
 fn apply(world: &impl CellView, changes: &mut Changes, transfer: Transfer) {
-    let Transfer { from, to, amount } = transfer;
+    let Transfer {
+        from,
+        to,
+        amount,
+        over,
+    } = transfer;
     let layer = Layer { world, changes };
     let (Some(Cell::Fluid(kind, has)), there) = (layer.cell(from), layer.cell(to)) else {
         return;
     };
+    // Something filled the edge since this was planned.
+    if over.is_some_and(|edge| room(kind, layer.cell(edge)).is_none()) {
+        return;
+    }
     let amount = amount.min(has).min(room(kind, there).unwrap_or(0));
     if amount == 0 {
         return;
@@ -801,6 +819,34 @@ pub(crate) mod tests {
             // (The test grid fails if flow writes over the closed cell.)
             assert_eq!(grid.total(WATER), 10 * FULL_FLUID as u64);
         }
+    }
+
+    /// Fluid running off an edge doesn't pass through a block put on the
+    /// edge while the step was under way.
+    #[test]
+    fn fluid_doesnt_run_through_a_new_block_on_the_edge() {
+        let mut grid = Grid::default();
+        grid.open(IVec3::ZERO, IVec3::X);
+        let below = IVec3::new(1, -1, 0);
+        grid.cells.insert(below, Cell::Open);
+        let mut sim = Simulation::default();
+        pour(&mut grid, &mut sim, IVec3::ZERO, WATER, 400);
+        // A second cell, on its own, that steps after it.
+        grid.cells.insert(IVec3::new(5, 0, 0), Cell::Open);
+        pour(&mut grid, &mut sim, IVec3::new(5, 0, 0), WATER, 400);
+        // A visit a tick: both fall, then the first plans running off its
+        // edge. The step isn't done until the second has planned too.
+        let mut visits = 0;
+        while visits < 3 {
+            visits += sim.tick(&mut grid, fluids, 0.01, 1).stepped;
+        }
+        assert_eq!(grid.amount(below), 0, "not done yet");
+        grid.cells.insert(IVec3::X, Cell::Closed);
+        for _ in 0..100 {
+            sim.tick(&mut grid, fluids, 0.01, usize::MAX);
+        }
+        assert_eq!(grid.amount(below), 0, "it went through the block");
+        assert_eq!(grid.amount(IVec3::ZERO), 400);
     }
 
     /// Half of a cell goes over its edges in a step, shared between them,
