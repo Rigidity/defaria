@@ -157,12 +157,20 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
                 // and has a tile, used or not.
                 textures.templates.insert(def.id.clone(), template);
                 match textures.bake_all(&def.id, &mut content) {
-                    Ok(problems) => {
-                        for problem in problems {
-                            report(&def.file, Err(problem));
+                    Ok(missing) => {
+                        for image in missing {
+                            report(
+                                &def.file,
+                                Err(format!(
+                                    "there's no {image}; the tiles that use it show a placeholder"
+                                )),
+                            );
                         }
                     }
-                    Err(error) => report(&def.file, Err(error)),
+                    Err(error) => {
+                        textures.templates.remove(&def.id);
+                        report(&def.file, Err(error));
+                    }
                 }
             }
             Err(error) => report(&def.file, Err(error)),
@@ -499,18 +507,20 @@ fn template(
     }
     for (i, layer) in layers.iter().enumerate() {
         if let LayerImage::Pattern(pattern) = &layer.image {
+            let mut untagged = None;
             fill_with(pattern, |name| {
-                inputs
-                    .get(name)
-                    .and_then(Option::as_ref)
-                    .map(|_| String::new())
+                if !inputs.get(name).is_some_and(Option::is_some) {
+                    untagged.get_or_insert(name.to_owned());
+                }
+                Some(String::new())
             })
-            .map_err(|_| {
-                format!(
-                    "layer {}: image `{pattern}` can only name `#tag` inputs in `{{}}`",
+            .map_err(|error| format!("layer {}: {error}", i + 1))?;
+            if let Some(name) = untagged {
+                return Err(format!(
+                    "layer {}: image `{pattern}` uses `{{{name}}}`, which isn't a `#tag` input",
                     i + 1
-                )
-            })?;
+                ));
+            }
         }
     }
     Ok((Template { layers, inputs }, problems))
@@ -572,8 +582,9 @@ fn image_path(id: &str, dirs: &HashMap<String, String>) -> Result<String, String
     Ok(format!("{dir}/images/{name}.png"))
 }
 
-/// The most tiles one texture's `#tag` inputs may make.
-const MAX_PERMUTATIONS: usize = 4096;
+/// The most tiles the game has room for: every tile is a layer of one
+/// texture array, and 2048 layers is what GPUs commonly allow.
+pub const MAX_TILES: usize = 2048;
 
 /// The texture templates, and the tiles baked from them so far (in
 /// [`Content::textures`]).
@@ -589,14 +600,15 @@ struct Textures {
 impl Textures {
     /// Bakes texture `id` for every combination its inputs can take: none
     /// for a texture without inputs, every combination of tagged materials
-    /// for one whose inputs are `#tag`s. Problems that don't stop a tile
-    /// being made (a missing image) come back with the result.
-    fn bake_all(&self, id: &str, content: &mut Content) -> Result<Vec<String>, String> {
+    /// for one whose inputs are `#tag`s. Every tile is made or none is.
+    /// Images that are missing (so their tiles show the placeholder) come
+    /// back with the result, each once.
+    fn bake_all(&self, id: &str, content: &mut Content) -> Result<BTreeSet<String>, String> {
         let template = &self.templates[id];
         if !template.inputs.is_empty() && !template.permutes() {
-            return Ok(Vec::new());
+            return Ok(BTreeSet::new());
         }
-        let choices: Vec<(&String, Vec<String>)> = template
+        let choices: Vec<(&String, Vec<&String>)> = template
             .inputs
             .iter()
             .map(|(name, tag)| {
@@ -605,30 +617,48 @@ impl Textures {
                     .materials
                     .iter()
                     .filter(|(_, material)| material.has_tag(tag))
-                    .map(|(id, _)| id.clone())
+                    .map(|(id, _)| id)
                     .collect();
                 (name, materials)
             })
             .collect();
         let count: usize = choices.iter().map(|(_, m)| m.len()).product();
-        if count > MAX_PERMUTATIONS {
+        let room = MAX_TILES.saturating_sub(content.textures.len());
+        if count > room {
             return Err(format!(
-                "its `#tag` inputs make {count} tiles; the most is {MAX_PERMUTATIONS}"
+                "it makes {count} tiles, and there's room for {room} more of the game's {MAX_TILES}"
             ));
         }
-        let mut problems = Vec::new();
-        for n in 0..count {
-            // Each combination, the last input changing fastest.
-            let mut rest = n;
-            let mut materials = BTreeMap::new();
-            for (name, options) in choices.iter().rev() {
-                materials.insert((*name).clone(), options[rest % options.len()].clone());
-                rest /= options.len();
+        // Each combination, the last input changing fastest.
+        let combinations: Vec<BTreeMap<String, String>> = (0..count)
+            .map(|n| {
+                let mut rest = n;
+                let mut materials = BTreeMap::new();
+                for (name, options) in choices.iter().rev() {
+                    materials.insert((*name).clone(), options[rest % options.len()].clone());
+                    rest /= options.len();
+                }
+                materials
+            })
+            .collect();
+        // Check every combination's images before making any tile. Fixed
+        // images were checked with the template.
+        let mut missing = BTreeSet::new();
+        for materials in &combinations {
+            for layer in &template.layers {
+                if matches!(layer.image, LayerImage::Path(_)) {
+                    continue;
+                }
+                let image = self.image(&layer.image, materials)?;
+                if !self.images.contains(&image) {
+                    missing.insert(image);
+                }
             }
-            let (_, found) = self.bake_checked(id, &materials, content)?;
-            problems.extend(found);
         }
-        Ok(problems)
+        for materials in &combinations {
+            self.bake(id, materials, content)?;
+        }
+        Ok(missing)
     }
 
     /// The layer of texture `id` with these materials for its inputs,
@@ -639,25 +669,9 @@ impl Textures {
         materials: &BTreeMap<String, String>,
         content: &mut Content,
     ) -> Result<u32, String> {
-        let (layer, problems) = self.bake_checked(id, materials, content)?;
-        // Images named by materials are only in textures baked at load,
-        // whose problems were reported then.
-        match problems.first() {
-            Some(problem) => Err(problem.clone()),
-            None => Ok(layer),
-        }
-    }
-
-    /// [`Textures::bake`], with the images found missing.
-    fn bake_checked(
-        &self,
-        id: &str,
-        materials: &BTreeMap<String, String>,
-        content: &mut Content,
-    ) -> Result<(u32, Vec<String>), String> {
         let key = texture_key(id, materials);
         if let Some(layer) = content.texture(&key) {
-            return Ok((layer, Vec::new()));
+            return Ok(layer);
         }
         let template = self
             .templates
@@ -690,36 +704,34 @@ impl Textures {
                 ));
             }
         }
-        let mut problems = Vec::new();
-        let mut layers = Vec::new();
-        for layer in &template.layers {
-            let image = self.image(&layer.image, materials)?;
-            // Fixed images were checked with the template.
-            if matches!(layer.image, LayerImage::Pattern(_)) && !self.images.contains(&image) {
-                problems.push(format!(
-                    "`{key}`: there's no {image}; the texture shows a placeholder"
-                ));
-            }
-            let (material, role) = match &layer.color {
-                LayerColor::Palette(palette) => {
-                    layers.push(TextureLayer {
-                        image,
-                        palette: *palette,
-                    });
-                    continue;
-                }
-                LayerColor::Material { id, role } => (id, role),
-                LayerColor::Input { name, role } => (&materials[name], role),
-            };
-            let material = content
-                .materials
-                .get(material)
-                .ok_or_else(|| format!("no material `{material}`"))?;
-            layers.push(TextureLayer {
-                image,
-                palette: material.palette_for(role.as_deref()),
-            });
+        if content.textures.len() >= MAX_TILES {
+            return Err(format!("there's no room for more than {MAX_TILES} tiles"));
         }
+        let layers = template
+            .layers
+            .iter()
+            .map(|layer| {
+                let image = self.image(&layer.image, materials)?;
+                let (material, role) = match &layer.color {
+                    LayerColor::Palette(palette) => {
+                        return Ok(TextureLayer {
+                            image,
+                            palette: *palette,
+                        });
+                    }
+                    LayerColor::Material { id, role } => (id, role),
+                    LayerColor::Input { name, role } => (&materials[name], role),
+                };
+                let material = content
+                    .materials
+                    .get(material)
+                    .ok_or_else(|| format!("no material `{material}`"))?;
+                Ok(TextureLayer {
+                    image,
+                    palette: material.palette_for(role.as_deref()),
+                })
+            })
+            .collect::<Result<_, String>>()?;
         let layer = content.textures.len() as u32;
         content.textures.push(Texture {
             id: key.clone(),
@@ -728,10 +740,12 @@ impl Textures {
             cutout: false,
         });
         content.texture_index.insert(key, layer);
-        Ok((layer, problems))
+        Ok(layer)
     }
 
-    /// The asset path of a layer's image with these materials.
+    /// The asset path of a layer's image with these materials. A pattern
+    /// is filled with the materials' names and, unless it names a mod, is
+    /// in the mod of the first one.
     fn image(
         &self,
         image: &LayerImage,
@@ -747,12 +761,9 @@ impl Textures {
             first_mod.get_or_insert(material_mod);
             Some(name.to_owned())
         })?;
-        let id = match (name.contains(':'), first_mod) {
-            (true, _) => name,
-            (false, Some(material_mod)) => format!("{material_mod}:{name}"),
-            (false, None) => return Err(format!("image `{pattern}` names no input")),
-        };
-        image_path(&id, &self.dirs)
+        // The template checked that every `{}` names an input.
+        let namespace = first_mod.ok_or_else(|| format!("image `{pattern}` names no input"))?;
+        image_path(&qualify(&name, namespace)?, &self.dirs)
     }
 
     /// Bakes a reference from a block or item, with `{property}` filled
@@ -2264,7 +2275,7 @@ mod tests {
     }
 
     /// A base mod with soils `dirt` and `sand` (each with its own image)
-    /// and turf `moss`, textures `soil` and `soil_turf` with `#tag` inputs
+    /// and turfs `fern` and `moss`, textures `soil` and `soil_turf` with `#tag` inputs
     /// and images named by them, and a block of any soil with optional
     /// turf; plus `extra` files.
     fn soil_mod(extra: &[(&str, &str)]) -> ModFiles {
@@ -2283,6 +2294,10 @@ mod tests {
             (
                 "materials/moss.json5",
                 r##"{ tags: ["turf"], palette: ["#000010", "#000020"], hardness: 1, weight: 1 }"##,
+            ),
+            (
+                "materials/fern.json5",
+                r##"{ tags: ["turf"], palette: ["#001010", "#002020"], hardness: 1, weight: 1 }"##,
             ),
             (
                 "textures/soil.json5",
@@ -2339,14 +2354,19 @@ mod tests {
     fn tagged_inputs_bake_every_combination() {
         let content = Content::from_mods(vec![soil_mod(&[(
             "textures/unused.json5",
-            r##"{ layers: [{ image: "{soil}", material: "#soil" }] }"##,
+            r##"{ layers: [
+                { image: "{soil}", material: "#soil" },
+                { image: "overhang", material: "#turf" },
+            ] }"##,
         )])]);
         assert!(content.errors.is_empty(), "{}", errors(&content));
         for key in [
             "base:soil(soil=base:dirt)",
             "base:soil(soil=base:sand)",
-            "base:unused(soil=base:dirt)",
-            "base:unused(soil=base:sand)",
+            "base:unused(soil=base:dirt,turf=base:fern)",
+            "base:unused(soil=base:dirt,turf=base:moss)",
+            "base:unused(soil=base:sand,turf=base:fern)",
+            "base:unused(soil=base:sand,turf=base:moss)",
         ] {
             assert!(content.texture(key).is_some(), "no tile {key}");
         }
@@ -2354,10 +2374,19 @@ mod tests {
             images_of(&content, "base:soil(soil=base:sand)"),
             ["sand.png"]
         );
-        assert_eq!(
-            images_of(&content, "base:soil_turf(soil=base:sand,turf=base:moss)"),
-            ["sand.png", "overhang.png"]
-        );
+        // Two soils and two turfs make four tiles.
+        for (soil, turf) in [
+            ("dirt", "fern"),
+            ("dirt", "moss"),
+            ("sand", "fern"),
+            ("sand", "moss"),
+        ] {
+            let key = format!("base:soil_turf(soil=base:{soil},turf=base:{turf})");
+            assert_eq!(
+                images_of(&content, &key),
+                [format!("{soil}.png"), "overhang.png".into()]
+            );
+        }
         // Each layer takes its own material's palette.
         let turfed = content
             .texture("base:soil_turf(soil=base:dirt,turf=base:moss)")
@@ -2367,13 +2396,13 @@ mod tests {
         assert_eq!(layers[1].palette, content.materials["base:moss"].palette);
         // Blocks use the tiles baked at load rather than making more.
         let ground = content.block("base:ground").unwrap();
-        assert_eq!(ground.state_count, 4);
+        assert_eq!(ground.state_count, 2 * 3);
         let sand = content.state(ground.state(&[("soil", "base:sand")]).unwrap());
         assert_eq!(
             sand.faces[0].layer,
             content.texture("base:soil(soil=base:sand)").unwrap()
         );
-        assert_eq!(content.textures.len(), 2 + 2 + 2);
+        assert_eq!(content.textures.len(), 2 + 2 * 2 + 2 * 2);
     }
 
     /// Another mod adds a soil with only a material tagged `soil` and its
@@ -2411,16 +2440,63 @@ mod tests {
 
         let content = Content::from_mods(vec![soil_mod(&[]), clay(&[material])]);
         let all = errors(&content);
-        assert!(
-            all.contains("there's no mods/clay/images/clay.png"),
-            "{all}"
-        );
+        // Once for each texture that uses it, not once per tile.
+        let missing = "there's no mods/clay/images/clay.png";
+        assert_eq!(all.matches(missing).count(), 2, "{all}");
+        assert!(all.contains("mods/base/textures/soil.json5"), "{all}");
+        assert!(all.contains("mods/base/textures/soil_turf.json5"), "{all}");
         assert!(content.block("base:ground").is_some(), "{all}");
         assert!(
             content
                 .image_paths()
                 .contains(&"mods/clay/images/clay.png".to_owned())
         );
+    }
+
+    /// Tags whose combinations would make more tiles than the game has
+    /// room for are reported against the texture, which is left out, and
+    /// what uses it fails rather than making the tiles one at a time.
+    #[test]
+    fn too_many_combinations_are_reported() {
+        let mut files: Vec<(String, String)> = Vec::new();
+        for i in 0..46 {
+            for tag in ["a", "b"] {
+                files.push((
+                    format!("materials/{tag}{i}.json5"),
+                    format!(
+                        r##"{{ tags: ["{tag}"], palette: ["#000000", "#ffffff"], hardness: 1, weight: 1 }}"##
+                    ),
+                ));
+            }
+        }
+        files.push((
+            "textures/x.json5".into(),
+            r##"{ layers: [
+                { image: "overhang", material: "#a" },
+                { image: "overhang", material: "#b" },
+            ] }"##
+                .into(),
+        ));
+        files.push((
+            "blocks/x.json5".into(),
+            r##"{ model: "quad", textures: { all: {
+                texture: "x", materials: { a: "a0", b: "b0" },
+            } } }"##
+                .into(),
+        ));
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        let content = Content::from_mods(vec![soil_mod(&refs)]);
+        let all = errors(&content);
+        assert!(
+            all.contains("mods/base/textures/x.json5: it makes 2116 tiles"),
+            "{all}"
+        );
+        assert!(all.contains("mods/base/blocks/x.json5"), "{all}");
+        assert!(content.textures.iter().all(|t| t.template != "base:x"));
+        assert!(content.textures.len() < MAX_TILES);
     }
 
     /// Mistakes with `#tag` inputs are reported.
@@ -2438,7 +2514,7 @@ mod tests {
             (
                 "textures/x.json5",
                 r##"{ layers: [{ image: "{other}", material: "$other" }] }"##,
-                "can only name `#tag` inputs",
+                "uses `{other}`, which isn't a `#tag` input",
             ),
             (
                 "textures/x.json5",
@@ -2459,6 +2535,16 @@ mod tests {
                 "blocks/x.json5",
                 r##"{ model: "quad", textures: { all: "soil" } }"##,
                 "needs a material for `#soil`",
+            ),
+            (
+                "textures/x.json5",
+                r##"{ layers: [{ image: "{soil", material: "#soil" }] }"##,
+                "has a `{` with no `}`",
+            ),
+            (
+                "textures/x.json5",
+                r##"{ layers: [{ image: "Big {soil}", material: "#soil" }] }"##,
+                "Big dirt",
             ),
         ];
         for &(path, text, expected) in cases {

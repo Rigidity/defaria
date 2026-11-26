@@ -169,8 +169,11 @@ can bring its own image:
 `defaria:sand`), and the image is looked up in that material's mod, unless
 the image names a mod of its own (`"defaria:{soil}"`). A missing image is
 reported, and the tiles that use it show the placeholder. A texture's
-inputs are all `$name`s or all `#tag`s, not a mix, and one texture makes at
-most 4096 tiles.
+inputs are all `$name`s or all `#tag`s, not a mix.
+
+All mods together have room for 2048 tiles, counting every combination a
+tagged texture makes. A texture whose combinations don't fit is reported
+and left out.
 
 ## Models
 
