@@ -85,13 +85,15 @@ changes.
    mouse 150 0           # turn right
    wait 1
    screenshot target/scenarios/fly-around/after.png
-   inspect FlyCamera     # short or full reflected type name
+   inspect FlyCamera     # a component or resource, short or full name
    ```
    Commands: `wait`, `press`, `release`, `hold`, `mouse`, `screenshot`,
    `grain` (a texture-noise number for the frame; lower is smoother, and only
    comparable between runs with the same view and art), `inspect`, `fill`
    (set a box of voxels to a block, to build a test scene), `cursor` and
-   `scroll` (point at and wheel over UI, such as the inventory), `camera` (put the
+   `scroll` (point at and wheel over UI, such as the inventory), `pour` (put
+   an amount of a fluid in a voxel) and `fluids` (each fluid's total in the
+   loaded world and how much of it is active), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -269,6 +271,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
   stepping up), in `FixedUpdate`. `src/player.rs`: the player's
   Minecraft-style walking, jumping, sneaking, sprinting and flying, on a
   physics body at the camera.
+- `src/fluid.rs` (and `src/fluid/`): fluid flow. A fluid voxel holds an
+  amount (`Chunk::partial_at`), and `src/fluid/flow.rs` moves amounts
+  between voxels, never making or losing any. Also what the player
+  swims in and the fog inside fluid.
 - `src/streaming.rs`: loading, unloading and saving chunks around the
   camera. The world has no edges, up and down included.
 - `src/fog.rs`: distance fog that follows the edge of the drawn world.

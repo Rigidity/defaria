@@ -343,3 +343,143 @@ fn unsettled(cells: &impl CellView, pos: IVec3) -> bool {
             .into_iter()
             .any(|side| has_room(pos + side))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use bevy::time::TimeUpdateStrategy;
+
+    use super::*;
+    use crate::{
+        content::{base, block},
+        terrain::FluidChanged,
+    };
+
+    /// The flow systems alone, on chunks spawned by the test.
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                50,
+            )))
+            .insert_resource(base().clone())
+            .init_resource::<ChunkMap>()
+            .init_resource::<FluidSettings>()
+            .init_resource::<FluidStats>()
+            .init_resource::<FluidSim>()
+            .add_message::<VoxelChanged>()
+            .add_message::<FluidChanged>()
+            .add_systems(Update, (wake_around_edits, wake_loaded_chunks).chain())
+            .add_systems(FixedUpdate, run_flow);
+        app
+    }
+
+    fn spawn(app: &mut App, coord: IVec3, chunk: Chunk) {
+        let coord = ChunkCoord(coord);
+        let entity = app.world_mut().spawn((coord, chunk)).id();
+        app.world_mut()
+            .resource_mut::<ChunkMap>()
+            .insert(coord, entity);
+    }
+
+    fn amount(app: &App, pos: IVec3) -> u16 {
+        let (coord, local) = ChunkCoord::split(pos);
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        chunk.fluid_at(local, app.world().resource::<Content>())
+    }
+
+    fn run(app: &mut App, seconds: f32) {
+        for _ in 0..(seconds / 0.05) as usize {
+            app.update();
+        }
+    }
+
+    /// Fluid against the face of a chunk that isn't loaded waits there,
+    /// and flows into it once it loads.
+    #[test]
+    fn fluid_waits_for_the_next_chunk_to_load() {
+        let mut app = app();
+        // Stone, but for a tunnel along X at y 1, z 8: water fills the end
+        // of the first chunk's, against its +X face.
+        let tunnel = || {
+            let mut chunk = Chunk::filled(block("stone"));
+            for x in 0..16 {
+                chunk.set(x, 1, 8, BlockState::AIR);
+            }
+            chunk
+        };
+        let mut chunk = Chunk::filled(block("stone"));
+        chunk.set(15, 1, 8, block("water"));
+        spawn(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 2.0);
+        let near = IVec3::new(15, 1, 8);
+        assert_eq!(amount(&app, near), FULL_FLUID, "nowhere to go");
+        assert_eq!(app.world().resource::<FluidStats>().active, 0, "settled");
+
+        spawn(&mut app, IVec3::X, tunnel());
+        run(&mut app, 3.0);
+        let along: Vec<u16> = (15..32)
+            .map(|x| amount(&app, IVec3::new(x, 1, 8)))
+            .collect();
+        assert!(along[1] > 0, "flowed into the new chunk: {along:?}");
+        assert_eq!(along.iter().map(|&a| a as u32).sum::<u32>(), 1000);
+    }
+
+    /// A chunk full of settled water, like the sea's, loads with nothing
+    /// active.
+    #[test]
+    fn settled_water_loads_asleep() {
+        let mut app = app();
+        let mut sea = Chunk::filled(block("water"));
+        for x in 0..16 {
+            for z in 0..16 {
+                sea.set(x, 0, z, block("stone"));
+            }
+        }
+        // Walls all round, as the sea's neighbours would be.
+        for i in 0..16 {
+            for y in 0..16 {
+                sea.set(i, y, 0, block("stone"));
+                sea.set(i, y, 15, block("stone"));
+                sea.set(0, y, i, block("stone"));
+                sea.set(15, y, i, block("stone"));
+            }
+        }
+        spawn(&mut app, IVec3::ZERO, sea);
+        run(&mut app, 0.5);
+        let stats = app.world().resource::<FluidStats>();
+        assert_eq!((stats.active, stats.stepped), (0, 0));
+    }
+
+    /// With the eyes under a fluid's surface, the fog is the fluid's; above
+    /// it, or in a voxel's empty top, it's left alone.
+    #[test]
+    fn the_fog_inside_fluid_is_the_fluids() {
+        let mut app = app();
+        app.add_systems(Update, fog_inside_fluid);
+        let mut chunk = Chunk::default();
+        chunk.set(4, 4, 4, block("water"));
+        chunk.set_fluid_at(IVec3::splat(4), FULL_FLUID / 2);
+        spawn(&mut app, IVec3::ZERO, chunk);
+        let fog_at = |app: &mut App, y: f32| {
+            let eye = app
+                .world_mut()
+                .spawn((
+                    EyeView,
+                    GlobalTransform::from_translation(Vec3::new(4.5, y, 4.5)),
+                    DistanceFog::default(),
+                ))
+                .id();
+            app.update();
+            let fog = app.world().get::<DistanceFog>(eye).unwrap().color;
+            app.world_mut().despawn(eye);
+            fog
+        };
+        let water = base().state(block("water")).fluid.clone().unwrap();
+        assert_eq!(fog_at(&mut app, 4.25), water.view_color);
+        assert_eq!(fog_at(&mut app, 4.75), DistanceFog::default().color);
+        assert_eq!(fog_at(&mut app, 3.5), DistanceFog::default().color);
+    }
+}

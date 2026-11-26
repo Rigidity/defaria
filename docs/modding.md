@@ -317,15 +317,26 @@ and lava's from inside it. It's set on the block, not in variants.
 
 ### Fluids
 
-`fluid: true` makes a block a fluid: nothing bumps into it, whatever its
-model's `collision`, the crosshair passes through it (so you can't mine
-it), and placing a block where it is replaces it. Since you can be inside
-one, even an opaque fluid like lava doesn't hide the faces of solid opaque
-blocks next to it, so the floor and walls of a lava pool show from inside;
-it still hides its own faces, and those of anything else see-through
-(water, glass, leaves), so only one face is drawn where they meet. Make a
-fluid `double_sided` too, so its surface shows from inside. Fluids don't
-flow yet.
+`fluid` makes a block a fluid: nothing bumps into it, whatever its model's
+`collision`, the crosshair passes through it (so you can't mine it), and
+placing a block where it is replaces it, deleting the fluid. Since you can
+be inside one, even an opaque fluid like lava doesn't hide the faces of
+solid opaque blocks next to it, so the floor and walls of a lava pool show
+from inside; it still hides its own faces, and those of anything else
+see-through (water, glass, leaves), so only one face is drawn where they
+meet. Make a fluid `double_sided` too, so its surface shows from inside.
+
+A voxel of a fluid holds an amount of it, from a sliver to a full block,
+and is drawn that high, at one of 16 heights (a full block with the same
+fluid above it). Fluid flows: it only ever moves between voxels, so none
+is made or lost. Each step, a voxel's fluid first falls into the voxel
+below, as much as fits; then, if that's full, it spreads to its four sides
+toward an even level. Fluid only flows into air and into the same fluid:
+two different fluids that touch stop there. Model a fluid as a `"cube"`;
+its faces are cut to its height.
+
+`fluid` says how it flows and what it's like to be in, with amounts in
+blocks (1 is a full block):
 
 ```json5
 // blocks/water.json5
@@ -334,10 +345,35 @@ flow yet.
   model: "cube",
   render: "translucent",
   double_sided: true,
-  fluid: true,
+  fluid: {
+    rate: 10,          // flow steps a second
+    fall: 1,           // the most that falls into the voxel below in a step
+    film: 0.0625,      // the thinnest layer that spreads onto dry ground
+    ripple: 0.005,     // the smallest difference that flows sideways
+    move_speed: 0.5,   // how fast you move in it, as a fraction of walking
+    view: { color: "#1d3f73", distance: 14 }, // the fog with your eyes in it
+  },
   textures: { all: "water" },
 }
 ```
+
+- **`rate`**: how many times a second it flows. Lava's 2 to water's 10
+  makes it creep.
+- **`fall`**: how much falls into the voxel below in a step, from a
+  sliver to 1. Under 1, a stream poured off a ledge falls as a thin
+  column.
+- **`film`**: fluid thinner than this stays where it is on dry ground
+  (it still runs off an edge). A full block of water with a sixteenth for
+  its film spreads over a dozen or so voxels; lava's quarter keeps it in a
+  thick blob.
+- **`ripple`**: two voxels of it closer than this count as level, so
+  nothing flows between them. Small, and surfaces settle flat; bigger,
+  and flow settles sooner, but surfaces can be left sloping by up to
+  this much a voxel.
+- **`move_speed`**: how fast the player walks and swims in it, from 0 to
+  1 of walking speed. It also scales swimming up and sinking.
+- **`view`**: the fog's `color` (`#rrggbb`) and how far you can see
+  (`distance`, in blocks) with your eyes under its surface.
 
 ### Hardness and weight
 
@@ -603,7 +639,10 @@ the textures hot reload. Every item state shows in the inventory.
 - Item data that isn't a fixed list of values, such as durability.
 - Weight is worked out but nothing uses it yet. Variants can't change
   hardness or weight.
-- Fluids don't flow, and their textures don't move.
+- Fluids' textures don't move, and their surfaces are flat steps rather
+  than slopes.
+- Fluids only flow into air: not into blocks that don't fill their
+  voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
 - A mod can only add definitions in its own namespace, not replace another

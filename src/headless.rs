@@ -1125,7 +1125,9 @@ mod tests {
              fill 3 9 -2 1 4 5 red_lamp\n\
              camera 1 2.5 3 90 -45\n\
              timing\n\
-             settle\n",
+             settle\n\
+             pour 4 -5 6 water 0.25\n\
+             fluids\n",
         )
         .unwrap();
         assert_eq!(
@@ -1155,6 +1157,12 @@ mod tests {
                 },
                 Command::Timing,
                 Command::Settle,
+                Command::Pour {
+                    pos: IVec3::new(4, -5, 6),
+                    fluid: "water".into(),
+                    amount: 0.25,
+                },
+                Command::Fluids,
             ]
         );
     }
@@ -1174,6 +1182,9 @@ mod tests {
         assert!(Script::parse("settle 5").is_err());
         assert!(Script::parse("cursor 4").is_err());
         assert!(Script::parse("scroll").is_err());
+        assert!(Script::parse("pour 1 2 3 water").is_err());
+        assert!(Script::parse("pour 1 2 3 water lots").is_err());
+        assert!(Script::parse("fluids all").is_err());
     }
 
     /// Runs the whole game with no GPU until the script ends, and returns
@@ -1400,6 +1411,72 @@ mod tests {
     fn filling_with_an_unknown_block_fails_the_run() {
         let (_, exit) = run_game("wait 2\nfill 1 1 1 2 2 2 nonsense\nwait 1\n");
         assert!(exit.is_error());
+    }
+
+    /// The amount of fluid in the voxel at `pos`.
+    fn fluid_at(app: &App, pos: IVec3) -> u16 {
+        let (coord, local) = ChunkCoord::split(pos);
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        chunk.fluid_at(local, app.world().resource::<Content>())
+    }
+
+    /// `pour` puts fluid in a voxel through the game's own edit path, and
+    /// it flows from there: a block of water poured in a sealed trench
+    /// spreads along it, all of it still there.
+    #[test]
+    fn poured_water_spreads_and_keeps_all_of_itself() {
+        let (app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 60 22 52 stone\n\
+             fill 51 21 51 59 22 51 air\n\
+             pour 55 21 51 water 1\n\
+             wait 120\n\
+             fluids\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let row: Vec<u16> = (51..=59)
+            .map(|x| fluid_at(&app, IVec3::new(x, 21, 51)))
+            .collect();
+        assert_eq!(row.iter().map(|&a| a as u32).sum::<u32>(), 1000, "{row:?}");
+        assert!(row.iter().filter(|&&a| a > 0).count() >= 7, "{row:?}");
+    }
+
+    /// Pouring something that isn't a fluid, or no amount, fails the run.
+    #[test]
+    fn pouring_a_solid_or_nothing_fails_the_run() {
+        let (_, exit) = run_game("wait 2\npour 1 1 1 stone 1\nwait 1\n");
+        assert!(exit.is_error());
+        let (_, exit) = run_game("wait 2\npour 1 1 1 water 0\nwait 1\n");
+        assert!(exit.is_error());
+    }
+
+    /// Placing a block into water deletes the water in that voxel, and
+    /// wakes the water around it: water held back by a wall flows on once
+    /// the wall is gone.
+    #[test]
+    fn blocks_delete_fluid_and_edits_wake_it() {
+        let (app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 60 22 52 stone\n\
+             fill 51 21 51 59 22 51 air\n\
+             fill 55 21 51 55 21 51 stone\n\
+             fill 51 21 51 52 21 51 water\n\
+             wait 120\n\
+             fill 51 21 51 51 21 51 stone\n\
+             fill 55 21 51 55 21 51 air\n\
+             wait 240\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let row: Vec<u16> = (51..=59)
+            .map(|x| fluid_at(&app, IVec3::new(x, 21, 51)))
+            .collect();
+        assert_eq!(row[0], 0, "the stone took the water's place");
+        // Two blocks spread over four voxels, and the stone took the
+        // quarter in one.
+        let total = row.iter().map(|&a| a as u32).sum::<u32>();
+        assert!((1490..=1510).contains(&total), "{row:?}");
+        assert!(row[8] > 0, "flowed past where the wall was: {row:?}");
     }
 
     /// `cursor` puts the window's cursor where it says, and `scroll` turns

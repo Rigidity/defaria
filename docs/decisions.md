@@ -3,6 +3,67 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Fluid flows a voxel at a time (2026-11-25)
+
+**Context.** Fluid is volumetric: each voxel holds an amount, and flow
+moves amounts between neighbouring voxels (`src/fluid/flow.rs`). Only
+active voxels step, so settled fluid is free, and each fixed tick steps
+at most `FluidSettings::cells_per_tick` (4096) of them, spread evenly
+between a fluid's steps.
+
+**Decision.** Keep flow local: a voxel only ever looks at its six
+neighbours. A surface counts as level once neighbours are within the
+fluid's `ripple`.
+
+**What's wrong with it.** Sideways, local flow is diffusion. Measured in
+`scenarios/sea-breach.txt` (a cut 64 long, 31 wide and 12 deep opened
+onto the sea): the sea pours in slowly, its front creeping rather than
+rushing, and after 20 seconds the cut is still mostly dry. The sea around
+the breach drops in a shallow cone, sloping by up to a ripple a voxel,
+and that disturbance keeps spreading out across the loaded sea: 1,500
+active voxels after one second, 8,900 after twenty, about 1 µs each. Frame
+times stay in budget (mean 3.6 to 5.4 ms, worst under 9 ms, against 2.5
+to 3 ms with the same cut on `main`, where water doesn't flow), but a
+longer drain wakes more and more of the sea until the budget caps it, and
+then flow slows down. A settled sea costs nothing: flying over one is as
+fast as on `main`.
+
+**What should replace it.** Treat a settled, connected body of a fluid as
+one reservoir with a shared level: water leaving it lowers the whole
+surface evenly, without stepping each voxel. That also makes a dam break
+fast, and it's what pumps drawing from a lake or an oil pool will need.
+
+## A fluid's kind is its block; only its amount is stored apart (2026-11-25)
+
+**Context.** Water and lava are blocks with `fluid` set. A voxel of one
+also holds an amount, finer than any block property could hold.
+
+**Decision.** The voxel's block says which fluid it is, and the chunk
+keeps the amounts of the fluid voxels that aren't full in a sparse map
+(`Chunk::partial_at`; a fluid voxel not in it is full), saved in the chunk
+format. Generated seas are full, so they cost no extra memory or disk.
+
+**What's wrong with it.** A voxel holds one block, so it can't hold a
+fluid and a block that doesn't fill it, such as a slab in a pond
+(waterlogging, #75). And a fluid can only flow into air: flow's
+`cell_of` in `src/fluid.rs` gives every other block no room.
+
+**What should replace it.** Move the fluid's kind into the same per-voxel
+layer as its amount, so a voxel holds a block and a fluid, and let
+`cell_of` give a block that doesn't fill its voxel room for some fluid.
+
+## Fluid surfaces are flat steps (2026-11-25)
+
+**Context.** A fluid voxel is drawn at one of 16 heights by its amount.
+
+**Decision.** Its top is flat at that height, and its sides are cut to
+it.
+
+**What's wrong with it.** Flowing water looks like terraces rather than a
+slope.
+
+**What should replace it.** Average each corner's height with the voxels
+around it, as Minecraft does, so the surface slopes toward the flow.
 ## Images are named after their materials (2026-11-25)
 
 **Context.** Each soil (dirt, sand, gravel) has its own image, not just its
