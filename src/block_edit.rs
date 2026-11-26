@@ -334,9 +334,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        content::{base, block, test_mod},
+        content::{base, block, grass, test_mod},
         headless::{Script, settle, test_game},
-        hotbar::{DEFAULT_HOTBAR, select_with_keys},
+        hotbar::{default_hotbar, select_with_keys},
         mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{
@@ -511,14 +511,14 @@ mod tests {
     /// and the edit, mining and remesh systems; no rendering.
     fn app() -> (App, Entity, Entity) {
         let content = base().clone();
-        let hotbar = Hotbar(DEFAULT_HOTBAR.map(|id| content.default_item(id)));
+        let hotbar = Hotbar(default_hotbar(&content));
         let (mut app, left, right) = app_with(content, hotbar);
         let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
         // A wall at x = 14..=15 of the left chunk, on the chunk border.
         for y in 0..4 {
             chunk.set(15, y, 5, block("stone"));
         }
-        chunk.set(14, 1, 5, block("dirt"));
+        chunk.set(14, 1, 5, block("soil"));
         let mut chunk = app.world_mut().get_mut::<Chunk>(right).unwrap();
         chunk.set(0, 1, 5, block("stone"));
         // Meshes the new chunks and lets their change ticks pass.
@@ -835,7 +835,7 @@ mod tests {
         press_key(&mut app, KeyCode::Digit2);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
-        assert_eq!(voxel(&app, left, 14, 1, 5), block("dirt"));
+        assert_eq!(voxel(&app, left, 14, 1, 5), block("soil"));
     }
 
     /// The left chunk's block at x = 0 faces -X, where there's no chunk.
@@ -889,7 +889,7 @@ mod tests {
             .grab_mode = CursorGrabMode::None;
         click(&mut app, MouseButton::Left);
         click(&mut app, MouseButton::Right);
-        assert_eq!(voxel(&app, left, 14, 1, 5), block("dirt"));
+        assert_eq!(voxel(&app, left, 14, 1, 5), block("soil"));
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
     }
 
@@ -928,7 +928,7 @@ mod tests {
     /// Frames, at the headless runner's 60 per second, that holding left
     /// click on grass takes to break it.
     fn grass_frames() -> u32 {
-        let seconds = crate::mining::break_time(base().state(block("grass")).hardness);
+        let seconds = crate::mining::break_time(base().state(grass()).hardness);
         (seconds * 60.0).ceil() as u32
     }
 
@@ -951,7 +951,7 @@ mod tests {
 
         let top = IVec3::new(x, height - 1, z);
         let below = top - IVec3::Y;
-        assert_eq!(world_voxel(&mut app, top), block("grass"));
+        assert_eq!(world_voxel(&mut app, top), grass());
         let below_before = world_voxel(&mut app, below);
         assert!(!below_before.is_air());
 
@@ -975,7 +975,7 @@ mod tests {
              hold MouseLeft {hold}  # lock the cursor, and keep holding\n\
              wait 2\n"
         ));
-        assert_eq!(world_voxel(&mut app, top), block("grass"));
+        assert_eq!(world_voxel(&mut app, top), grass());
         let mut miners = app.world_mut().query::<&Mining>();
         assert_eq!(miners.single(app.world()).unwrap().target, None);
     }

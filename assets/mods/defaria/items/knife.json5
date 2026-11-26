@@ -2,8 +2,8 @@
 {
   name: "{head} Knife",
   properties: {
-    head: { materials: ["iron", "#metal"] },
-    handle: { materials: ["oak", "#wood"] },
+    head: { materials: "#metal", default: "iron" },
+    handle: { materials: "#wood", default: "oak" },
   },
   texture: { texture: "knife", materials: { head: "{head}", handle: "{handle}" } },
   max_stack: 1,

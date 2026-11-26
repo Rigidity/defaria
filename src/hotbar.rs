@@ -23,18 +23,34 @@ use crate::{
 
 pub const HOTBAR_SLOTS: usize = 9;
 
-/// What the hotbar starts with, slot 1 first.
-pub const DEFAULT_HOTBAR: [&str; HOTBAR_SLOTS] = [
-    "defaria:stone",
-    "defaria:dirt",
-    "defaria:grass",
-    "defaria:sand",
-    "defaria:stone_slab",
-    "defaria:log",
-    "defaria:planks",
-    "defaria:lamp",
-    "defaria:red_lamp",
+/// What the hotbar starts with, slot 1 first: each item's id and the
+/// values of the properties it doesn't leave at their defaults.
+pub const DEFAULT_HOTBAR: [(&str, &[(&str, &str)]); HOTBAR_SLOTS] = [
+    ("defaria:stone", &[]),
+    ("defaria:soil", &[("soil", "defaria:dirt")]),
+    (
+        "defaria:soil",
+        &[("soil", "defaria:dirt"), ("turf", "defaria:grass")],
+    ),
+    ("defaria:soil", &[("soil", "defaria:sand")]),
+    ("defaria:stone_slab", &[]),
+    ("defaria:log", &[]),
+    ("defaria:planks", &[]),
+    ("defaria:lamp", &[]),
+    ("defaria:red_lamp", &[]),
 ];
+
+/// The item states of [`DEFAULT_HOTBAR`]. An item that didn't load is
+/// reported and leaves its slot empty.
+pub fn default_hotbar(content: &Content) -> [Option<ItemState>; HOTBAR_SLOTS] {
+    DEFAULT_HOTBAR.map(|(id, values)| {
+        let item = content.item(id).and_then(|item| item.state(values));
+        if item.is_none() {
+            error!("the hotbar starts with item `{id}` with {values:?}, which didn't load");
+        }
+        item
+    })
+}
 
 pub const HOTBAR_KEYS: [KeyCode; HOTBAR_SLOTS] = [
     KeyCode::Digit1,
@@ -86,17 +102,9 @@ pub struct HotbarInput;
 pub struct Hotbar(pub [Option<ItemState>; HOTBAR_SLOTS]);
 
 impl FromWorld for Hotbar {
-    /// [`DEFAULT_HOTBAR`]. An item that didn't load is reported and leaves
-    /// its slot empty.
+    /// [`default_hotbar`].
     fn from_world(world: &mut World) -> Self {
-        let content = world.resource::<Content>();
-        Self(DEFAULT_HOTBAR.map(|id| {
-            let item = content.default_item(id);
-            if item.is_none() {
-                error!("the hotbar starts with item `{id}`, which didn't load");
-            }
-            item
-        }))
+        Self(default_hotbar(world.resource::<Content>()))
     }
 }
 
@@ -333,12 +341,23 @@ mod tests {
     fn starts_with_the_default_items() {
         let app = app();
         let hotbar = app.world().resource::<Hotbar>();
-        let ids: Vec<&str> = hotbar
-            .0
-            .iter()
-            .map(|item| base().item_of(item.unwrap()).unwrap().id.as_str())
-            .collect();
-        assert_eq!(ids, DEFAULT_HOTBAR);
+        for (slot, (id, values)) in hotbar.0.iter().zip(DEFAULT_HOTBAR) {
+            let state = slot.unwrap();
+            assert_eq!(base().item_of(state).unwrap().id, id);
+            let info = base().item_state(state).unwrap();
+            for (name, value) in values {
+                assert!(
+                    info.values.iter().any(|(n, v)| n == name && v == value),
+                    "{id} has {:?}",
+                    info.values
+                );
+            }
+        }
+        // Dirt, dirt with grass and sand are three states of one item.
+        assert_eq!(
+            base().item_name(hotbar.0[2].unwrap()),
+            Some("Dirt with Grass")
+        );
     }
 
     /// Items that didn't load leave their slots empty.
@@ -384,7 +403,7 @@ mod tests {
     #[test]
     fn the_slots_show_the_hotbar_and_the_active_slot() {
         let mut app = app();
-        let dirt = base().default_item("defaria:dirt");
+        let dirt = Some(base().default_item("defaria:soil").unwrap());
         app.world_mut().resource_mut::<Hotbar>().0[4] = dirt;
         app.world_mut().resource_mut::<ActiveSlot>().0 = 4;
         app.update();

@@ -1,0 +1,4 @@
+// The top of turfed soil: any `#turf` material seen from above.
+{
+  layers: [{ image: "grass", material: "#turf" }],
+}

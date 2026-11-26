@@ -3,6 +3,26 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Images are named after their materials (2026-11-25)
+
+**Context.** Each soil (dirt, sand, gravel) has its own image, not just its
+own colors, so the soil textures pick the image by material: `{soil}` in a
+layer's `image` is the soil material's name (see Textures in
+`docs/modding.md`).
+
+**Decision.** A material's image is found by name: a soil `clay` in mod
+`clay` is drawn with `clay:clay`, so a mod adding a soil names its image
+after the material.
+
+**What's wrong with it.** It's a convention: nothing in the material file
+says which image is its own, and a material can have only one image per
+mod name.
+
+**What should replace it.** If materials ever need several images, or
+images shared between them, let a material name its images by role, the
+way it names palettes (`images: { soil: "sand" }`), and have `{soil}` look
+there first.
+
 ## See-through blocks let all light through (2026-11-25)
 
 **Context.** Leaves, glass, water and plants are drawn see-through

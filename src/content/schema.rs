@@ -100,8 +100,8 @@ pub struct BoundTexture {
     pub materials: BTreeMap<String, String>,
 }
 
-/// A block or item property: a list of values, the first the default, or
-/// the materials it can be.
+/// A block or item property: a list of values, or the materials it can be.
+/// Its default is `default`, or else its first value.
 #[derive(Debug, Clone)]
 pub enum PropertyDef {
     Values(Vec<String>),
@@ -115,13 +115,17 @@ pub struct PropertySpec {
     #[serde(default)]
     pub values: Option<Vec<String>>,
     /// Materials, each a material or `#tag` for every material with that
-    /// tag, in order of id. A material listed again is skipped, so
-    /// `["stone", "#rock"]` puts stone first.
+    /// tag, in order of id. A material listed again is skipped.
     #[serde(default)]
     pub materials: Option<OneOrMany>,
-    /// Adds the value `none` before the materials, as the default.
+    /// Adds the value `none` before the materials.
     #[serde(default)]
     pub optional: bool,
+    /// The value the block or item has unless something sets it: one of
+    /// `values`, or a material (or `none`). Left out, it's the first value,
+    /// or `none` for an optional material.
+    #[serde(default)]
+    pub default: Option<String>,
     /// Whether the property is part of the block's item, so each of its
     /// values is a different item. On by default for materials, off for
     /// plain values. Only for blocks.
@@ -239,7 +243,7 @@ pub struct BlockDef {
     /// `{property}` is replaced by its value, or its material's name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Each property's values; the first is the default.
+    /// Each property's values and default.
     #[serde(default)]
     pub properties: BTreeMap<String, PropertyDef>,
     #[serde(default)]
@@ -346,8 +350,8 @@ pub struct ItemDef {
     /// `{property}` is replaced by its value, or its material's name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Each property's values; the first is the default. Not for a block's
-    /// own item, which has the block's.
+    /// Each property's values and default. Not for a block's own item,
+    /// which has the block's.
     #[serde(default)]
     pub properties: BTreeMap<String, PropertyDef>,
     /// The icon.

@@ -1285,6 +1285,32 @@ mod tests {
         }
     }
 
+    /// Every scenario in `scenarios/` parses, and every block it fills
+    /// with exists, so a renamed block fails `cargo test` and not just the
+    /// scenario run in CI.
+    #[test]
+    fn every_scenario_parses_and_fills_with_real_blocks() {
+        let content = crate::content::base();
+        let mut scenarios = 0;
+        for entry in std::fs::read_dir("scenarios").unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "txt") {
+                continue;
+            }
+            scenarios += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            let script = Script::parse(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            for command in script.commands {
+                if let Command::Fill { block, .. } = command
+                    && block != crate::content::AIR
+                {
+                    fill_state(content, &block).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+                }
+            }
+        }
+        assert!(scenarios > 0, "no scenarios found");
+    }
+
     #[test]
     fn filling_with_an_unknown_block_fails_the_run() {
         let (_, exit) = run_game("wait 2\nfill 1 1 1 2 2 2 nonsense\nwait 1\n");

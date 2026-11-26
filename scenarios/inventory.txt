@@ -9,7 +9,7 @@ wait 1
 screenshot target/scenarios/inventory/0-hotbar.png
 wait 1
 
-scroll -2                        # two slots right: grass
+scroll -2                        # two slots right: dirt with grass
 wait 1
 screenshot target/scenarios/inventory/1-wheel.png
 inspect ActiveSlot
@@ -18,7 +18,7 @@ wait 1
 hold KeyE 1                      # open the inventory
 wait 3
 hold Digit9 1                    # pick the last slot
-cursor 455 424                   # hover the stone slab, fifth row
+cursor 575 424                   # hover the stone slab, fifth row
 wait 2
 screenshot target/scenarios/inventory/2-open.png
 wait 1

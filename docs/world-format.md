@@ -99,7 +99,7 @@ its index into the palette, packed least significant bit first into
 
 The palette lists block states by name: the block's id, plus its property
 values in the block's property order (sorted by name) if it has any, as in
-`defaria:dirt` and `defaria:log[axis=x,wood=defaria:birch]`. A material
+`defaria:lamp` and `defaria:log[axis=x,wood=defaria:birch]`. A material
 property's value is the material's id, or `none`. Air is `air`. Names, rather than the game's internal
 state numbers, keep saves valid when mods are added, removed or reordered. When
 loading, a block that no longer exists becomes air, and a state whose

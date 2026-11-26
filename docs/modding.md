@@ -146,6 +146,35 @@ A block or item names a texture with inputs together with its materials:
 a material, and only inputs can be given. Each combination in use becomes
 its own tile, made once.
 
+An input can instead be a **tag**, `#name`: an input called `name` that
+takes only materials with that tag. A texture whose inputs are all tags is
+made for every combination of tagged materials as the game loads, so every
+tile it could need exists, and a mod adding a material with the tag gets
+its tiles without writing a texture. And `{name}` in a layer's `image`
+(for a tag input) is the name of that input's material, so each material
+can bring its own image:
+
+```json5
+// textures/soil_turf.json5: the side of any soil under any turf. Sand's
+// is sand.png with grass_side.png over it, colored sand and grass.
+{
+  layers: [
+    { image: "{soil}", material: "#soil" },
+    { image: "grass_side", material: "#turf" },
+  ],
+}
+```
+
+`{name}` gives the material's id without its mod (`sand` for
+`defaria:sand`), and the image is looked up in that material's mod, unless
+the image names a mod of its own (`"defaria:{soil}"`). A missing image is
+reported, and the tiles that use it show the placeholder. A texture's
+inputs are all `$name`s or all `#tag`s, not a mix.
+
+All mods together have room for 2048 tiles, counting every combination a
+tagged texture makes. A texture whose combinations don't fit is reported
+and left out.
+
 ## Models
 
 `models/<name>.json5`: the vertex data a block (and later an entity) is
@@ -260,7 +289,7 @@ corners of the faces next to it (ambient occlusion).
 // blocks/leaves.json5
 {
   name: "{wood} Leaves",
-  properties: { wood: { materials: ["oak", "#wood"] } },
+  properties: { wood: { materials: "#wood", default: "oak" } },
   model: "cube",
   render: "cutout",
   textures: { all: { texture: "leaves", materials: { wood: "{wood}" } } },
@@ -317,7 +346,7 @@ break; no unit, dirt about 0.5 and stone 1.5) and a weight in kilograms.
 Each is a number:
 
 ```json5
-{ name: "Dirt", model: "cube", textures: { all: "dirt" }, hardness: 0.5, weight: 1500 }
+{ name: "Lamp", model: "cube", textures: { all: "lamp" }, hardness: 0.3, weight: 500 }
 ```
 
 or, for something made of materials, a `base` times the weighted average
@@ -349,9 +378,10 @@ Each state's values are worked out once, at load.
 ### States, properties and variants
 
 A block can have **properties**, each with a list of values; the first is
-the default. Every combination of values is a separate block state, which
-can look different. Chunks store block states, so a block carries its
-property values wherever it is.
+the default, unless the long form names one (see below). Every
+combination of values is a separate block state, which can look
+different. Chunks store block states, so a block carries its property
+values wherever it is.
 
 ```json5
 // A log: `axis` is the direction the trunk runs.
@@ -401,7 +431,7 @@ A property can be a material instead of a list of words:
 {
   name: "{rock}",
   properties: {
-    rock: { materials: ["stone", "#rock"] },
+    rock: { materials: "#rock", default: "stone" },
     ore: { materials: "#ore", optional: true },
   },
   model: "cube",
@@ -418,15 +448,52 @@ A property can be a material instead of a list of words:
 
 - **`materials`** is a material, `#tag` for every material with that tag
   (in order of id), or a list of them. A material that comes up again is
-  skipped, so `["stone", "#rock"]` makes stone the default.
-- **`optional: true`** adds the value `none`, first, for no material.
+  skipped.
+- **`default`** is the value the block has unless something sets it: a
+  material (`"stone"`), or `none` for an optional one. Left out, it's the
+  first: `none` if the property is optional, else the first material, which
+  for a tag is whichever id sorts first, and a mod can change that. So give
+  a tagged property a `default`.
+- **`optional: true`** adds the value `none`, for no material.
 - The values are the materials' ids (`defaria:granite`), and that's what
   `{rock}` gives in texture and model names and in `materials`.
 - **Names.** In `name`, `{property}` gives the material's name
   ("Granite"), nothing for `none` (spaces left over are dropped), or a
   plain property's value as it's written.
 
-The long form works for plain values too: `{ values: ["y", "x", "z"] }`.
+Tag inputs (see [Textures](#textures)) suit material properties: soil is
+any `#soil` material, with or without a `#turf` growing on it, and dirt,
+sand and gravel each have their own image:
+
+```json5
+// blocks/soil.json5
+{
+  name: "{soil}",
+  properties: {
+    soil: { materials: "#soil", default: "dirt" },
+    turf: { materials: "#turf", optional: true },
+  },
+  model: "cube",
+  textures: { all: { texture: "soil", materials: { soil: "{soil}" } } },
+  variants: [
+    {
+      when: { turf: { not: "none" } },
+      name: "{soil} with {turf}",
+      textures: {
+        up: { texture: "turf", materials: { turf: "{turf}" } },
+        side: { texture: "soil_turf", materials: { soil: "{soil}", turf: "{turf}" } },
+      },
+    },
+  ],
+}
+```
+
+A mod adds a soil, say `clay`, with a material tagged `soil` and an image
+`clay.png`; a turf, say `moss`, needs only a material tagged `turf`.
+
+The long form works for plain values too, and can name the default the
+same way: `{ values: ["x", "y", "z"], default: "y" }`. The default comes
+first among the values; the others keep their order.
 
 ### Placement
 
@@ -495,8 +562,8 @@ properties or a `block`.
 {
   name: "{head} Pickaxe",   // defaults to the id, e.g. "Pickaxe"
   properties: {
-    head: { materials: ["iron", "#metal"] },
-    handle: { materials: ["oak", "#wood"] },
+    head: { materials: "#metal", default: "iron" },
+    handle: { materials: "#wood", default: "oak" },
   },
   // The icon.
   texture: { texture: "pickaxe", materials: { head: "{head}", handle: "{handle}" } },

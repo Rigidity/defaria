@@ -560,6 +560,12 @@ impl Content {
         self.block(id).map(Block::default_state)
     }
 
+    /// Block `id`'s state with these property values, the rest at their
+    /// defaults. `None` for a block, property or value that isn't there.
+    pub fn block_state(&self, id: &str, values: &[(&str, &str)]) -> Option<BlockState> {
+        self.block(id)?.state(values)
+    }
+
     /// What `state` looks like. Air for a state that doesn't exist.
     pub fn state(&self, state: BlockState) -> &State {
         self.states.get(state.0 as usize).unwrap_or(&self.states[0])
@@ -722,9 +728,28 @@ pub fn base_texture(name: &str) -> u32 {
 /// The default state of base game block `defaria:<name>`.
 #[cfg(test)]
 pub fn block(name: &str) -> BlockState {
+    block_with(name, &[])
+}
+
+/// The state of base game block `defaria:<name>` with these property
+/// values, the rest at their defaults.
+#[cfg(test)]
+pub fn block_with(name: &str, values: &[(&str, &str)]) -> BlockState {
     base()
-        .default_state(&format!("defaria:{name}"))
-        .unwrap_or_else(|| panic!("no block defaria:{name}"))
+        .block_state(&format!("defaria:{name}"), values)
+        .unwrap_or_else(|| panic!("no block defaria:{name} with {values:?}"))
+}
+
+/// Base game dirt with grass on it, the terrain's top.
+#[cfg(test)]
+pub fn grass() -> BlockState {
+    block_with("soil", &[("turf", "defaria:grass")])
+}
+
+/// Base game sand.
+#[cfg(test)]
+pub fn sand() -> BlockState {
+    block_with("soil", &[("soil", "defaria:sand")])
 }
 
 /// A model with one face, on top of the block, in slot `side`, which
@@ -856,7 +881,7 @@ mod tests {
         assert_eq!(content.blocks[0].id, AIR);
         assert!(BlockState::AIR.is_air());
         assert!(content.state(BlockState::AIR).faces.is_empty());
-        for name in ["stone", "dirt", "grass", "sand", "gravel", "log", "planks"] {
+        for name in ["stone", "soil", "log", "planks"] {
             let id = format!("defaria:{name}");
             let state = content.default_state(&id).unwrap();
             assert_eq!(content.state(state).faces.len(), 6, "{id}");
@@ -912,12 +937,79 @@ mod tests {
         assert_eq!(content.block_of(BlockState(u16::MAX)).id, AIR);
     }
 
+    /// Soil is every soil material with or without every turf: bare, it's
+    /// its own texture all round; with a turf, the turf's on top, hanging
+    /// over the soil's sides, and the bottom is bare soil.
+    #[test]
+    fn soil_is_any_soil_with_or_without_turf() {
+        let content = base();
+        let soil = content.block("defaria:soil").unwrap();
+        // The texture on a face, and its images' names.
+        let texture = |state: BlockState, normal: Vec3| {
+            let face = content
+                .state(state)
+                .faces
+                .iter()
+                .find(|f| f.normal == normal);
+            let texture = &content.textures[face.unwrap().layer as usize];
+            let images: Vec<&str> = texture
+                .layers
+                .iter()
+                .map(|layer| layer.image.rsplit('/').next().unwrap())
+                .collect();
+            (texture.id.clone(), images.join(" "))
+        };
+        for (material, name) in [("dirt", "Dirt"), ("sand", "Sand"), ("gravel", "Gravel")] {
+            let id = format!("defaria:{material}");
+            let image = format!("{material}.png");
+            let bare = soil.state(&[("soil", &id)]).unwrap();
+            assert_eq!(content.state(bare).name, name);
+            let soil_texture = (format!("defaria:soil(soil={id})"), image.clone());
+            for normal in [Vec3::Y, Vec3::NEG_Y, Vec3::X] {
+                assert_eq!(texture(bare, normal), soil_texture);
+            }
+            let turfed = soil
+                .state(&[("soil", &id), ("turf", "defaria:grass")])
+                .unwrap();
+            assert_eq!(content.state(turfed).name, format!("{name} with Grass"));
+            assert_eq!(
+                texture(turfed, Vec3::Y),
+                (
+                    "defaria:turf(turf=defaria:grass)".into(),
+                    "grass.png".into()
+                )
+            );
+            assert_eq!(
+                texture(turfed, Vec3::X),
+                (
+                    format!("defaria:soil_turf(soil={id},turf=defaria:grass)"),
+                    format!("{image} grass_side.png")
+                )
+            );
+            assert_eq!(texture(turfed, Vec3::NEG_Y), soil_texture);
+            // Each one is its own item.
+            let item = content.item("defaria:soil").unwrap();
+            for (values, block) in [
+                (vec![("soil", id.as_str())], bare),
+                (
+                    vec![("soil", id.as_str()), ("turf", "defaria:grass")],
+                    turfed,
+                ),
+            ] {
+                let state = item.state(&values).unwrap();
+                assert_eq!(content.item_state(state).unwrap().block, Some(block));
+            }
+        }
+        assert_eq!(soil.default_state(), block("soil"));
+        assert_eq!(content.state(block("soil")).name, "Dirt");
+    }
+
     /// Every image the base game's textures use is in the image set, once.
     #[test]
     fn image_paths_are_listed_once() {
         let paths = base().image_paths();
         assert!(paths.contains(&"mods/defaria/images/dirt.png".to_string()));
-        // Dirt is under both dirt and grass_side but loads once.
+        // Dirt is under both soil and soil_turf but loads once.
         assert_eq!(paths.iter().filter(|p| p.ends_with("/dirt.png")).count(), 1);
     }
 }

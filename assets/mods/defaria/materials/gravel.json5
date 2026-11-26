@@ -1,5 +1,6 @@
 // Warm grays with more contrast than stone, so the pebbles read.
 {
+  tags: ["soil"],
   palette: ["#4a4644", "#6e6a66", "#928c86", "#b4aea6"],
   hardness: 0.6,
   weight: 1800,

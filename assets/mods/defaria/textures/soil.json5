@@ -1,0 +1,5 @@
+// Bare soil: any `#soil` material, drawn with its own image (sand's is
+// `sand.png`).
+{
+  layers: [{ image: "{soil}", material: "#soil" }],
+}

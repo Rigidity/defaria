@@ -3,7 +3,7 @@
 //!
 //! Each column's height comes from noise mapped through splines, with
 //! plains, mountains, ridges and valleys (see [`shape`]). Below the surface
-//! is stone, then a few layers of dirt, then one layer of grass on top, except
+//! is stone, then a few layers of dirt, then one layer of dirt with grass on it, except
 //! high up and on cliffs, which are bare stone. Here and there a tuft of
 //! grass grows on the grass. Hollows below [`SEA_LEVEL`] fill with water,
 //! and the ground at and under the water's edge is sand. The world
@@ -254,6 +254,7 @@ impl Voxels<'_, '_> {
 /// The blocks the terrain is made of.
 #[derive(Debug, Clone, Copy)]
 pub struct TerrainBlocks {
+    /// Dirt with grass on it.
     pub grass: BlockState,
     pub dirt: BlockState,
     pub stone: BlockState,
@@ -263,40 +264,66 @@ pub struct TerrainBlocks {
 }
 
 impl TerrainBlocks {
-    const IDS: [&str; 6] = [
-        "defaria:grass",
-        "defaria:dirt",
-        "defaria:stone",
-        "defaria:sand",
-        "defaria:water",
-        "defaria:tuft",
+    /// Each block state the terrain is made of: its block and its property
+    /// values, in field order. Soil names every value, so a mod whose soil
+    /// sorts before dirt can't change the ground.
+    const STATES: [(&str, &[(&str, &str)]); 6] = [
+        (
+            "defaria:soil",
+            &[("soil", "defaria:dirt"), ("turf", "defaria:grass")],
+        ),
+        (
+            "defaria:soil",
+            &[("soil", "defaria:dirt"), ("turf", "none")],
+        ),
+        ("defaria:stone", &[]),
+        (
+            "defaria:soil",
+            &[("soil", "defaria:sand"), ("turf", "none")],
+        ),
+        ("defaria:water", &[]),
+        ("defaria:tuft", &[]),
     ];
 
-    /// The ids of the blocks the terrain needs that didn't load.
-    pub fn missing(content: &Content) -> Vec<&'static str> {
-        Self::IDS
-            .into_iter()
-            .filter(|id| content.block(id).is_none())
+    /// Each of [`Self::STATES`], if it loaded.
+    fn states(content: &Content) -> [Option<BlockState>; 6] {
+        Self::STATES.map(|(id, values)| content.block_state(id, values))
+    }
+
+    /// The states the terrain needs that didn't load: each block's id with
+    /// the values it sets, in brackets
+    /// (`defaria:soil[soil=defaria:sand,turf=none]`).
+    pub fn missing(content: &Content) -> Vec<String> {
+        Self::STATES
+            .iter()
+            .zip(Self::states(content))
+            .filter(|(_, state)| state.is_none())
+            .map(|((id, values), _)| match values {
+                [] => id.to_string(),
+                values => {
+                    let values: Vec<_> = values.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                    format!("{id}[{}]", values.join(","))
+                }
+            })
             .collect()
     }
 
     /// The base game's blocks the terrain is made of. One that didn't load
     /// is reported and left as air.
     pub fn from_content(content: &Content) -> Self {
-        let block = |name: &str| {
-            let id = format!("defaria:{name}");
-            content.default_state(&id).unwrap_or_else(|| {
-                error!("the terrain needs block `{id}`, which didn't load");
-                BlockState::AIR
-            })
-        };
+        let missing = Self::missing(content);
+        if !missing.is_empty() {
+            error!("the terrain needs {missing:?}, which didn't load; they're left as air");
+        }
+        let [grass, dirt, stone, sand, water, tuft] =
+            Self::states(content).map(|state| state.unwrap_or(BlockState::AIR));
         Self {
-            grass: block("grass"),
-            dirt: block("dirt"),
-            stone: block("stone"),
-            sand: block("sand"),
-            water: block("water"),
-            tuft: block("tuft"),
+            grass,
+            dirt,
+            stone,
+            sand,
+            water,
+            tuft,
         }
     }
 }
@@ -763,7 +790,7 @@ mod tests {
         testing::{PATCH_SIZE, finish_meshing, patch_chunks, spawn_patch},
         *,
     };
-    use crate::content::{self, base, block};
+    use crate::content::{self, base, block, grass, sand};
 
     fn terrain() -> Terrain {
         terrain_with(TerrainSettings::default())
@@ -790,12 +817,12 @@ mod tests {
                 let top = if terrain.is_rock(x, z0) {
                     block("stone")
                 } else if h <= SEA_LEVEL {
-                    block("sand")
+                    sand()
                 } else {
-                    block("grass")
+                    grass()
                 };
                 assert_eq!(terrain.voxel(IVec3::new(x, h - 1, z0)), top);
-                if top != block("grass") {
+                if top != grass() {
                     let above = terrain.voxel(IVec3::new(x, h, z0));
                     assert_ne!(above, block("tuft"), "a tuft on {top:?} at ({x}, {z0})");
                 }
@@ -824,7 +851,7 @@ mod tests {
     #[test]
     fn columns_are_layered_grass_dirt_stone() {
         let terrain = terrain();
-        let (mut tufts, mut grass, mut ponds) = (0, 0, 0);
+        let (mut tufts, mut grassy, mut ponds) = (0, 0, 0);
         for (x, z) in columns() {
             let height = terrain.height(x, z);
             assert!(
@@ -834,9 +861,9 @@ mod tests {
             let at = |y| terrain.voxel(IVec3::new(x, y, z));
             let shore = height <= SEA_LEVEL;
             let (top, soil) = if shore {
-                (block("sand"), block("sand"))
+                (sand(), sand())
             } else {
-                (block("grass"), block("dirt"))
+                (grass(), block("soil"))
             };
             assert_eq!(at(height - 1), top);
             let mut above = height;
@@ -849,7 +876,7 @@ mod tests {
                 assert_eq!(at(y), block("water"), "({x}, {y}, {z})");
             }
             ponds += (height < SEA_LEVEL) as u32;
-            grass += !shore as u32;
+            grassy += !shore as u32;
             for y in above.max(SEA_LEVEL)..height + 100 {
                 assert_eq!(at(y), BlockState::AIR, "({x}, {y}, {z})");
             }
@@ -863,7 +890,7 @@ mod tests {
             }
         }
         // About 8% of the grass has a tuft, and the patch has a pond.
-        let share = tufts as f32 / grass as f32;
+        let share = tufts as f32 / grassy as f32;
         assert!(
             (0.06..0.10).contains(&share),
             "{share} of the grass has tufts"
@@ -980,6 +1007,63 @@ mod tests {
         assert_eq!(TerrainBlocks::missing(&content), ["defaria:stone"]);
     }
 
+    /// A mod's soil whose id sorts before `defaria:dirt` changes neither
+    /// soil's default nor the ground: the terrain names dirt.
+    #[test]
+    fn a_modded_soil_doesnt_change_the_ground() {
+        let (mut mods, errors) = crate::content::load::read_mods(
+            std::path::Path::new("assets/mods"),
+            crate::content::MODS_DIR,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        mods.push(crate::content::load::ModFiles::new(
+            "mods/clay",
+            r#"{ id: "clay", name: "Clay", dependencies: ["defaria"] }"#,
+            &[
+                ("images/clay.png", ""),
+                (
+                    "materials/clay.json5",
+                    r##"{ tags: ["soil"], palette: ["#000000", "#ffffff"], hardness: 1, weight: 1 }"##,
+                ),
+            ],
+        ));
+        let content = Content::from_mods(mods);
+        let soil = content.block("defaria:soil").unwrap();
+        assert!(soil.state(&[("soil", "clay:clay")]).is_some());
+        let dirt = |state: BlockState| {
+            content
+                .state(state)
+                .values
+                .contains(&("soil".into(), "defaria:dirt".into()))
+        };
+        assert!(dirt(soil.default_state()));
+        let blocks = TerrainBlocks::from_content(&content);
+        assert!(dirt(blocks.dirt) && dirt(blocks.grass));
+    }
+
+    /// Without the sand material, the soil block still loads but has no
+    /// sand state, which the terrain needs for its shores.
+    #[test]
+    fn missing_terrain_states_are_named() {
+        let (mut mods, errors) = crate::content::load::read_mods(
+            std::path::Path::new("assets/mods"),
+            crate::content::MODS_DIR,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let base = mods
+            .iter_mut()
+            .find(|m| m.dir.ends_with("defaria"))
+            .unwrap();
+        assert!(base.files.remove("materials/sand.json5").is_some());
+        let content = Content::from_mods(mods);
+        assert!(content.block("defaria:soil").is_some());
+        assert_eq!(
+            TerrainBlocks::missing(&content),
+            ["defaria:soil[soil=defaria:sand,turf=none]"]
+        );
+        assert_eq!(TerrainBlocks::from_content(&content).sand, BlockState::AIR);
+    }
+
     #[test]
     fn different_seeds_make_different_terrain() {
         let a = terrain();
@@ -997,7 +1081,7 @@ mod tests {
     #[test]
     fn mountain_chunks_match_their_columns() {
         let terrain = terrain();
-        let (mut rock, mut grass) = (0, 0);
+        let (mut rock, mut grassy) = (0, 0);
         // East of the start, where the mountains are cliffs below the rock
         // line.
         for cx in 102..106 {
@@ -1019,16 +1103,16 @@ mod tests {
                             rock += 1;
                             assert_eq!(top, block("stone"), "at ({x}, {z})");
                         } else {
-                            grass += 1;
-                            assert_eq!(top, block("grass"), "at ({x}, {z})");
+                            grassy += 1;
+                            assert_eq!(top, grass(), "at ({x}, {z})");
                         }
                     }
                 }
             }
         }
         assert!(
-            rock > 50 && grass > 50,
-            "{rock} rock and {grass} grass columns"
+            rock > 50 && grassy > 50,
+            "{rock} rock and {grassy} grass columns"
         );
     }
 

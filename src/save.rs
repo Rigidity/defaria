@@ -412,7 +412,7 @@ impl WorldStore {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::content::{base, block};
+    use crate::content::{base, block, sand};
 
     /// A fresh, empty folder under `target/`, unique to this test.
     pub fn temp_folder(name: &str) -> PathBuf {
@@ -436,7 +436,7 @@ pub mod tests {
         let (a, b) = (IVec3::new(3, 2, -4), IVec3::new(40, -9, 7));
         assert_eq!(store.load(a), None);
         store.save(a, chunk_with(block("lamp")));
-        store.save(b, chunk_with(block("sand")));
+        store.save(b, chunk_with(sand()));
         // Unflushed saves are already visible to loads.
         assert_eq!(store.load(a), Some(chunk_with(block("lamp"))));
         assert_eq!(store.flush(), 2);
@@ -446,17 +446,17 @@ pub mod tests {
 
         let reopened = WorldStore::new(Some(&folder), base());
         assert_eq!(reopened.load(a), Some(chunk_with(block("lamp"))));
-        assert_eq!(reopened.load(b), Some(chunk_with(block("sand"))));
+        assert_eq!(reopened.load(b), Some(chunk_with(sand())));
         assert_eq!(reopened.load(IVec3::new(3, 3, -4)), None);
 
         // Saving into a region on disk keeps its other chunks.
-        reopened.save(IVec3::new(4, 2, -4), chunk_with(block("dirt")));
+        reopened.save(IVec3::new(4, 2, -4), chunk_with(block("soil")));
         reopened.flush();
         let third = WorldStore::new(Some(&folder), base());
         assert_eq!(third.load(a), Some(chunk_with(block("lamp"))));
         assert_eq!(
             third.load(IVec3::new(4, 2, -4)),
-            Some(chunk_with(block("dirt")))
+            Some(chunk_with(block("soil")))
         );
     }
 
@@ -512,7 +512,7 @@ pub mod tests {
         let folder = temp_folder("during-flush");
         let store = WorldStore::new(Some(&folder), base());
         let coord = IVec3::new(1, 2, 3);
-        store.save(coord, chunk_with(block("sand")));
+        store.save(coord, chunk_with(sand()));
         let (region_coord, _) = region::split(coord);
         let region = store.region(region_coord);
         assert!(store.flush_region(region_coord, &region, || {
@@ -539,15 +539,15 @@ pub mod tests {
 
         let store = WorldStore::new(Some(&folder), base());
         assert_eq!(store.load(IVec3::ZERO), None);
-        store.save(IVec3::ZERO, chunk_with(block("sand")));
-        assert_eq!(store.load(IVec3::ZERO), Some(chunk_with(block("sand"))));
+        store.save(IVec3::ZERO, chunk_with(sand()));
+        assert_eq!(store.load(IVec3::ZERO), Some(chunk_with(sand())));
         assert_eq!(store.flush(), 0);
         assert_eq!(std::fs::read(&path).unwrap(), newer);
         assert!(!folder.join("regions/r.0.0.0.dfr.broken").exists());
         // Saves to it stay in memory: it isn't forgotten while they're there.
         store.evict(|_| false);
         assert_eq!(store.regions_held(), 1);
-        assert_eq!(store.load(IVec3::ZERO), Some(chunk_with(block("sand"))));
+        assert_eq!(store.load(IVec3::ZERO), Some(chunk_with(sand())));
     }
 
     /// A region file the game isn't allowed to read is left alone too.
@@ -568,7 +568,7 @@ pub mod tests {
 
         let store = WorldStore::new(Some(&folder), base());
         assert_eq!(store.load(IVec3::ZERO), None);
-        store.save(IVec3::ZERO, chunk_with(block("sand")));
+        store.save(IVec3::ZERO, chunk_with(sand()));
         assert_eq!(store.flush(), 0);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -592,7 +592,7 @@ pub mod tests {
         let store = WorldStore::new(Some(&folder), base());
         assert_eq!(store.load(b), Some(chunk_with(block("lamp"))));
         assert_eq!(store.load(a), None);
-        store.save(a, chunk_with(block("sand")));
+        store.save(a, chunk_with(sand()));
         assert_eq!(store.flush(), 0);
         assert_eq!(std::fs::read(&path).unwrap(), newer);
 
@@ -602,7 +602,7 @@ pub mod tests {
         assert_eq!(store.load(a), None);
         store.evict(|_| false);
         assert_eq!(store.regions_held(), 0);
-        store.save(a, chunk_with(block("sand")));
+        store.save(a, chunk_with(sand()));
         assert_eq!(store.flush(), 0);
         assert_eq!(std::fs::read(&path).unwrap(), newer);
     }

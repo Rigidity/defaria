@@ -212,7 +212,7 @@ mod tests {
         ));
         let mut chunk = Chunk::default();
         chunk.set(5, 1, 5, block("stone"));
-        chunk.set(5, 1, 7, block("dirt"));
+        chunk.set(5, 1, 7, block("soil"));
         let entity = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), chunk)).id();
         app.world_mut()
             .resource_mut::<ChunkMap>()
@@ -333,7 +333,7 @@ mod tests {
         assert!(mining(&mut app).progress > 0.5);
         look_at(&mut app, dirt.as_vec3() + Vec3::splat(0.5));
         frame(&mut app, false);
-        assert_eq!(mining(&mut app).target, Some((dirt, block("dirt"))));
+        assert_eq!(mining(&mut app).target, Some((dirt, block("soil"))));
         assert_eq!(mining(&mut app).progress, 0.0);
         // Back to the stone: it starts over too.
         look_at(&mut app, stone.as_vec3() + Vec3::splat(0.5));
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn holding_on_mines_the_next_block_after_a_delay() {
         let mut app = app();
-        set(&mut app, IVec3::new(6, 1, 5), block("dirt"));
+        set(&mut app, IVec3::new(6, 1, 5), block("soil"));
         let frames = frames_to_break(block("stone"));
         frame(&mut app, true);
         for _ in 0..frames {
@@ -368,9 +368,9 @@ mod tests {
         frame(&mut app, false);
         assert_eq!(
             mining(&mut app).target,
-            Some((IVec3::new(6, 1, 5), block("dirt")))
+            Some((IVec3::new(6, 1, 5), block("soil")))
         );
-        for _ in 0..frames_to_break(block("dirt")) {
+        for _ in 0..frames_to_break(block("soil")) {
             frame(&mut app, false);
         }
         assert_eq!(at(&mut app, IVec3::new(6, 1, 5)), BlockState::AIR);
@@ -388,16 +388,16 @@ mod tests {
             frame(&mut app, false);
         }
         assert!(mining(&mut app).progress > 0.5);
-        set(&mut app, pos, block("dirt"));
+        set(&mut app, pos, block("soil"));
         frame(&mut app, false);
-        assert_eq!(mining(&mut app).target, Some((pos, block("dirt"))));
+        assert_eq!(mining(&mut app).target, Some((pos, block("soil"))));
         assert_eq!(mining(&mut app).progress, 0.0);
-        let frames = frames_to_break(block("dirt"));
+        let frames = frames_to_break(block("soil"));
         assert!(frames > 1);
         for _ in 1..frames {
             frame(&mut app, false);
         }
-        assert_eq!(at(&mut app, pos), block("dirt"));
+        assert_eq!(at(&mut app, pos), block("soil"));
         frame(&mut app, false);
         assert_eq!(at(&mut app, pos), BlockState::AIR);
     }

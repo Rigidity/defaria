@@ -408,8 +408,8 @@ mod tests {
         let bottom = TILE_SIZE - 1;
         for x in 0..TILE_SIZE {
             assert_eq!(
-                pixel(&image, tile("grass_side"), 0, x, bottom),
-                pixel(&image, tile("dirt"), 0, x, bottom),
+                pixel(&image, tile("soil_turf"), 0, x, bottom),
+                pixel(&image, tile("soil"), 0, x, bottom),
             );
         }
     }
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(pixel(&image, tile("stone"), 0, 7, 7), expected);
         // Opaque grass over dirt hides the dirt.
         let grass = material("grass").color(3).to_u8_array();
-        assert_eq!(pixel(&image, tile("grass_side"), 0, 0, 0), grass);
+        assert_eq!(pixel(&image, tile("soil_turf"), 0, 0, 0), grass);
     }
 
     /// The pixels of array layer `layer`'s full-size mip.

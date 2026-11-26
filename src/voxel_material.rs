@@ -538,7 +538,7 @@ mod tests {
     fn a_bad_layer_shows_the_placeholder_until_fixed() {
         let mut app = app();
         let good = built_texture(&mut app);
-        let dirt = tile(&app, &good, "dirt");
+        let dirt = tile(&app, &good, "soil");
         let stone = layer(&app, "stone");
 
         paint(&mut app, &stone, [100, 100, 100, 255]);
@@ -547,7 +547,7 @@ mod tests {
         let broken = material_texture(&app);
         assert_ne!(broken, good);
         assert_eq!(tile(&app, &broken, "stone"), block_texture::placeholder());
-        assert_eq!(tile(&app, &broken, "dirt"), dirt);
+        assert_eq!(tile(&app, &broken, "soil"), dirt);
 
         paint(&mut app, &stone, [0, 0, 0, 255]);
         app.update();
@@ -571,7 +571,7 @@ mod tests {
             .insert("mods/defaria/images/stone.png".into(), missing);
         let texture = built_texture(&mut app);
         assert_eq!(tile(&app, &texture, "stone"), block_texture::placeholder());
-        assert_ne!(tile(&app, &texture, "dirt"), block_texture::placeholder());
+        assert_ne!(tile(&app, &texture, "soil"), block_texture::placeholder());
     }
 
     /// Sends the failure event Bevy sends when `layer` fails to load. The
@@ -599,7 +599,7 @@ mod tests {
         app.update();
         let broken = material_texture(&app);
         assert_eq!(tile(&app, &broken, "stone"), block_texture::placeholder());
-        assert_ne!(tile(&app, &broken, "dirt"), block_texture::placeholder());
+        assert_ne!(tile(&app, &broken, "soil"), block_texture::placeholder());
 
         // Reloaded successfully: the same image, marked modified.
         paint(&mut app, &stone, [0, 0, 0, 255]);

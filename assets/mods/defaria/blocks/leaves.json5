@@ -3,7 +3,7 @@
 {
   name: "{wood} Leaves",
   properties: {
-    wood: { materials: ["oak", "#wood"] },
+    wood: { materials: "#wood", default: "oak" },
   },
   model: "cube",
   render: "cutout",

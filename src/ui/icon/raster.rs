@@ -236,7 +236,7 @@ fn to_srgb(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{BlockState, base, block};
+    use crate::content::{BlockState, base, block, grass};
 
     /// One solid tile per texture: tile `i` is the color `colors(i)`.
     fn solid_tiles(colors: impl Fn(usize) -> [u8; 4]) -> Vec<Vec<u8>> {
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn each_face_shows_its_texture() {
         let content = base();
-        let top = content.texture("defaria:grass_top").unwrap() as usize;
+        let top = content.texture("defaria:turf(turf=defaria:grass)").unwrap() as usize;
         let tiles = solid_tiles(|i| {
             if i == top {
                 [0, 255, 0, 255]
@@ -296,7 +296,7 @@ mod tests {
                 [255, 0, 0, 255]
             }
         });
-        let icon = icon_of(block("grass"), &tiles);
+        let icon = icon_of(grass(), &tiles);
         let s = BLOCK_ICON_SIZE;
         let top = pixel(&icon, s, s / 2, s / 4);
         let side = pixel(&icon, s, s / 4, s * 5 / 8);
