@@ -22,6 +22,7 @@
 //! Networks are rebuilt from the chunks as they load; nothing extra is
 //! saved. See `docs/decisions.md`.
 
+pub mod energy;
 mod graph;
 mod state;
 

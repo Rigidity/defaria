@@ -1,0 +1,24 @@
+// A lamp that lights only while it's powered: wires join it on any side,
+// and it uses 20 W while it's lit. Dark, it's the lamp's crystal gone grey.
+{
+  name: "Powered Lamp",
+  properties: {
+    lit: ["false", "true"],
+  },
+  model: "cube",
+  textures: { all: "powered_lamp" },
+  variants: [
+    { when: { lit: "true" }, textures: { all: "lamp" }, light: [15, 14, 12] },
+  ],
+  hardness: 0.3,
+  weight: 500,
+  category: "lighting",
+  machine: {
+    ports: [
+      { faces: ["up", "down", "north", "south", "east", "west"], network: "electric", role: "consume" },
+    ],
+    // A second's worth of light in hand; joules and watts.
+    energy: { capacity: 20, max_in: 20, use: 20 },
+    active_state: { lit: "true" },
+  },
+}

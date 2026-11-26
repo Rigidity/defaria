@@ -826,7 +826,7 @@ machine does with what it holds.
       { faces: ["down"], network: "item", role: "output", slots: "output" },
       { faces: ["left", "right"], network: "fluid", role: "input" },
     ],
-    // Energy units; rates are per second.
+    // Joules; rates are per second (watts).
     energy: { capacity: 20000, max_in: 400, max_out: 0 },
     // In blocks of fluid; `accepts` left out takes any fluid.
     tanks: { water: { capacity: 4, accepts: ["water"] } },
@@ -860,8 +860,13 @@ Every field is optional; `machine: {}` is a machine with nothing.
     or drains a **`tank`**, and an item port a slot group, named with
     **`slots`**; either can be left out when the machine has only one.
 - **`energy`**: `capacity` (the most it holds), `max_in` and `max_out`
-  (the most it takes and gives in a second, 0 if left out), in energy
-  units.
+  (the most it takes and gives in a second, 0 if left out), in joules
+  and watts. Two more rates, also 0 if left out, make and use energy:
+  **`generate`**, what it makes on its own each second while its buffer
+  has room (a creative generator), and **`use`**, what it uses up each
+  second while it works: it works, and is in its `active_state`, exactly
+  while its buffer pays for that (a powered lamp). Machines that do work
+  for recipes or scripts leave `use` out and are made active by those.
 - **`tanks`**: each by name, with a **`capacity`** in blocks of fluid and
   the fluids it **`accepts`** (blocks with `fluid`); left out, any. A tank
   holds one fluid at a time.
@@ -966,7 +971,23 @@ form.
 
 The solver is the engine's code that runs the network: `energy` (power
 from producers to consumers), `fluid` (one shared tank of one fluid) or
-`item` (items moved between machines). A mod can add a kind on any of
+`item` (items moved between machines).
+
+The `energy` solver runs 20 times a second. Energy is in joules, rates
+in watts, and is held only in machines' buffers (wires hold none). Each
+tick, `produce` ports offer what their machine holds, up to its
+`max_out`; `consume` ports ask for what it has room for, up to its
+`max_in`; `store` ports do both. Consumers are served from producers
+first, then from storage; what producers have left charges storage.
+What a consumer needs to keep running this tick (its `use`, or a
+running recipe's share) comes before filling buffers, which share what's
+left by their room; in a shortage, those needs are served whole, the
+smallest first, until the power runs out, so some machines run and the
+rest wait.
+All that's moved on a network is capped by its **throughput**: its
+weakest conduit's (a copper wire passes 1000 W, an iron one 170 W), so
+one iron wire anywhere limits the whole network. A frozen network moves
+nothing, so its batteries keep their charge. A mod can add a kind on any of
 them, a steam network on the `fluid` solver say, and conduits on it join
 only each other. The base game's kinds are `electric`, `fluid` and
 `item`, with wires, pipes and tubes.
@@ -986,8 +1007,11 @@ only each other. The base game's kinds are `electric`, `fluid` and
   voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
-- Networks don't carry anything yet: the solvers come next, so a
-  machine's buffer, tanks and slots stay as they are.
+- Fluid and item networks don't carry anything yet, so a machine's tanks
+  and slots stay as they are.
+- A wire carrying more than it can doesn't burn out; it caps what the
+  network moves. Wires lose nothing over distance, and there are no
+  voltages.
 - A slot's size (64) is the same for every machine.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.

@@ -50,7 +50,7 @@ pub struct MachinePort {
     pub slots: Option<usize>,
 }
 
-/// A machine's energy buffer, in energy units.
+/// A machine's energy buffer, in joules, rates in watts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnergySpec {
     pub capacity: u64,
@@ -58,6 +58,10 @@ pub struct EnergySpec {
     pub max_in: u64,
     /// The most it gives in a second.
     pub max_out: u64,
+    /// What it makes on its own in a second.
+    pub generate: u64,
+    /// What it uses up in a second while it works.
+    pub uses: u64,
 }
 
 /// One of a machine's tanks.
@@ -154,7 +158,7 @@ pub const FACING: &str = "facing";
 /// state.
 pub(super) struct MachineMix {
     ports: Vec<PortMix>,
-    energy: Option<[Mix; 3]>,
+    energy: Option<[Mix; 5]>,
     tanks: Vec<(String, Mix, Vec<String>)>,
     slots: Vec<SlotGroupSpec>,
     /// Property index and value index of each `active_state` value.
@@ -196,6 +200,8 @@ impl MachineMix {
                     mix("energy.capacity", "capacity", &energy.capacity)?,
                     mix("energy.max_in", "max_in", &energy.max_in)?,
                     mix("energy.max_out", "max_out", &energy.max_out)?,
+                    mix("energy.generate", "generate", &energy.generate)?,
+                    mix("energy.use", "use", &energy.uses)?,
                 ])
             })
             .transpose()?;
@@ -390,14 +396,19 @@ impl MachineMix {
             }
         }
         let round = |value: f32| value.round() as u64;
-        let energy = self.energy.as_ref().map(|[capacity, max_in, max_out]| {
-            let value = |mix: &Mix| round(mix.value(properties, index, content));
-            EnergySpec {
-                capacity: value(capacity),
-                max_in: value(max_in),
-                max_out: value(max_out),
-            }
-        });
+        let energy = self
+            .energy
+            .as_ref()
+            .map(|[capacity, max_in, max_out, generate, uses]| {
+                let value = |mix: &Mix| round(mix.value(properties, index, content));
+                EnergySpec {
+                    capacity: value(capacity),
+                    max_in: value(max_in),
+                    max_out: value(max_out),
+                    generate: value(generate),
+                    uses: value(uses),
+                }
+            });
         let tanks = self
             .tanks
             .iter()

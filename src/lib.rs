@@ -75,6 +75,7 @@ impl Plugin for GamePlugin {
             network::NetworkPlugin,
             block_entity::BlockEntityPlugin,
             machine::MachinePlugin,
+            network::energy::EnergyPlugin,
             script::ScriptPlugin,
         ));
     }

@@ -1,0 +1,40 @@
+# Energy networks: a creative generator lights a row of powered lamps
+# through a copper wire, in a closed stone room so only the lamps light
+# it, and charges a battery beside it. Breaking the wire darkens the lamps
+# past the break; the battery, on the generator's side, keeps charging.
+# `network` prints each network's stored, produced and consumed energy.
+# Run: cargo headless scenarios/energy.txt
+camera 30 47 37 0 -20                                     # inside the room, looking north
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 18 40 18 42 52 40 stone                              # the room's walls, floor and roof
+fill 19 41 19 41 51 39 air                                # and the air inside
+# The generator faces south, toward the camera: wires join its back
+# (north) and sides (east and west).
+fill 22 41 28 22 41 28 creative_generator[facing=south]
+fill 23 41 28 38 41 28 wire                               # east from its right side
+# Lamps on the wire, one every four blocks.
+fill 25 42 28 25 42 28 powered_lamp
+fill 29 42 28 29 42 28 powered_lamp
+fill 33 42 28 33 42 28 powered_lamp
+fill 37 42 28 37 42 28 powered_lamp
+# A battery south of the wire near the generator: its front (north) joins it.
+fill 24 41 29 24 41 29 battery
+wait 60
+network 30 41 28                                          # the whole line: produced and consumed
+inspect MachineActive                                     # every lamp lit
+screenshot target/scenarios/energy/0-lit.png
+wait 1
+# Break the wire between the first and second lamps.
+fill 27 41 28 27 41 28 air
+wait 60
+network 26 41 28                                          # the generator's half: one lamp and the battery
+network 30 41 28                                          # the far half: nothing produced
+inspect MachineActive                                     # one lamp lit, three dark
+inspect EnergyBuffer
+screenshot target/scenarios/energy/1-broken.png
+wait 1
+camera 30 50 33 0 -70                                     # from above, looking down on the line
+wait 2
+screenshot target/scenarios/energy/2-above.png
+wait 1

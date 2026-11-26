@@ -1,0 +1,32 @@
+// A test and creative block: makes 2 kW out of nothing, for as long as
+// there's room in its buffer. Its front (facing you as you place it) is
+// the magenta flywheel; wires join its back and sides.
+{
+  name: "Creative Generator",
+  properties: {
+    // Facing you: the opposite of the way you look.
+    facing: {
+      values: ["north", "south", "east", "west"],
+      place: { from: "look", values: { north: "south", south: "north", east: "west", west: "east" } },
+    },
+  },
+  model: "cube",
+  textures: {
+    side: "energy_port",
+    end: "machine_top",
+    north: "creative_generator_front",
+  },
+  variants: [
+    { when: { facing: "south" }, textures: { north: "energy_port", south: "creative_generator_front" } },
+    { when: { facing: "east" }, textures: { north: "energy_port", east: "creative_generator_front" } },
+    { when: { facing: "west" }, textures: { north: "energy_port", west: "creative_generator_front" } },
+  ],
+  hardness: 2,
+  weight: 2500,
+  category: "machines",
+  machine: {
+    ports: [{ faces: ["back", "left", "right"], network: "electric", role: "produce" }],
+    // Joules, and watts; see docs/decisions.md.
+    energy: { capacity: 2000, max_out: 2000, generate: 2000 },
+  },
+}

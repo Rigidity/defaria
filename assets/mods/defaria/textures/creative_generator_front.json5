@@ -1,0 +1,7 @@
+// The creative generator's front: the generator flywheel in magenta, so
+// it reads as a creative block; see images/SOURCES.md.
+{
+  layers: [
+    { image: "generator_front", palette: ["#3a0f3e", "#7a2a82", "#b84cc0", "#f0a0f4"] },
+  ],
+}
