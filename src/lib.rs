@@ -4,6 +4,7 @@
 //! [`GamePlugin`], so parallel work rarely touches the same file.
 
 mod block_edit;
+pub mod block_entity;
 mod block_texture;
 mod connections;
 pub mod content;
@@ -70,6 +71,7 @@ impl Plugin for GamePlugin {
             game_mode::GameModePlugin,
             connections::ConnectionsPlugin,
             network::NetworkPlugin,
+            block_entity::BlockEntityPlugin,
         ));
     }
 }

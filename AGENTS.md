@@ -308,6 +308,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `src/light.rs` (and `src/light/`): block and sky light. `src/light/sky.rs`
   decides where sky light comes in above the loaded chunks; see
   `docs/decisions.md`.
+- `src/block_entity.rs` (and `src/block_entity/`): block entities, the
+  data a voxel keeps beyond its state (`BlockEntity`, under the chunk's
+  entity while it's loaded). Features add parts with
+  `register_block_entity_part`; `BlockEntities` finds the one at a voxel.
 - `src/save.rs` (and `src/save/`): the world's folder on disk and its region
   and chunk formats, documented in `docs/world-format.md`. Keep the two in
   step, and bump a format's version when it changes.

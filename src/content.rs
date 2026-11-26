@@ -355,9 +355,16 @@ pub struct Block {
     pub state_count: u16,
     /// The properties the engine sets from the neighbours, if it has them.
     pub connections: Option<Connections>,
+    /// Its voxels' block entity, if they have one.
+    pub block_entity: Option<schema::BlockEntityDef>,
 }
 
 impl Block {
+    /// Whether each voxel of the block has a block entity.
+    pub fn has_block_entity(&self) -> bool {
+        self.block_entity.is_some()
+    }
+
     /// Every property at its first value.
     pub fn default_state(&self) -> BlockState {
         BlockState(self.first_state)

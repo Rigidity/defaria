@@ -110,11 +110,11 @@ Chunks that aren't in the table have never been saved, and are generated when
 they're loaded. A region file that's damaged is renamed to `<name>.broken`
 (and logged), and the region starts over.
 
-### Chunk blob, format 2
+### Chunk blob, format 3
 
 | Bytes | Field |
 |---|---|
-| 1 | Format: `2` |
+| 1 | Format: `3` |
 | rest | The payload below, zlib-compressed |
 
 The payload uses unsigned LEB128 varints (seven bits a byte, lowest first, the
@@ -127,7 +127,39 @@ packed  4096 voxels, B bits each, B = ceil(log2 P)
         (0 bits when P is 1: the chunk is one block)
 varint  F, the number of voxels not full of fluid
 F ×     varint voxel index, then varint amount (1 to 999)
+varint  E, the number of block entities
+E ×     varint voxel index
+        string kind: the id of the block that has it
+        varint part count N
+        N ×  string key, varint version, value
 ```
+
+Strings are a varint length in bytes, then UTF-8.
+
+A **block entity** is data a voxel keeps beyond its block state (see
+`docs/modding.md`). Entries are in increasing index order. Each has
+*parts*, one per feature that adds one (the block's plain `data` is the
+part `data`), sorted by key, each with the version of its own form, so a
+feature can change how it saves without the chunk format changing. When
+loading, an entry whose kind no mod defines any more is dropped, as is one
+whose voxel isn't that block any more, or whose block no longer has a
+block entity; a part no feature adds is dropped, and one at a version its
+feature can't read starts over from the block's defaults. A voxel whose
+block has a block entity but that has no entry gets a new one.
+
+A **value** is a tag byte and what it says follows:
+
+| Tag | Value | Followed by |
+|---|---|---|
+| 0 | false | |
+| 1 | true | |
+| 2 | integer | varint, zigzag-encoded (`(n << 1) ^ (n >> 63)`) |
+| 3 | float | 8 bytes, an IEEE 754 double |
+| 4 | string | string |
+| 5 | list | varint count, then that many values |
+| 6 | table | varint count, then that many string keys, each followed by a value |
+
+Lists and tables nest at most 32 deep.
 
 A fluid voxel (a block with `fluid` set, such as water) holds an amount of
 its fluid, in thousandths of a block. Most fluid is full, so only the

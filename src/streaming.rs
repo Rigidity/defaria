@@ -44,6 +44,7 @@ use bevy::{
 };
 
 use crate::{
+    block_entity::{BlockEntityChanged, BlockEntitySystems, ChunkSaver},
     content::Content,
     fly_camera::FlyCamera,
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
@@ -63,6 +64,7 @@ impl Plugin for StreamingPlugin {
         app.init_resource::<StreamingSettings>()
             .init_resource::<Chunks>()
             .init_resource::<StreamingStatus>()
+            .add_message::<BlockEntityChanged>()
             .add_observer(load_around_the_camera)
             .add_systems(Startup, open_world)
             .add_systems(
@@ -78,7 +80,8 @@ impl Plugin for StreamingPlugin {
                     autosave,
                 )
                     .chain()
-                    .after(RemeshChunks),
+                    .after(RemeshChunks)
+                    .after(BlockEntitySystems),
             )
             .add_systems(PostUpdate, update_status)
             .init_schedule(SaveOnExit)
@@ -233,12 +236,12 @@ impl Chunks {
 impl LoadedChunk {
     /// Copies the chunk into the store if it has changes the store doesn't
     /// have: edits, or (unless `edits_only`) never having been saved.
-    fn save(&mut self, coord: IVec3, store: &WorldStore, data: &Query<&Chunk>, edits_only: bool) {
+    fn save(&mut self, coord: IVec3, store: &WorldStore, data: &ChunkSaver, edits_only: bool) {
         if !self.edited && (self.saved || edits_only) {
             return;
         }
-        if let Ok(chunk) = data.get(self.entity) {
-            store.save(coord, chunk.clone());
+        if let Some(chunk) = data.chunk(self.entity) {
+            store.save(coord, chunk);
         }
         self.edited = false;
         self.saved = true;
@@ -307,18 +310,21 @@ fn open_world(
 }
 
 /// Marks the chunks of edited voxels for saving, including those whose
-/// fluid has moved or whose properties the engine updated.
+/// fluid has moved, whose properties the engine updated or whose block
+/// entities have changed.
 fn mark_edited_chunks(
     mut changes: MessageReader<VoxelChanged>,
     mut fluid_changes: MessageReader<FluidChanged>,
     mut updates: MessageReader<PropertiesUpdated>,
+    mut block_entity_changes: MessageReader<BlockEntityChanged>,
     mut chunks: ResMut<Chunks>,
 ) {
     let changed = changes
         .read()
         .map(|change| change.pos)
         .chain(fluid_changes.read().map(|change| change.pos))
-        .chain(updates.read().map(|update| update.pos));
+        .chain(updates.read().map(|update| update.pos))
+        .chain(block_entity_changes.read().map(|change| change.pos));
     for pos in changed {
         let (coord, _) = ChunkCoord::split(pos);
         if let Some(chunk) = chunks.loaded.get_mut(&coord.0) {
@@ -386,7 +392,7 @@ fn unload_chunks(
     source: Res<WorldSource>,
     mut chunks: ResMut<Chunks>,
     mut map: ResMut<ChunkMap>,
-    data: Query<&Chunk>,
+    data: ChunkSaver,
 ) {
     let gone: Vec<IVec3> = chunks
         .loaded
@@ -532,7 +538,7 @@ fn autosave(
     settings: Res<StreamingSettings>,
     source: Res<WorldSource>,
     mut chunks: ResMut<Chunks>,
-    data: Query<&Chunk>,
+    data: ChunkSaver,
 ) {
     if let Some(task) = &mut chunks.flush
         && check_ready(task).is_some()
@@ -566,7 +572,7 @@ fn save_on_exit(
     mut exits: MessageReader<AppExit>,
     source: Option<Res<WorldSource>>,
     mut chunks: ResMut<Chunks>,
-    data: Query<&Chunk>,
+    data: ChunkSaver,
 ) {
     if exits.read().count() == 0 {
         return;

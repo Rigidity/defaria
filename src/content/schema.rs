@@ -7,6 +7,8 @@
 
 use std::{collections::BTreeMap, fmt, marker::PhantomData};
 
+use crate::block_entity::Value;
+
 use serde::{
     Deserialize, Deserializer,
     de::{
@@ -318,6 +320,20 @@ pub struct BlockDef {
     /// It's part of a network: a wire, pipe or tube.
     #[serde(default)]
     pub conduit: Option<ConduitDef>,
+    /// Each voxel of the block keeps data of its own, beyond its state,
+    /// saved with its chunk.
+    #[serde(default)]
+    pub block_entity: Option<BlockEntityDef>,
+}
+
+/// A block's block entity: what a new one starts with.
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlockEntityDef {
+    /// Plain data to start with, by key: numbers, strings, booleans, lists
+    /// and tables of them.
+    #[serde(default)]
+    pub data: Option<BTreeMap<String, Value>>,
 }
 
 /// A block's `conduit`: the network kind it carries, and how much.
