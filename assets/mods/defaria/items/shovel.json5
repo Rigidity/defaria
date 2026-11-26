@@ -11,4 +11,5 @@
   hardness: { materials: { head: 3, handle: 1 } },
   // 0.6 litres in all, head to handle 1 to 4 by volume.
   weight: { base: 0.0006, materials: { head: 1, handle: 4 } },
+  category: "tools",
 }

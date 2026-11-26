@@ -21,6 +21,7 @@ assets/mods/<folder>/
   models/            mesh data with texture slots
   blocks/            blocks and their states
   items/             items (blocks get one automatically)
+  categories/        headings items are listed under in the inventory
 ```
 
 Every folder except the manifest is optional, and each may have
@@ -640,6 +641,30 @@ that block instead, drawn in 3D from its model in its default state, seen
 from above with its top, south and east faces showing. Icons redraw when
 the textures hot reload. Every item state shows in the inventory.
 
+## Categories
+
+`categories/<name>.json5`: a heading the creative inventory lists items
+under.
+
+```json5
+{
+  name: "Building",   // required: the heading
+  order: 20,          // lowest first; ties go by id. Default 0
+}
+```
+
+A block or item names its category with `category`, a reference like any
+other (`"building"`, or `"othermod:machines"`):
+
+```json5
+{ name: "Planks", model: "cube", textures: { all: "planks" }, category: "building" }
+```
+
+A block's item is in the block's category, unless an item file for it
+says otherwise. Items in no category come last, under "Other". The base
+game's are Natural (10), Building (20), Lighting (30) and Tools (40);
+leave gaps in `order` so other mods can slot theirs between.
+
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
@@ -647,8 +672,7 @@ the textures hot reload. Every item state shows in the inventory.
   against the side of a block can't pick its half from the upper or lower
   part of that side.
 - Item data that isn't a fixed list of values, such as durability.
-- Weight is worked out but nothing uses it yet. Variants can't change
-  hardness or weight.
+- Variants can't change hardness or weight.
 - Fluids' textures don't move, and their surfaces are flat steps rather
   than slopes.
 - Fluids only flow into air: not into blocks that don't fill their

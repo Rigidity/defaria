@@ -16,4 +16,5 @@
   },
   textures: { all: "water" },
   weight: 1000,
+  category: "natural",
 }

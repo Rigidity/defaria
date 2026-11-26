@@ -7,4 +7,5 @@
   textures: { all: "glass" },
   hardness: 0.3,
   weight: 2500,
+  category: "building",
 }

@@ -24,4 +24,5 @@
   // Mostly soil: the turf counts a quarter.
   hardness: { materials: { soil: 3, turf: 1 } },
   weight: { materials: { soil: 3, turf: 1 } },
+  category: "natural",
 }

@@ -17,4 +17,5 @@
   // Mostly rock: ore counts a quarter.
   hardness: { materials: { rock: 3, ore: 1 } },
   weight: { materials: { rock: 3, ore: 1 } },
+  category: "natural",
 }

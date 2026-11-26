@@ -7,4 +7,5 @@
   textures: { all: "tuft" },
   hardness: 0.05,
   weight: 0.05,
+  category: "natural",
 }

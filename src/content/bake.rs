@@ -15,8 +15,8 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use serde::de::DeserializeOwned;
 
 use super::{
-    AIR, BakedFace, Block, BlockBox, BlockState, Content, Direction, FULL_FLUID, Fluid, Item,
-    ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Placement, Property,
+    AIR, BakedFace, Block, BlockBox, BlockState, Category, Content, Direction, FULL_FLUID, Fluid,
+    Item, ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Placement, Property,
     State, Texture, TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*,
     state_count,
 };
@@ -25,6 +25,7 @@ use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
 /// The kinds of definition, each in its own folder.
 #[derive(Debug, Clone, Copy)]
 enum Kind {
+    Categories,
     Materials,
     Textures,
     Models,
@@ -33,7 +34,8 @@ enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 5] = [
+    const ALL: [Kind; 6] = [
+        Kind::Categories,
         Kind::Materials,
         Kind::Textures,
         Kind::Models,
@@ -43,6 +45,7 @@ impl Kind {
 
     fn folder(self) -> &'static str {
         match self {
+            Kind::Categories => "categories",
             Kind::Materials => "materials",
             Kind::Textures => "textures",
             Kind::Models => "models",
@@ -66,6 +69,7 @@ struct Def<T> {
 
 #[derive(Default)]
 struct Defs {
+    categories: Vec<Def<CategoryDef>>,
     materials: Vec<Def<MaterialDef>>,
     textures: Vec<Def<TextureDef>>,
     models: Vec<Def<ModelDef>>,
@@ -122,7 +126,9 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         }],
         items: Vec::new(),
         item_states: Vec::new(),
+        categories: Vec::new(),
         errors: Vec::new(),
+        category_index: HashMap::new(),
         texture_index: HashMap::new(),
         block_index: HashMap::new(),
         item_index: HashMap::new(),
@@ -134,6 +140,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             errors.push(format!("{file}: {error}"));
         }
     };
+    add_categories(&defs.categories, &mut content);
     for def in &defs.materials {
         let result = material(def).map(|material| {
             content.materials.insert(def.id.clone(), material);
@@ -188,6 +195,43 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
     content
 }
 
+/// Adds the categories, in their order: lowest `order` first, then by id.
+fn add_categories(defs: &[Def<CategoryDef>], content: &mut Content) {
+    let mut categories: Vec<Category> = defs
+        .iter()
+        .map(|def| Category {
+            id: def.id.clone(),
+            name: def.def.name.clone(),
+            order: def.def.order,
+        })
+        .collect();
+    categories.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
+    content.category_index = categories
+        .iter()
+        .enumerate()
+        .map(|(index, category)| (category.id.clone(), index))
+        .collect();
+    content.categories = categories;
+}
+
+/// The category `reference` (from a file in `namespace`) names.
+fn category(
+    reference: Option<&String>,
+    namespace: &str,
+    content: &Content,
+) -> Result<Option<usize>, String> {
+    let Some(reference) = reference else {
+        return Ok(None);
+    };
+    let id = qualify(reference, namespace)?;
+    content
+        .category_index
+        .get(&id)
+        .copied()
+        .map(Some)
+        .ok_or_else(|| format!("no category `{id}`"))
+}
+
 /// Parses one file into its kind's list, with its id.
 fn parse_file(
     namespace: &str,
@@ -224,6 +268,7 @@ fn parse_file(
     }
     let file = format!("{dir}/{path}");
     match kind {
+        Kind::Categories => defs.categories.push(def(id, namespace, file, text)?),
         Kind::Materials => defs.materials.push(def(id, namespace, file, text)?),
         Kind::Textures => defs.textures.push(def(id, namespace, file, text)?),
         Kind::Models => defs.models.push(def(id, namespace, file, text)?),
@@ -1641,7 +1686,7 @@ fn add_items(
             continue;
         }
         let file = overrides.get(def.id.as_str()).copied();
-        let result = block_item(&def.id, file, content, textures);
+        let result = block_item(def, file, content, textures);
         // A mistake in the item file is that file's.
         report(file.map_or(&def.file, |file| &file.file), result);
     }
@@ -1668,12 +1713,21 @@ fn add_items(
 /// block's item properties, each placing the block with those values and
 /// the rest at their defaults. `file` is an item file changing it.
 fn block_item(
-    id: &str,
+    block_def: &Def<BlockDef>,
     file: Option<&Def<ItemDef>>,
     content: &mut Content,
     textures: &Textures,
 ) -> Result<(), String> {
+    let id = block_def.id.as_str();
     let block = content.block(id).unwrap().clone();
+    let category = match file.and_then(|file| file.def.category.as_ref()) {
+        Some(reference) => category(Some(reference), &file.unwrap().namespace, content)?,
+        None => category(
+            block_def.def.category.as_ref(),
+            &block_def.namespace,
+            content,
+        )?,
+    };
     if let Some(file) = file {
         if !file.def.properties.is_empty() {
             return Err("a block's item has the block's properties; it can't add its own".into());
@@ -1731,7 +1785,7 @@ fn block_item(
         states.push(info);
     }
     let unique = file.and_then(|file| file.def.unique).unwrap_or(false);
-    push_item(id, properties, unique, states, content);
+    push_item(id, properties, unique, category, states, content);
     Ok(())
 }
 
@@ -1742,6 +1796,7 @@ fn standalone_item(
     textures: &Textures,
 ) -> Result<(), String> {
     let item_def = &def.def;
+    let category = category(item_def.category.as_ref(), &def.namespace, content)?;
     let properties = properties(&item_def.properties, &def.namespace, content, false)?;
     let count = check_count(&properties)?;
     let block = match &item_def.block {
@@ -1800,7 +1855,7 @@ fn standalone_item(
         states.push(info);
     }
     let unique = item_def.unique.unwrap_or(false);
-    push_item(&def.id, properties, unique, states, content);
+    push_item(&def.id, properties, unique, category, states, content);
     Ok(())
 }
 
@@ -1826,6 +1881,7 @@ fn push_item(
     id: &str,
     properties: Vec<Property>,
     unique: bool,
+    category: Option<usize>,
     states: Vec<ItemStateInfo>,
     content: &mut Content,
 ) {
@@ -1836,6 +1892,7 @@ fn push_item(
         first_state: content.item_states.len() as u32,
         state_count: states.len() as u32,
         unique,
+        category,
     });
     content.item_states.extend(states);
 }
@@ -1849,6 +1906,56 @@ mod tests {
 
     fn errors(content: &Content) -> String {
         content.errors.join("\n")
+    }
+
+    #[test]
+    fn items_are_listed_under_their_categories_in_order() {
+        let content = content(&[
+            ("categories/tools.json5", r#"{ name: "Tools", order: 20 }"#),
+            (
+                "categories/natural.json5",
+                r#"{ name: "Natural", order: 10 }"#,
+            ),
+            (
+                "categories/a_later.json5",
+                r#"{ name: "Later", order: 20 }"#,
+            ),
+            (
+                "blocks/dirt.json5",
+                r#"{ model: "quad", textures: { all: "a" }, category: "natural" }"#,
+            ),
+            // The item file moves the block's item to another category.
+            (
+                "blocks/rock.json5",
+                r#"{ model: "quad", textures: { all: "a" }, category: "natural" }"#,
+            ),
+            ("items/rock.json5", r#"{ category: "tools" }"#),
+            ("items/pick.json5", r#"{ texture: "a", category: "tools" }"#),
+            ("items/stick.json5", r#"{ texture: "a" }"#),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let names: Vec<&str> = content.categories.iter().map(|c| c.name.as_str()).collect();
+        // By order, then by id.
+        assert_eq!(names, ["Natural", "Later", "Tools"]);
+        let category = |id: &str| {
+            let item = content.default_item(id).unwrap();
+            content.item_category(item).map(|c| c.name.as_str())
+        };
+        assert_eq!(category("test:dirt"), Some("Natural"));
+        assert_eq!(category("test:rock"), Some("Tools"));
+        assert_eq!(category("test:pick"), Some("Tools"));
+        assert_eq!(category("test:stick"), None);
+    }
+
+    #[test]
+    fn an_unknown_category_is_an_error() {
+        let content = content(&[("items/pick.json5", r#"{ texture: "a", category: "nope" }"#)]);
+        assert!(
+            errors(&content).contains("no category `test:nope`"),
+            "{}",
+            errors(&content)
+        );
+        assert!(content.item("test:pick").is_none());
     }
 
     #[test]
