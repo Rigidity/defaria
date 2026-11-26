@@ -1,0 +1,10 @@
+// A polished face of any rock, bevelled at its edges.
+{
+  name: "Smooth {rock}",
+  properties: { rock: { materials: "#rock", default: "stone" } },
+  model: "cube",
+  textures: { all: { texture: "smooth_stone", materials: { rock: "{rock}" } } },
+  hardness: { materials: { rock: 1 } },
+  weight: { materials: { rock: 1 } },
+  category: "building",
+}

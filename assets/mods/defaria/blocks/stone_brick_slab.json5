@@ -1,0 +1,10 @@
+// Half a block of rock bricks.
+{
+  name: "{rock} Brick Slab",
+  properties: { rock: { materials: "#rock", default: "stone" } },
+  model: "slab",
+  textures: { all: { texture: "stone_bricks", materials: { rock: "{rock}" } } },
+  hardness: { materials: { rock: 1 } },
+  weight: { base: 0.5, materials: { rock: 1 } },
+  category: "building",
+}

@@ -1,0 +1,52 @@
+# Rock building blocks: a wall of cobbled rock, rock bricks and smooth
+# rock in each rock (stone at the top, granite, slate at the bottom), each
+# two blocks high with a row of its slab on top, built in the sky. Then a
+# close-up across the brick and cobble walls (the tiles must join without
+# seams), a view from above onto the slabs' tops, and the inventory
+# filtered to building.
+# Run: cargo headless scenarios/rock-building.txt
+camera 63.5 75 94 0 0
+settle
+wait 2
+fill 55 66 78 72 82 82 air
+fill 57 77 80 60 78 80 cobblestone[rock=defaria:stone]
+fill 57 79 80 60 79 80 cobblestone_slab[rock=defaria:stone]
+fill 62 77 80 65 78 80 stone_bricks[rock=defaria:stone]
+fill 62 79 80 65 79 80 stone_brick_slab[rock=defaria:stone]
+fill 67 77 80 70 78 80 smooth_stone[rock=defaria:stone]
+fill 67 79 80 70 79 80 smooth_stone_slab[rock=defaria:stone]
+fill 57 73 80 60 74 80 cobblestone[rock=defaria:granite]
+fill 57 75 80 60 75 80 cobblestone_slab[rock=defaria:granite]
+fill 62 73 80 65 74 80 stone_bricks[rock=defaria:granite]
+fill 62 75 80 65 75 80 stone_brick_slab[rock=defaria:granite]
+fill 67 73 80 70 74 80 smooth_stone[rock=defaria:granite]
+fill 67 75 80 70 75 80 smooth_stone_slab[rock=defaria:granite]
+fill 57 69 80 60 70 80 cobblestone[rock=defaria:slate]
+fill 57 71 80 60 71 80 cobblestone_slab[rock=defaria:slate]
+fill 62 69 80 65 70 80 stone_bricks[rock=defaria:slate]
+fill 62 71 80 65 71 80 stone_brick_slab[rock=defaria:slate]
+fill 67 69 80 70 70 80 smooth_stone[rock=defaria:slate]
+fill 67 71 80 70 71 80 smooth_stone_slab[rock=defaria:slate]
+wait 3
+screenshot target/scenarios/rock-building/walls.png
+wait 1
+camera 62 73.5 85 -20 0   # close up, along the stone walls
+wait 3
+screenshot target/scenarios/rock-building/close-up.png
+wait 1
+camera 63.5 84 88 0 -40    # above, looking down on the slabs
+wait 3
+screenshot target/scenarios/rock-building/slabs.png
+wait 1
+hold MouseLeft 1           # lock the cursor
+wait 1
+hold KeyE 1                # open the inventory
+wait 3
+cursor 640 73              # the search box
+wait 1
+hold MouseLeft 1
+wait 1
+type category:building
+wait 2
+screenshot target/scenarios/rock-building/inventory.png
+wait 1

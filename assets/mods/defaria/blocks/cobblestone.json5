@@ -1,0 +1,10 @@
+// Rounded stones of any rock, packed with dark gaps between them.
+{
+  name: "Cobbled {rock}",
+  properties: { rock: { materials: "#rock", default: "stone" } },
+  model: "cube",
+  textures: { all: { texture: "cobblestone", materials: { rock: "{rock}" } } },
+  hardness: { materials: { rock: 1 } },
+  weight: { materials: { rock: 1 } },
+  category: "building",
+}
