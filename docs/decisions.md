@@ -47,13 +47,13 @@ sorted, and far chunks re-sort at staggered places (`sort_position`).
 Glass and water are double-sided, so a glass wall tints what's behind it
 twice (its near and far faces), and there's no tint or fog underwater.
 
-Double-sided faces' backs are drawn 1/512 of a block out of their block,
-so a neighbour's face in the same plane that only covers part of it (a
+Double-sided faces' backs are flagged, and the shader draws them a hair
+farther away than they are (a depth bias of 2e-5 of their distance), so
+a neighbour's face in the same plane that only covers part of it (a
 slab's side against water or lava) wins the depth test instead of
-flickering. Lava's backs are widened by as much so they meet at its
-edges; water's and glass's aren't, since overlapping translucent backs
-would blend twice, which leaves a hairline gap at the edges of a single
-water or glass block seen from inside it.
+flickering. Moving the backs themselves left hairline gaps or overlaps
+at block edges. A back sorts as if a little inside its block, so water
+blends over the glass it touches.
 
 **What should replace it.** Order-independent transparency (Bevy has an
 OIT pass), or sorting only the index buffer on the GPU. For water, add an

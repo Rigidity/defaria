@@ -331,6 +331,8 @@ mod tests {
             "const MAX_DYNAMIC_LIGHTS: u32 = {MAX_DYNAMIC_LIGHTS}u;"
         )));
         assert!(shader.contains("fn vertex("));
+        let back = format!("const BACK_FACE: u32 = 0x{:08x}u;", crate::voxel::BACK_FACE);
+        assert!(shader.contains(&back), "the shader doesn't declare {back}");
         // The vertex inputs at the locations `specialize` feeds them to.
         for (location, (_, declaration)) in VERTEX_INPUTS.iter().enumerate() {
             let input = format!("@location({location}) {declaration}");
