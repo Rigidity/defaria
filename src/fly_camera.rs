@@ -1,32 +1,28 @@
-//! Minecraft-style first-person camera: where the player looks.
+//! Minecraft-style first-person camera: what the local player sees.
 //!
 //! - Left click locks and hides the cursor; Escape releases it.
-//! - While locked, the mouse turns the camera (yaw) and looks up/down (pitch).
-//!   Pitch is clamped just short of straight up/down so the view never flips.
+//! - While locked, the mouse turns the player (yaw) and looks up/down
+//!   (pitch): its [`Look`]. Pitch is clamped just short of straight up/down
+//!   so the view never flips.
 //!
-//! The [`FlyCamera`] is the player's eyes: `player` moves it (walking,
-//! jumping and flying) and keeps it at the player's body. What's drawn is
-//! seen through its child, the [`EyeView`], which `view_bob` sways as the
-//! player walks, so the swaying never moves what the player aims at.
-
-use std::f32::consts::FRAC_PI_2;
+//! The [`FlyCamera`] is a child of the local player, at its eyes: raised to
+//! [`Player::drawn_eye_height`] above its feet and pitched by its look (the
+//! player's own transform has the yaw). It only shows what the player's
+//! eyes see; gameplay works from the player's [`Eyes`](crate::player::Eyes)
+//! and never from here. What's drawn is seen through the camera's child,
+//! the [`EyeView`], which `view_bob` sways as the player walks and `fov`
+//! widens, so neither changes what the player aims at.
 
 use bevy::{
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     input::mouse::AccumulatedMouseMotion,
     prelude::*,
+    transform::TransformSystems,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 
-/// Keep pitch just inside ±90° so the camera never looks exactly straight up
-/// or down, where yaw becomes ambiguous.
-pub const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
+use crate::player::{FaceTheLook, LocalPlayer, Look, Player};
 
-/// Where the camera spawns: just above the hills, so there's ground right
-/// below. The scenarios' coordinates are picked around it.
-pub const START_POSITION: Vec3 = Vec3::new(64.0, 56.0, 92.0);
-/// The point the camera looks at when it spawns.
-pub const START_TARGET: Vec3 = Vec3::new(64.0, 28.0, 56.0);
 /// The vertical field of view, in degrees.
 pub const FOV: f32 = 70.0;
 
@@ -34,7 +30,7 @@ pub struct FlyCameraPlugin;
 
 impl Plugin for FlyCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera)
+        app.add_observer(give_the_player_a_camera)
             .add_systems(Update, (grab_cursor, look).chain().in_set(FlyCameraSystems))
             // A screen (the inventory) has the mouse while it's open, and
             // Escape closing it leaves the cursor locked.
@@ -43,6 +39,12 @@ impl Plugin for FlyCameraPlugin {
                 FlyCameraSystems
                     .run_if(crate::ui::playing)
                     .before(crate::ui::screen::CloseOnEscapeSystems),
+            )
+            .add_systems(
+                PostUpdate,
+                place_the_camera
+                    .after(FaceTheLook)
+                    .before(TransformSystems::Propagate),
             );
     }
 }
@@ -53,31 +55,18 @@ impl Plugin for FlyCameraPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FlyCameraSystems;
 
+/// The first-person camera: a child of the player it's the eyes of.
 #[derive(Component, Reflect, Debug, Clone)]
 #[reflect(Component)]
+#[require(Transform, Visibility)]
 pub struct FlyCamera {
     /// Radians turned per pixel of mouse motion.
     pub sensitivity: f32,
-    /// Rotation around the world Y axis, in radians.
-    pub yaw: f32,
-    /// Rotation up (+) or down (-), in radians, within ±[`MAX_PITCH`].
-    pub pitch: f32,
 }
 
 impl Default for FlyCamera {
     fn default() -> Self {
-        Self {
-            sensitivity: 0.002,
-            yaw: 0.0,
-            pitch: 0.0,
-        }
-    }
-}
-
-impl FlyCamera {
-    /// Builds the camera's rotation from yaw and pitch. No roll, ever.
-    pub fn rotation(&self) -> Quat {
-        Quat::from_euler(EulerRot::YXZ, self.yaw, self.pitch, 0.0)
+        Self { sensitivity: 0.002 }
     }
 }
 
@@ -93,22 +82,22 @@ pub const NEAR: f32 = 0.01;
 #[require(Camera3d)]
 pub struct EyeView;
 
-fn spawn_camera(mut commands: Commands) {
-    let (position, target) = (START_POSITION, START_TARGET);
-    let (yaw, pitch, _) = Transform::from_translation(position)
-        .looking_at(target, Vec3::Y)
-        .rotation
-        .to_euler(EulerRot::YXZ);
-    let camera = FlyCamera {
-        yaw,
-        pitch,
-        ..default()
-    };
+/// Gives the local player a camera at its eyes.
+fn give_the_player_a_camera(
+    add: On<Add<LocalPlayer>>,
+    players: Query<(&Player, &Look)>,
+    mut commands: Commands,
+) {
+    let transform = players
+        .get(add.entity)
+        .map_or(Transform::IDENTITY, |(player, look)| {
+            camera_transform(player, look)
+        });
     commands.spawn((
         Name::new("Fly Camera"),
-        Transform::from_translation(position).with_rotation(camera.rotation()),
-        Visibility::default(),
-        camera,
+        FlyCamera::default(),
+        transform,
+        ChildOf(add.entity),
         children![(
             Name::new("Eye View"),
             EyeView,
@@ -124,6 +113,24 @@ fn spawn_camera(mut commands: Commands) {
             DebandDither::Disabled,
         )],
     ));
+}
+
+/// Where the camera goes on its player: at the eyes, pitched.
+fn camera_transform(player: &Player, look: &Look) -> Transform {
+    Transform::from_xyz(0.0, player.drawn_eye_height as f32, 0.0)
+        .with_rotation(look.pitch_rotation())
+}
+
+/// Puts each camera at its player's eyes, as the frame is drawn.
+fn place_the_camera(
+    players: Query<(&Player, &Look)>,
+    mut cameras: Query<(&ChildOf, &mut Transform), With<FlyCamera>>,
+) {
+    for (parent, mut transform) in &mut cameras {
+        if let Ok((player, look)) = players.get(parent.parent()) {
+            transform.set_if_neq(camera_transform(player, look));
+        }
+    }
 }
 
 fn grab_cursor(
@@ -143,25 +150,28 @@ fn grab_cursor(
     }
 }
 
+/// The mouse turns the player each camera is the eyes of.
 fn look(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     motion: Res<AccumulatedMouseMotion>,
-    mut cameras: Query<(&mut FlyCamera, &mut Transform)>,
+    cameras: Query<(&FlyCamera, &ChildOf)>,
+    mut looks: Query<&mut Look>,
 ) {
     if cursor.grab_mode == CursorGrabMode::None || motion.delta == Vec2::ZERO {
         return;
     }
-    for (mut camera, mut transform) in &mut cameras {
-        let delta = motion.delta * camera.sensitivity;
-        camera.yaw -= delta.x;
-        camera.pitch = (camera.pitch - delta.y).clamp(-MAX_PITCH, MAX_PITCH);
-        transform.rotation = camera.rotation();
+    for (camera, parent) in &cameras {
+        if let Ok(mut look) = looks.get_mut(parent.parent()) {
+            let delta = motion.delta * camera.sensitivity;
+            look.turn(-delta.x, -delta.y);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player::MAX_PITCH;
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
 
@@ -176,19 +186,26 @@ mod tests {
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<AccumulatedMouseMotion>()
-            .add_systems(Update, (grab_cursor, look).chain());
+            .add_systems(Update, (grab_cursor, look).chain())
+            .add_systems(PostUpdate, place_the_camera);
         app.world_mut()
             .spawn((Window::default(), CursorOptions::default(), PrimaryWindow));
         app
     }
 
-    fn spawn_camera(app: &mut App, camera: FlyCamera) -> Entity {
+    /// A player with a camera; the player.
+    fn spawn_camera(app: &mut App) -> Entity {
+        let player = app.world_mut().spawn(Player::default()).id();
         app.world_mut()
-            .spawn((
-                Transform::default().with_rotation(camera.rotation()),
-                camera,
-            ))
-            .id()
+            .spawn((FlyCamera::default(), ChildOf(player)));
+        player
+    }
+
+    fn camera(app: &mut App) -> Transform {
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&Transform, With<FlyCamera>>();
+        *cameras.single(app.world()).unwrap()
     }
 
     fn cursor(app: &mut App) -> CursorOptions {
@@ -222,18 +239,18 @@ mod tests {
     #[test]
     fn mouse_is_ignored_until_cursor_is_locked() {
         let mut app = app();
-        let entity = spawn_camera(&mut app, FlyCamera::default());
+        let player = spawn_camera(&mut app);
         app.world_mut()
             .resource_mut::<AccumulatedMouseMotion>()
             .delta = Vec2::new(100.0, 0.0);
         app.update();
-        assert_eq!(app.world().get::<FlyCamera>(entity).unwrap().yaw, 0.0);
+        assert_eq!(app.world().get::<Look>(player).unwrap().yaw, 0.0);
     }
 
     #[test]
     fn pitch_is_clamped_so_the_view_never_flips() {
         let mut app = app();
-        let entity = spawn_camera(&mut app, FlyCamera::default());
+        let player = spawn_camera(&mut app);
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
             .press(MouseButton::Left);
@@ -243,10 +260,34 @@ mod tests {
             .delta = Vec2::new(0.0, -10_000.0);
         app.update();
 
-        let camera = app.world().get::<FlyCamera>(entity).unwrap();
-        assert_eq!(camera.pitch, MAX_PITCH);
-        let forward = app.world().get::<Transform>(entity).unwrap().forward();
+        let look = *app.world().get::<Look>(player).unwrap();
+        assert_eq!(look.pitch, MAX_PITCH);
+        let forward = camera(&mut app).forward();
         assert!(forward.y > 0.99, "looking almost straight up: {forward:?}");
         assert!(forward.y < 1.0, "but never exactly: {forward:?}");
+    }
+
+    /// The mouse turns the player: the yaw is the player's, and the camera,
+    /// at its eyes, only pitches.
+    #[test]
+    fn the_mouse_turns_the_player_and_pitches_the_camera() {
+        let mut app = app();
+        let player = spawn_camera(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::new(-200.0, 100.0);
+        app.update();
+        let look = *app.world().get::<Look>(player).unwrap();
+        assert!((look.yaw - 0.4).abs() < 1e-6, "{look:?}");
+        assert!((look.pitch + 0.2).abs() < 1e-6, "{look:?}");
+        let camera = camera(&mut app);
+        assert_eq!(camera.rotation, look.pitch_rotation());
+        assert_eq!(
+            camera.translation,
+            Vec3::Y * crate::player::EYE_HEIGHT as f32
+        );
     }
 }

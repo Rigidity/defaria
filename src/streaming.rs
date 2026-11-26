@@ -2,7 +2,7 @@
 //! and saving it.
 //!
 //! The world has no edges in any direction, so what's loaded is a cylinder
-//! of chunks around each [`ChunkLoader`] (the fly camera has one): every
+//! of chunks around each [`ChunkLoader`] (the local player has one, at its eyes): every
 //! chunk within [`StreamingSettings::radius`] chunks sideways and from
 //! [`StreamingSettings::below`] chunks below to
 //! [`StreamingSettings::above`] above. Both matter: what's below is the
@@ -51,9 +51,9 @@ use bevy::{
 use crate::{
     block_entity::{BlockEntityChanged, BlockEntitySystems, ChunkSaver},
     content::Content,
-    fly_camera::FlyCamera,
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
     meshing::{AwaitingNeighbours, MeshTask, Meshed, RemeshChunks},
+    player::{EYE_HEIGHT, LocalPlayer},
     save::{self, WorldFolder, WorldStore, region},
     world::{
         Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, spawn_chunk,
@@ -71,7 +71,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingStatus>()
             .init_resource::<ChunksSaving>()
             .add_message::<BlockEntityChanged>()
-            .add_observer(load_around_the_camera)
+            .add_observer(load_around_the_player)
             .add_systems(Startup, open_world)
             .add_systems(
                 Update,
@@ -204,8 +204,16 @@ impl StreamingSettings {
 #[require(Transform)]
 pub struct ChunkLoader;
 
-fn load_around_the_camera(add: On<Add<FlyCamera>>, mut commands: Commands) {
-    commands.entity(add.entity).insert(ChunkLoader);
+/// The local player loads the world around its eyes (not its feet, so the
+/// levels above and below are counted from what it sees), with a loader
+/// that's its child at eye height.
+fn load_around_the_player(add: On<Add<LocalPlayer>>, mut commands: Commands) {
+    commands.spawn((
+        Name::new("Chunk Loader"),
+        ChunkLoader,
+        Transform::from_xyz(0.0, EYE_HEIGHT as f32, 0.0),
+        ChildOf(add.entity),
+    ));
 }
 
 /// Where chunks come from: the save, and the terrain for chunks that have

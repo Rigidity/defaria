@@ -27,7 +27,7 @@ use bevy::{
 
 use crate::{
     content::Content,
-    fly_camera::FlyCamera,
+    fly_camera::EyeView,
     light::ChunkLight,
     perlin::splitmix64,
     voxel_material::{BlockMaterial, VoxelMaterial},
@@ -316,7 +316,7 @@ fn sort_position(eye: Vec3, coord: ChunkCoord) -> IVec3 {
 /// [`sort_position`]). Only the indices change. A mesh whose faces all lie
 /// in one plane (open water) never needs it.
 fn sort_translucent_faces(
-    camera: Query<&Transform, With<FlyCamera>>,
+    camera: Query<&GlobalTransform, With<EyeView>>,
     mut parts: Query<(&TranslucentFaces, &Mesh3d, &ChildOf, &mut SortedFrom)>,
     coords: Query<&ChunkCoord>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -331,7 +331,7 @@ fn sort_translucent_faces(
         let Ok(coord) = coords.get(parent.parent()) else {
             continue;
         };
-        let eye = camera.translation - coord.origin().as_vec3();
+        let eye = camera.translation() - coord.origin().as_vec3();
         let at = sort_position(eye, *coord);
         if sorted.0 == Some(at) {
             continue;

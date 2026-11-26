@@ -312,7 +312,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   builds (`src/ui/gallery.rs`), for working on how they look.
 - `src/block_edit.rs`: the crosshair, its target and placing blocks.
   `src/mining.rs`: breaking blocks by holding left click, for a time set
-  by their hardness (`Mining`, on the camera, has the target and progress).
+  by their hardness (`Mining`, on the local player, has the target and
+  progress).
   `src/cracks.rs`: the crack overlay on the block being mined.
 - `src/connections.rs`: keeps blocks' connection properties (a pipe's
   joined sides) in step with their neighbours, after edits and on chunk
@@ -358,8 +359,13 @@ documented in `docs/modding.md`; keep that file, the serde types in
   showing how many the player has) and `ActiveSlot`.
 - `src/physics.rs`: boxes colliding with block shapes (swept, sliding,
   stepping up), in `FixedUpdate`. `src/player.rs`: the player's
-  Minecraft-style walking, jumping, sneaking, sprinting and flying, on a
-  physics body at the camera.
+  Minecraft-style walking, jumping, sneaking, sprinting and flying: a
+  physics body on its own entity (the `LocalPlayer` one is this game's
+  player), its `Transform` at its feet, moved by its `Controls` (the
+  keys fill the local player's) and facing its `Look` (yaw turns the
+  body, pitch the head). Gameplay aims from the player's `Eyes`, never
+  from the camera. `src/fly_camera.rs`: the camera, a child of the local
+  player at its eyes, and the mouse turning its `Look`.
 - `src/fluid.rs` (and `src/fluid/`): fluid flow. A fluid voxel holds an
   amount (`Chunk::partial_at`), and `src/fluid/flow.rs` moves amounts
   between voxels, never making or losing any. Also what the player

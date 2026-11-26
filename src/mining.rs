@@ -12,7 +12,7 @@
 //!   of blocks that break at once.
 //! - The click that locks the cursor mines nothing, even if it's held.
 //!
-//! [`Mining`], on the camera, says which block is being mined and how far
+//! [`Mining`], on the local player, says which block is being mined and how far
 //! along it is, for the cracks drawn on it and for `inspect`.
 
 use std::time::Duration;
@@ -25,11 +25,11 @@ use bevy::{
 use crate::{
     block_edit::{BlockEditSystems, BlockOutlineSystems, crosshair_target},
     content::{BlockState, Content},
-    fly_camera::{FlyCamera, FlyCameraSystems},
+    fly_camera::FlyCameraSystems,
     game_mode::{GameMode, harvest},
     inventory::Inventory,
     meshing::RemeshChunks,
-    player::LocalPlayer,
+    player::{Eyes, LocalPlayer},
     ui::{UiScreen, playing},
     world::Voxels,
 };
@@ -56,7 +56,7 @@ pub struct MiningPlugin;
 impl Plugin for MiningPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Mining>()
-            .add_observer(give_the_camera_mining)
+            .add_observer(give_the_player_mining)
             .add_systems(
                 Update,
                 (
@@ -102,7 +102,7 @@ pub struct Mining {
     elapsed: Duration,
 }
 
-fn give_the_camera_mining(add: On<Add<FlyCamera>>, mut commands: Commands) {
+fn give_the_player_mining(add: On<Add<LocalPlayer>>, mut commands: Commands) {
     commands.entity(add.entity).insert(Mining::default());
 }
 
@@ -118,7 +118,7 @@ fn arm(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     screens: Query<(), With<UiScreen>>,
-    mut mining: Single<&mut Mining, With<FlyCamera>>,
+    mut mining: Single<&mut Mining, With<LocalPlayer>>,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
         mining.armed = can_mine(&cursor, screens);
@@ -133,12 +133,13 @@ fn mine(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     screens: Query<(), With<UiScreen>>,
     content: Res<Content>,
-    camera: Single<(&Transform, &mut Mining), With<FlyCamera>>,
-    // Who gets what's mined: the player, whichever entity that is.
+    miner: Single<(Eyes, &mut Mining), With<LocalPlayer>>,
+    // What it gets for it, in survival.
     carrier: Option<Single<(&mut Inventory, &GameMode), With<LocalPlayer>>>,
     mut voxels: Voxels,
 ) {
-    let (transform, mut mining) = camera.into_inner();
+    let (eyes, mut mining) = miner.into_inner();
+    let transform = &eyes.transform();
     if !(can_mine(&cursor, screens) && mining.armed && mouse.pressed(MouseButton::Left)) {
         mining.set_if_neq(Mining::default());
         return;
@@ -196,6 +197,7 @@ fn mine(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player::tests::{local_eyes, put_local_eyes};
     use crate::{
         content::{base, block},
         world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
@@ -222,7 +224,7 @@ mod tests {
             .add_message::<VoxelChanged>()
             .add_message::<crate::world::PropertiesUpdated>()
             .add_message::<crate::world::FluidChanged>()
-            .add_observer(give_the_camera_mining)
+            .add_observer(give_the_player_mining)
             .add_systems(Update, (arm, mine).chain());
         app.world_mut().spawn((
             Window::default(),
@@ -239,8 +241,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<ChunkMap>()
             .insert(ChunkCoord(IVec3::ZERO), entity);
-        app.world_mut().spawn((
-            FlyCamera::default(),
+        app.world_mut().spawn(crate::player::local_player(
             Transform::from_xyz(2.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
         ));
         // Lets the first frame, which has no time step, go by.
@@ -285,11 +286,8 @@ mod tests {
     }
 
     fn look_at(app: &mut App, target: Vec3) {
-        let mut cameras = app
-            .world_mut()
-            .query_filtered::<&mut Transform, With<FlyCamera>>();
-        let mut transform = cameras.single_mut(app.world_mut()).unwrap();
-        transform.look_at(target, Vec3::Y);
+        let eyes = local_eyes(app).looking_at(target, Vec3::Y);
+        put_local_eyes(app, eyes);
     }
 
     #[test]

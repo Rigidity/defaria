@@ -68,6 +68,7 @@ impl Plugin for GamePlugin {
         ))
         // Bevy takes at most 15 plugins in one tuple.
         .add_plugins((
+            player::LocalPlayerPlugin,
             fog::FogPlugin,
             fov::FovPlugin,
             mining::MiningPlugin,

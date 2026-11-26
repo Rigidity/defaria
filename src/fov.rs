@@ -89,25 +89,29 @@ fn ease_widening(time: Res<Time>, mut players: Query<(&Player, &mut Widening)>) 
     }
 }
 
-/// Sets each player's eye view's field of view, between the last two
+/// Sets each eye view's field of view from the player it's the eyes of
+/// (its nearest ancestor with a [`Widening`]), between the last two
 /// physics steps.
 fn widen_the_view(
     time: Res<Time<Fixed>>,
-    players: Query<(&Widening, &Children)>,
-    mut views: Query<&mut Projection, With<EyeView>>,
+    players: Query<&Widening>,
+    parents: Query<&ChildOf>,
+    mut views: Query<(Entity, &mut Projection), With<EyeView>>,
 ) {
     let fraction = time.overstep_fraction_f64();
-    for (widening, children) in &players {
-        for &child in children {
-            if let Ok(mut projection) = views.get_mut(child)
-                && let Projection::Perspective(perspective) = &mut *projection
-            {
-                let fov = widening.fov(fraction);
-                // Only on a change, so the camera isn't marked changed
-                // every frame.
-                if perspective.fov != fov {
-                    perspective.fov = fov;
-                }
+    for (view, mut projection) in &mut views {
+        let Some(widening) = parents
+            .iter_ancestors(view)
+            .find_map(|ancestor| players.get(ancestor).ok())
+        else {
+            continue;
+        };
+        if let Projection::Perspective(perspective) = &mut *projection {
+            let fov = widening.fov(fraction);
+            // Only on a change, so the camera isn't marked changed
+            // every frame.
+            if perspective.fov != fov {
+                perspective.fov = fov;
             }
         }
     }

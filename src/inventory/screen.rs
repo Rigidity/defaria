@@ -233,7 +233,6 @@ mod tests {
     use super::*;
     use crate::{
         content::ItemState,
-        fly_camera::FlyCamera,
         headless::{Script, run_more, settle, test_game},
         hotbar::{ActiveSlot, Hotbar, HotbarSlot},
         inventory::{
@@ -340,10 +339,7 @@ mod tests {
     }
 
     fn camera(app: &mut App) -> Vec3 {
-        let mut cameras = app
-            .world_mut()
-            .query_filtered::<&Transform, With<FlyCamera>>();
-        cameras.single(app.world()).unwrap().translation
+        crate::player::tests::local_eyes(app).translation
     }
 
     fn flying(app: &mut App) -> bool {

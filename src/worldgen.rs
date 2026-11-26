@@ -504,7 +504,7 @@ mod tests {
     /// it, not inside or skimming the ground.
     #[test]
     fn camera_starts_above_the_ground() {
-        use crate::fly_camera::START_POSITION;
+        use crate::player::START_POSITION;
         let terrain = terrain();
         let start = START_POSITION.as_ivec3();
         assert!((0..PATCH_SIZE.y).contains(&start.y));

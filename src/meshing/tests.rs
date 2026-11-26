@@ -242,8 +242,8 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     let camera = app
         .world_mut()
         .spawn((
-            FlyCamera::default(),
-            Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, 30.0)),
+            EyeView,
+            GlobalTransform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, 30.0)),
         ))
         .id();
     // A pond walled in with stone: its faces are all in one plane.
@@ -321,10 +321,10 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     };
     assert!(first_face_z(&app) < 4.0);
     app.world_mut()
-        .get_mut::<Transform>(camera)
-        .unwrap()
-        .translation
-        .z = origin.z as f32 - 20.0;
+        .entity_mut(camera)
+        .insert(GlobalTransform::from_translation(
+            origin.as_vec3() + Vec3::new(6.5, 2.5, -20.0),
+        ));
     app.update();
     assert!(first_face_z(&app) > 10.0);
 
@@ -350,10 +350,10 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
         .resource::<Messages<AssetEvent<Mesh>>>()
         .get_cursor_current();
     app.world_mut()
-        .get_mut::<Transform>(camera)
-        .unwrap()
-        .translation
-        .z = origin.z as f32 - 19.7;
+        .entity_mut(camera)
+        .insert(GlobalTransform::from_translation(
+            origin.as_vec3() + Vec3::new(6.5, 2.5, -19.7),
+        ));
     app.update();
     app.update();
     assert_eq!(

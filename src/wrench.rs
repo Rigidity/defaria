@@ -28,10 +28,9 @@ use crate::{
     block_entity::{BlockEntities, RegisterBlockEntityPart},
     connections::{Blocked, BlockedFaces},
     content::{BlockBox, BlockState, Content, Direction, ItemAction},
-    fly_camera::FlyCamera,
     hotbar::{ActiveSlot, Hotbar},
     machine::screen::open_machine_screen,
-    player::LocalPlayer,
+    player::{Eyes, LocalPlayer},
     world::Voxels,
 };
 
@@ -142,13 +141,14 @@ pub(crate) fn use_wrench(
     mut commands: Commands,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    camera: Single<&Transform, With<FlyCamera>>,
+    eyes: Single<Eyes, With<LocalPlayer>>,
     player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
     content: Res<Content>,
     voxels: Voxels,
     index: Res<BlockEntities>,
     blocked: Blocked,
 ) {
+    let camera = eyes.transform();
     if cursor.grab_mode == CursorGrabMode::None || !mouse.just_pressed(MouseButton::Right) {
         return;
     }
