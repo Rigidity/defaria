@@ -163,7 +163,7 @@ fn cycle_with_wheel(
     }
 }
 
-/// One slot of the hotbar, showing the local player's inventory slot
+/// One slot of the hotbar on screen: the local player's hotbar slot
 /// `index`.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
 #[reflect(Component)]

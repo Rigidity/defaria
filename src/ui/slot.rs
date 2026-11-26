@@ -10,10 +10,7 @@
 use bevy::{picking::hover::Hovered, prelude::*};
 
 use super::{ItemIcon, Tooltip, UiTheme, UiWidgetSystems, icon::show_icons};
-use crate::{
-    content::{Content, ItemState},
-    inventory::ItemStack,
-};
+use crate::content::{Content, ItemState};
 
 pub struct SlotPlugin;
 
@@ -43,15 +40,6 @@ pub struct ItemSlot {
 }
 
 impl ItemSlot {
-    /// A slot showing `stack`, not selected.
-    pub fn of(stack: Option<&ItemStack>) -> Self {
-        Self {
-            item: stack.map(|stack| stack.item),
-            count: stack.map_or(0, |stack| stack.count),
-            ..default()
-        }
-    }
-
     /// A slot showing one `item`, with no count.
     pub fn item(item: ItemState) -> Self {
         Self {

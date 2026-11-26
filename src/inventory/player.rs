@@ -9,7 +9,7 @@
 
 use bevy::prelude::*;
 
-use super::{Inventory, ItemStack};
+use super::{Inventory, ItemStack, model::is_unique};
 use crate::{
     content::Content,
     hotbar::{ActiveSlot, HOTBAR_SLOTS, Hotbar},
@@ -109,7 +109,17 @@ pub fn load(saved: &PlayerFile, content: &Content) -> (Inventory, Hotbar, Active
         match names.item(&stack.item) {
             // Saved, so it fitted: the limit only applies from here on.
             Some(item) => {
-                inventory.add(content, ItemStack::new(item, stack.count));
+                // Each copy of a unique item is saved on its own.
+                let count = if is_unique(content, item) && stack.count > 1 {
+                    warn!(
+                        "the saved inventory has {} of unique `{}` in one entry; keeping one",
+                        stack.count, stack.item
+                    );
+                    1
+                } else {
+                    stack.count
+                };
+                inventory.add(content, ItemStack::new(item, count));
             }
             None => warn!(
                 "the saved inventory has `{}`, which no mod defines",
@@ -253,6 +263,30 @@ mod tests {
         assert_eq!(inventory.count(lamp), 99_999);
         assert_eq!(inventory.entries().len(), 1);
         assert_eq!(hotbar.0[..2], [None, Some(lamp)]);
+    }
+
+    /// A unique item saved as many in one entry (a hand-edited file) loads
+    /// as one, rather than as billions of entries.
+    #[test]
+    fn a_unique_item_loads_one_per_entry() {
+        let content = base();
+        let saved = PlayerFile {
+            inventory: vec![SavedStack {
+                item: ItemNames::new(content)
+                    .name(content.default_item("defaria:pickaxe").unwrap())
+                    .unwrap()
+                    .to_owned(),
+                count: 4_000_000_000,
+            }],
+            ..save(
+                &Inventory::new(),
+                &Hotbar::default(),
+                ActiveSlot(0),
+                content,
+            )
+        };
+        let (inventory, ..) = load(&saved, content);
+        assert_eq!(inventory.entries().len(), 1);
     }
 
     /// Through the real game, in a world on disk: the active slot is saved

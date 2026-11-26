@@ -108,13 +108,20 @@ impl Inventory {
         self.entries.iter().map(|stack| stack.weight(content)).sum()
     }
 
-    /// How many of `item` it has, in all its entries.
+    /// How many of `item` it has, in all its entries (of any data).
     pub fn count(&self, item: ItemState) -> u32 {
         self.entries
             .iter()
             .filter(|stack| stack.item == item)
-            .map(|stack| stack.count)
-            .sum()
+            .fold(0, |sum: u32, stack| sum.saturating_add(stack.count))
+    }
+
+    /// How many of `kind`'s item with its data it has.
+    pub fn count_kind(&self, kind: &ItemStack) -> u32 {
+        self.entries
+            .iter()
+            .filter(|stack| stack.same_kind(kind))
+            .fold(0, |sum: u32, stack| sum.saturating_add(stack.count))
     }
 
     /// How many more of `item` its weight limit lets in: unlimited
@@ -138,10 +145,16 @@ impl Inventory {
     /// what's there of the same kind (or, for a unique item, an entry per
     /// copy). Returns what didn't fit, if anything.
     pub fn add(&mut self, content: &Content, mut stack: ItemStack) -> Option<ItemStack> {
-        let allowed = stack.count.min(self.room_for(content, stack.item));
+        let mut allowed = stack.count.min(self.room_for(content, stack.item));
+        // A count can't go past what a u32 holds; the rest doesn't fit.
+        let unique = is_unique(content, stack.item);
+        if !unique && let Some(existing) = self.entries.iter().find(|there| there.same_kind(&stack))
+        {
+            allowed = allowed.min(u32::MAX - existing.count);
+        }
         let refused = stack.count - allowed;
         if allowed > 0 {
-            if is_unique(content, stack.item) {
+            if unique {
                 let one = ItemStack {
                     count: 1,
                     ..stack.clone()
@@ -192,28 +205,26 @@ impl Inventory {
         true
     }
 
-    /// Takes up to `count` from entry `index`, returning what it took.
-    pub fn take(&mut self, index: usize, count: u32) -> Option<ItemStack> {
-        let stack = self.entries.get_mut(index)?;
-        let taken = stack.count.min(count);
-        if taken == 0 {
-            return None;
+    /// Takes `count` of `kind`'s item with its data out, the latest
+    /// entries first, or nothing at all if it doesn't have that many.
+    /// Returns whether it did.
+    pub fn remove_kind(&mut self, kind: &ItemStack, count: u32) -> bool {
+        if self.count_kind(kind) < count {
+            return false;
         }
-        stack.count -= taken;
-        let out = ItemStack {
-            count: taken,
-            ..stack.clone()
-        };
-        if stack.count == 0 {
-            self.entries.remove(index);
+        let mut left = count;
+        for stack in self.entries.iter_mut().rev() {
+            if left == 0 {
+                break;
+            }
+            if stack.same_kind(kind) {
+                let taken = stack.count.min(left);
+                stack.count -= taken;
+                left -= taken;
+            }
         }
-        Some(out)
-    }
-
-    /// The index of the entry holding `stack`'s kind, if any (for a unique
-    /// item, the first copy).
-    pub fn find(&self, stack: &ItemStack) -> Option<usize> {
-        self.entries.iter().position(|there| there.same_kind(stack))
+        self.entries.retain(|stack| stack.count > 0);
+        true
     }
 }
 
@@ -287,15 +298,34 @@ mod tests {
     }
 
     #[test]
-    fn taking_from_an_entry() {
+    fn removing_a_kind() {
         let content = base();
         let stone = item("defaria:stone");
         let mut inventory = Inventory::new();
         inventory.add(content, ItemStack::new(stone, 3));
-        assert_eq!(inventory.find(&ItemStack::one(stone)), Some(0));
-        assert_eq!(inventory.take(0, 2), Some(ItemStack::new(stone, 2)));
-        assert_eq!(inventory.take(0, 5), Some(ItemStack::one(stone)));
+        let kind = ItemStack::one(stone);
+        assert_eq!(inventory.count_kind(&kind), 3);
+        assert!(!inventory.remove_kind(&kind, 4));
+        assert!(inventory.remove_kind(&kind, 2));
+        assert_eq!(inventory.count_kind(&kind), 1);
+        assert!(inventory.remove_kind(&kind, 1));
         assert!(inventory.is_empty());
-        assert_eq!(inventory.take(0, 1), None);
+    }
+
+    /// A count stops at what a u32 holds rather than overflowing.
+    #[test]
+    fn counts_stop_at_the_largest_number() {
+        let content = base();
+        let stone = item("defaria:stone");
+        let mut inventory = Inventory::new();
+        assert_eq!(
+            inventory.add(content, ItemStack::new(stone, u32::MAX - 5)),
+            None
+        );
+        assert_eq!(
+            inventory.add(content, ItemStack::new(stone, 10)),
+            Some(ItemStack::new(stone, 5))
+        );
+        assert_eq!(inventory.count(stone), u32::MAX);
     }
 }
