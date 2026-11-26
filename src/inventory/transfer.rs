@@ -8,11 +8,12 @@ use crate::content::Content;
 /// One side of a move: an inventory, or the catalog (`None`).
 pub type Side<'a> = Option<&'a mut Inventory>;
 
-/// Moves up to `count` of `kind`'s item (with its data) from `from` to
-/// `to`: no more than `from` has, nor than `to`'s weight limit lets in.
+/// Moves up to `count` of `kind`'s item with its data (the copies like the
+/// one clicked, not any of the item) from `from` to `to`: no more than
+/// `from` has, nor than `to`'s weight limit lets in.
 /// Returns how many moved.
 pub fn transfer(content: &Content, from: Side, to: Side, kind: &ItemStack, count: u32) -> u32 {
-    let available = from.as_ref().map_or(u32::MAX, |from| from.count(kind.item));
+    let available = from.as_ref().map_or(u32::MAX, |from| from.count_kind(kind));
     let room = to
         .as_ref()
         .map_or(u32::MAX, |to| to.room_for(content, kind.item));
@@ -21,7 +22,7 @@ pub fn transfer(content: &Content, from: Side, to: Side, kind: &ItemStack, count
         return 0;
     }
     if let Some(from) = from {
-        from.remove(kind.item, moved);
+        from.remove_kind(kind, moved);
     }
     if let Some(to) = to {
         let stack = ItemStack {

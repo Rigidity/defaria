@@ -1,8 +1,8 @@
 //! The mouse on item lists and the hotbar, with a screen open.
 //!
-//! A screen with two lists ([`ScreenLists`]) moves items between them, such
-//! as the creative catalog and the player's inventory (there, moving items
-//! into the catalog throws them away):
+//! Each list says where its items go ([`ItemList::sends_to`]), such as
+//! between the creative catalog and the player's inventory (there, moving
+//! items into the catalog throws them away):
 //!
 //! - **Left click** an entry moves one to the other list; **Shift** moves
 //!   them all (from the catalog, [`CATALOG_BATCH`]); **right click** moves
@@ -15,8 +15,9 @@
 //!   anywhere else clears it.
 //!
 //! Clicks and drags are picking's (`PointerClick`, `PointerDragStart`,
-//! `PointerDragDrop`, `PointerDragEnd`). A dragged item's icon follows the
-//! pointer.
+//! `PointerDragDrop`, `PointerDragEnd`). A press that moves more than
+//! [`DRAG_DISTANCE`] is a drag, not a click, even if it ends where it
+//! started. A dragged item's icon follows the pointer.
 
 use bevy::{
     picking::{
@@ -34,7 +35,7 @@ use super::{
 };
 use crate::{
     content::{Content, ItemState},
-    hotbar::{HOTBAR_KEYS, Hotbar, HotbarSlot},
+    hotbar::{HOTBAR_KEYS, Hotbar, HotbarInput, HotbarSlot},
     player::LocalPlayer,
     ui::{ItemIcon, UiPointer, UiTheme, typing},
 };
@@ -43,6 +44,9 @@ use crate::{
 pub const CATALOG_BATCH: u32 = 100;
 /// How many a right click takes from the catalog.
 pub const CATALOG_HALF: u32 = 10;
+/// How far a press has to move, in logical pixels, to be a drag rather
+/// than a click.
+pub const DRAG_DISTANCE: f32 = 6.0;
 
 pub struct GesturePlugin;
 
@@ -50,6 +54,7 @@ impl Plugin for GesturePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HoveredEntry>()
             .init_resource::<Dragging>()
+            .register_type::<DragIcon>()
             .add_observer(click_entry)
             .add_observer(start_drag)
             .add_observer(drop_on)
@@ -59,7 +64,9 @@ impl Plugin for GesturePlugin {
                 Update,
                 (
                     find_hovered_entry,
-                    bind_with_keys.run_if(not(typing)),
+                    // Before the hotbar, which takes the number keys
+                    // that are left.
+                    bind_with_keys.run_if(not(typing)).before(HotbarInput),
                     show_drag_icon,
                 )
                     .chain(),
@@ -67,39 +74,18 @@ impl Plugin for GesturePlugin {
     }
 }
 
-/// The two lists a screen moves items between. On the screen's root.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScreenLists(pub ListSource, pub ListSource);
-
-impl ScreenLists {
-    /// Where items from `source` go.
-    pub fn other(&self, source: ListSource) -> Option<ListSource> {
-        if source == self.0 {
-            Some(self.1)
-        } else if source == self.1 {
-            Some(self.0)
-        } else {
-            None
-        }
-    }
-}
-
 /// The list entry under the pointer, if any.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct HoveredEntry(pub Option<ListEntry>);
-
-/// A run condition: the pointer is over a list entry, so the number keys
-/// put its item in the hotbar rather than picking a slot.
-pub fn over_entry(hovered: Option<Res<HoveredEntry>>) -> bool {
-    hovered.is_some_and(|hovered| hovered.0.is_some())
-}
 
 /// What's being dragged.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 enum Dragging {
     #[default]
     Nothing,
-    Entry(ListEntry, PointerButton),
+    /// An entry, where its list sends items, the button, and where the drag
+    /// started.
+    Entry(ListEntry, Option<ListSource>, PointerButton, Vec2),
     /// A hotbar slot, and whether it's been dropped somewhere that took it.
     HotbarSlot(usize, bool),
 }
@@ -159,22 +145,41 @@ fn amount(entry: &ListEntry, button: PointerButton, all: bool) -> u32 {
     }
 }
 
+/// Where `entry`'s list sends items: its parent's [`ItemList::sends_to`].
+fn sends_to(
+    entry: Entity,
+    parents: &Query<&ChildOf>,
+    lists: &Query<&ItemList>,
+) -> Option<ListSource> {
+    let list = parents.get(entry).ok()?.parent();
+    lists.get(list).ok()?.sends_to
+}
+
 fn click_entry(
     click: On<PointerClick>,
     keys: Res<ButtonInput<KeyCode>>,
     content: Res<Content>,
     entries: Query<&ListEntry>,
-    screen: Option<Single<&ScreenLists>>,
+    parents: Query<&ChildOf>,
+    lists: Query<&ItemList>,
+    dragging: Res<Dragging>,
     player: Option<Single<Entity, With<LocalPlayer>>>,
     mut inventories: Query<&mut Inventory>,
 ) {
-    let (Ok(entry), Some(screen)) = (entries.get(click.entity), screen) else {
+    let Ok(entry) = entries.get(click.entity) else {
         return;
     };
-    let Some(to) = screen.other(entry.source) else {
+    let Some(to) = sends_to(click.entity, &parents, &lists) else {
         return;
     };
     if click.button == PointerButton::Middle {
+        return;
+    }
+    // The end of a drag that came back where it started isn't a click.
+    // (Picking sends the click before the drag's end.)
+    if let Dragging::Entry(_, _, _, from) = *dragging
+        && from.distance(click.pointer.position) > DRAG_DISTANCE
+    {
         return;
     }
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -195,10 +200,13 @@ fn start_drag(
     drag: On<PointerDragStart>,
     entries: Query<&ListEntry>,
     slots: Query<&HotbarSlot>,
+    parents: Query<&ChildOf>,
+    lists: Query<&ItemList>,
     mut dragging: ResMut<Dragging>,
 ) {
     if let Ok(entry) = entries.get(drag.entity) {
-        *dragging = Dragging::Entry(entry.clone(), drag.button);
+        let to = sends_to(drag.entity, &parents, &lists);
+        *dragging = Dragging::Entry(entry.clone(), to, drag.button, drag.pointer.position);
     } else if let Ok(&HotbarSlot(index)) = slots.get(drag.entity) {
         *dragging = Dragging::HotbarSlot(index, false);
     }
@@ -227,7 +235,6 @@ fn drop_on(
     slots: Query<&HotbarSlot>,
     lists: Query<&ItemList>,
     parents: Query<&ChildOf>,
-    screen: Option<Single<&ScreenLists>>,
     mut players: Query<&mut Hotbar, With<LocalPlayer>>,
     player: Option<Single<Entity, With<LocalPlayer>>>,
     mut inventories: Query<&mut Inventory>,
@@ -242,14 +249,13 @@ fn drop_on(
     };
     let player = player.map(|player| *player);
     match (&mut *dragging, target) {
-        (Dragging::Entry(entry, _), Ok(slot)) => {
+        (Dragging::Entry(entry, ..), Ok(slot)) => {
             if let Ok(mut hotbar) = players.single_mut() {
                 hotbar.assign(slot, Some(entry.stack.item));
             }
         }
-        (Dragging::Entry(entry, button), Err(list)) => {
-            let to_other = screen.is_some_and(|screen| screen.other(entry.source) == Some(list));
-            if to_other {
+        (Dragging::Entry(entry, to, button, _), Err(list)) => {
+            if *to == Some(list) {
                 let count = amount(entry, *button, *button == PointerButton::Primary);
                 move_items(
                     &content,
@@ -287,9 +293,10 @@ fn end_drag(
     *dragging = Dragging::Nothing;
 }
 
-/// A number key over an entry puts its item in that hotbar slot.
+/// A number key over an entry puts its item in that hotbar slot, and uses
+/// the key up so the hotbar doesn't also pick that slot.
 fn bind_with_keys(
-    keys: Res<ButtonInput<KeyCode>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
     hovered: Res<HoveredEntry>,
     mut players: Query<&mut Hotbar, With<LocalPlayer>>,
 ) {
@@ -299,12 +306,14 @@ fn bind_with_keys(
     if let Some(slot) = HOTBAR_KEYS.iter().position(|&key| keys.just_pressed(key))
         && let Ok(mut hotbar) = players.single_mut()
     {
+        keys.clear_just_pressed(HOTBAR_KEYS[slot]);
         hotbar.assign(slot, Some(entry.stack.item));
     }
 }
 
 /// The icon of what's being dragged, under the pointer.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
 struct DragIcon;
 
 fn spawn_drag_icon(mut commands: Commands, theme: Res<UiTheme>) {
@@ -333,7 +342,7 @@ fn show_drag_icon(
     mut icons: Query<(&mut Node, &mut ItemIcon, &mut Visibility), With<DragIcon>>,
 ) {
     let item: Option<ItemState> = match &*dragging {
-        Dragging::Entry(entry, _) => Some(entry.stack.item),
+        Dragging::Entry(entry, ..) => Some(entry.stack.item),
         Dragging::HotbarSlot(slot, _) => players.single().ok().and_then(|hotbar| hotbar.0[*slot]),
         Dragging::Nothing => None,
     };

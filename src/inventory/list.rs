@@ -3,9 +3,10 @@
 //! entries respond to the mouse.
 //!
 //! There's no arranging: an inventory's list is always sorted (in item
-//! order for now), with an entry per kind of item showing how many. It's
-//! rebuilt when the kinds change, and its counts updated in place when only
-//! counts do.
+//! order for now), with an entry per kind of item showing how many. When
+//! the inventory changes its entries are updated in place, spawning or
+//! despawning only as many as the count of kinds changes by, so the list
+//! never draws half-built.
 
 use bevy::prelude::*;
 
@@ -13,7 +14,7 @@ use super::{Inventory, ItemStack, model::ItemData};
 use crate::{
     content::{Content, ItemState},
     player::LocalPlayer,
-    ui::{ItemSlot, UiTheme, UiWidgetSystems, item_slot, scroll_panel},
+    ui::{ItemSlot, UiTheme, item_slot, scroll_panel},
 };
 
 pub struct ListPlugin;
@@ -22,7 +23,9 @@ impl Plugin for ListPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<ItemList>()
             .register_type::<ListEntry>()
-            .add_systems(PostUpdate, refresh_lists.before(UiWidgetSystems));
+            // In Update, not just before the UI's own systems: an entry
+            // spawned in PostUpdate draws faded for its first frame.
+            .add_systems(Update, refresh_lists);
     }
 }
 
@@ -57,6 +60,9 @@ pub enum ListSource {
 #[reflect(Component)]
 pub struct ItemList {
     pub source: ListSource,
+    /// Where its items go when clicked or dragged away (the screen's other
+    /// list), if anywhere.
+    pub sends_to: Option<ListSource>,
 }
 
 /// One entry of an [`ItemList`]: a kind of item, and how many (for the
@@ -71,12 +77,12 @@ pub struct ListEntry {
 /// Slots in a row of a list.
 pub const COLUMNS: usize = 9;
 
-/// A list of `source`, `rows` rows of slots tall (more scroll), spawned
-/// under `parent`. `extra` goes on the list's node. Returns the list.
+/// `list`, `rows` rows of slots tall (more scroll), spawned under
+/// `parent`. `extra` goes on the list's node. Returns the list.
 pub fn item_list(
     parent: &mut ChildSpawnerCommands,
     theme: &UiTheme,
-    source: ListSource,
+    list: ItemList,
     rows: usize,
     extra: impl Bundle,
 ) -> Entity {
@@ -96,7 +102,7 @@ pub fn item_list(
             ..default()
         },
         slot + gap,
-        (ItemList { source }, extra),
+        (list, extra),
         |_| {},
     )
 }
@@ -151,40 +157,38 @@ fn refresh_lists(
         let shown: Vec<Entity> = children
             .map(|children| children.iter().filter(|e| entries.contains(*e)).collect())
             .unwrap_or_default();
-        let same_kinds = shown.len() == wanted.len()
-            && shown.iter().zip(&wanted).all(|(&entity, stack)| {
-                entries
-                    .get(entity)
-                    .is_ok_and(|(entry, _)| entry.stack.same_kind(stack))
-            });
-        if same_kinds {
-            for (&entity, stack) in shown.iter().zip(&wanted) {
-                if let Ok((mut entry, mut slot)) = entries.get_mut(entity) {
-                    entry.set_if_neq(ListEntry {
-                        source: item_list.source,
-                        stack: stack.clone(),
-                    });
-                    slot.count = shown_count(item_list.source, stack);
-                }
+        let source = item_list.source;
+        // Reuse what's there, in order; spawn or despawn only the
+        // difference.
+        for (&entity, stack) in shown.iter().zip(&wanted) {
+            if let Ok((mut entry, mut slot)) = entries.get_mut(entity) {
+                entry.set_if_neq(ListEntry {
+                    source,
+                    stack: stack.clone(),
+                });
+                slot.set_if_neq(entry_slot(source, stack, slot.selected));
             }
-            continue;
         }
-        commands.entity(list).despawn_related::<Children>();
-        commands.entity(list).with_children(|list| {
-            for stack in wanted {
-                let slot = ItemSlot {
-                    count: shown_count(item_list.source, &stack),
-                    ..ItemSlot::item(stack.item)
-                };
-                list.spawn((
-                    ListEntry {
-                        source: item_list.source,
-                        stack,
-                    },
-                    item_slot(&theme, slot),
-                ));
-            }
-        });
+        for &extra in shown.iter().skip(wanted.len()) {
+            commands.entity(extra).despawn();
+        }
+        if wanted.len() > shown.len() {
+            commands.entity(list).with_children(|list| {
+                for stack in wanted.into_iter().skip(shown.len()) {
+                    let slot = entry_slot(source, &stack, false);
+                    list.spawn((ListEntry { source, stack }, item_slot(&theme, slot)));
+                }
+            });
+        }
+    }
+}
+
+/// What an entry's slot shows.
+fn entry_slot(source: ListSource, stack: &ItemStack, selected: bool) -> ItemSlot {
+    ItemSlot {
+        count: shown_count(source, stack),
+        selected,
+        ..ItemSlot::item(stack.item)
     }
 }
 

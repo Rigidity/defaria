@@ -16,8 +16,7 @@ use bevy::prelude::*;
 
 use super::{
     Inventory,
-    gesture::ScreenLists,
-    list::{ListSource, Owner, item_list},
+    list::{ItemList, ListSource, Owner, item_list},
 };
 use crate::{
     content::Content,
@@ -38,6 +37,7 @@ pub struct ScreenPlugin;
 impl Plugin for ScreenPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<InventoryScreen>()
+            .register_type::<WeightLabel>()
             .add_systems(Update, (toggle_inventory.run_if(not(typing)), show_weight));
     }
 }
@@ -49,7 +49,8 @@ impl Plugin for ScreenPlugin {
 pub struct InventoryScreen;
 
 /// The line showing how much the player carries.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
 pub struct WeightLabel;
 
 fn toggle_inventory(
@@ -93,7 +94,6 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme) {
         .spawn((
             Name::new("Inventory"),
             InventoryScreen,
-            ScreenLists(ListSource::Catalog, player),
             Node {
                 position_type: PositionType::Absolute,
                 width: percent(100),
@@ -124,7 +124,10 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme) {
                 item_list(
                     panel,
                     theme,
-                    ListSource::Catalog,
+                    ItemList {
+                        source: ListSource::Catalog,
+                        sends_to: Some(player),
+                    },
                     CATALOG_ROWS,
                     Name::new("Catalog"),
                 );
@@ -142,7 +145,10 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme) {
                 item_list(
                     panel,
                     theme,
-                    player,
+                    ItemList {
+                        source: player,
+                        sends_to: Some(ListSource::Catalog),
+                    },
                     INVENTORY_ROWS,
                     Name::new("Inventory list"),
                 );
@@ -476,6 +482,49 @@ mod tests {
         assert_eq!(hotbar(&mut app).0[0], Some(glass));
         assert_eq!(hotbar(&mut app).0[8], None);
         assert_eq!(active(&mut app), ActiveSlot(0));
+    }
+
+    /// A drag that comes back where it started isn't a click: nothing
+    /// moves. A click that wobbles a pixel or two still is one.
+    #[test]
+    fn a_drag_back_to_the_start_moves_nothing() {
+        let mut app = open_inventory();
+        let sand = soil(&app, "defaria:sand");
+        let start = inventory(&mut app).count(sand);
+        let at = catalog_at(&mut app, sand);
+        let away = at + Vec2::new(0.0, 200.0);
+        run_more(
+            &mut app,
+            &format!(
+                "cursor {} {}\nwait 1\npress MouseRight\nwait 1\ncursor {} {}\nwait 1\ncursor {} {}\nwait 1\nrelease MouseRight\nwait 2",
+                at.x, at.y, away.x, away.y, at.x, at.y
+            ),
+        );
+        assert_eq!(inventory(&mut app).count(sand), start);
+        run_more(
+            &mut app,
+            &format!(
+                "cursor {} {}\nwait 1\npress MouseLeft\nwait 1\ncursor {} {}\nwait 1\nrelease MouseLeft\nwait 2",
+                at.x,
+                at.y,
+                at.x + 2.0,
+                at.y + 1.0
+            ),
+        );
+        assert_eq!(inventory(&mut app).count(sand), start + 1);
+    }
+
+    /// With the screen open, clicking a hotbar slot makes it active, and
+    /// right clicking clears it.
+    #[test]
+    fn hotbar_slots_are_clicked_in_the_screen() {
+        let mut app = open_inventory();
+        let slot_3 = hotbar_slot_at(&mut app, 2);
+        run_more(&mut app, &click("MouseLeft", slot_3));
+        assert_eq!(active(&mut app), ActiveSlot(2));
+        assert!(hotbar(&mut app).0[2].is_some());
+        run_more(&mut app, &click("MouseRight", slot_3));
+        assert_eq!(hotbar(&mut app).0[2], None);
     }
 
     /// Escape closes it too and locks the cursor again.

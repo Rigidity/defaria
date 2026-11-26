@@ -67,9 +67,7 @@ impl Plugin for HotbarPlugin {
                 Update,
                 (
                     (
-                        select_with_keys
-                            .run_if(not(typing))
-                            .run_if(not(crate::inventory::gesture::over_entry)),
+                        select_with_keys.run_if(not(typing)),
                         cycle_with_wheel.run_if(playing),
                     )
                         .in_set(HotbarInput),
