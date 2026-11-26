@@ -572,7 +572,9 @@ impl Content {
     /// - an opaque block hides it, unless it's a fluid and the face is a
     ///   solid opaque block's: you can be inside a fluid, so the floor and
     ///   walls of a lava pool stay drawn. Any other face against lava
-    ///   (water, glass, leaves) is hidden, so only one face is drawn there;
+    ///   (water, glass, leaves) is hidden, so only one face is drawn there,
+    ///   and between two different opaque fluids the one with the higher
+    ///   block number keeps its face;
     /// - a translucent one hides only the same block's translucent faces
     ///   (water against water, glass against glass);
     /// - a cut-out one hides nothing.
@@ -580,7 +582,12 @@ impl Content {
         let (own, next) = (self.state(block), self.state(neighbour));
         next.occludes(side.opposite())
             && match next.render {
-                Render::Opaque => !next.fluid || own.fluid || own.render != Render::Opaque,
+                Render::Opaque => {
+                    !next.fluid
+                        || next.block == own.block
+                        || own.render != Render::Opaque
+                        || (own.fluid && own.block < next.block)
+                }
                 Render::Cutout => false,
                 Render::Translucent => next.block == own.block && own.render == Render::Translucent,
             }

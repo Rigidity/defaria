@@ -1638,6 +1638,10 @@ mod tests {
                 r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
             ),
             (
+                "blocks/tar.json5",
+                r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
+            ),
+            (
                 "blocks/deep.json5",
                 r#"{ model: "pair", textures: { top: "a", bottom: "a" }, fluid: true }"#,
             ),
@@ -1671,7 +1675,16 @@ mod tests {
         // What hides a block's bottom face, from below.
         let hides = |block, neighbour| content.hides(block, neighbour, Direction::Down);
         assert!(hides(clear, solid) && hides(leafy, solid));
-        assert!(hides(clear, pool), "an opaque fluid hides see-through faces");
+        assert!(
+            hides(clear, pool),
+            "an opaque fluid hides see-through faces"
+        );
+        // Two different opaque fluids: exactly one face between them.
+        let tar = content.default_state("test:tar").unwrap();
+        assert!(
+            hides(pool, tar) != hides(tar, pool),
+            "one face between two fluids"
+        );
         assert!(!hides(solid, pool), "but not a solid opaque block's");
         assert!(hides(pool, pool), "an opaque fluid hides itself");
         assert!(hides(clear, clear), "the same translucent block");

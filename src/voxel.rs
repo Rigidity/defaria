@@ -319,9 +319,14 @@ impl Neighborhood {
                     continue;
                 }
                 let shading = self.shade_face(pos, face, glows, &opaque_at);
-                builder.push(pos.as_vec3(), face, &shading, false);
+                builder.push(pos.as_vec3(), face, &shading, Side::Front);
                 if state.double_sided {
-                    builder.push(pos.as_vec3(), face, &shading, true);
+                    // Opaque backs (lava's) can overlap at the block's
+                    // edges; translucent ones would blend twice there.
+                    let back = Side::Back {
+                        widened: state.render == Render::Opaque,
+                    };
+                    builder.push(pos.as_vec3(), face, &shading, back);
                 }
             }
         }
@@ -553,7 +558,13 @@ struct MeshBuilder {
 impl MeshBuilder {
     /// Adds a face of the block at `origin`, or its back: the same face
     /// facing the other way, with the front's light and shading.
-    fn push(&mut self, origin: Vec3, face: &BakedFace, shading: &FaceShading, back: bool) {
+    fn push(&mut self, origin: Vec3, face: &BakedFace, shading: &FaceShading, side: Side) {
+        let back = side != Side::Front;
+        let middle = if back {
+            face.vertices.iter().map(|v| v.pos).sum::<Vec3>() / face.vertices.len() as f32
+        } else {
+            Vec3::ZERO
+        };
         let base = self.positions.len() as u32;
         let count = face.vertices.len();
         let triangle = count == 3;
@@ -567,8 +578,25 @@ impl MeshBuilder {
             // The back runs the other way round: the first vertex, then the
             // rest in reverse, which swaps the second and fourth corners.
             let vertex = &face.vertices[if back && i > 0 { count - i } else { i }];
-            let pos = origin + vertex.pos;
-            center += pos;
+            // A back is drawn a hair out of the block: a neighbour's face in
+            // the same plane (a slab's side beside water or lava) is then
+            // nearer and wins the depth test, where they'd flicker
+            // otherwise. Widened by as much, its edges reach the block's
+            // other backs, leaving no hairline gap at the block's edges.
+            let pos = origin
+                + match side {
+                    Side::Front => vertex.pos,
+                    Side::Back { widened } => {
+                        let grow = if widened {
+                            1.0 + 2.0 * BACK_OFFSET
+                        } else {
+                            1.0
+                        };
+                        middle + (vertex.pos - middle) * grow + face.normal * BACK_OFFSET
+                    }
+                };
+            // The back sorts as its front: they're never seen together.
+            center += origin + vertex.pos;
             self.positions.push(pos.to_array());
             self.normals.push(normal.to_array());
             self.uvs.push(vertex.uv.to_array());
@@ -603,6 +631,21 @@ impl MeshBuilder {
         .with_inserted_attribute(ATTRIBUTE_FACE, self.faces)
         .with_inserted_indices(Indices::U32(self.indices))
     }
+}
+
+/// How far out of its block a double-sided block's back face is drawn, in
+/// blocks.
+const BACK_OFFSET: f32 = 1.0 / 512.0;
+
+/// Which side of a face [`MeshBuilder::push`] adds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Side {
+    Front,
+    /// Facing the other way; `widened` past its edges by
+    /// [`BACK_OFFSET`].
+    Back {
+        widened: bool,
+    },
 }
 
 /// [`ATTRIBUTE_CORNER`] for each corner.
@@ -1368,9 +1411,10 @@ mod tests {
     }
 
     /// A double-sided block's back faces are its front faces turned round:
-    /// the same corners, wound the other way, facing the other way, each
-    /// corner with the front's light and occlusion. So the underside of
-    /// water's surface is lit as its top is.
+    /// the same corners (pushed a hair out of the block), wound
+    /// the other way, facing the other way, each corner with the front's
+    /// light and occlusion. So the underside of water's surface is lit as
+    /// its top is.
     #[test]
     fn back_faces_mirror_the_front() {
         let blocks = [(A, block("water")), (A - IVec3::X, block("stone"))];
@@ -1401,10 +1445,11 @@ mod tests {
                 |i: usize| (positions[i + 1] - positions[i]).cross(positions[i + 2] - positions[i]);
             assert!(wound(back).dot(normals[back]) > 0.0, "counter-clockwise");
             for i in 0..4 {
+                let out = positions[front + i] + normals[front] * BACK_OFFSET;
                 let twin = (0..4)
                     .map(|j| back + j)
-                    .find(|&j| positions[j] == positions[front + i])
-                    .expect("the back has the front's corners");
+                    .find(|&j| positions[j].distance(out) < 1e-5)
+                    .expect("the back has the front's corners, pushed out");
                 assert_eq!(at(twin), at(front + i));
             }
         }
@@ -1462,6 +1507,41 @@ mod tests {
         );
     }
 
+    /// Lava's backs are widened past the block's edges, so the backs meet
+    /// with no gap where two sides of the block do; water's aren't, so
+    /// backs side by side don't overlap and blend twice.
+    #[test]
+    fn opaque_backs_are_widened() {
+        // The x extent of the back of the block's top face.
+        let top_back = |name: &str| {
+            let meshes = neighborhood(&[(A, block(name))], |_| OPEN_SKY).meshes(base());
+            let mesh = if name == "lava" {
+                meshes.opaque
+            } else {
+                meshes.translucent
+            };
+            let positions = vec3s(&mesh, Mesh::ATTRIBUTE_POSITION);
+            let normals = vec3s(&mesh, Mesh::ATTRIBUTE_NORMAL);
+            let first = (0..positions.len())
+                .step_by(4)
+                .find(|&i| normals[i] == Vec3::NEG_Y && positions[i].y > A.y as f32 + 1.0)
+                .expect("a back facing down, above the block");
+            let xs = positions[first..first + 4].iter().map(|p| p.x - A.x as f32);
+            xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
+        };
+        let e = BACK_OFFSET;
+        let (lo, hi) = top_back("lava");
+        assert!(
+            (lo + e).abs() < 1e-6 && (hi - 1.0 - e).abs() < 1e-6,
+            "lava: {lo}..{hi}"
+        );
+        let (lo, hi) = top_back("water");
+        assert!(
+            lo.abs() < 1e-6 && (hi - 1.0).abs() < 1e-6,
+            "water: {lo}..{hi}"
+        );
+    }
+
     /// Translucent faces sort farthest first from the eye, as whole faces.
     #[test]
     fn translucent_faces_sort_back_to_front() {
@@ -1489,8 +1569,10 @@ mod tests {
                     center(&[quad[0], quad[1], quad[2], quad[5]]).distance(eye)
                 })
                 .collect();
+            // Back faces sort as their fronts, a hair from where they're
+            // drawn.
             assert!(
-                distances.is_sorted_by(|a, b| a >= b),
+                distances.is_sorted_by(|a, b| *a >= b - 0.01),
                 "{eye}: {distances:?}"
             );
         }
