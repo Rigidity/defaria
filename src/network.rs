@@ -24,11 +24,16 @@
 
 pub mod energy;
 mod graph;
+mod item;
 mod state;
 
 use bevy::prelude::*;
 
 pub use graph::{Network, NetworkChanged, NetworkId, Networks, Port, Share};
+pub use item::{
+    Cursor, Endpoint, ItemNetworkPlugin, ItemRates, ItemRouting, ItemSource, MAX_MOVES_PER_TICK,
+    route,
+};
 pub use state::{
     NetworkAppExt, NetworkMap, NetworkState, NetworkStateSystems, divide, divide_by_share,
 };

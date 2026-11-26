@@ -11,8 +11,9 @@ use super::{
     BlockState, Content, Direction, FULL_FLUID, Property,
     bake::{Mix, rotation},
     check_namespace, offset_of, qualify,
-    schema::{Attribute, MachineDef, MachineRecipesDef, PortFace, PortRole, Solver},
+    schema::{Attribute, FilterDef, MachineDef, MachineRecipesDef, PortFace, PortRole, Solver},
 };
+use crate::content::ItemState;
 
 /// The most slots a group may have.
 pub const MAX_SLOTS: u32 = 256;
@@ -34,6 +35,10 @@ pub struct Machine {
     /// This state with those properties back at their defaults: the state
     /// it's in when it stops.
     pub idle: BlockState,
+    /// The item ports' filters, which [`MachinePort::filter`] indexes.
+    pub filters: Vec<ItemFilter>,
+    /// For a creative machine, the item it keeps a slot group full of.
+    pub emits: Option<Emits>,
     /// The recipes it runs, if it's a recipe machine.
     pub recipes: Option<MachineRecipes>,
 }
@@ -50,6 +55,52 @@ pub struct MachineRecipes {
     pub output_tanks: Vec<usize>,
 }
 
+/// The items an item port passes: those with one of the ids, or with a
+/// material property that's one of the materials or has one of the tags.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ItemFilter {
+    /// Item ids.
+    pub items: Vec<String>,
+    /// Material ids.
+    pub materials: Vec<String>,
+    /// Material tags, without the `#`.
+    pub tags: Vec<String>,
+}
+
+impl ItemFilter {
+    /// Whether `item` passes.
+    pub fn passes(&self, content: &Content, item: ItemState) -> bool {
+        let Some(info) = content.item_state(item) else {
+            return false;
+        };
+        let def = &content.items[info.item];
+        if self.items.contains(&def.id) {
+            return true;
+        }
+        def.properties
+            .iter()
+            .zip(&info.values)
+            .filter(|(property, _)| property.materials)
+            .any(|(_, (_, value))| {
+                self.materials.contains(value)
+                    || content
+                        .materials
+                        .get(value)
+                        .is_some_and(|m| self.tags.iter().any(|tag| m.has_tag(tag)))
+            })
+    }
+}
+
+/// A creative machine's endless supply: a slot group kept full of one
+/// item, out of nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emits {
+    /// The item's id; it's emitted in its default state.
+    pub item: String,
+    /// The slot group, an index into [`Machine::slots`].
+    pub slots: usize,
+}
+
 /// A face of a machine that conduits of one network kind join.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MachinePort {
@@ -62,6 +113,8 @@ pub struct MachinePort {
     pub tank: Option<usize>,
     /// For an item port, its slot group, an index into [`Machine::slots`].
     pub slots: Option<usize>,
+    /// For an item port with a filter, an index into [`Machine::filters`].
+    pub filter: Option<usize>,
 }
 
 /// A machine's energy buffer, in joules, rates in watts.
@@ -180,6 +233,8 @@ pub(super) struct MachineMix {
     /// The `facing` property's index, if a port needs it.
     facing: Option<usize>,
     recipes: Option<MachineRecipes>,
+    filters: Vec<ItemFilter>,
+    emits: Option<Emits>,
 }
 
 struct PortMix {
@@ -188,6 +243,7 @@ struct PortMix {
     role: PortRole,
     tank: Option<usize>,
     slots: Option<usize>,
+    filter: Option<usize>,
 }
 
 impl MachineMix {
@@ -251,6 +307,7 @@ impl MachineMix {
         }
 
         let mut ports = Vec::new();
+        let mut filters = Vec::new();
         for (i, port) in def.ports.iter().enumerate() {
             let at = |error: String| format!("machine port {}: {error}", i + 1);
             if port.faces.is_empty() {
@@ -283,6 +340,9 @@ impl MachineMix {
             if port.slots.is_some() && solver != Solver::Item {
                 return Err(at("only a port on an item network has `slots`".into()));
             }
+            if port.filter.is_some() && solver != Solver::Item {
+                return Err(at("only a port on an item network has a `filter`".into()));
+            }
             let names: Vec<&str> = tanks.iter().map(|(name, ..)| name.as_str()).collect();
             let tank = (solver == Solver::Fluid)
                 .then(|| pick("tank", "tanks", port.tank.as_deref(), &names))
@@ -293,12 +353,20 @@ impl MachineMix {
                 .then(|| pick("slot group", "slots", port.slots.as_deref(), &names))
                 .transpose()
                 .map_err(at)?;
+            let filter = match &port.filter {
+                Some(def) => {
+                    filters.push(item_filter(def, namespace, content).map_err(at)?);
+                    Some(filters.len() - 1)
+                }
+                None => None,
+            };
             ports.push(PortMix {
                 faces: port.faces.clone(),
                 network,
                 role: port.role,
                 tank,
                 slots: group,
+                filter,
             });
         }
 
@@ -361,6 +429,20 @@ impl MachineMix {
             .map(|recipes| machine_recipes(recipes, def, &tanks, &slots))
             .transpose()?;
 
+        let emits = def
+            .emits
+            .as_ref()
+            .map(|emits| {
+                let names: Vec<&str> = slots.iter().map(|group| group.name.as_str()).collect();
+                Ok::<_, String>(Emits {
+                    item: qualify(&emits.item, namespace)
+                        .map_err(|error| format!("machine `emits`: {error}"))?,
+                    slots: pick("slot group", "slots", emits.slots.as_deref(), &names)
+                        .map_err(|error| format!("machine `emits` {error}"))?,
+                })
+            })
+            .transpose()?;
+
         Ok(MachineMix {
             ports,
             energy,
@@ -369,6 +451,8 @@ impl MachineMix {
             active,
             facing,
             recipes,
+            filters,
+            emits,
         })
     }
 
@@ -414,6 +498,7 @@ impl MachineMix {
                     role: port.role,
                     tank: port.tank,
                     slots: port.slots,
+                    filter: port.filter,
                 });
             }
         }
@@ -456,6 +541,8 @@ impl MachineMix {
             active: state(&active),
             idle: state(&idle),
             recipes: self.recipes.clone(),
+            filters: self.filters.clone(),
+            emits: self.emits.clone(),
         })
     }
 }
@@ -526,6 +613,69 @@ fn pick(what: &str, field: &str, named: Option<&str>, names: &[&str]) -> Result<
             if field == "tanks" { "tank" } else { "slots" }
         )),
     }
+}
+
+/// A port's `filter`, its materials checked.
+fn item_filter(def: &FilterDef, namespace: &str, content: &Content) -> Result<ItemFilter, String> {
+    if def.items.is_empty() && def.materials.is_empty() {
+        return Err(
+            "`filter` is empty, so nothing would pass; give it `items` or `materials`".into(),
+        );
+    }
+    let items = def
+        .items
+        .iter()
+        .map(|item| qualify(item, namespace))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("`filter.items`: {error}"))?;
+    let mut materials = Vec::new();
+    let mut tags = Vec::new();
+    for entry in &def.materials {
+        if let Some(tag) = entry.strip_prefix('#') {
+            if !content.materials.values().any(|m| m.has_tag(tag)) {
+                return Err(format!("`filter.materials`: no material has tag `{tag}`"));
+            }
+            tags.push(tag.to_string());
+        } else {
+            let id = qualify(entry, namespace)
+                .map_err(|error| format!("`filter.materials`: {error}"))?;
+            if !content.materials.contains_key(&id) {
+                return Err(format!("`filter.materials`: no material `{id}`"));
+            }
+            materials.push(id);
+        }
+    }
+    Ok(ItemFilter {
+        items,
+        materials,
+        tags,
+    })
+}
+
+/// Checks that the items a machine's filters and `emits` name are items.
+/// Run once every item has loaded, since items load after blocks.
+pub(super) fn check_machine_items(
+    def: &MachineDef,
+    namespace: &str,
+    content: &Content,
+) -> Result<(), String> {
+    let named = def
+        .ports
+        .iter()
+        .filter_map(|port| port.filter.as_ref())
+        .flat_map(|filter| filter.items.iter().map(|item| ("filter.items", item)))
+        .chain(def.emits.iter().map(|emits| ("emits.item", &emits.item)));
+    for (field, item) in named {
+        let Ok(id) = qualify(item, namespace) else {
+            continue;
+        };
+        if content.item(&id).is_none() {
+            return Err(format!(
+                "machine `{field}` names `{id}`, which isn't an item"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn solver_name(solver: Solver) -> &'static str {

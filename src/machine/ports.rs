@@ -32,6 +32,12 @@ pub struct MachinePortRef {
     /// For an item port, its slot group, an index into the machine's
     /// [`Slots`](super::Slots).
     pub slots: Option<usize>,
+    /// For an item port with a filter, an index into the machine's
+    /// [`Machine::filters`](crate::content::Machine::filters).
+    pub filter: Option<usize>,
+    /// The machine's voxel's state, for its
+    /// [`Machine`](crate::content::Machine).
+    pub state: BlockState,
     /// The machine's block entity, with its buffer, tanks and slots.
     /// `None` only for the frame it's placed on, before it's made.
     pub entity: Option<Entity>,
@@ -78,7 +84,8 @@ impl MachinePorts {
                 .ports()
                 .iter()
                 .filter_map(|port| {
-                    let machine = content.machine(world(port.pos)?)?;
+                    let state = world(port.pos)?;
+                    let machine = content.machine(state)?;
                     let found = machine.port(network.kind(), port.face)?;
                     Some(MachinePortRef {
                         pos: port.pos,
@@ -86,6 +93,8 @@ impl MachinePorts {
                         role: found.role,
                         tank: found.tank,
                         slots: found.slots,
+                        filter: found.filter,
+                        state,
                         entity: entity(port.pos),
                     })
                 })

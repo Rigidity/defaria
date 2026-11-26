@@ -357,6 +357,10 @@ pub struct MachineDef {
     /// naming where it takes and puts things.
     #[serde(default)]
     pub recipes: Option<MachineRecipesDef>,
+    /// Creative and test machines: keeps a slot group full of an item,
+    /// out of nothing, for item networks to carry.
+    #[serde(default)]
+    pub emits: Option<EmitsDef>,
 }
 
 /// A machine's `recipes`: the type of recipe it runs, and the slot groups
@@ -466,6 +470,35 @@ pub struct PortDef {
     pub tank: Option<String>,
     /// The slot group an item port fills or takes from. Left out, the
     /// machine's only group.
+    #[serde(default)]
+    pub slots: Option<String>,
+    /// For an item port, the items it passes: an input takes only these
+    /// from the network, an output offers only these. Left out, any.
+    #[serde(default)]
+    pub filter: Option<FilterDef>,
+}
+
+/// The items an item port passes: those named, and those made of one of
+/// the materials. An item passes if it matches either list.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FilterDef {
+    /// Item ids, such as `"defaria:planks"`.
+    #[serde(default)]
+    pub items: Vec<String>,
+    /// Material ids, or tags as `"#metal"`: an item passes if one of its
+    /// material properties is one of them.
+    #[serde(default)]
+    pub materials: Vec<String>,
+}
+
+/// A creative machine's endless supply of one item.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct EmitsDef {
+    /// The item's id, in its default state.
+    pub item: String,
+    /// The slot group kept full of it. Left out, the machine's only group.
     #[serde(default)]
     pub slots: Option<String>,
 }

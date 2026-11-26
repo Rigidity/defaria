@@ -853,7 +853,8 @@ Every field is optional; `machine: {}` is a machine with nothing.
   A port with relative faces needs a `facing` property whose values are
   all sides. A face has at most one port of each network kind, and
   conduits of that kind join the machine on it, and only there.
-- **Roles** say what a port does, and each solver takes its own:
+- **Roles** say what a port does, and each solver takes its own (how
+  items move is under [Networks](#networks)):
   - energy networks: `produce` (gives energy from the buffer: a
     generator), `consume` (takes energy into it: a lamp) and `store`
     (both, as the network has too much or too little: a battery). An
@@ -885,6 +886,16 @@ Every field is optional; `machine: {}` is a machine with nothing.
   `recipes: { type: "combustion", inputs: ["fuel"], outputs: [] }` (a
   name that's both a slot group and a tank means both). A recipe machine
   uses energy for its recipes itself, so it has no `energy.use`.
+- **`filter`**, on an item port: the items it passes, by **`items`** (item
+  ids) and **`materials`** (material ids, or tags as `"#metal"`; an item
+  passes if one of its material properties is one). An item passes if it
+  matches either list. An `input` with a filter takes only those from the
+  network, and an `output` offers only those. Left out, any item passes.
+  `filter: { materials: ["#wood"] }` takes planks and logs of every wood.
+- **`emits`**, for creative and test machines: `{ item, slots }` keeps
+  the slot group `slots` (left out, the only one) full of `item`, in its
+  default state, out of nothing, so tubes can take it away. The base
+  game's Creative Item Source emits planks.
 
 A machine with slots, tanks or `recipes` has a **screen**,
 which opens when the player uses it (right click) and is laid out from
@@ -905,8 +916,9 @@ Every number (capacities and rates) is an
 [attribute](#hardness-weight-and-stats), so a machine of better metal
 can hold more. Names of tanks and slot groups are lowercase letters,
 digits and `_`. A port naming a network kind, tank or slot group that
-doesn't exist, a role the network's solver doesn't take, or two ports on
-one face and network kind, is an error.
+doesn't exist, a role the network's solver doesn't take, two ports on
+one face and network kind, an empty filter, or a filter or `emits` naming
+an item or material that doesn't exist, is an error.
 
 ## Items
 
@@ -1081,6 +1093,16 @@ them, a steam network on the `fluid` solver say, and conduits on it join
 only each other. The base game's kinds are `electric`, `fluid` and
 `item`, with wires, pipes and tubes.
 
+On an `item` network, items move straight from one machine's slots to
+another's, none in the tubes between: a network moves as many items a
+second as its slowest tube's `throughput`. Each goes from a port that
+gives (`output` or `store`) to one that takes (`input` or `store`), but
+never from a `store` to a `store`, nor back into the slot group it came
+from. Inputs are filled before stores, so machines are fed first and
+storage takes the rest, and items go round-robin between the ports that
+take them, so two crates on one tube fill evenly. A full slot group
+takes no more, and the items wait where they are.
+
 ## Recipes
 
 `recipes/<name>.json5`: something a recipe machine does. A machine with
@@ -1185,13 +1207,14 @@ and tanks (a player, a tube, a pipe, a script), it runs on them the same.
   voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
-- Item networks don't carry anything yet, so a machine's slots fill only
-  by hand or by scripts.
 - A wire carrying more than it can doesn't burn out; it caps what the
   network moves. Wires lose nothing over distance, and there are no
   voltages.
 - A pump or outlet reaches only the world in front of it, and a tank
   shows its first tank only.
+- Items don't visibly travel along tubes; they jump from machine to
+  machine.
+- Item ports can't be told apart by priority beyond inputs before stores.
 - A slot's size (64) is the same for every machine.
 - A recipe machine with too little power stops and starts rather than
   running slower; recipes can't take a tool without using it up, or give
