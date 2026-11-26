@@ -93,15 +93,31 @@ log, and a mod adding a wood gets its logs, planks and tool handles too.
   },
   hardness: 1,                     // required: how hard it is to break
   weight: 750,                     // required: kg per block of it
+  // Other named numbers, for blocks and items to read.
+  stats: { throughput: 0.5, max_temperature: 570 },
 }
 ```
 
 `hardness` and `weight` are what blocks and items made of the material
-count toward their own (see [Hardness and weight](#hardness-and-weight)).
+count toward their own (see [Hardness, weight and stats](#hardness-weight-and-stats)).
 Hardness has no unit: dirt is about 0.5, stone 1.5 and iron 3. Weight is in
 kilograms for a whole block of the material, a cube a metre on each side,
 so it's the material's density in kg/m³: oak 750, stone 2600, iron 7870.
 Every material needs both.
+
+`stats` are any other numbers a material has, by name, read the same way
+(blocks and items average them over their materials). A name is lowercase
+letters, digits and `_`, and isn't `hardness` or `weight`; a value is at
+least 0. Names aren't qualified with the mod: a mod's materials give the
+same stats the base game's do, so its metals work in the base game's
+wires. A mod adding stats of its own should start their names with its id
+(`mymod_mana`) so they don't clash. The base game's:
+
+| Stat | Meaning | Materials |
+|---|---|---|
+| `conductivity` | How well it carries power, copper being 1 | copper 1, gold 0.7, iron 0.17 |
+| `throughput` | How much a pipe of it carries, iron being 1 | gold 1.5, copper 1.25, iron 1, woods 0.5 |
+| `max_temperature` | The hottest it holds, in kelvin | iron 1811, copper 1358, gold 1337, woods 570 |
 
 Each palette is 2 to 8 hex colors, darkest first: `#rrggbb`, or
 `#rrggbbaa` with an alpha, for see-through materials like water. They're
@@ -381,18 +397,18 @@ blocks (1 is a full block):
 - **`view`**: the fog's `color` (`#rrggbb`) and how far you can see
   (`distance`, in blocks) with your eyes under its surface.
 
-### Hardness and weight
+### Hardness, weight and stats
 
 Every block state and item state has a hardness (how long it takes to
 break; no unit, dirt about 0.5 and stone 1.5) and a weight in kilograms.
-Each is a number:
+Each is an attribute: a number,
 
 ```json5
 { name: "Lamp", model: "cube", textures: { all: "lamp" }, hardness: 0.3, weight: 500 }
 ```
 
 or, for something made of materials, a `base` times the weighted average
-of its material properties' values:
+of one stat of its material properties' materials:
 
 ```json5
 // blocks/stone.json5: mostly rock, so ore counts a quarter.
@@ -401,6 +417,10 @@ weight: { materials: { rock: 3, ore: 1 } },
 
 // blocks/stone_slab.json5: half a block of rock.
 weight: { base: 0.5, materials: { rock: 1 } },
+
+// A wire's stat (see below): 500 for each unit of its metal's
+// conductivity, and 50 for a metal that doesn't say.
+stats: { capacity: { base: 500, stat: "conductivity", materials: { metal: 1 }, default: 0.1 } },
 ```
 
 - **`materials`** names material properties and how much each counts.
@@ -410,12 +430,37 @@ weight: { base: 0.5, materials: { rock: 1 } },
   optional properties is an error (in the state where all are `none`,
   there'd be nothing to average); count one that isn't optional, or
   write a number.
+- **`stat`** is the materials' stat it averages: `hardness`, `weight` or
+  one of their [`stats`](#materials). Left out, it's the stat named like
+  the field, so `hardness` averages hardness and a block stat
+  `max_temperature` averages `max_temperature`. A stat no material has is
+  an error (it's likely misspelt).
+- **`default`** is the value for a material without the stat. Left out,
+  every material a counted property can be must have it: one that doesn't
+  is an error naming the material and the stat.
 - **`base`** multiplies the average; it defaults to 1. A material's weight
   is per whole block, so a slab's base is 0.5, and a tool's is its volume
   in cubic metres (a 0.7-litre pickaxe is `0.0007`).
 - Left out, a block's hardness and weight are 0.
 
-Each state's values are worked out once, at load.
+A block can have other numbers too, by name, in `stats`, each an
+attribute:
+
+```json5
+// blocks/pipe.json5
+stats: {
+  throughput: { base: 2, materials: { material: 1 } },   // the stat `throughput`
+  max_temperature: { materials: { material: 1 } },
+  size: 0.25,                                            // the same for every state
+},
+```
+
+Stat names are as for materials, and a stat a block leaves out it
+doesn't have. Any other field that works a number out from materials
+takes an attribute too, read the same way.
+
+Each state's values are worked out once, at load, so the game never
+averages while it runs.
 
 ### States, properties and variants
 
@@ -592,7 +637,7 @@ Log and a Birch Log item, but no item per axis. Set `item: false` on a
 property to leave it out, or on the block to have no item at all.
 
 The item is as hard and as heavy as the block state it places. To change
-the item (its name, icon, uniqueness, hardness or weight), add an item file with
+the item (its name, icon, uniqueness, hardness, weight or stats), add an item file with
 the same name: what it leaves out comes from the block. It can't add
 properties or a `block`.
 
@@ -615,13 +660,16 @@ properties or a `block`.
   hardness: { materials: { head: 3, handle: 1 } },
   // 0.7 litres, a quarter of it the head.
   weight: { base: 0.0007, materials: { head: 1, handle: 3 } },
+  stats: { reach: 4.5 },  // other numbers, by name
 }
 ```
 
-`hardness` and `weight` work as they do for
-[blocks](#hardness-and-weight), with the item's own properties; weight is
-what one of the item weighs, in kilograms. Left out, they're those of the
-block state the item places, or 0 for an item that places none.
+`hardness`, `weight` and `stats` work as they do for
+[blocks](#hardness-weight-and-stats), with the item's own properties;
+weight is what one of the item weighs, in kilograms. Left out, hardness
+and weight are those of the block state the item places, or 0 for an
+item that places none. An item has the stats of the block state it
+places as well as its own, its own winning where both have one.
 
 Inventories count items, limited only by weight, so any number of an
 item fits in one entry. A `unique` item is the exception: every copy is
@@ -672,7 +720,7 @@ leave gaps in `order` so other mods can slot theirs between.
   against the side of a block can't pick its half from the upper or lower
   part of that side.
 - Item data that isn't a fixed list of values, such as durability.
-- Variants can't change hardness or weight.
+- Variants can't change hardness, weight or stats.
 - Fluids' textures don't move, and their surfaces are flat steps rather
   than slopes.
 - Fluids only flow into air: not into blocks that don't fill their

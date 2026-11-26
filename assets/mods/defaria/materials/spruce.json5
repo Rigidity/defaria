@@ -10,4 +10,5 @@
   },
   hardness: 0.8,
   weight: 450,
+  stats: { throughput: 0.5, max_temperature: 570 },
 }
