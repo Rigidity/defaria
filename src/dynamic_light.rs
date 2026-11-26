@@ -11,8 +11,8 @@
 //!
 //! Only the [`MAX_DYNAMIC_LIGHTS`] nearest the camera are drawn.
 //!
-//! The player carries one: [`PlayerLight`], on the fly camera. L switches it
-//! on and off.
+//! The player carries one: [`PlayerLight`], a child of the local player at
+//! eye height. L switches it on and off.
 
 use bevy::prelude::*;
 
@@ -242,8 +242,9 @@ mod tests {
     fn the_player_carries_a_light_that_l_toggles() {
         let mut app = app();
         let at = Vec3::new(3.0, 40.0, -7.0);
-        app.world_mut()
-            .spawn(crate::player::local_player(Transform::from_translation(at)));
+        app.world_mut().spawn(crate::player::tests::local_player_at(
+            Transform::from_translation(at),
+        ));
         app.update();
         let player = app
             .world_mut()

@@ -140,9 +140,18 @@ fn sway_the_view(
 mod tests {
     use super::*;
     use crate::{
+        fly_camera::give_the_player_a_camera,
         physics::STEP,
         player::tests::{FRAME, app, floor, hold, run, spawn},
     };
+
+    /// The [`EyeView`] the game gives the local player, under its camera.
+    fn eye_view(app: &mut App) -> Entity {
+        app.world_mut()
+            .query_filtered::<Entity, With<EyeView>>()
+            .single(app.world())
+            .unwrap()
+    }
 
     /// Standing still, nothing sways.
     #[test]
@@ -214,9 +223,10 @@ mod tests {
         assert_eq!(bob.sway(0.5), sway(0.3, 0.075));
 
         let mut app = app(IVec3::new(8, 8, 8), STEP / 2, floor(4));
-        app.add_plugins(ViewBobPlugin);
+        app.add_plugins(ViewBobPlugin)
+            .add_observer(give_the_player_a_camera);
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
-        let view = app.world_mut().spawn((EyeView, ChildOf(player))).id();
+        let view = eye_view(&mut app);
         hold(&mut app, &[KeyCode::KeyW]);
         run(&mut app, 0.5);
         let mut halfway = 0;
@@ -238,9 +248,10 @@ mod tests {
     #[test]
     fn walking_sways_and_stopping_settles() {
         let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
-        app.add_plugins(ViewBobPlugin);
+        app.add_plugins(ViewBobPlugin)
+            .add_observer(give_the_player_a_camera);
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
-        let view = app.world_mut().spawn((EyeView, ChildOf(player))).id();
+        let view = eye_view(&mut app);
         run(&mut app, 0.2);
         let sway = |app: &App| *app.world().get::<Transform>(view).unwrap();
         assert_eq!(sway(&app), Transform::IDENTITY);

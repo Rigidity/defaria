@@ -652,7 +652,7 @@ mod tests {
         // Looking along +X at block (14, 1, 5) from three blocks away.
         app.world_mut()
             .spawn((
-                crate::player::local_player(
+                crate::player::tests::local_player_at(
                     Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
                 ),
                 Inventory::new(),

@@ -241,7 +241,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<ChunkMap>()
             .insert(ChunkCoord(IVec3::ZERO), entity);
-        app.world_mut().spawn(crate::player::local_player(
+        app.world_mut().spawn(crate::player::tests::local_player_at(
             Transform::from_xyz(2.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
         ));
         // Lets the first frame, which has no time step, go by.

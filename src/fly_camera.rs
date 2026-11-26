@@ -21,7 +21,7 @@ use bevy::{
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 
-use crate::player::{FaceTheLook, LocalPlayer, Look, Player};
+use crate::player::{LocalPlayer, Look, Player};
 
 /// The vertical field of view, in degrees.
 pub const FOV: f32 = 70.0;
@@ -42,9 +42,7 @@ impl Plugin for FlyCameraPlugin {
             )
             .add_systems(
                 PostUpdate,
-                place_the_camera
-                    .after(FaceTheLook)
-                    .before(TransformSystems::Propagate),
+                place_the_camera.before(TransformSystems::Propagate),
             );
     }
 }
@@ -82,8 +80,9 @@ pub const NEAR: f32 = 0.01;
 #[require(Camera3d)]
 pub struct EyeView;
 
-/// Gives the local player a camera at its eyes.
-fn give_the_player_a_camera(
+/// Gives the local player a camera at its eyes: the [`FlyCamera`], with the
+/// [`EyeView`] under it.
+pub(crate) fn give_the_player_a_camera(
     add: On<Add<LocalPlayer>>,
     players: Query<(&Player, &Look)>,
     mut commands: Commands,
@@ -289,5 +288,20 @@ mod tests {
             camera.translation,
             Vec3::Y * crate::player::EYE_HEIGHT as f32
         );
+    }
+
+    /// The camera follows the eye height drawn this frame, so it lowers as
+    /// the player sneaks.
+    #[test]
+    fn the_camera_lowers_with_the_eyes() {
+        let mut app = app();
+        let player = spawn_camera(&mut app);
+        app.update();
+        app.world_mut()
+            .get_mut::<Player>(player)
+            .unwrap()
+            .drawn_eye_height = 1.4;
+        app.update();
+        assert_eq!(camera(&mut app).translation, Vec3::Y * 1.4);
     }
 }

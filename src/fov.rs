@@ -120,7 +120,10 @@ fn widen_the_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::tests::{FRAME, app, floor, hold, run, spawn};
+    use crate::{
+        fly_camera::give_the_player_a_camera,
+        player::tests::{FRAME, app, floor, hold, run, spawn},
+    };
     use bevy::math::DVec3;
 
     fn fov(app: &App, view: Entity) -> f32 {
@@ -132,19 +135,15 @@ mod tests {
 
     fn setup() -> (App, Entity, Entity) {
         let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
-        app.add_plugins(FovPlugin);
+        app.add_plugins(FovPlugin)
+            .add_observer(give_the_player_a_camera);
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        // The eye view the game gives the local player, under its camera.
         let view = app
             .world_mut()
-            .spawn((
-                EyeView,
-                Projection::Perspective(PerspectiveProjection {
-                    fov: FOV.to_radians(),
-                    ..default()
-                }),
-                ChildOf(player),
-            ))
-            .id();
+            .query_filtered::<Entity, With<EyeView>>()
+            .single(app.world())
+            .unwrap();
         (app, player, view)
     }
 

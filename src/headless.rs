@@ -127,7 +127,7 @@ use crate::{
     hotbar::{ActiveSlot, Hotbar},
     machine::{Slots, Tanks},
     physics::Body,
-    player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player},
+    player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player, put_eyes},
     script::random_tick::RandomTicks,
     streaming::StreamingStatus,
     view_bob::ViewBob,
@@ -1193,12 +1193,11 @@ fn place_camera(
     let (mut look, mut transform, mut player, mut body, bob) = players
         .single_mut()
         .map_err(|error| format!("camera: {error}"))?;
+    // The body turns to face the look as the frame is drawn.
     *look = Look {
         yaw: yaw.to_radians(),
         pitch: pitch.to_radians().clamp(-MAX_PITCH, MAX_PITCH),
     };
-    let feet = position - Vec3::Y * EYE_HEIGHT as f32;
-    *transform = Transform::from_translation(feet).with_rotation(look.yaw_rotation());
     player.flying = true;
     player.eye_height = EYE_HEIGHT;
     player.previous_eye_height = EYE_HEIGHT;
@@ -1206,7 +1205,7 @@ fn place_camera(
     if let Some(mut bob) = bob {
         bob.settle();
     }
-    body.teleport(position.as_dvec3() - bevy::math::DVec3::Y * EYE_HEIGHT);
+    put_eyes(position.as_dvec3(), EYE_HEIGHT, &mut body, &mut transform);
     Ok(())
 }
 
@@ -2449,6 +2448,39 @@ mod tests {
         const { assert!(NEAR <= 0.01) };
         assert_eq!(view.get::<Tonemapping>(), Some(&Tonemapping::None));
         assert_eq!(view.get::<DebandDither>(), Some(&DebandDither::Disabled));
+    }
+
+    /// End to end, the eye view the game draws through sways as the player
+    /// walks and widens as it sprints.
+    #[test]
+    fn walking_sways_and_sprinting_widens_the_eye_view() {
+        use crate::fly_camera::{EyeView, FOV};
+
+        let mut app = play(
+            "fill 56 50 84 72 50 100 stone\n\
+             camera 64.5 52.7 92.5 0 0\n\
+             hold ShiftLeft 40  # down onto the stone\n\
+             wait 10\n\
+             press KeyW\n\
+             press KeyF\n\
+             wait 40\n",
+        );
+        let world = app.world_mut();
+        let player = world
+            .query_filtered::<&Player, With<LocalPlayer>>()
+            .single(world)
+            .unwrap();
+        assert!(!player.flying && player.sprinting, "{player:?}");
+        let (sway, projection) = world
+            .query_filtered::<(&Transform, &Projection), With<EyeView>>()
+            .single(world)
+            .unwrap();
+        assert_ne!(*sway, Transform::IDENTITY);
+        let Projection::Perspective(projection) = projection else {
+            panic!("not a perspective projection");
+        };
+        let fov = projection.fov.to_degrees();
+        assert!(fov > FOV * 1.1, "{fov}");
     }
 
     /// `camera` puts the eyes exactly where it says, level, even straight

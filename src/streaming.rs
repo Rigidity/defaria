@@ -1127,4 +1127,34 @@ mod tests {
         move_loader(&mut app, Vec3::new(8.0, 20.5 * 16.0, 8.0));
         assert!(sky(&app) < MAX_LIGHT);
     }
+
+    /// The local player's loader is at its eyes, not its feet, so the
+    /// levels loaded above and below count from what it sees.
+    #[test]
+    fn the_player_loads_around_its_eyes() {
+        use crate::player::{Eyes, tests::local_player_at};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin))
+            .add_observer(load_around_the_player);
+        let at = Vec3::new(3.5, 40.0, -7.5);
+        app.world_mut()
+            .spawn(local_player_at(Transform::from_translation(at)));
+        app.update();
+        let world = app.world_mut();
+        let eyes = world
+            .query_filtered::<Eyes, With<LocalPlayer>>()
+            .single(world)
+            .unwrap()
+            .transform();
+        assert!(eyes.translation.distance(at) < 1e-4, "{eyes:?}");
+        let loader = *world
+            .query_filtered::<&GlobalTransform, With<ChunkLoader>>()
+            .single(world)
+            .unwrap();
+        assert!(
+            loader.translation().distance(eyes.translation) < 1e-4,
+            "{loader:?} {eyes:?}"
+        );
+    }
 }
