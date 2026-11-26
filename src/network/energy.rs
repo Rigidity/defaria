@@ -34,12 +34,11 @@ use bevy::{
 };
 
 use super::{
-    ItemSystems, NetworkId, NetworkSystems, Networks,
+    NetworkId, NetworkSystems, Networks,
     tick::{NetworkClock, NetworkTick, TICKS_PER_SECOND, on_network_tick},
 };
 use crate::{
     content::{BlockState, Content, Solver},
-    fluid_network::FluidSystems,
     machine::{EnergyBuffer, MachineActive, MachinePorts},
     world::{Chunk, ChunkCoord, ChunkMap},
 };
@@ -57,11 +56,7 @@ impl Plugin for EnergyPlugin {
                     .chain()
                     .run_if(on_network_tick)
                     .in_set(NetworkTick::Solve)
-                    .in_set(EnergySystems)
-                    // Where it has always run. The other solvers don't
-                    // read energy, but the order stays fixed.
-                    .before(FluidSystems)
-                    .before(ItemSystems),
+                    .in_set(EnergySystems),
             );
     }
 }
