@@ -287,6 +287,11 @@ pub struct BlockDef {
     /// `when` matches the state.
     #[serde(default)]
     pub variants: Vec<VariantDef>,
+    /// Models added to the state's own, each where its `when` matches the
+    /// state (or always, without one): a pipe's core, and an arm for each
+    /// side it joins.
+    #[serde(default)]
+    pub parts: Vec<PartDef>,
     /// Whether the block gets an item that places it. On by default.
     #[serde(default = "default_true")]
     pub item: bool,
@@ -352,6 +357,25 @@ pub struct VariantDef {
     /// How the variant's faces are drawn, replacing the block's.
     #[serde(default)]
     pub render: Option<Render>,
+}
+
+/// A model a block state adds to its own, where `when` matches.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PartDef {
+    /// What each property must be for the part to be added, as in a
+    /// variant. Left out, it always is.
+    #[serde(default)]
+    pub when: BTreeMap<String, Condition>,
+    /// `{property}` is replaced by its value.
+    pub model: String,
+    /// Slot to texture, over the state's own textures for this part only.
+    #[serde(default)]
+    pub textures: BTreeMap<String, TextureRef>,
+    /// Degrees about X, then Y, then Z; multiples of 90. Only this part
+    /// turns: the block's `rotate` doesn't apply to it.
+    #[serde(default)]
+    pub rotate: Option<[i32; 3]>,
 }
 
 /// How a block's faces are drawn.

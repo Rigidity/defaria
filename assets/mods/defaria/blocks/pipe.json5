@@ -1,0 +1,36 @@
+// A metal pipe: a core with an arm out to each side it's joined on. Each
+// side's property says whether its arm is there; for now they're set by
+// hand (`fill pipe[north=true,east=true]` in a scenario) and placing one
+// gives just the core. Every arm is the same model, `pipe_arm`, which
+// points north, turned to face its side. Its arms' ends are round, so its
+// faces are cut out.
+{
+  name: "{metal} Pipe",
+  properties: {
+    metal: { materials: "#metal", default: "iron" },
+    north: ["false", "true"],
+    south: ["false", "true"],
+    east: ["false", "true"],
+    west: ["false", "true"],
+    up: ["false", "true"],
+    down: ["false", "true"],
+  },
+  textures: {
+    all: { texture: "pipe_core", materials: { metal: "{metal}" } },
+    side: { texture: "pipe_side", materials: { metal: "{metal}" } },
+    end: { texture: "pipe_end", materials: { metal: "{metal}" } },
+  },
+  parts: [
+    { model: "pipe_core" },
+    { when: { north: "true" }, model: "pipe_arm" },
+    { when: { south: "true" }, model: "pipe_arm", rotate: [0, 180, 0] },
+    { when: { west: "true" }, model: "pipe_arm", rotate: [0, 90, 0] },
+    { when: { east: "true" }, model: "pipe_arm", rotate: [0, 270, 0] },
+    { when: { up: "true" }, model: "pipe_arm", rotate: [90, 0, 0] },
+    { when: { down: "true" }, model: "pipe_arm", rotate: [270, 0, 0] },
+  ],
+  render: "cutout",
+  hardness: { base: 0.5, materials: { metal: 1 } },
+  weight: { base: 0.1, materials: { metal: 1 } },
+  category: "building",
+}

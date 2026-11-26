@@ -29,7 +29,7 @@ pub mod load;
 mod place;
 pub mod schema;
 
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, ops::Range, path::Path};
 
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
 
@@ -376,12 +376,20 @@ pub struct State {
     pub name: String,
     /// Property name and value, in the block's property order.
     pub values: Vec<(String, String)>,
+    /// Every part's faces, in part order.
     pub faces: Vec<BakedFace>,
     /// The boxes things bump into and the crosshair picks, rotated with the
-    /// model. Empty for air and anything you walk through.
+    /// model: every part's, in part order. Empty for air and anything you
+    /// walk through.
     pub collision: Vec<BlockBox>,
-    /// Bit per [`Direction`]: sides this state covers completely.
+    /// Bit per [`Direction`]: sides this state covers completely, which
+    /// is the sides any of its parts covers.
     occludes: u8,
+    /// The models the state is made of, in order: its own model, then each
+    /// of the block's `parts` that matches it. Meshing, light and physics
+    /// use the union in `faces`, `collision` and `occludes`; this keeps
+    /// which part each came from.
+    pub parts: Vec<StatePart>,
     /// The light it gives off: red, green and blue levels, up to
     /// [`MAX_LIGHT`].
     pub light: [u8; 3],
@@ -401,6 +409,22 @@ pub struct State {
     pub weight: f32,
     /// The block's `stats`, worked out for this state.
     pub stats: BTreeMap<String, f32>,
+}
+
+/// One model in a block state, turned and textured, and where its share
+/// of the state's faces and boxes are.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatePart {
+    /// The model's id.
+    pub model: String,
+    /// Degrees about X, then Y, then Z.
+    pub rotate: [i32; 3],
+    /// Its faces, in [`State::faces`].
+    pub faces: Range<usize>,
+    /// Its boxes, in [`State::collision`].
+    pub collision: Range<usize>,
+    /// Bit per [`Direction`]: the sides it covers completely.
+    pub occludes: u8,
 }
 
 /// How much fluid a full cell holds, in the units fluid amounts are counted

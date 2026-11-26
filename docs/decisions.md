@@ -3,6 +3,43 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Multipart states are flattened at load, and parts don't cull each other (2026-11-26)
+
+**Context.** Blocks have `parts` (#107): models added to a state where
+their `when` matches, so a pipe is a core and an arm per joined side
+rather than 64 hand-made models.
+
+**Decision.** Each state is baked at load into one list of faces, one
+list of collision boxes and one set of covered sides, the union of its
+parts', so meshing, culling, light and physics read a state exactly as
+before. The parts aren't thrown away: `State::parts` keeps each part's
+model, rotation, covered sides and its ranges in those lists. A part's
+`rotate` turns only that part; the block's (and its variants') `rotate`
+turns only the block's own model. Parts in one voxel don't hide each
+other's faces: a model meant to join another leaves out the faces it
+would cover (the pipe arm has no face against the core). Every
+combination is still a separate state, baked up front, so the six
+connection properties of #108 cost 64 states per combination of a
+block's other properties.
+
+**What's wrong with it.** Faces that one part hides inside another are
+drawn unless the model author leaves them out. A directional block with
+parts must repeat its turn on every part. States multiply: a block with
+many independent parts and a couple of material properties nears the
+4096-state limit, and every state's faces are stored. The parts can only
+come from the block's properties, not from data in the voxel, so a wire
+and a pipe can't share one voxel and there's no Chisel & Bits-style
+building from small pieces.
+
+**What should replace it.** A voxel that holds several parts of its own
+(per-voxel data, or a block entity, #109), meshed part by part with
+culling between parts in the same voxel, and parts baked once per model
+and rotation rather than per state. `State::parts` is the list that work
+should start from.
+
+**When to revisit.** When a wire and a pipe should share a voxel, when
+the state limit is hit, or when small-part building starts.
+
 ## Material stats share one namespace, and their units are loose (2026-11-26)
 
 **Context.** Materials have named stats (#106), which blocks and items

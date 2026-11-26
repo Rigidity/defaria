@@ -1,0 +1,40 @@
+# Multipart models: pipes on a flat stone platform built in the air, each
+# a core plus an arm for every side its properties say. Along the front,
+# west to east: a lone core, a straight run of three (north–south), a
+# corner, a tee, a cross with an arm up, and one with all six arms. Behind
+# them: a vertical run of three standing on the platform, an iron run into
+# a stone block (its end against the stone is hidden), and copper and gold
+# pipes.
+# Run: cargo headless scenarios/pipe-parts.txt
+wait 5
+fill 20 45 20 44 45 44 stone                              # the platform
+fill 22 46 30 22 46 30 pipe                               # a lone core
+fill 25 46 29 25 46 29 pipe[south=true]                   # a run of three
+fill 25 46 30 25 46 30 pipe[north=true,south=true]
+fill 25 46 31 25 46 31 pipe[north=true]
+fill 28 46 30 28 46 30 pipe[north=true,east=true]         # a corner
+fill 31 46 30 31 46 30 pipe[east=true,west=true,south=true]  # a tee
+fill 34 46 30 34 46 30 pipe[north=true,south=true,east=true,west=true,up=true]
+fill 37 46 30 37 46 30 pipe[north=true,south=true,east=true,west=true,up=true,down=true]
+fill 22 46 25 22 46 25 pipe[up=true]                      # a vertical run
+fill 22 47 25 22 47 25 pipe[up=true,down=true]
+fill 22 48 25 22 48 25 pipe[down=true]
+fill 26 46 25 27 46 25 pipe[east=true,west=true]          # a run into stone
+fill 28 46 25 28 46 25 stone
+fill 31 46 25 31 46 25 pipe[metal=defaria:copper,east=true,west=true]
+fill 34 46 25 34 46 25 pipe[metal=defaria:gold,north=true,up=true]
+camera 30 50.5 35.5 0 -35                                 # south of it, looking down
+wait 2
+screenshot target/scenarios/pipe-parts/0-overview.png
+wait 1
+camera 28.5 47.6 32.5 15 -25                              # close up on the run, corner and tee
+wait 2
+screenshot target/scenarios/pipe-parts/1-close.png
+wait 1
+camera 36 47.8 32 -20 -30                                 # the cross and the six-armed one
+wait 2
+screenshot target/scenarios/pipe-parts/2-cross.png
+wait 1
+camera 25.5 48.5 29.5 10 -22                              # the vertical run and the run into stone
+wait 2
+screenshot target/scenarios/pipe-parts/3-back.png
