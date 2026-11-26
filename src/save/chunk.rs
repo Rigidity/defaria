@@ -176,7 +176,7 @@ pub fn decode(blob: &[u8], names: &StateNames) -> Result<Chunk, String> {
         if amount == 0 {
             return Err("a voxel has no fluid in it".into());
         }
-        chunk.set_fluid_at(Chunk::position_of(index), amount as u16);
+        chunk.start_fluid_at(Chunk::position_of(index), amount as u16);
     }
     if !reader.is_done() {
         return Err("chunk has trailing bytes".into());

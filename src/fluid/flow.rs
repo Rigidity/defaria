@@ -350,6 +350,8 @@ struct Step {
     transfers: Vec<Transfer>,
     /// Fluids that met, to tell the world about.
     meetings: Vec<(IVec3, IVec3)>,
+    /// Cells fluid fell into this step, which it doesn't fall on from.
+    fell_into: HashSet<IVec3>,
 }
 
 impl Step {
@@ -496,6 +498,7 @@ impl Simulation {
                 };
                 if step.visited < count {
                     if let Some(falls) = fall(&layer, flow, pos, &mut step.meetings) {
+                        step.fell_into.insert(falls.to);
                         apply(&*cells, &mut step.changes, falls);
                     }
                 } else {
@@ -551,6 +554,8 @@ fn finish_step(
     // What spread onto fluid that's drained in the same step falls into it
     // now, bottom up, rather than showing on top for a step and then
     // dropping in.
+    // Not where fluid already fell this step: it falls a cell a step.
+    landed.retain(|pos| !step.fell_into.contains(pos));
     landed.sort_unstable_by_key(|pos| (pos.y, pos.x, pos.z));
     landed.dedup();
     for pos in landed {
@@ -865,6 +870,38 @@ pub(crate) mod tests {
         }
         assert_eq!(grid.amount(below), 0, "it went through the block");
         assert_eq!(grid.amount(IVec3::ZERO), 400);
+    }
+
+    /// Fluid falls at most one cell a step: what fell into a cell this
+    /// step doesn't fall on again at its end, though fluid that spread in
+    /// beside it can.
+    #[test]
+    fn fluid_falls_one_cell_a_step() {
+        let mut grid = Grid::default();
+        // Lava 1000 at A falls into B (400) below it, over C (1000, on the
+        // floor), which spreads into the open cell beside it, making room;
+        // D beside B spreads into it.
+        let (a, b, c, d) = (
+            IVec3::new(0, 2, 0),
+            IVec3::Y,
+            IVec3::ZERO,
+            IVec3::new(-1, 1, 0),
+        );
+        for pos in [a, b, c, d, IVec3::X, IVec3::new(1, 1, 0)] {
+            grid.cells.insert(pos, Cell::Open);
+        }
+        let mut sim = Simulation::default();
+        for (pos, amount) in [(a, 1000), (b, 400), (c, 1000), (d, 1000)] {
+            pour(&mut grid, &mut sim, pos, LAVA, amount);
+        }
+        sim.tick(&mut grid, fluids, 0.5, usize::MAX);
+        assert_eq!(grid.amount(a), 500, "half fell");
+        assert_eq!(
+            grid.amount(c),
+            875,
+            "C gave an eighth, and took nothing from above"
+        );
+        assert_eq!(grid.total(LAVA), 3400);
     }
 
     /// Half of a cell goes over its edges in a step, shared between them,

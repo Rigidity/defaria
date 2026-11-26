@@ -297,8 +297,7 @@ impl Voxels<'_, '_> {
     }
 
     /// Sets the voxel at a world position to `amount` of the fluid `state`,
-    /// for flow moving fluid into it. It starts out not drawn until there's
-    /// enough to show (see [`Chunk::start_fluid_at`]).
+    /// for flow moving fluid into it (see [`Chunk::start_fluid_at`]).
     pub fn flow_into(&mut self, pos: IVec3, state: BlockState, amount: u16) -> bool {
         self.set(pos, state) && self.change_fluid(pos, amount, true, true)
     }

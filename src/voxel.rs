@@ -165,11 +165,11 @@ impl Chunk {
         self.store_fluid(pos, amount, self.fluid_step_at(pos))
     }
 
-    /// [`Chunk::set_fluid_at`] for fluid that's just flowed into the voxel:
-    /// it starts out not drawn at all (height 0), so a sliver that comes and
-    /// goes from the edge of a puddle doesn't blink in and out.
+    /// [`Chunk::set_fluid_at`] for fluid that's just arrived in the voxel,
+    /// with no height drawn before to stick to: it's drawn at its amount's
+    /// own height (see [`fluid_step`]).
     pub fn start_fluid_at(&mut self, pos: IVec3, amount: u16) -> bool {
-        self.store_fluid(pos, amount, 0)
+        self.store_fluid(pos, amount, fluid_step(amount))
     }
 
     fn store_fluid(&mut self, pos: IVec3, amount: u16, before: u16) -> bool {
@@ -284,9 +284,9 @@ pub fn fluid_step(amount: u16) -> u16 {
 }
 
 /// The height fluid is drawn at, as one of the [`FLUID_STEPS`], given the
-/// one it was drawn at before (0 for fluid just arrived, not drawn yet):
-/// that one still, while `amount` is within half a step of it, and
-/// otherwise the amount's own [`fluid_step`]. Flow
+/// one it was drawn at before: that one still, while `amount` is within
+/// half a step of it, and otherwise the amount's own [`fluid_step`]. Any
+/// fluid at all is drawn at least a step high. Flow
 /// nudges amounts by a few thousandths as it levels off, and without this,
 /// an amount at the edge between two heights would make the surface
 /// blink between them.
@@ -518,10 +518,6 @@ impl Neighborhood {
         let voxel = self.block(pos);
         let state = content.state(voxel);
         let height = self.fluid_height(voxel, pos);
-        if height <= 0.0 {
-            // Too little to draw yet (see `Chunk::start_fluid_at`).
-            return;
-        }
         for face in &state.faces {
             let Some(side) = face.cull else {
                 continue;
@@ -1705,8 +1701,8 @@ mod tests {
         assert_eq!(sticky_step(407, 8), 8, "a little under");
         assert_eq!(sticky_step(406, 8), 7, "half a step under");
         assert_eq!(sticky_step(200, 8), 4, "far off");
-        assert_eq!(sticky_step(31, 0), 0, "too little to draw yet");
-        assert_eq!(sticky_step(32, 0), 1);
+        assert_eq!(sticky_step(1, 1), 1, "a sliver shows");
+        assert_eq!(sticky_step(1, 2), 1);
 
         let pos = IVec3::new(1, 2, 3);
         let mut chunk = Chunk::default();
@@ -1721,6 +1717,17 @@ mod tests {
         assert_eq!(chunk.fluid_step_at(pos), 9);
         assert!(chunk.set_fluid_at(pos, FULL_FLUID));
         assert_eq!(chunk.fluid_step_at(pos), FLUID_STEPS);
+    }
+
+    /// A sliver of water on a pond's surface is drawn on top of it, and the
+    /// pond's top stays hidden under it, so the surface has no hole.
+    #[test]
+    fn a_sliver_on_a_surface_leaves_no_hole() {
+        let mesh = fluid_mesh(&[(A, "water", None), (A + IVec3::Y, "water", Some(1))]);
+        // Below: bottom and four sides; above: top and four sides.
+        assert_eq!(faces(&mesh), 2 * 10);
+        let top = positions(&mesh).iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, A.y as f32 + 1.0 + 1.0 / 16.0);
     }
 
     /// Fluid with the same fluid above it is drawn full height, so a falling
