@@ -1,0 +1,7 @@
+// A tank's side, its sight glass 4/4 full of the fluid `$fluid`.
+{
+  layers: [
+    { image: "tank_side", material: "iron" },
+    { image: "tank_fill_4", material: "$fluid" },
+  ],
+}

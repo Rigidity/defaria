@@ -1,0 +1,70 @@
+# A fluid network: a pump draws a pond dry into a tank, then an outlet
+# pours the tank out into a pit. The pump sits in the pond's east wall
+# facing into it, with pipes from its back up and over into the top of a
+# tank. Pipes from the tank's bottom run to an outlet in the west wall of
+# a pit; the last pipe goes in once the pond is dry, so the tank fills
+# first. `fluids` shows the water in the world, the pipes and the tank
+# adding up to the pond's 12 blocks (12000) all the way through, and
+# `network` what each network holds. Once it's full, the tank's screen
+# shows the pumped water in its bar. It's built in the sky, above where
+# the sea could load, so the pond is the only water in the world.
+# Run: cargo headless scenarios/fluid-network.txt
+camera 28 254 41 0 -40                                    # south of it, looking down
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 18 245 22 40 245 36 stone                            # the platform
+fill 18 246 22 40 252 36 air                              # and clear air above it
+# The pond: walls one high around 4×3 of water.
+fill 20 246 27 25 246 31 stone
+fill 21 246 28 24 246 30 water
+# The pit: walls two high around 4×4 of air.
+fill 31 246 26 36 247 31 stone
+fill 32 246 27 35 247 30 air
+# The pump, in the pond's east wall facing in; pipes up from its back
+# and over into the tank's top.
+fill 25 246 29 25 246 29 pump[facing=west]
+fill 26 246 29 26 247 29 pipe
+fill 27 247 29 28 247 29 pipe
+fill 28 246 29 28 246 29 tank
+# The outlet, in the pit's west wall facing in; pipes from the tank's
+# bottom (under the platform) toward its back, all but the last.
+fill 31 246 29 31 246 29 outlet[facing=east]
+fill 28 245 29 30 245 29 pipe
+wait 2
+fluids                                                    # all 12000 in the world
+network 26 246 29                                         # the pump's network: output and store
+network 29 245 29                                         # the tank's bottom: just the store so far
+camera 28 252 39 0 -38
+wait 2
+screenshot target/scenarios/fluid-network/0-pond.png
+wait 300                                                  # five seconds of pumping
+fluids                                                    # some in the tank
+network 26 246 29
+screenshot target/scenarios/fluid-network/1-pumping.png
+wait 720                                                  # twelve more seconds
+fluids                                                    # all of it in the tank
+camera 30.5 249 34.5 20 -25                               # the tank and the dry pond
+wait 2
+screenshot target/scenarios/fluid-network/2-tank-full.png
+wait 1
+camera 28.5 246.5 31.5 0 0                                # facing the tank's side
+wait 2
+hold MouseLeft 1                                          # lock the cursor
+wait 1
+hold MouseRight 1                                         # open the tank's screen
+wait 3
+inspect MachineScreen
+screenshot target/scenarios/fluid-network/2b-tank-screen.png
+wait 1
+hold KeyE 1                                               # close it
+wait 2
+fill 30 246 29 30 246 29 pipe                             # join the outlet
+wait 300
+fluids                                                    # pouring into the pit
+network 29 245 29                                         # the tank, pipes and outlet
+camera 33.5 251.5 33 0 -62                                # over the pit, the outlet on its left
+wait 2
+screenshot target/scenarios/fluid-network/3-pouring.png
+wait 900                                                  # fifteen more seconds
+fluids                                                    # all of it in the pit
+screenshot target/scenarios/fluid-network/4-pit-full.png

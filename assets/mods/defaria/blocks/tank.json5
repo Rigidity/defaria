@@ -1,9 +1,21 @@
 // Holds 16 blocks of water or lava. Pipes join it on its top and bottom
-// only: the iron sockets.
+// only: the iron sockets. The engine sets `level` to how full it is, in
+// quarters (rounded up), and `fluid` to what it holds, and its sight glass
+// shows them.
 {
   name: "Tank",
+  properties: {
+    level: { values: ["0", "1", "2", "3", "4"], item: false },
+    fluid: { values: ["water", "lava"], item: false },
+  },
   model: "cube",
   textures: { side: "tank_side", end: "fluid_port" },
+  variants: [
+    {
+      when: { level: { not: "0" } },
+      textures: { side: { texture: "tank_level_{level}", materials: { fluid: "{fluid}" } } },
+    },
+  ],
   hardness: 2,
   weight: 2000,
   category: "machines",

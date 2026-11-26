@@ -17,4 +17,6 @@
   textures: { all: "water" },
   weight: 1000,
   category: "natural",
+  // Room temperature, in kelvin: any pipe carries it.
+  stats: { temperature: 293 },
 }

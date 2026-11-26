@@ -1689,11 +1689,12 @@ fn add_block(
         first_state,
         state_count: count as u16,
         connections,
-        // A machine keeps what it holds in its block entity.
+        // A machine keeps what it holds in its block entity, and a conduit
+        // what it carries.
         block_entity: block
             .block_entity
             .clone()
-            .or_else(|| block.machine.as_ref().map(|_| default())),
+            .or_else(|| (block.machine.is_some() || block.conduit.is_some()).then(default)),
     });
     content.block_index.insert(def.id.clone(), index);
     for state in states.iter().filter(|s| s.render == Render::Cutout) {

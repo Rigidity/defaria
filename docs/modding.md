@@ -752,7 +752,7 @@ joined side facing any other block is a port on the network (a machine's
 face). A network with a joined side facing a chunk that isn't loaded is
 frozen, as it may go on out there: its solver skips it until the chunk
 loads. Networks are worked out from the world as chunks load; nothing
-about them is saved. A conduit joins a block that isn't a conduit only
+about them is saved but what pipes hold (see [Fluid networks](#fluid-networks)). A conduit joins a block that isn't a conduit only
 on a face where that block has a [port](#machines) of its kind.
 
 ### Conditions
@@ -981,6 +981,70 @@ game's are Natural (10), Materials (15), Building (20), Lighting (30),
 Machines (35) and Tools (40);
 leave gaps in `order` so other mods can slot theirs between.
 
+## Fluid networks
+
+The `fluid` solver runs each network as one shared tank: it holds as much
+as its pipes' `capacity` together (half a block per base-game pipe), and
+moves fluid between it and the tanks of the machines on it, each network
+tick (20 a second, as energy networks):
+
+1. `output` ports give their tank's fluid to the network, as much as
+   there's room for;
+2. `input` ports take it into theirs, as much as they hold;
+3. if those still want more, `store` ports give theirs to the network
+   for them; otherwise the stores take what's left in the pipes.
+
+What goes in and what comes out in a second are each at most the
+network's throughput: the `throughput` of its slowest pipe, in blocks of
+fluid a second. A network holds one fluid: it takes in only the one it
+holds (any while it's empty). Two networks holding different fluids that
+are joined hold both, and take nothing in, only give out, until one is
+used up. A network doesn't take a fluid hotter than its coolest pipe can
+carry: a fluid block's `temperature` stat against a pipe's
+`max_temperature` stat, both in kelvin (either left out: no limit).
+
+```json5
+// blocks/lava.json5
+stats: { temperature: 1400 },
+// blocks/pipe.json5: copper (1358) won't carry lava, iron (1811) will.
+stats: { max_temperature: { materials: { metal: 1 } } },
+```
+
+A broken pipe pours its share of its network (by volume) into its voxel,
+for flow to spread. A network's fluid is kept with its pipes in their
+block entities while their chunk isn't loaded.
+
+Machines meet the world's fluid through stats:
+
+- **`pump_rate`**: a pump. Each second it draws that many blocks of fluid
+  into its first tank, from the voxel in front of it (the side its
+  `facing` property names) and the fluid reached from there through
+  fluid and air, no higher than that voxel, up to 64 voxels and 8 blocks
+  away: so it drains a pond's bed, not just the voxel in front.
+- **`outlet_rate`**: an outlet. Each second it pours that many blocks of
+  fluid from its first tank into the voxel in front of it, if that's air
+  or the same fluid, as much as fits, and flow spreads it.
+
+A machine with a `level` property, whose values are numbers from `0`,
+has it set to how full its first tank is (rounded up, so any fluid
+shows), and one with a `fluid` property to the fluid it holds, where the
+fluid's name (without its mod) is one of its values. The base game's
+tank draws its sight glass from them:
+
+```json5
+// blocks/tank.json5
+properties: {
+  level: { values: ["0", "1", "2", "3", "4"], item: false },
+  fluid: { values: ["water", "lava"], item: false },
+},
+variants: [
+  {
+    when: { level: { not: "0" } },
+    textures: { side: { texture: "tank_level_{level}", materials: { fluid: "{fluid}" } } },
+  },
+],
+```
+
 ## Networks
 
 `networks/<name>.json5`: a kind of network that [conduits](#conduits)
@@ -1121,11 +1185,13 @@ and tanks (a player, a tube, a pipe, a script), it runs on them the same.
   voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
-- Fluid and item networks don't carry anything yet, so a machine's tanks
-  and slots stay as they are.
+- Item networks don't carry anything yet, so a machine's slots fill only
+  by hand or by scripts.
 - A wire carrying more than it can doesn't burn out; it caps what the
   network moves. Wires lose nothing over distance, and there are no
   voltages.
+- A pump or outlet reaches only the world in front of it, and a tank
+  shows its first tank only.
 - A slot's size (64) is the same for every machine.
 - A recipe machine with too little power stops and starts rather than
   running slower; recipes can't take a tool without using it up, or give

@@ -350,6 +350,20 @@ def tank_side():
     return g
 
 
+def tank_fill(level):
+    """The fluid in the tank's sight glass, `level` quarters full: an
+    overlay for `tank_side`, colored by the fluid. The glass inside is
+    x 7-9, y 4-12; a lit surface row on top, a lighter left edge."""
+    g = blank()
+    rows = -(-9 * level // 4)
+    for y in range(13 - rows, 13):
+        for x in range(7, 10):
+            g[y][x] = 5 if x == 7 else 4
+    for x in range(7, 10):
+        g[13 - rows][x] = 6
+    return g
+
+
 PORT = """
 655554
 511112
@@ -547,6 +561,10 @@ def main():
         "pump_front": pump_front(),
         "outlet_front": outlet_front(),
         "tank_side": tank_side(),
+        "tank_fill_1": tank_fill(1),
+        "tank_fill_2": tank_fill(2),
+        "tank_fill_3": tank_fill(3),
+        "tank_fill_4": tank_fill(4),
         "crate_side": crate_side(),
         "port": port(),
     }

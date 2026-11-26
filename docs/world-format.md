@@ -170,8 +170,14 @@ The parts the game saves, each at version 1:
 | `tanks` | machines with `tanks` | a table by tank name of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block; an empty tank is left out |
 | `slots` | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`) |
 | `recipe` | machines with `recipes` | `{ recipe, ticks }` while one is running: the recipe's id (`defaria:smelt_ore[ore=defaria:iron]` for one of a templated recipe's materials) and how many of its network ticks have run; `{}` when none is. Its inputs were taken when it started, so they're in no slot |
+| `pipe` | conduits on a network the `fluid` solver runs (pipes) | a list of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block: the pipe's share of its network's fluid when its chunk was saved; an empty list when it held none |
 
-A machine's ports and whether it's working aren't saved: they're worked
+Every conduit (wire, pipe, tube) has a block entity, even with no parts.
+A fluid network's fluid is kept for the network while it's loaded, not
+per pipe: just before a chunk is saved, each of its pipes gets its share
+of its network's fluid (divided by capacity) in `pipe`, and when the
+chunk loads, each pipe gives what it holds back to its network and is
+emptied. A machine's ports and whether it's working aren't saved: they're worked
 out from the voxel's state. A tank or slot group the block doesn't have
 any more is dropped, as are slots past a group's count and items that no
 longer exist. A running recipe that doesn't exist any more is dropped, and

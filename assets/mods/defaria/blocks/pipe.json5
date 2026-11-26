@@ -29,6 +29,9 @@
   hardness: { base: 0.5, materials: { metal: 1 } },
   weight: { base: 0.1, materials: { metal: 1 } },
   category: "building",
+  // Its metal's melting point, in kelvin: it won't carry a fluid hotter
+  // than that (copper won't carry lava).
+  stats: { max_temperature: { materials: { metal: 1 } } },
   // Half a block of fluid in each pipe, and the metal's throughput in
   // blocks a second.
   conduit: {
