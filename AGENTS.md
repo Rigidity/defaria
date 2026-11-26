@@ -266,7 +266,7 @@ documented in `docs/modding.md`; keep that file, the serde types in
   built from: the theme, screens (`UiScreen`, and the `playing` run
   condition gameplay input runs under), the pointer (Bevy's picking),
   scrolling, the pixel font, buttons, text fields (and the `typing` run
-  condition), item icons, item slots and tooltips. Build new UI from these,
+  condition), item icons, item slots, bars and tooltips. Build new UI from these,
   in the feature's own module. F10 opens a gallery of the widgets in dev
   builds (`src/ui/gallery.rs`), for working on how they look.
 - `src/block_edit.rs`: the crosshair, its target and placing blocks.
@@ -325,7 +325,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
   entities get `Ports`, `EnergyBuffer`, `Tanks`, `Slots` and
   `MachineActive` (which puts the voxel in its `active_state`), and
   `MachinePorts` lists each network's machine ports and their roles for
-  the solvers.
+  the solvers. `src/machine/screen.rs`: the screen using a machine
+  opens, laid out from its definition; `src/machine/exchange.rs`: moving
+  items between the player and a machine. Using a block (right click) is
+  handled in `block_edit::BlockUseSystems`, before placing.
 - `src/recipe.rs` (and `src/recipe/`): recipe machines (a `machine` with
   `recipes`), in `FixedUpdate` on network ticks: start a recipe on what's
   in their input slots and tanks, draw its energy (or make a generator's)

@@ -13,12 +13,17 @@
 //! - [`MachineActive`]: whether it's working, which puts the voxel in its
 //!   block's `active_state`.
 //!
+//! [`screen`] is the screen using a machine opens, and [`exchange`] moves
+//! items between it and the player.
+//!
 //! It also keeps [`MachinePorts`]: for each network, its machine ports and
 //! their roles, which the solvers (energy, fluid, items) iterate. Nothing
 //! moves here; the solvers fill and drain the parts.
 
+pub mod exchange;
 mod parts;
 mod ports;
+pub mod screen;
 
 use bevy::prelude::*;
 

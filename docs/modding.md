@@ -886,6 +886,21 @@ Every field is optional; `machine: {}` is a machine with nothing.
   name that's both a slot group and a tank means both). A recipe machine
   uses energy for its recipes itself, so it has no `energy.use`.
 
+A machine with slots, tanks or `recipes` has a **screen**,
+which opens when the player uses it (right click) and is laid out from
+these fields: its slot groups (a recipe machine's inputs, its progress,
+then its outputs and other groups; a group of more than four slots is
+a square-ish grid, and one more than three rows tall scrolls; parts too
+wide for the window wrap onto more lines), a bar per
+tank and one for its energy with their numbers under them, each under
+its name with the first letter capitalised (name them to read well:
+`input`, `fuel`). The player's items go into a recipe machine's input
+slot groups (only what one of its type's recipes takes; see
+[Recipes](#recipes)), or any group of another machine, and come out of
+any slot. Dropped on a slot, they go into that slot's group first (any
+group but a recipe machine's outputs), so a group no recipe names, which
+a script reads, can be filled by hand.
+
 Every number (capacities and rates) is an
 [attribute](#hardness-weight-and-stats), so a machine of better metal
 can hold more. Names of tanks and slot groups are lowercase letters,

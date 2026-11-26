@@ -23,9 +23,20 @@ impl Plugin for ScreenPlugin {
         app.register_type::<UiScreen>()
             .add_observer(free_cursor)
             .add_observer(lock_cursor)
-            .add_systems(Update, close_on_escape.run_if(not(playing)));
+            .add_systems(
+                Update,
+                close_on_escape
+                    .run_if(not(playing))
+                    .in_set(CloseOnEscapeSystems),
+            );
     }
 }
+
+/// Where Escape closes the open screens. Gameplay's own use of Escape (the
+/// fly camera freeing the cursor) runs before it, so it sees the screens
+/// still open and leaves the cursor to them.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CloseOnEscapeSystems;
 
 /// Marks the root of an open screen. Despawning the root closes it.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]

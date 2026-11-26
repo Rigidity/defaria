@@ -1,0 +1,77 @@
+# Machine screens: a combustion generator burning logs powers an electric
+# furnace smelting iron ore, in a closed stone room. Right click on the
+# furnace opens its screen mid-recipe: its input and output slots, its
+# progress and status, its energy, and the player's inventory under it.
+# Shift-clicking its input takes the ore left there to the player, and a
+# click on the player's sand puts one in. E closes it; then the
+# generator's screen shows its fuel slot, its lava tank and its energy,
+# with their numbers under the bars, and its inventory list scrolls. Last,
+# a crate's nine slots are three by three, and the panel's top stays put.
+# Run: cargo headless scenarios/machine-screen.txt
+camera 30.5 41.5 33.5 0 0                                 # in front of the furnace, looking north
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 25 40 26 37 46 36 stone                              # the room's walls, floor and roof
+fill 26 41 27 36 45 35 air                                # and the air inside
+fill 30 41 30 30 41 30 electric_furnace[facing=south]
+fill 33 41 30 33 41 30 combustion_generator[facing=south]
+fill 30 41 29 33 41 29 wire                               # along their backs
+fill 27 41 30 27 41 30 crate
+wait 2
+put 33 41 30 fuel 8 log
+put 33 41 30 fuel 2.5 lava
+put 30 41 30 input 8 stone[ore=defaria:iron]              # 4 s each
+put 27 41 30 items 64 log
+put 27 41 30 items 64 planks
+put 27 41 30 items 20 stone
+wait 300                                                  # one ingot done, the next under way
+hold MouseLeft 1                                          # lock the cursor
+wait 1
+hold MouseRight 1                                         # use the furnace
+wait 3
+inspect MachineScreen
+screenshot target/scenarios/machine-screen/0-furnace.png
+wait 1
+cursor 490 214                                            # the input slot
+wait 1
+press ShiftLeft
+wait 1
+hold MouseLeft 1                                          # all of its ore to the player
+wait 2
+release ShiftLeft
+wait 1
+cursor 575 466                                            # the player's sand
+wait 1
+hold MouseLeft 1                                          # one into the furnace
+wait 2
+cursor 490 214                                            # its name in a tooltip
+wait 2
+inspect Slots
+screenshot target/scenarios/machine-screen/1-ore-taken.png
+wait 1
+hold KeyE 1                                               # close it
+wait 2
+camera 33.5 41.5 33.5 0 0                                 # in front of the generator
+wait 2
+hold MouseRight 1
+wait 3
+cursor 714 245                                            # its tank's name in a tooltip
+wait 2
+screenshot target/scenarios/machine-screen/2-generator.png
+wait 1
+cursor 640 500                                            # over the player's inventory
+wait 1
+scroll -3                                                 # down the list
+wait 3
+screenshot target/scenarios/machine-screen/3-scrolled.png
+wait 1
+hold Escape 1
+wait 2
+camera 27.5 41.5 33.5 0 0                                 # in front of the crate
+wait 2
+hold MouseRight 1
+wait 3
+screenshot target/scenarios/machine-screen/4-crate.png
+wait 1
+hold Escape 1
+wait 2
