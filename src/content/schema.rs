@@ -600,6 +600,11 @@ pub struct EnergyDef {
     /// room: a creative generator.
     #[serde(default = "zero")]
     pub generate: Attribute,
+    /// The most its script may make each second, with
+    /// `m.energy:generate(n)` in `on_tick`: a generator whose output
+    /// depends on its surroundings. See `docs/scripting.md`.
+    #[serde(default = "zero")]
+    pub max_generate: Attribute,
     /// What it uses up each second while it's working; it works (and is
     /// in its `active_state`) only while its buffer pays for it: a
     /// powered lamp.

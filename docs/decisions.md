@@ -3,6 +3,104 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Machine scripts only move things, and make energy only up to `max_generate` (2026-11-26)
+
+**Context.** Machines' scripts (#118) need hooks at the network tick and
+when a recipe finishes, and an API onto the machine's energy buffer,
+tanks and slots, without letting a script break the rule the solvers
+keep: energy, fluid and items are never made or lost except where a
+definition says so (a generator's `generate`, a creative `emits`,
+recipes). The issue sketched `fill(fluid, n)`/`drain(n)` on tanks and
+`take`/`put` on slots, which as written make and lose things.
+
+**Decision.** A machine's script is its block's `script` (#122), not a
+separate `machine.script`: one script per block, which gets every block
+hook as well. `on_tick(m, dt)` runs on every network tick, after the
+energy, fluid and item solvers and the recipe machines, for every
+machine whose script defines it, in order of position, and not while
+any network on its ports is frozen. The calls are spread over the
+fixed steps between two network ticks (three at 60 Hz), each machine
+on the step its position hashes to, so no one frame runs them all; each
+still gets the network tick's `dt` and share of `max_generate`, and a
+third of them run on the network tick's own step, after the solvers.
+They share a pool of steps a tick the size of block hooks' (250,000,
+`HookSettings::steps_per_tick`, split evenly between the steps; its
+size provisional, for the user to confirm), and of wall clock (4 ms,
+`HookSettings::time_per_tick`, split the same way; provisional too):
+once a step's share is
+spent, the rest of its machines skip the tick, and its next turn starts
+with them, so the same machines don't always miss out. `on_recipe_finished(m, recipe)`
+runs from a `RecipeFinished` message the recipe machines send, oldest
+first, from a pool of steps and time a tick as big as block hooks' (so
+furnaces fed together, finishing together, don't all run at once); the
+rest wait for the next network tick, in a queue that isn't saved, so
+a hook still waiting when the world closes is lost. Past 65,536 waiting,
+new ones are dropped with a warning, as block hooks are, and a hook
+whose machine was broken (or replaced by another) before it ran is
+dropped too, so a new machine never hears of the old one's recipe. In
+every hook of a machine (`on_used` too) the handle is a `MachineRef`,
+which reaches the machine's own parts through the call's world
+function, as block handles do, and only in its own hooks. Every API
+call only moves things, through the components' own methods:
+
+- energy: `take(n)` spends what the buffer holds (as `use` does), and
+  `generate(n)` makes energy only in `on_tick`, at most the tick's share
+  of a new `energy.max_generate` rate (0 unless given). `generate` (the
+  creative generator's) stays automatic and apart, so a script can't
+  raise it.
+- tanks: `move_to` another of its tanks, `pour` into and `draw` from a
+  voxel within one step of the machine (through `Voxels`, so flow wakes
+  around it). No `fill` or `drain` from nowhere.
+- slots: `get`, `count`, and `move` between its own slot groups. No
+  `take` that hands a script items to hold, which a failing hook would
+  lose.
+
+What a failing hook moved stays moved (each move is whole), while its
+`data` is left as it was, and the machine's script is disabled
+(`Caller::Block`, as for blocks). Scripts read light (`block.light`) and
+materials (`world.material_def`) for machines that depend on their
+surroundings; the base game's example is a solar panel.
+
+**What's wrong with it.** A script can't hand anything to another
+machine, or to a network, except through its ports and the solvers, nor
+drop items into the world; a sorter that sends items to a neighbour
+needs tubes. Energy a script makes waits a tick in the buffer before the
+network sees it. Every scripted machine is a Lua call every tick even
+when it has nothing to do, and each call costs: the base game's solar
+panel took about 11 µs a call (1,024 panels, 3.7 ms on one frame of
+every three) and takes about 7.5 µs now (about 2.6 ms, spread over
+three frames), in a dev build on an M3 Max. What's left is mlua's
+round trips: an empty `on_tick` costs about 1 µs, reading a handle's
+field about 0.3 µs, and each field or method that asks the world
+(`data`, `energy`, `light`, `neighbour`) about 0.5 µs more, through
+the call's world function (a Lua function the field getter calls); and
+reading `data` converts it to a table and back. A script that keeps an
+`energy`, `data` or `neighbour` it reads twice in a local pays once. A
+script keeping a fraction in its `data`
+marks its chunk edited every tick. A machine's script can't make fluid
+or items at all, even for a creative or test machine. `set_active` is
+overwritten each tick on recipe machines and those with `use`. `on_broken`
+still runs after the block entity is gone, so a broken machine's script
+can't see (or drop) what it held. A machine whose tick is skipped,
+when the pool runs out, misses it: a script that makes energy by the
+tick makes none that tick. Since the pool is time as well as steps,
+which machines miss out on a busy tick depends on the computer's speed.
+
+**What should replace it.** Let scripts offer to and ask of the
+networks on their ports (through the solvers, as a scripted port role),
+and give items to a neighbouring machine's slots or drop them as item
+entities once those exist. Let `on_tick` return how long to sleep. Hand
+`on_broken` the block entity's parts before it's despawned. Run machine
+hooks before the solvers when the simulation has an ordering of events.
+If machine scripts' cost matters, make the handles scoped userdata that
+borrow the call's world directly (one Rust call per field, not two and
+a Lua call between), and skip converting `data` back when a script
+didn't write it.
+
+**When to revisit.** When item entities exist, when a mod needs a
+scripted sorter or pump, or if scripted machines show up in frame
+times.
+
 ## Block and item scripts: hooks a tick later, writes within one step, capped random ticks (2026-11-26)
 
 **Context.** Blocks and items name scripts (#122) whose hooks run when
@@ -30,7 +128,7 @@ block with one of the same material, or never fill air, or only make
 blocks their definition lists as ones scripts may set). A hook may change only its own block and the six
 next to it (an item's, the block looked at and its six), and read any
 loaded block. Block handles reach the world through a function the call
-puts in the Lua registry, made in the call's scope, and carry the call's
+puts in the Lua state's app data, made in the call's scope, and carry the call's
 serial, so a kept handle fails. A block's `data` is its block entity's
 `BlockData`, turned into a Lua table when first read in a call and saved
 back when the hook succeeds; out of the hook's reach, it's a read-only

@@ -127,6 +127,8 @@ pub struct EnergySpec {
     pub max_out: u64,
     /// What it makes on its own in a second.
     pub generate: u64,
+    /// The most its script may make in a second.
+    pub max_generate: u64,
     /// What it uses up in a second while it works.
     pub uses: u64,
 }
@@ -225,7 +227,7 @@ pub const FACING: &str = "facing";
 /// state.
 pub(super) struct MachineMix {
     ports: Vec<PortMix>,
-    energy: Option<[Mix; 5]>,
+    energy: Option<[Mix; 6]>,
     tanks: Vec<(String, Mix, Vec<String>)>,
     slots: Vec<SlotGroupSpec>,
     /// Property index and value index of each `active_state` value.
@@ -272,6 +274,7 @@ impl MachineMix {
                     mix("energy.max_in", "max_in", &energy.max_in)?,
                     mix("energy.max_out", "max_out", &energy.max_out)?,
                     mix("energy.generate", "generate", &energy.generate)?,
+                    mix("energy.max_generate", "max_generate", &energy.max_generate)?,
                     mix("energy.use", "use", &energy.uses)?,
                 ])
             })
@@ -503,19 +506,19 @@ impl MachineMix {
             }
         }
         let round = |value: f32| value.round() as u64;
-        let energy = self
-            .energy
-            .as_ref()
-            .map(|[capacity, max_in, max_out, generate, uses]| {
+        let energy = self.energy.as_ref().map(
+            |[capacity, max_in, max_out, generate, max_generate, uses]| {
                 let value = |mix: &Mix| round(mix.value(properties, index, content));
                 EnergySpec {
                     capacity: value(capacity),
                     max_in: value(max_in),
                     max_out: value(max_out),
                     generate: value(generate),
+                    max_generate: value(max_generate),
                     uses: value(uses),
                 }
-            });
+            },
+        );
         let tanks = self
             .tanks
             .iter()

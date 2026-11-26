@@ -155,6 +155,7 @@ fn placing_a_machine_gives_it_its_parts() {
             max_in: 50,
             max_out: 0,
             generate: 0,
+            max_generate: 0,
             uses: 0,
         })
     );

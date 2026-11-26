@@ -23,7 +23,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use bevy::prelude::*;
 
 use crate::{
-    block_entity::{BlockEntityPart, RegisterBlockEntityPart, Value},
+    block_entity::{BlockEntity, BlockEntityPart, RegisterBlockEntityPart, Value},
     content::{BlockState, Content, MachineRecipes, Recipe, RecipeInput, RecipeOutput, share},
     inventory::ItemStack,
     machine::{EnergyBuffer, MachineActive, Slots, Tanks},
@@ -38,16 +38,34 @@ impl Plugin for RecipePlugin {
             FixedUpdate,
             ask_for_energy
                 .after(run_recipes)
+                .in_set(RecipeSystems)
                 .run_if(|clock: Res<EnergyClock>| clock.due),
         );
         app.register_block_entity_part::<RecipeProgress>()
+            .add_message::<RecipeFinished>()
             .add_systems(
                 FixedUpdate,
                 run_recipes
                     .after(EnergySystems)
+                    .in_set(RecipeSystems)
                     .run_if(|clock: Res<EnergyClock>| clock.due),
             );
     }
+}
+
+/// Where recipe machines run and say what energy they need next, in
+/// `FixedUpdate`: after the energy solver, on network ticks.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RecipeSystems;
+
+/// A recipe machine finished a recipe: its outputs went in. Scripts'
+/// `on_recipe_finished` runs from these.
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub struct RecipeFinished {
+    /// The machine's voxel.
+    pub pos: IVec3,
+    /// The recipe's id ([`Recipe::id`]).
+    pub recipe: String,
 }
 
 /// A recipe machine's progress: the recipe it's running, whose inputs it
@@ -172,6 +190,8 @@ pub struct Holdings {
     /// Energy drained and filled this tick, for the [`EnergyReport`].
     pub used: u64,
     pub generated: u64,
+    /// The recipes that finished this tick, by id.
+    pub finished: Vec<String>,
 }
 
 impl Holdings {
@@ -188,7 +208,9 @@ impl Holdings {
 pub fn run_recipes(
     content: Res<Content>,
     mut report: ResMut<EnergyReport>,
+    mut finished: MessageWriter<RecipeFinished>,
     mut machines: Query<(
+        &BlockEntity,
         &mut RecipeProgress,
         Option<&mut Slots>,
         Option<&mut Tanks>,
@@ -196,7 +218,7 @@ pub fn run_recipes(
         Option<&mut MachineActive>,
     )>,
 ) {
-    for (mut progress, slots, tanks, energy, active) in &mut machines {
+    for (block, mut progress, slots, tanks, energy, active) in &mut machines {
         let mut new = progress.clone();
         // An idle machine with nothing in its inputs has nothing to start:
         // every recipe takes something.
@@ -231,6 +253,10 @@ pub fn run_recipes(
         }
         report.used += holdings.used;
         report.generated += holdings.generated;
+        finished.write_batch(holdings.finished.into_iter().map(|recipe| RecipeFinished {
+            pos: block.pos,
+            recipe,
+        }));
     }
 }
 
@@ -272,6 +298,7 @@ pub fn step(content: &Content, progress: &mut RecipeProgress, holdings: &mut Hol
         }
         holdings.slots = done.slots;
         holdings.tanks = done.tanks;
+        holdings.finished.push(recipe.id.clone());
         *progress = RecipeProgress::of(&progress.spec);
         if !start(content, progress, holdings) {
             return false;

@@ -1,0 +1,8 @@
+// A solar panel's top: the iron casing with a grid of slate-dark cells
+// over its panel; see images/SOURCES.md.
+{
+  layers: [
+    { image: "machine_side", material: "iron" },
+    { image: "solar_cell", material: "slate" },
+  ],
+}

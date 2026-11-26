@@ -1,0 +1,25 @@
+// Makes electricity from the sky: up to 60 W in open sky, less the less
+// sky light falls on its top, and none roofed over. Its script
+// (scripts/solar_panel.luau) does that, and counts what it's made in its
+// data. Wires join it on its sides and bottom.
+{
+  name: "Solar Panel",
+  model: "cube",
+  textures: {
+    side: "energy_port",
+    up: "solar_panel_top",
+    down: "energy_port",
+  },
+  hardness: 2,
+  weight: 1500,
+  category: "machines",
+  block_entity: { data: { made: 0, carry: 0 } },
+  script: "solar_panel",
+  machine: {
+    ports: [
+      { faces: ["down", "north", "south", "east", "west"], network: "electric", role: "produce" },
+    ],
+    // Joules, and watts: `max_generate` is the most its script may make.
+    energy: { capacity: 2000, max_out: 1000, max_generate: 60 },
+  },
+}

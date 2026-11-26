@@ -35,6 +35,7 @@ fn base_machines_have_their_ports_and_stores() {
             max_in: 1000,
             max_out: 1000,
             generate: 0,
+            max_generate: 0,
             uses: 0,
         })
     );
@@ -246,6 +247,7 @@ fn numbers_come_from_materials() {
             max_in: 5,
             max_out: 0,
             generate: 0,
+            max_generate: 0,
             uses: 0,
         })
     );

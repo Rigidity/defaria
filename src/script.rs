@@ -10,8 +10,9 @@
 //! passed in as userdata. [`api`] is what hooks are handed (block handles,
 //! the `world` global, players, items and blocks' `data`), and
 //! [`ScriptWorld::call`] calls a hook with it; [`hooks`] calls blocks' and
-//! items' scripts as things happen to them, and [`random_tick`] gives
-//! blocks random ticks.
+//! items' scripts as things happen to them, [`random_tick`] gives
+//! blocks random ticks, and [`machine`] calls machines' `on_tick` and
+//! `on_recipe_finished`.
 //!
 //! Scripts only ever change game state through what they're handed, never
 //! rendering or UI, so they can run on a server once the game is split.
@@ -20,6 +21,7 @@
 pub mod api;
 mod error;
 pub mod hooks;
+pub mod machine;
 pub mod random_tick;
 #[cfg(feature = "dev")]
 mod reload;

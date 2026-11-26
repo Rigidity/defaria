@@ -110,6 +110,11 @@ feature drawn into the panel.
 - `crate_side.png`: the casing's frame around a dark panel with crossed
   diagonal braces, corner brackets and a small port where the braces meet.
   Layout from the Retro Diffusion crate in the table above.
+- `solar_cell.png`: a solar panel's cells, an overlay over the casing's
+  panel (2–14): a three by three grid of cells in dark seams, each with a
+  glint at its top left and shade at its bottom right; transparent
+  around it. Drawn by `solar_cell()` in `scripts/draw-machines.py`, no
+  Retro Diffusion (2026-11-26).
 
 ## Cracks (`cracks/`)
 

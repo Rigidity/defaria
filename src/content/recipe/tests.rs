@@ -480,6 +480,12 @@ fn recipe_machines_that_cant_run_are_errors() {
             "{machine}: {errors}"
         );
     }
+    // A script may fill it, up to its `max_generate`.
+    let (errors, _) = block(
+        r#"{ energy: { capacity: 100, max_generate: 100 }, slots: { input: 1, output: 1 }, recipes: "smelting" }"#,
+        ore,
+    );
+    assert_eq!(errors, "");
     // A recipe type no machine runs.
     let (_, warnings) = block(
         r#"{ slots: { input: 1, output: 1 }, recipes: "smelting" }"#,

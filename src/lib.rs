@@ -86,6 +86,7 @@ impl Plugin for GamePlugin {
             recipe::RecipePlugin,
             network::ItemNetworkPlugin,
             script::ScriptPlugin,
+            script::machine::MachineScriptPlugin,
             wrench::WrenchPlugin,
         ));
     }

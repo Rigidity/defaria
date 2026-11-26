@@ -153,6 +153,43 @@ pub fn pour(
     0
 }
 
+/// Takes up to `want` of the fluid in the voxel at `pos`, and no other,
+/// into `tank`, if the tank takes it: as much as the voxel holds and the
+/// tank has room for. A voxel emptied becomes air. Returns how much it
+/// took.
+pub fn take(
+    voxels: &mut Voxels,
+    content: &Content,
+    pos: IVec3,
+    want: u64,
+    tank: &mut crate::machine::Tank,
+) -> u64 {
+    let Some((here, partial)) = voxels.get_with_fluid(pos) else {
+        return 0;
+    };
+    if !content.state(here).is_fluid() {
+        return 0;
+    }
+    let fluid = content.block_of(here).id.clone();
+    if !tank.takes(&fluid) {
+        return 0;
+    }
+    let amount = partial.unwrap_or(FULL_FLUID) as u64;
+    let taken = amount.min(want).min(tank.room());
+    if taken == 0 {
+        return 0;
+    }
+    let changed = if taken == amount {
+        voxels.set(pos, BlockState::AIR)
+    } else {
+        voxels.set_fluid(pos, (amount - taken) as u16)
+    };
+    if !changed {
+        return 0;
+    }
+    tank.fill(&fluid, taken)
+}
+
 /// Runs the pumps and outlets for this network tick.
 pub(super) fn run_pumps_and_outlets(
     clock: Res<EnergyClock>,

@@ -30,7 +30,7 @@ use mlua::Lua;
 
 use super::{
     Caller, ScriptRuntime, ScriptsReloaded,
-    api::{BlockRef, PlayerView, ScriptWorld, item_table, player_table},
+    api::{PlayerView, ScriptWorld, handle, item_table, player_table},
     random_tick,
 };
 use crate::{
@@ -48,6 +48,8 @@ pub const ON_BROKEN: &str = "on_broken";
 pub const ON_NEIGHBOUR_CHANGED: &str = "on_neighbour_changed";
 pub const ON_RANDOM_TICK: &str = "on_random_tick";
 pub const ON_USE: &str = "on_use";
+pub const ON_TICK: &str = "on_tick";
+pub const ON_RECIPE_FINISHED: &str = "on_recipe_finished";
 
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<ScriptIndex>()
@@ -113,7 +115,9 @@ pub struct HookSettings {
     /// The most block hooks called in one tick. The rest wait for the next.
     pub max_per_tick: usize,
     /// The steps block hooks may use between them in one tick, about 3 ms
-    /// of work: once they're spent, the rest wait for the next tick. (Each
+    /// of work: once they're spent, the rest wait for the next tick. On a
+    /// network tick machines' `on_tick`s get as much again, and their
+    /// `on_recipe_finished`s as much again (see `script::machine`). (Each
     /// call still gets its own `ScriptSettings::step_budget`, so a tick
     /// may go over by one call's.)
     pub steps_per_tick: u64,
@@ -121,8 +125,10 @@ pub struct HookSettings {
     /// tick, a safety net beside the steps (library functions do a lot
     /// of work in one step, and logging costs no steps): once it's
     /// passed, the rest wait for the next tick. The first hook of a tick
-    /// always runs, so hooks keep moving however small it is. Unlike the
-    /// steps it isn't deterministic.
+    /// always runs, so hooks keep moving however small it is. Machines'
+    /// `on_tick`s and `on_recipe_finished`s each get as much again on a
+    /// network tick. Unlike the steps
+    /// it isn't deterministic.
     pub time_per_tick: Duration,
 }
 
@@ -145,6 +151,9 @@ pub struct BlockHooks {
     pub broken: bool,
     pub neighbour_changed: bool,
     pub random_tick: bool,
+    /// Machines' hooks (see `script::machine`).
+    pub tick: bool,
+    pub recipe_finished: bool,
 }
 
 impl BlockHooks {
@@ -155,6 +164,8 @@ impl BlockHooks {
             ON_BROKEN => self.broken,
             ON_NEIGHBOUR_CHANGED => self.neighbour_changed,
             ON_RANDOM_TICK => self.random_tick,
+            ON_TICK => self.tick,
+            ON_RECIPE_FINISHED => self.recipe_finished,
             _ => false,
         }
     }
@@ -172,6 +183,8 @@ pub struct ScriptIndex {
     /// Whether any block's script defines `on_random_tick`, so worlds
     /// with none skip looking for them.
     any_random_tick: bool,
+    /// Whether any block's script defines `on_tick`, likewise.
+    any_tick: bool,
 }
 
 impl FromWorld for ScriptIndex {
@@ -185,6 +198,7 @@ impl FromWorld for ScriptIndex {
                 blocks: Vec::new(),
                 items: Vec::new(),
                 any_random_tick: false,
+                any_tick: false,
             },
         }
     }
@@ -213,6 +227,8 @@ impl ScriptIndex {
                     broken: runtime.has_hook(script, ON_BROKEN),
                     neighbour_changed: runtime.has_hook(script, ON_NEIGHBOUR_CHANGED),
                     random_tick: runtime.has_hook(script, ON_RANDOM_TICK),
+                    tick: runtime.has_hook(script, ON_TICK),
+                    recipe_finished: runtime.has_hook(script, ON_RECIPE_FINISHED),
                 })
             })
             .collect();
@@ -226,16 +242,23 @@ impl ScriptIndex {
             })
             .collect();
         let any_random_tick = blocks.iter().flatten().any(|hooks| hooks.random_tick);
+        let any_tick = blocks.iter().flatten().any(|hooks| hooks.tick);
         Self {
             blocks,
             items,
             any_random_tick,
+            any_tick,
         }
     }
 
     /// Whether any block's script defines `on_random_tick`.
     pub fn any_random_tick(&self) -> bool {
         self.any_random_tick
+    }
+
+    /// Whether any block's script defines `on_tick`.
+    pub fn any_tick(&self) -> bool {
+        self.any_tick
     }
 
     /// The hooks of `state`'s block, if it's scripted.
@@ -523,7 +546,10 @@ pub(super) fn run_block_hook(
     {
         return false;
     }
-    let block = |lua: &Lua| BlockRef::create(lua, pos);
+    // A machine's hooks get its machine handle; a broken one's, the
+    // block that's there now.
+    let machine = name != ON_BROKEN && world.content.machine(state).is_some();
+    let block = |lua: &Lua| handle(lua, pos, machine);
     let caller = Caller::Block(pos);
     // Errors are logged, and disable the caller, in the runtime.
     let _ = match hook {

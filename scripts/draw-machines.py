@@ -378,6 +378,26 @@ def port():
     return stamp(blank(), 5, 5, PORT)
 
 
+def solar_cell():
+    """A solar panel's face, an overlay over the casing's panel (2-14): a
+    three by three grid of cells in dark seams, each lit at its top left
+    with a glint, its bottom right in shade. Transparent around it."""
+    g = blank()
+    for y in range(2, 15):
+        for x in range(2, 15):
+            g[y][x] = 1  # the seams
+    for cy in (3, 7, 11):
+        for cx in (3, 7, 11):
+            for dy in range(3):
+                for dx in range(3):
+                    g[cy + dy][cx + dx] = 3
+            g[cy][cx] = 5  # glint
+            g[cy][cx + 1] = 4
+            g[cy + 1][cx] = 4
+            g[cy + 2][cx + 2] = 2  # shade
+    return g
+
+
 def crate_side():
     """Crossed braces over a dark panel, the port where they meet."""
     g = clear_panel(casing(), 3, 3, 13, 13, level=2)
@@ -567,6 +587,7 @@ def main():
         "tank_fill_4": tank_fill(4),
         "crate_side": crate_side(),
         "port": port(),
+        "solar_cell": solar_cell(),
     }
     head, handle = wrench(raw)
     layers["items/wrench_head"] = head
