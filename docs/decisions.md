@@ -18,9 +18,10 @@ cores). Wall-clock frame times swung from 10 ms to 170 ms between runs of
 the same build, so they say little; CPU time per system held steady
 between runs and is what the numbers below use.
 
-Before, the flight's busiest frame used 59 ms of CPU in its systems, 35
-of them in `light::propagate_light`, its worst frame against a mean of
-1.9. A crossing puts a whole row of chunks out of reach (about
+Before (on the code after #172 and #167), the flight's worst frame for
+`light::propagate_light` used 19 ms of CPU, against a mean of 1.6 (35
+ms before #172 made light cheaper), and the busiest frame 33 ms across
+its systems. A crossing puts a whole row of chunks out of reach (about
 a thousand, at radius 16), and they all unloaded on one frame: each
 chunk's light leaving its neighbours was taken away by one flood fill.
 Loading is spread at 24 chunks a frame, but unloading wasn't.
@@ -30,17 +31,18 @@ a `unload_frames` (30) share of those waiting if that's more, the
 furthest first, so a crossing's row goes over about 45 frames and
 however fast the player moves (sprinting flight, falling) the chunks
 waiting to unload stay bounded (about 800 more loaded at a sprint).
-`propagate_light`'s worst frame fell to 11 ms of CPU, its mean about
-the same (2.2), and the busiest frame to 38 ms of CPU across every
-thread.
+`propagate_light`'s worst frame fell to 8 ms of CPU (11 before #172),
+its mean about the same, and the busiest frame to 27 ms of CPU across
+every thread.
 
 **What's wrong with it.** It isn't verified against the 16.7 ms budget:
 that needs an idle machine. The busiest frames left are spread over
 several systems, none dominant:
 
-- `fluid::wake_loaded_chunks` (up to 11 ms, the busiest frame's biggest
-  after the change): waking the sea's surface in newly loaded chunks.
-- `light::propagate_light` (5 to 11 ms) on frames that spawn chunks,
+- `fluid::wake_loaded_chunks` (10 to 12 ms, the busiest frame's biggest
+  before and after the change): waking the sea's surface in newly loaded
+  chunks.
+- `light::propagate_light` (3 to 8 ms) on frames that spawn chunks,
   settling light across 24 new chunks' borders.
 - Bevy's `check_entities_needing_specialization` and `calculate_bounds`
   (about 1.3 ms each every frame, up to 6 ms): both scan every mesh
