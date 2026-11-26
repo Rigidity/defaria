@@ -1,6 +1,6 @@
 {
   name: "{wood} Slab",
-  properties: { wood: { materials: ["oak", "#wood"] } },
+  properties: { wood: { materials: "#wood", default: "oak" } },
   model: "slab",
   textures: { all: { texture: "planks", materials: { wood: "{wood}" } } },
   hardness: { materials: { wood: 1 } },

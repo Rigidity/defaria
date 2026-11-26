@@ -264,13 +264,23 @@ pub struct TerrainBlocks {
 }
 
 impl TerrainBlocks {
-    /// Each block state the terrain is made of: its block and the property
-    /// values it doesn't leave at their defaults, in field order.
+    /// Each block state the terrain is made of: its block and its property
+    /// values, in field order. Soil names every value, so a mod whose soil
+    /// sorts before dirt can't change the ground.
     const STATES: [(&str, &[(&str, &str)]); 6] = [
-        ("defaria:soil", &[("turf", "defaria:grass")]),
-        ("defaria:soil", &[]),
+        (
+            "defaria:soil",
+            &[("soil", "defaria:dirt"), ("turf", "defaria:grass")],
+        ),
+        (
+            "defaria:soil",
+            &[("soil", "defaria:dirt"), ("turf", "none")],
+        ),
         ("defaria:stone", &[]),
-        ("defaria:soil", &[("soil", "defaria:sand")]),
+        (
+            "defaria:soil",
+            &[("soil", "defaria:sand"), ("turf", "none")],
+        ),
         ("defaria:water", &[]),
         ("defaria:tuft", &[]),
     ];
@@ -281,7 +291,8 @@ impl TerrainBlocks {
     }
 
     /// The states the terrain needs that didn't load: each block's id with
-    /// the values it sets, in brackets (`defaria:soil[soil=defaria:sand]`).
+    /// the values it sets, in brackets
+    /// (`defaria:soil[soil=defaria:sand,turf=none]`).
     pub fn missing(content: &Content) -> Vec<String> {
         Self::STATES
             .iter()
@@ -996,6 +1007,40 @@ mod tests {
         assert_eq!(TerrainBlocks::missing(&content), ["defaria:stone"]);
     }
 
+    /// A mod's soil whose id sorts before `defaria:dirt` changes neither
+    /// soil's default nor the ground: the terrain names dirt.
+    #[test]
+    fn a_modded_soil_doesnt_change_the_ground() {
+        let (mut mods, errors) = crate::content::load::read_mods(
+            std::path::Path::new("assets/mods"),
+            crate::content::MODS_DIR,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        mods.push(crate::content::load::ModFiles::new(
+            "mods/clay",
+            r#"{ id: "clay", name: "Clay", dependencies: ["defaria"] }"#,
+            &[
+                ("images/clay.png", ""),
+                (
+                    "materials/clay.json5",
+                    r##"{ tags: ["soil"], palette: ["#000000", "#ffffff"], hardness: 1, weight: 1 }"##,
+                ),
+            ],
+        ));
+        let content = Content::from_mods(mods);
+        let soil = content.block("defaria:soil").unwrap();
+        assert!(soil.state(&[("soil", "clay:clay")]).is_some());
+        let dirt = |state: BlockState| {
+            content
+                .state(state)
+                .values
+                .contains(&("soil".into(), "defaria:dirt".into()))
+        };
+        assert!(dirt(soil.default_state()));
+        let blocks = TerrainBlocks::from_content(&content);
+        assert!(dirt(blocks.dirt) && dirt(blocks.grass));
+    }
+
     /// Without the sand material, the soil block still loads but has no
     /// sand state, which the terrain needs for its shores.
     #[test]
@@ -1014,7 +1059,7 @@ mod tests {
         assert!(content.block("defaria:soil").is_some());
         assert_eq!(
             TerrainBlocks::missing(&content),
-            ["defaria:soil[soil=defaria:sand]"]
+            ["defaria:soil[soil=defaria:sand,turf=none]"]
         );
         assert_eq!(TerrainBlocks::from_content(&content).sand, BlockState::AIR);
     }

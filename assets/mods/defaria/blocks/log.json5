@@ -5,7 +5,7 @@
 {
   name: "{wood} Log",
   properties: {
-    wood: { materials: ["oak", "#wood"] },
+    wood: { materials: "#wood", default: "oak" },
     axis: { values: ["y", "x", "z"], place: "face" },
   },
   model: "cube",

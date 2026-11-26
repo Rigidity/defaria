@@ -27,8 +27,11 @@ pub const HOTBAR_SLOTS: usize = 9;
 /// values of the properties it doesn't leave at their defaults.
 pub const DEFAULT_HOTBAR: [(&str, &[(&str, &str)]); HOTBAR_SLOTS] = [
     ("defaria:stone", &[]),
-    ("defaria:soil", &[]),
-    ("defaria:soil", &[("turf", "defaria:grass")]),
+    ("defaria:soil", &[("soil", "defaria:dirt")]),
+    (
+        "defaria:soil",
+        &[("soil", "defaria:dirt"), ("turf", "defaria:grass")],
+    ),
     ("defaria:soil", &[("soil", "defaria:sand")]),
     ("defaria:stone_slab", &[]),
     ("defaria:log", &[]),

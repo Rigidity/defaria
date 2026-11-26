@@ -2,7 +2,7 @@
 {
   name: "{rock}",
   properties: {
-    rock: { materials: ["stone", "#rock"] },
+    rock: { materials: "#rock", default: "stone" },
     ore: { materials: "#ore", optional: true },
   },
   model: "cube",

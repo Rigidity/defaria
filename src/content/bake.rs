@@ -958,6 +958,48 @@ fn property(
     content: &Content,
     for_block: bool,
 ) -> Result<Property, String> {
+    let mut property = listed_property(name, def, namespace, content, for_block)?;
+    let (default, place) = match def {
+        PropertyDef::Full(PropertySpec {
+            default: Some(default),
+            place,
+            ..
+        }) => (default, place),
+        _ => return Ok(property),
+    };
+    let default = if property.materials && default != NONE {
+        qualify(default, namespace)?
+    } else {
+        default.clone()
+    };
+    let at = property
+        .values
+        .iter()
+        .position(|value| *value == default)
+        .ok_or_else(|| format!("the default `{default}` isn't one of its values"))?;
+    // The default is the first value: a block's default state has every
+    // property at its first.
+    let value = property.values.remove(at);
+    property.values.insert(0, value);
+    // Placement refers to values by position, so it's worked out again.
+    if let Some(place) = place {
+        property.place = Some(Placement::new(
+            place.from,
+            &property.values,
+            place.values.as_ref(),
+        )?);
+    }
+    Ok(property)
+}
+
+/// A property with its values in the order they're listed.
+fn listed_property(
+    name: &str,
+    def: &PropertyDef,
+    namespace: &str,
+    content: &Content,
+    for_block: bool,
+) -> Result<Property, String> {
     let spec = match def {
         PropertyDef::Values(values) => {
             return plain_property(name, values, false);
@@ -2828,6 +2870,103 @@ mod tests {
         ];
         all.extend_from_slice(files);
         content(&all)
+    }
+
+    /// `default` picks a property's default value, which comes first so the
+    /// block's default state has it; the other values keep their order.
+    /// Without it, the default is the first value. Placement still gives
+    /// the values it names.
+    #[test]
+    fn default_names_the_default_value() {
+        let content = materials(&[
+            (
+                "blocks/plank.json5",
+                r##"{
+                    properties: {
+                        wood: { materials: "#wood", default: "oak" },
+                        ore: { materials: "#ore", optional: true, default: "coal" },
+                        axis: { values: ["x", "y", "z"], default: "y", place: "face" },
+                        size: ["small", "big"],
+                    },
+                    model: "quad",
+                    textures: { all: "a" },
+                }"##,
+            ),
+            (
+                "blocks/plain.json5",
+                r##"{
+                    properties: { ore: { materials: "#ore", optional: true } },
+                    model: "quad",
+                    textures: { all: "a" },
+                }"##,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let plank = content.block("test:plank").unwrap();
+        let values = |name: &str| {
+            plank
+                .properties
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap()
+                .values
+                .clone()
+        };
+        // By id, birch would come first.
+        assert_eq!(values("wood"), ["test:oak", "test:birch"]);
+        assert_eq!(values("ore"), ["test:coal", "none", "test:iron"]);
+        assert_eq!(values("axis"), ["y", "x", "z"]);
+        assert_eq!(values("size"), ["small", "big"]);
+        let default = content.state(plank.default_state());
+        for (name, value) in [
+            ("axis", "y"),
+            ("ore", "test:coal"),
+            ("size", "small"),
+            ("wood", "test:oak"),
+        ] {
+            assert!(
+                default.values.contains(&(name.into(), value.into())),
+                "{:?}",
+                default.values
+            );
+        }
+        // Placing on a block's east side still sets `axis` to `x`.
+        let placed = content.placed(plank.default_state(), Direction::East, Vec3::NEG_X);
+        assert!(
+            content
+                .state(placed)
+                .values
+                .contains(&("axis".into(), "x".into()))
+        );
+        // An optional material defaults to `none`.
+        let plain = content.block("test:plain").unwrap();
+        assert_eq!(
+            content.state(plain.default_state()).values,
+            [("ore".to_owned(), "none".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_default_that_isnt_a_value_is_an_error() {
+        for (property, expected) in [
+            (
+                r##"{ materials: "#wood", default: "rock" }"##,
+                "`test:rock` isn't one",
+            ),
+            (r##"{ values: ["a", "b"], default: "c" }"##, "`c` isn't one"),
+            (
+                r##"{ materials: "#wood", default: "none" }"##,
+                "`none` isn't one",
+            ),
+        ] {
+            let block = format!(
+                r#"{{ properties: {{ p: {property} }}, model: "quad", textures: {{ all: "a" }} }}"#
+            );
+            let content = materials(&[("blocks/x.json5", Box::leak(block.into_boxed_str()))]);
+            let all = errors(&content);
+            assert!(all.contains(expected), "{property}: {all}");
+            assert!(content.block("test:x").is_none());
+        }
     }
 
     /// A material property takes its values from tags and lists, in

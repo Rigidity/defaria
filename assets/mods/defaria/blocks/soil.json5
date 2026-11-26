@@ -6,7 +6,7 @@
 {
   name: "{soil}",
   properties: {
-    soil: { materials: ["dirt", "#soil"] },
+    soil: { materials: "#soil", default: "dirt" },
     turf: { materials: "#turf", optional: true },
   },
   model: "cube",
