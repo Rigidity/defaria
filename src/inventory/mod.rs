@@ -30,6 +30,7 @@ impl Plugin for InventoryPlugin {
         app.register_type::<Inventory>().add_plugins((
             player::PlayerInventoryPlugin,
             list::ListPlugin,
+            search::SearchPlugin,
             gesture::GesturePlugin,
             screen::ScreenPlugin,
         ));

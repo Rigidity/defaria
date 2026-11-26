@@ -1,6 +1,7 @@
-//! Searching items: what's typed in a screen's search box, parsed into an
-//! [`ItemQuery`], and whether an item matches it. Item lists show only
-//! what matches their filter.
+//! Searching items: what's typed in a screen's search box ([`SearchBox`]),
+//! parsed into an [`ItemQuery`], and whether an item matches it. Typing in
+//! a search box sets the filter ([`ListFilter`]) of every item list on the
+//! same screen, so any screen with lists can have one.
 //!
 //! A query is words separated by spaces, and an item matches when every
 //! word does:
@@ -16,7 +17,52 @@
 //! Case doesn't matter. A word with some other `key:` is taken as plain
 //! text, colon and all.
 
-use crate::content::{Content, ItemState};
+use bevy::{prelude::*, ui_widgets::ValueChange};
+
+use super::list::ListFilter;
+use crate::{
+    content::{Content, ItemState},
+    ui::UiScreen,
+};
+
+pub struct SearchPlugin;
+
+impl Plugin for SearchPlugin {
+    fn build(&self, app: &mut App) {
+        app.register_type::<SearchBox>().add_observer(search_lists);
+    }
+}
+
+/// A screen's search box.
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
+pub struct SearchBox;
+
+/// Typing in a search box narrows the lists on its screen to what
+/// matches.
+fn search_lists(
+    change: On<ValueChange<String>>,
+    boxes: Query<(), With<SearchBox>>,
+    screens: Query<(), With<UiScreen>>,
+    parents: Query<&ChildOf>,
+    mut lists: Query<(Entity, &mut ListFilter)>,
+) {
+    if !boxes.contains(change.source) {
+        return;
+    }
+    let Some(screen) = parents
+        .iter_ancestors(change.source)
+        .find(|&entity| screens.contains(entity))
+    else {
+        return;
+    };
+    let query = ItemQuery::parse(&change.value);
+    for (list, mut filter) in &mut lists {
+        if parents.iter_ancestors(list).any(|entity| entity == screen) {
+            filter.set_if_neq(ListFilter(query.clone()));
+        }
+    }
+}
 
 /// A parsed search: every part has to match.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

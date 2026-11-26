@@ -14,12 +14,12 @@
 //! - The search box on top narrows both lists to what matches (see
 //!   `search`).
 
-use bevy::{prelude::*, ui_widgets::ValueChange};
+use bevy::prelude::*;
 
 use super::{
     Inventory,
-    list::{ItemList, ListFilter, ListSource, ListSystems, Owner, item_list},
-    search::ItemQuery,
+    list::{ItemList, ListSource, ListSystems, Owner, item_list},
+    search::SearchBox,
 };
 use crate::{
     content::Content,
@@ -42,8 +42,6 @@ impl Plugin for ScreenPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<InventoryScreen>()
             .register_type::<WeightLabel>()
-            .register_type::<SearchBox>()
-            .add_observer(search_lists)
             .add_systems(
                 Update,
                 (
@@ -69,37 +67,6 @@ fn panel_width(theme: &UiTheme) -> f32 {
         + (columns - 1.0) * theme.slot_gap
         + theme.scrollbar_gap
         + theme.scrollbar_width
-}
-
-/// A screen's search box.
-#[derive(Component, Reflect, Debug, Clone, Copy)]
-#[reflect(Component)]
-pub struct SearchBox;
-
-/// Typing in a search box narrows the lists on its screen to what
-/// matches.
-fn search_lists(
-    change: On<ValueChange<String>>,
-    boxes: Query<(), With<SearchBox>>,
-    screens: Query<(), With<UiScreen>>,
-    parents: Query<&ChildOf>,
-    mut lists: Query<(Entity, &mut ListFilter)>,
-) {
-    if !boxes.contains(change.source) {
-        return;
-    }
-    let Some(screen) = parents
-        .iter_ancestors(change.source)
-        .find(|&entity| screens.contains(entity))
-    else {
-        return;
-    };
-    let query = ItemQuery::parse(&change.value);
-    for (list, mut filter) in &mut lists {
-        if parents.iter_ancestors(list).any(|entity| entity == screen) {
-            filter.set_if_neq(ListFilter(query.clone()));
-        }
-    }
 }
 
 /// The line showing how much the player carries.
@@ -915,6 +882,13 @@ mod tests {
             "\"stone2\" matches nothing"
         );
         run_more(&mut app, "hold Backspace 1\nwait 2");
+
+        // Erased back to nothing, the player's list widens in place, in
+        // order; then narrow it again.
+        run_more(&mut app, &"hold Backspace 1\nwait 1\n".repeat(5));
+        run_more(&mut app, "wait 2");
+        assert_eq!(shown(&mut app, mine).0, expected(&mut app));
+        run_more(&mut app, "type stone\nwait 2");
 
         // Typing goes on, and the screen stays open.
         run_more(&mut app, "hold Space 1\nwait 1\ntype slab\nwait 2");
