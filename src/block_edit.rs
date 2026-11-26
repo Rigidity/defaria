@@ -12,6 +12,9 @@
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
+//! - Right click on a block that does something when used (a machine
+//!   opens its screen) uses it instead of placing against it. Features
+//!   handle that in [`BlockUseSystems`].
 //!
 //! Edits go through [`Voxels`], and the terrain remeshes the changed chunks
 //! on the same frame.
@@ -48,6 +51,16 @@ impl Plugin for BlockEditPlugin {
                 show_crosshair
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
             )
+            .configure_sets(
+                Update,
+                // Without a sync point after it, so a screen it opens
+                // applies at the end of the frame, as one a key opens does.
+                BlockUseSystems
+                    .run_if(playing)
+                    .after(HotbarInput)
+                    .before_ignore_deferred(BlockEditSystems)
+                    .before_ignore_deferred(FlyCameraSystems),
+            )
             .add_systems(
                 Update,
                 (
@@ -73,6 +86,16 @@ impl Plugin for BlockEditPlugin {
 /// Where blocks are placed.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockEditSystems;
+
+/// Where right clicks on blocks that do something when used are handled,
+/// while playing, before blocks are placed (and before the fly camera, so
+/// the click that locks the cursor finds it unlocked). A system here that
+/// uses a click takes it with
+/// `ButtonInput::<MouseButton>::clear_just_pressed(MouseButton::Right)`,
+/// so nothing is placed against the block too. Use
+/// [`crosshair_target`] for the block.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BlockUseSystems;
 
 /// Where the block under the crosshair is outlined. Systems that change
 /// blocks run before it, so the outline never surrounds a block removed

@@ -3,6 +3,75 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Machine screens are laid out from the definition, and take any item (2026-11-26)
+
+**Context.** Using a machine (#119) opens a screen showing its slots,
+tanks, energy and recipe progress, and the player moves items in and
+out. Mods' machines need one without writing UI, and later layers add
+other things right click does on a block (the wrench, #121; scripted
+blocks' `on_used`, #122).
+
+**Decision.** The screen is generated from the `machine` definition: a
+row of slot groups (a recipe machine's inputs, its progress bar and
+status, then its outputs and the rest), a vertical bar per tank in its
+fluid's fog color and one for energy, each under its capitalised name,
+and the player's inventory list under it, as in the inventory screen.
+The player's items go into a recipe machine's **input groups, but only
+items one of its type's recipes takes** (`Content::slot_group_takes`, the
+rule tubes follow too, #120), or any group of another machine; any slot
+gives its items back. Taking anything, as the screen first did, let a
+player or a tube put glass into a furnace, where it sat for good: two
+furnaces chained on a tube line jammed, the second full of the first's
+glass. *Provisional, for the user to confirm*: the same rule for hands
+and tubes is the conservative pick; the other way is letting hands put
+anything in (a player can take it back out) and holding only tubes to
+it. Clicks work as in the inventory (one,
+all with Shift, half with right click), and an inventory entry dragged
+onto the machine moves them all; dropped on a slot, they go into that
+slot's group first, so a group no recipe names (one a script reads) can
+be filled by hand (any group but a recipe machine's outputs;
+provisional, for the user to confirm: the other way is a filter in the
+definition saying which groups hands fill). Fluid shows in litres (a
+block of fluid is a cubic metre). Using a block is a right click handled in
+`BlockUseSystems`, before placing, which takes the click so nothing is
+placed; **Shift with right click places** against a machine instead.
+Only machines with slots, tanks or recipes have a screen: one with just
+an energy buffer (a powered lamp, a battery) would show a single bar, and
+taking right click from it would make placing against it need Shift, so
+it has none (provisional, for the user to confirm; a battery's charge
+shows in the headless `network` command for now, a tooltip later).
+The screen closes when the machine's block entity goes (broken,
+replaced, or its chunk unloaded). A slot group of more than three rows
+(a slot group can have up to 256 slots) scrolls, three rows tall, so the
+screen fits in the window and stays the height it is for a furnace
+(provisional, for the user to confirm: the other way is a taller screen
+for big groups, scrolling only past what fits).
+
+**What's wrong with it.** An input takes an item if any recipe of the
+machine's type takes it, even one this machine can't run, or one whose
+other inputs aren't there, so a furnace can still hold something it
+never starts on. Machines without recipes take anything in every group.
+A machine's slots can't be
+dragged, nor bound to the hotbar with the number keys. Fluid and energy
+can't be moved by hand (no buckets or batteries in slots). One generated
+row is fine for a few groups but doesn't suit a machine with many (it
+wraps onto more lines, and scrolls once those don't fit), and a mod
+can't lay one out itself. Other mods' "use"
+actions and the screen compete for the same click with no priority
+beyond system order.
+
+**What should replace it.** Slot filters in the definition, for
+machines without recipes and for inputs narrower than their recipes;
+dragging
+and number keys on machine slots; item containers of fluid and energy;
+optional UI layouts in mod files (or from scripts, #118) that map onto
+the same widgets; and a single "use" event with a priority order once
+the wrench and block scripts need it.
+
+**When to revisit.** With the wrench (#121) and block scripts (#122),
+when mods add machines with many slot groups, or when fluid containers
+arrive.
+
 ## Recipes take their inputs when they start, and stop rather than slow down (2026-11-26)
 
 **Context.** Recipe machines (#115) turn what's in their slots and tanks

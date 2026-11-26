@@ -114,12 +114,20 @@ fn move_items(
 
 /// How many a click or drag moves of `entry`.
 fn amount(entry: &ListEntry, button: PointerButton, all: bool) -> u32 {
-    let catalog = entry.source == ListSource::Catalog;
-    match (button, all, catalog) {
+    match (button, all, entry.source == ListSource::Catalog) {
         (PointerButton::Secondary, _, true) => CATALOG_HALF,
-        (PointerButton::Secondary, _, false) => half(entry.stack.count),
         (_, true, true) => CATALOG_BATCH,
-        (_, true, false) => entry.stack.count,
+        (_, _, true) => 1,
+        _ => amount_of(entry.stack.count, button, all),
+    }
+}
+
+/// How many of `count` a click or drag moves: one, half with the right
+/// button, all with `all` (Shift, or a drag with the left button).
+pub(crate) fn amount_of(count: u32, button: PointerButton, all: bool) -> u32 {
+    match (button, all) {
+        (PointerButton::Secondary, _) => half(count),
+        (_, true) => count,
         _ => 1,
     }
 }

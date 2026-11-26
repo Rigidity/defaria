@@ -9,6 +9,8 @@
 //! - [`scroll`]: wheel scrolling and scrollbars ([`scroll_panel`]).
 //! - [`icon`]: item icons drawn from the block textures ([`ItemIcon`]).
 //! - [`slot`]: the item slot widget ([`item_slot`]).
+//! - [`bar`]: bars filled part of the way ([`bar`](bar::bar)), for
+//!   tanks, energy and progress.
 //! - [`button`]: buttons ([`button`](button::button)), on Bevy's.
 //! - [`text_field`]: single-line text fields ([`text_field`]), on Bevy's
 //!   text input, and the [`typing`] run condition.
@@ -22,11 +24,12 @@
 //! observes picking's events on it (`PointerPress`, `PointerClick`,
 //! `PointerDragDrop`, …), which bubble up from the node under the pointer
 //! to its ancestors. Features build their own UI out
-//! of these in their own modules (`hotbar`, `inventory`).
+//! of these in their own modules (`hotbar`, `inventory`, `machine`).
 //!
 //! The widgets are meant to stay small and data-driven, so that a later
 //! layout format (UI described in mod files) can map onto them one to one.
 
+pub mod bar;
 pub mod button;
 pub mod font;
 #[cfg(feature = "dev")]
@@ -42,6 +45,7 @@ pub mod tooltip;
 
 use bevy::prelude::*;
 
+pub use bar::{Bar, bar};
 pub use button::{UiButton, button};
 pub use icon::ItemIcon;
 pub use pointer::{DRAG_DISTANCE, PointerTravel, UiPointer};
@@ -71,6 +75,7 @@ impl Plugin for UiPlugin {
                 font::FontPlugin,
                 screen::ScreenPlugin,
                 pointer::PointerPlugin,
+                bar::BarPlugin,
                 button::ButtonPlugin,
                 text_field::TextFieldPlugin,
                 scroll::ScrollPlugin,

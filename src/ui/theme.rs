@@ -51,6 +51,10 @@ pub struct UiTheme {
     pub field: Color,
     /// A text field's frame while it has the keyboard.
     pub field_focused: Color,
+    /// A bar of stored energy.
+    pub energy: Color,
+    /// A bar of how far along something is.
+    pub progress: Color,
 }
 
 impl Default for UiTheme {
@@ -88,6 +92,8 @@ impl Default for UiTheme {
             button_pressed: Color::srgba(1.0, 1.0, 1.0, 0.04),
             field: Color::srgba(0.0, 0.0, 0.0, 0.45),
             field_focused: Color::srgb(0.95, 0.85, 0.35),
+            energy: Color::srgb(0.95, 0.78, 0.2),
+            progress: Color::srgb(0.85, 0.85, 0.85),
         }
     }
 }

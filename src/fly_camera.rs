@@ -36,8 +36,14 @@ impl Plugin for FlyCameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_camera)
             .add_systems(Update, (grab_cursor, look).chain().in_set(FlyCameraSystems))
-            // A screen (the inventory) has the mouse while it's open.
-            .configure_sets(Update, FlyCameraSystems.run_if(crate::ui::playing));
+            // A screen (the inventory) has the mouse while it's open, and
+            // Escape closing it leaves the cursor locked.
+            .configure_sets(
+                Update,
+                FlyCameraSystems
+                    .run_if(crate::ui::playing)
+                    .before(crate::ui::screen::CloseOnEscapeSystems),
+            );
     }
 }
 
