@@ -10,6 +10,9 @@ bevy = "0.20.1"
 json5 = "1.3.8"
 # zlib for saved chunks. The version Bevy already builds (for PNGs).
 miniz_oxide = "0.8.9"
+# Mod scripts run in Luau. Its C++ source is built once and linked in
+# statically, so shipping builds stay one binary (see docs/decisions.md).
+mlua = { version = "0.12.3", features = ["luau", "send"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # Compile out verbose log calls (including Bevy's own) at build time.
 # Debug builds keep up to `debug`; release builds keep only `warn` and `error`.

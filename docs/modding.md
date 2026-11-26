@@ -23,6 +23,7 @@ assets/mods/<folder>/
   items/             items (blocks get one automatically)
   categories/        headings items are listed under in the inventory
   networks/          kinds of network conduits form
+  scripts/           Luau scripts, see scripting.md
 ```
 
 Every folder except the manifest is optional, and each may have

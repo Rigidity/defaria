@@ -315,6 +315,9 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `src/save.rs` (and `src/save/`): the world's folder on disk and its region
   and chunk formats, documented in `docs/world-format.md`. Keep the two in
   step, and bump a format's version when it changes.
+- `src/script/`: mod scripts (Luau, through `mlua`): loading each mod's
+  `scripts/`, the sandbox, budgets and errors. Documented in
+  `docs/scripting.md`.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `src/content.rs` (and `src/content/`): mod loading and the `Content`
   registry.

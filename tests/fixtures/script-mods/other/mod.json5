@@ -1,0 +1,5 @@
+{
+  id: "other",
+  name: "A mod that depends on the scripted one",
+  dependencies: ["scripted"],
+}
