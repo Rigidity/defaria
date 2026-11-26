@@ -11,19 +11,22 @@
 //!   onto it, and its slots dragged around.
 //! - Items move between the two lists with the mouse as `gesture`
 //!   describes. Moving them into the catalog throws them away.
+//! - The search box on top narrows both lists to what matches (see
+//!   `search`).
 
 use bevy::prelude::*;
 
 use super::{
     Inventory,
     list::{ItemList, ListSource, ListSystems, Owner, item_list},
+    search::SearchBox,
 };
 use crate::{
     content::Content,
     game_mode::GameMode,
     hotbar::hotbar_height,
     player::LocalPlayer,
-    ui::{UiScreen, UiTheme, typing},
+    ui::{UiScreen, UiTheme, text_field, typing},
 };
 
 /// The catalog's rows that show at once; more scroll.
@@ -56,6 +59,15 @@ impl Plugin for ScreenPlugin {
 #[reflect(Component)]
 #[require(UiScreen)]
 pub struct InventoryScreen;
+
+/// How wide the panel's contents are: a list and its scrollbar.
+fn panel_width(theme: &UiTheme) -> f32 {
+    let columns = super::list::COLUMNS as f32;
+    columns * theme.slot_size
+        + (columns - 1.0) * theme.slot_gap
+        + theme.scrollbar_gap
+        + theme.scrollbar_width
+}
 
 /// The line showing how much the player carries.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
@@ -132,6 +144,15 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme, creative: bool) {
                 BorderColor::all(theme.panel_border),
             ))
             .with_children(|panel| {
+                panel.spawn((
+                    SearchBox,
+                    text_field(
+                        theme,
+                        panel_width(theme),
+                        "Search: words, category:, material:",
+                        64,
+                    ),
+                ));
                 if creative {
                     panel.spawn(heading(theme, "Items", (), 0.0));
                     item_list(
@@ -310,9 +331,11 @@ mod tests {
     }
 
     fn scrollbars_shown(app: &mut App) -> usize {
-        let mut bars = app.world_mut().query_filtered::<&Node, With<Scrollbar>>();
+        let mut bars = app
+            .world_mut()
+            .query_filtered::<&Visibility, With<Scrollbar>>();
         bars.iter(app.world())
-            .filter(|node| node.display != Display::None)
+            .filter(|visibility| **visibility != Visibility::Hidden)
             .count()
     }
 
@@ -789,6 +812,99 @@ mod tests {
         // The new player's hotbar items: natural blocks, building blocks
         // and lamps.
         assert_eq!(names(false), ["Natural", "Building", "Lighting"]);
+    }
+
+    fn entries_of(app: &mut App, source: ListSource) -> Vec<ItemState> {
+        let mut entries = app.world_mut().query::<&ListEntry>();
+        entries
+            .iter(app.world())
+            .filter(|entry| entry.source == source)
+            .map(|entry| entry.stack.item)
+            .collect()
+    }
+
+    fn heading_texts(app: &mut App) -> Vec<String> {
+        let mut headings = app
+            .world_mut()
+            .query_filtered::<&Text, With<crate::inventory::list::ListHeading>>();
+        headings
+            .iter(app.world())
+            .map(|text| text.0.clone())
+            .collect()
+    }
+
+    /// Typing in the search box narrows both lists as you type, with the
+    /// screen staying open and the game's keys typed rather than acted on
+    /// (a digit over an entry doesn't put it in the hotbar); a search that
+    /// matches nothing says so; and the next time the screen opens it's
+    /// cleared.
+    #[test]
+    fn searching_narrows_the_lists() {
+        let mut app = open_inventory();
+        let catalog = ListSource::Catalog;
+        let mine = ListSource::Inventory(Owner::LocalPlayer);
+        let all = entries_of(&mut app, catalog).len();
+        let at = {
+            let mut boxes = app
+                .world_mut()
+                .query_filtered::<&UiGlobalTransform, With<SearchBox>>();
+            boxes.single(app.world()).unwrap().translation
+        };
+        run_more(&mut app, &click("MouseLeft", at));
+        run_more(&mut app, "type stone\nwait 2");
+        let content = app.world().resource::<Content>().clone();
+        let named = |items: &[ItemState], word: &str| {
+            items.iter().all(|&item| {
+                content
+                    .item_name(item)
+                    .unwrap()
+                    .to_lowercase()
+                    .contains(word)
+            })
+        };
+        let stones = entries_of(&mut app, catalog);
+        assert!(!stones.is_empty() && stones.len() < all && named(&stones, "stone"));
+        let carried = entries_of(&mut app, mine);
+        assert_eq!(carried.len(), 2, "stone and stone slab");
+        assert!(named(&carried, "stone"));
+
+        // With the pointer over an entry, a digit is typed: the hotbar
+        // stays as it was.
+        let before = hotbar(&mut app);
+        let over = entry_at(&mut app, catalog, stones[0]);
+        run_more(
+            &mut app,
+            &format!("cursor {} {}\nwait 2\ntype 2\nwait 2", over.x, over.y),
+        );
+        assert_eq!(hotbar(&mut app), before);
+        assert!(
+            entries_of(&mut app, catalog).is_empty(),
+            "\"stone2\" matches nothing"
+        );
+        run_more(&mut app, "hold Backspace 1\nwait 2");
+
+        // Erased back to nothing, the player's list widens in place, in
+        // order; then narrow it again.
+        run_more(&mut app, &"hold Backspace 1\nwait 1\n".repeat(5));
+        run_more(&mut app, "wait 2");
+        assert_eq!(shown(&mut app, mine).0, expected(&mut app));
+        run_more(&mut app, "type stone\nwait 2");
+
+        // Typing goes on, and the screen stays open.
+        run_more(&mut app, "hold Space 1\nwait 1\ntype slab\nwait 2");
+        assert!(is_open(&mut app));
+        assert_eq!(entries_of(&mut app, mine).len(), 1);
+
+        run_more(&mut app, "type zzz\nwait 2");
+        assert!(entries_of(&mut app, catalog).is_empty());
+        assert!(entries_of(&mut app, mine).is_empty());
+        assert_eq!(
+            heading_texts(&mut app),
+            ["No items match", "No items match"]
+        );
+
+        run_more(&mut app, "hold Escape 1\nwait 2\nhold KeyE 1\nwait 3");
+        assert_eq!(entries_of(&mut app, catalog).len(), all);
     }
 
     #[test]

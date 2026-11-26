@@ -1,0 +1,26 @@
+# Searching the inventory screen: click the search box, type a filter and
+# a word (both lists narrow), then something that matches nothing.
+# Run: cargo headless scenarios/inventory-search.txt
+camera 64 56 92 0 -37.9          # the start's view, flying
+wait 2
+hold MouseLeft 1                 # lock the cursor
+wait 1
+hold KeyE 1                      # open the inventory
+wait 3
+cursor 640 73                    # the search box, at the top
+wait 1
+hold MouseLeft 1
+wait 1
+type category:natural
+wait 2
+screenshot target/scenarios/inventory-search/0-natural.png
+wait 1
+hold Space 1
+wait 1
+type dirt
+wait 2
+screenshot target/scenarios/inventory-search/1-natural-dirt.png
+wait 1
+type zzz
+wait 2
+screenshot target/scenarios/inventory-search/2-nothing.png
