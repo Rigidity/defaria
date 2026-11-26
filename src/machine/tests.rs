@@ -20,26 +20,26 @@ fn content() -> &'static Content {
     CONTENT.get_or_init(|| {
         test_content(&[(
             "blocks/oven.json5",
-                r#"{
-                    properties: {
-                        lit: ["false", "true"],
-                        facing: { values: ["north", "south", "east", "west"], place: "look" },
-                    },
-                    model: "defaria:cube",
-                    textures: { all: "defaria:machine_side" },
-                    variants: [{ when: { lit: "true" }, light: [10, 6, 2] }],
-                    machine: {
-                        ports: [
-                            { faces: ["back"], network: "defaria:electric", role: "consume" },
-                            { faces: ["left"], network: "defaria:fluid", role: "input" },
-                            { faces: ["right"], network: "defaria:item", role: "input", slots: "input" },
-                        ],
-                        energy: { capacity: 500, max_in: 50 },
-                        tanks: { water: { capacity: 2, accepts: ["defaria:water"] } },
-                        slots: { input: 2, output: 1 },
-                        active_state: { lit: "true" },
-                    },
-                }"#,
+            r#"{
+                properties: {
+                    lit: ["false", "true"],
+                    facing: { values: ["north", "south", "east", "west"], place: "look" },
+                },
+                model: "defaria:cube",
+                textures: { all: "defaria:machine_side" },
+                variants: [{ when: { lit: "true" }, light: [10, 6, 2] }],
+                machine: {
+                    ports: [
+                        { faces: ["back"], network: "defaria:electric", role: "consume" },
+                        { faces: ["left"], network: "defaria:fluid", role: "input" },
+                        { faces: ["right"], network: "defaria:item", role: "input", slots: "input" },
+                    ],
+                    energy: { capacity: 500, max_in: 50 },
+                    tanks: { water: { capacity: 2, accepts: ["defaria:water"] } },
+                    slots: { input: 2, output: 1 },
+                    active_state: { lit: "true" },
+                },
+            }"#,
         )])
     })
 }

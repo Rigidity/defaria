@@ -215,15 +215,15 @@ fn dear_recipes() -> &'static Content {
     static CONTENT: std::sync::OnceLock<Content> = std::sync::OnceLock::new();
     CONTENT.get_or_init(|| {
         test_content(&[
-                (
-                    "recipes/dear.json5",
-                    r#"{ type: "smelting", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], energy: 100000, time: 1 }"#,
-                ),
-                (
-                    "recipes/spark.json5",
-                    r#"{ type: "smelting", inputs: [{ item: "defaria:stone", when: { ore: "defaria:iron" } }], outputs: [{ energy: 10 }], energy: 1000, time: 1 }"#,
-                ),
-            ])
+            (
+                "recipes/dear.json5",
+                r#"{ type: "smelting", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], energy: 100000, time: 1 }"#,
+            ),
+            (
+                "recipes/spark.json5",
+                r#"{ type: "smelting", inputs: [{ item: "defaria:stone", when: { ore: "defaria:iron" } }], outputs: [{ energy: 10 }], energy: 1000, time: 1 }"#,
+            ),
+        ])
     })
 }
 

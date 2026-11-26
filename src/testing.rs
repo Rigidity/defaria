@@ -20,6 +20,7 @@ use crate::{
         Content, MODS_DIR,
         load::{ModFiles, read_mods},
     },
+    headless::SETTLE_TIMEOUT_FRAMES,
     light::LightPlugin,
     meshing::{MeshingPlugin, testing::finish_meshing},
     save::WorldFolder,
@@ -33,9 +34,6 @@ use crate::{
 
 /// Where [`world_app`]'s loader stands unless it's given another place.
 pub const HOME: Vec3 = Vec3::new(8.0, 40.0, 8.0);
-
-/// How many frames [`settle`] waits for streaming before it gives up.
-const SETTLE_FRAMES: u32 = 4000;
 
 /// The world, meshing, light and streaming with no rendering, loading a
 /// small world (radius 2, a chunk above and below) around a
@@ -121,13 +119,15 @@ impl WorldApp {
 }
 
 /// Steps the app until streaming has settled: nothing left to load,
-/// generate or save. Panics if it never does.
+/// generate or save. Panics if it never does within
+/// [`SETTLE_TIMEOUT_FRAMES`]. It doesn't wait for the fog to open, as a
+/// script's `settle` does.
 pub fn settle(app: &mut App) {
     // Two frames first: a moved loader's transform reaches the plan a
     // frame late.
     app.update();
     app.update();
-    for _ in 0..SETTLE_FRAMES {
+    for _ in 0..SETTLE_TIMEOUT_FRAMES {
         app.update();
         if app.world().resource::<StreamingStatus>().settled {
             return;
