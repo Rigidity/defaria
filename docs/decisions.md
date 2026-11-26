@@ -41,9 +41,11 @@ one, but a flood across many chunks at once might.
 **What should replace it.** Treat a settled, connected body of a fluid as
 one reservoir with a shared level: water leaving it lowers the whole
 surface evenly, without stepping each voxel. That also makes a dam break
-fast, and it's what pumps drawing from a lake or an oil pool will need. If
-floods turn out to remesh too much at once, cap the chunks remeshed for
-fluid alone per frame.
+fast, and it's what pumps drawing from a lake or an oil pool will need
+(#96 looks at this and other ways to speed flow up). If floods turn out to
+remesh too much at once, cap the chunks remeshed for fluid alone per
+frame. Films thinner than `film` stay on dry ground for good: see #97
+(creeping toward a drop) and #98 (evaporation).
 
 ## A fluid's kind is its block; only its amount is stored apart (2026-11-25)
 
