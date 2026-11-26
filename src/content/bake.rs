@@ -571,6 +571,7 @@ impl Textures {
             id: key.clone(),
             template: id.into(),
             layers,
+            cutout: false,
         });
         content.texture_index.insert(key, layer);
         Ok(layer)
@@ -1036,7 +1037,8 @@ fn add_block(
                     name,
                     attributes,
                     &def.namespace,
-                    (index, block.fluid, block.double_sided),
+                    index,
+                    block,
                     content,
                     textures,
                 )
@@ -1052,6 +1054,11 @@ fn add_block(
         state_count: count as u16,
     });
     content.block_index.insert(def.id.clone(), index);
+    for state in states.iter().filter(|s| s.render == Render::Cutout) {
+        for face in &state.faces {
+            content.textures[face.layer as usize].cutout = true;
+        }
+    }
     content.states.extend(states);
     Ok(())
 }
@@ -1125,9 +1132,10 @@ impl Look<'_> {
     }
 }
 
-/// Bakes one block state, called `name`, with this hardness and weight:
-/// the model's faces rotated and textured. Textures for slots the model
-/// doesn't have are left out.
+/// Bakes one state of `def`, block number `block`, called `name`, with this
+/// hardness and weight: the model's faces rotated and textured. Textures
+/// for slots the model doesn't have are left out. A fluid has nothing to
+/// bump into, whatever its model's collision.
 fn bake_state(
     look: &Look,
     model: &Model,
@@ -1135,7 +1143,8 @@ fn bake_state(
     name: String,
     (hardness, weight): (f32, f32),
     namespace: &str,
-    (block, fluid, double_sided): (usize, bool, bool),
+    block: usize,
+    def: &BlockDef,
     content: &mut Content,
     textures: &Textures,
 ) -> Result<State, String> {
@@ -1187,8 +1196,8 @@ fn bake_state(
         .occludes
         .iter()
         .fold(0, |bits, &d| bits | rotate_direction(d).bit());
-    let collision = model
-        .collision
+    let boxes = if def.fluid { &[][..] } else { &model.collision };
+    let collision = boxes
         .iter()
         .map(|b| {
             let [a, c] = [b.min, b.max].map(turn);
@@ -1207,8 +1216,8 @@ fn bake_state(
         occludes,
         light,
         render: look.render.unwrap_or_default(),
-        fluid,
-        double_sided,
+        fluid: def.fluid,
+        double_sided: def.double_sided,
         hardness,
         weight,
     })
@@ -1628,6 +1637,14 @@ mod tests {
                 "blocks/pool.json5",
                 r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
             ),
+            (
+                "blocks/deep.json5",
+                r#"{ model: "pair", textures: { top: "a", bottom: "a" }, fluid: true }"#,
+            ),
+            (
+                "blocks/box.json5",
+                r#"{ model: "pair", textures: { top: "a", bottom: "a" } }"#,
+            ),
         ]);
         assert!(content.errors.is_empty(), "{}", errors(&content));
         let pane = content.block("test:pane").unwrap();
@@ -1646,6 +1663,10 @@ mod tests {
         let pool = content.default_state("test:pool").unwrap();
         assert!(content.state(pool).fluid && !content.state(solid).fluid);
         assert_eq!(render(pool), Render::Opaque);
+        // A fluid has no collision, though its model has.
+        let collision = |id| &content.state(content.default_state(id).unwrap()).collision;
+        assert_eq!(collision("test:box"), &[BlockBox::FULL]);
+        assert!(collision("test:deep").is_empty());
 
         // What hides a block's bottom face, from below.
         let hides = |block, neighbour| content.hides(block, neighbour, Direction::Down);

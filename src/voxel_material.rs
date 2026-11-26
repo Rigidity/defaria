@@ -47,8 +47,7 @@ impl Plugin for VoxelMaterialPlugin {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .init_resource::<BlockMaterial>()
             .init_resource::<BlockTiles>()
-            .add_systems(Update, build_block_texture)
-            .add_systems(PostUpdate, sync_see_through_materials);
+            .add_systems(Update, build_block_texture);
     }
 }
 
@@ -160,11 +159,9 @@ const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 6] = [
 ];
 
 /// The materials chunk meshes are drawn with, one per
-/// [`Render`](crate::content::Render), and the
-/// images behind them. They differ only in how they blend: `material` is
-/// the opaque one, and the others copy its texture and lighting (see
-/// [`sync_see_through_materials`]), so the rest of the game only updates
-/// `material`.
+/// [`Render`](crate::content::Render), and the images behind them. They
+/// differ only in how they blend: whatever changes one's texture or
+/// lighting changes all three (see [`BlockMaterial::all`]).
 #[derive(Resource, Debug, Clone)]
 pub struct BlockMaterial {
     pub material: Handle<VoxelMaterial>,
@@ -214,6 +211,11 @@ impl FromWorld for BlockMaterial {
 }
 
 impl BlockMaterial {
+    /// Every material: opaque, cut-out and translucent.
+    pub fn all(&self) -> [&Handle<VoxelMaterial>; 3] {
+        [&self.material, &self.cutout, &self.translucent]
+    }
+
     /// Materials with nothing behind them, for tests that don't draw.
     #[cfg(test)]
     pub fn unloaded(material: Handle<VoxelMaterial>) -> Self {
@@ -222,28 +224,6 @@ impl BlockMaterial {
             cutout: Handle::default(),
             translucent: Handle::default(),
             layers: default(),
-        }
-    }
-}
-
-/// Gives the cut-out and translucent materials the opaque one's texture
-/// and lighting whenever they change. In `PostUpdate`, after everything
-/// that changes them, so all three draw the same frame alike.
-fn sync_see_through_materials(
-    block: Res<BlockMaterial>,
-    mut materials: ResMut<Assets<VoxelMaterial>>,
-) {
-    let Some(main) = materials.get(&block.material) else {
-        return;
-    };
-    let (blocks, lighting) = (main.blocks.clone(), main.lighting);
-    for handle in [&block.cutout, &block.translucent] {
-        let stale = materials
-            .get(handle)
-            .is_some_and(|m| m.blocks != blocks || m.lighting != lighting);
-        if stale && let Some(mut material) = materials.get_mut(handle) {
-            material.blocks = blocks.clone();
-            material.lighting = lighting;
         }
     }
 }
@@ -322,10 +302,13 @@ fn build_block_texture(
     }
     let texture = images.add(texture);
     tiles.0 = built;
-    // Assigning through `get_mut` marks the material modified, so its bind
-    // group is rebuilt with the new texture. The old texture is dropped.
-    if let Some(mut material) = materials.get_mut(&block.material) {
-        material.blocks = texture;
+    // Assigning through `get_mut` marks each material modified, so its
+    // bind group is rebuilt with the new texture. The old texture is
+    // dropped.
+    for handle in block.all() {
+        if let Some(mut material) = materials.get_mut(handle) {
+            material.blocks = texture.clone();
+        }
     }
 }
 
@@ -477,6 +460,12 @@ mod tests {
 
         let new = material_texture(&app);
         assert_ne!(new.id(), old.id(), "rebuilt texture must be a new asset");
+        // The cut-out and translucent materials use the new texture too.
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        for handle in block.all() {
+            assert_eq!(materials.get(handle).unwrap().blocks, new);
+        }
         let texture = app.world().resource::<Assets<Image>>().get(&new).unwrap();
         // The stone tile's first pixel is the darkest stone color now.
         let darkest = base().materials["defaria:stone"].palette.color(0);

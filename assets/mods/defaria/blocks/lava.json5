@@ -2,7 +2,7 @@
 // water.
 {
   name: "Lava",
-  model: "fluid",
+  model: "cube",
   fluid: true,
   textures: { all: "lava" },
   light: [15, 10, 4],

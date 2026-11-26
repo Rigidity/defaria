@@ -175,6 +175,9 @@ pub struct Texture {
     /// The texture file's id alone: `defaria:log_side`.
     pub template: String,
     pub layers: Vec<TextureLayer>,
+    /// Whether a cut-out block's face shows it, so its mipmaps keep its
+    /// share of solid pixels (see `block_texture`).
+    pub cutout: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -364,8 +367,8 @@ pub struct State {
     /// How its faces are drawn, which also decides whether it stops light
     /// and hides the faces next to it.
     pub render: Render,
-    /// Whether it's a fluid: the crosshair passes through it, and placing
-    /// a block replaces it.
+    /// Whether it's a fluid: it has no collision, the crosshair passes
+    /// through it, and placing a block replaces it.
     pub fluid: bool,
     /// Whether its faces show from behind too: from inside a glass block
     /// or under water.

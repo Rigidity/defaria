@@ -257,8 +257,8 @@ pub struct BlockDef {
     /// translucent.
     #[serde(default)]
     pub render: Option<Render>,
-    /// A fluid: the crosshair passes through it, and placing a block
-    /// replaces it.
+    /// A fluid: nothing bumps into it whatever its model's collision, the
+    /// crosshair passes through it, and placing a block replaces it.
     #[serde(default)]
     pub fluid: bool,
     /// Its faces show from behind as well as in front.
@@ -302,6 +302,7 @@ pub struct VariantDef {
     /// The light the block gives off: red, green and blue levels, 0 to 15.
     #[serde(default)]
     pub light: Option<[u8; 3]>,
+    /// How the variant's faces are drawn, replacing the block's.
     #[serde(default)]
     pub render: Option<Render>,
 }

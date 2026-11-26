@@ -301,6 +301,8 @@ impl Neighborhood {
         let opaque_at = |pos: IVec3| opaque[Self::index(pos)];
 
         let mut builders: [MeshBuilder; 3] = Default::default();
+        // Only translucent faces are sorted.
+        builders[Render::Translucent as usize].sorted = true;
         for (x, y, z) in Chunk::positions() {
             let pos = IVec3::new(x as i32, y as i32, z as i32);
             let voxel = self.block(pos);
@@ -323,8 +325,8 @@ impl Neighborhood {
                 }
             }
         }
-        let [opaque, cutout, translucent] = builders;
-        let faces = TranslucentFaces(translucent.sort_faces.clone());
+        let [opaque, cutout, mut translucent] = builders;
+        let faces = TranslucentFaces::new(std::mem::take(&mut translucent.sort_faces));
         ChunkMeshes {
             opaque: opaque.build(),
             cutout: cutout.build(),
@@ -448,6 +450,7 @@ pub struct ChunkMeshes {
     pub translucent_faces: TranslucentFaces,
 }
 
+#[cfg(test)]
 impl ChunkMeshes {
     /// The mesh drawn the way `render` says.
     pub fn get(&self, render: Render) -> &Mesh {
@@ -462,40 +465,73 @@ impl ChunkMeshes {
 /// A translucent mesh's faces, for drawing them back to front: blended
 /// faces only look right drawn over everything behind them.
 #[derive(Component, Debug, Clone, Default, PartialEq)]
-pub struct TranslucentFaces(Vec<SortFace>);
+pub struct TranslucentFaces {
+    faces: Vec<SortFace>,
+    /// Whether the order can matter: false when every face lies in one
+    /// plane (open water's surface, front and back), where no face is ever
+    /// behind another.
+    needs_sorting: bool,
+}
 
 /// One face of a translucent mesh.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SortFace {
     /// The middle of the face, chunk-local.
     center: Vec3,
+    /// Its plane's normal, either way round (pointing toward +X, or +Y,
+    /// or +Z, whichever it has first), so a face and its back match.
+    normal: Vec3,
     /// Its first vertex in the mesh.
     first: u32,
-    triangle: bool,
+    /// Its triangles, from its first vertex.
+    indices: &'static [u32],
 }
 
 impl TranslucentFaces {
+    fn new(faces: Vec<SortFace>) -> Self {
+        let plane = |face: &SortFace| (face.normal, face.normal.dot(face.center));
+        let needs_sorting = faces.first().is_some_and(|first| {
+            let (normal, offset) = plane(first);
+            faces.iter().any(|face| {
+                let (n, d) = plane(face);
+                n.distance(normal) > 1e-4 || (d - offset).abs() > 1e-4
+            })
+        });
+        Self {
+            faces,
+            needs_sorting,
+        }
+    }
+
+    /// Whether the faces' order can matter: see `needs_sorting`.
+    pub fn needs_sorting(&self) -> bool {
+        self.needs_sorting
+    }
+
     /// The mesh's indices with its faces ordered farthest first from
     /// `eye`, chunk-local.
     pub fn indices_from(&self, eye: Vec3) -> Vec<u32> {
         let mut order: Vec<(f32, &SortFace)> = self
-            .0
+            .faces
             .iter()
             .map(|face| (face.center.distance_squared(eye), face))
             .collect();
         order.sort_by(|a, b| b.0.total_cmp(&a.0));
         order
             .into_iter()
-            .flat_map(|(_, face)| {
-                let indices: &[u32] = if face.triangle {
-                    &[0, 1, 2]
-                } else {
-                    &[0, 1, 2, 0, 2, 3]
-                };
-                indices.iter().map(move |i| face.first + i)
-            })
+            .flat_map(|(_, face)| face.indices.iter().map(move |i| face.first + i))
             .collect()
     }
+}
+
+/// `normal` or its opposite, whichever points toward +X, or failing that
+/// +Y, or failing that +Z.
+fn either_way(normal: Vec3) -> Vec3 {
+    let first = [normal.x, normal.y, normal.z]
+        .into_iter()
+        .find(|c| c.abs() > 1e-6)
+        .unwrap_or(1.0);
+    normal * first.signum()
 }
 
 /// The vertex data of one chunk mesh, as it's built.
@@ -508,6 +544,8 @@ struct MeshBuilder {
     lights: Vec<[u32; 4]>,
     faces: Vec<[u32; 2]>,
     indices: Vec<u32>,
+    /// Whether to record `sort_faces`, for a translucent mesh.
+    sorted: bool,
     sort_faces: Vec<SortFace>,
 }
 
@@ -541,11 +579,14 @@ impl MeshBuilder {
             self.faces.push([face.layer, occlusion]);
         }
         self.indices.extend(face.indices().iter().map(|i| base + i));
-        self.sort_faces.push(SortFace {
-            center: center / face.vertices.len() as f32,
-            first: base,
-            triangle,
-        });
+        if self.sorted {
+            self.sort_faces.push(SortFace {
+                center: center / count as f32,
+                normal: either_way(face.normal),
+                first: base,
+                indices: face.indices(),
+            });
+        }
     }
 
     fn build(self) -> Mesh {
@@ -1257,6 +1298,32 @@ mod tests {
         assert_eq!(split(&[(A, "leaves"), (B, "glass")]), [0, 6, 12]);
     }
 
+    /// See-through blocks cast no ambient occlusion and don't hide light
+    /// from a corner: a floor beside and under them is shaded exactly as
+    /// it would be with nothing there. An opaque block in the same places
+    /// does shade it.
+    #[test]
+    fn see_through_blocks_cast_no_shadow_on_corners() {
+        let floor: Vec<_> = (4..7)
+            .flat_map(|x| (4..7).map(move |z| (IVec3::new(x, 4, z), block("stone"))))
+            .collect();
+        let light = |p: IVec3| Light::new((p.x + 2 * p.z + p.y) as u8 % 16, [0; 3]);
+        let top = |extra: &[(IVec3, BlockState)]| {
+            let blocks: Vec<_> = floor.iter().chain(extra).copied().collect();
+            let mesh = neighborhood(&blocks, light).meshes(base()).opaque;
+            shading(&mesh, A - IVec3::Y, IVec3::Y)
+        };
+        let bare = top(&[]);
+        for name in ["leaves", "glass", "water", "tuft"] {
+            let around = [A, A + IVec3::X, A + IVec3::Z, A + IVec3::ONE.with_y(0)];
+            let around = around.map(|p| (p, block(name)));
+            assert_eq!(top(&around), bare, "{name} over and beside");
+            assert!(!base().state(block(name)).is_opaque(), "{name}");
+        }
+        let stone = [(A + IVec3::X, block("stone"))];
+        assert_ne!(top(&stone).occlusion, bare.occlusion);
+    }
+
     /// A plant is four faces inside its block, lit by its own voxel, and
     /// it covers no side, so it hides nothing around it and nothing hides
     /// it.
@@ -1321,6 +1388,38 @@ mod tests {
                 assert_eq!(at(twin), at(front + i));
             }
         }
+    }
+
+    /// Faces that all lie in one plane, like open water's surface (front
+    /// and back), never need sorting; faces in two planes do.
+    #[test]
+    fn only_faces_in_several_planes_need_sorting() {
+        let needs = |blocks: &[(IVec3, &str)]| {
+            let blocks: Vec<_> = blocks.iter().map(|&(p, b)| (p, block(b))).collect();
+            // Stone all around below and beside, so only tops show.
+            let ground = |p: IVec3| {
+                let found = blocks.iter().find(|(q, _)| *q == p).map(|(_, b)| *b);
+                let state =
+                    found.unwrap_or(if p.y < 5 || p.x < 2 || p.x > 6 || p.z < 2 || p.z > 6 {
+                        block("stone")
+                    } else {
+                        BlockState::AIR
+                    });
+                (state, OPEN_SKY)
+            };
+            Neighborhood::from_fn(ground)
+                .meshes(base())
+                .translucent_faces
+                .needs_sorting()
+        };
+        let sheet: Vec<_> = (2..=6)
+            .flat_map(|x| (2..=6).map(move |z| (IVec3::new(x, 5, z), "water")))
+            .collect();
+        assert!(!needs(&sheet));
+        let mut deeper = sheet.clone();
+        deeper[0].0.y = 6;
+        assert!(needs(&deeper));
+        assert!(needs(&[(A, "glass")]));
     }
 
     /// Translucent faces sort farthest first from the eye, as whole faces.

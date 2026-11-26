@@ -33,9 +33,10 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockState, Content, Render},
+    content::{BlockState, Content},
     fly_camera::FlyCamera,
     light::ChunkLight,
+    perlin::splitmix64,
     voxel::{CHUNK_SIZE, Chunk, ChunkMeshes, Neighborhood, TranslucentFaces, touching_offsets},
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
@@ -420,14 +421,9 @@ impl Column {
     }
 }
 
-/// A well-mixed number from a seed and a column, the same every time
-/// (SplitMix64's finalizer).
+/// A well-mixed number from a seed and a column, the same every time.
 fn hash(seed: u64, x: i32, z: i32) -> u64 {
-    let mut h = seed ^ (x as u32 as u64) << 32 ^ z as u32 as u64;
-    h = h.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    h ^ (h >> 31)
+    splitmix64(&mut (seed ^ (x as u32 as u64) << 32 ^ z as u32 as u64))
 }
 
 /// Rebuilds the mesh of every chunk that was spawned or changed, or whose
@@ -542,7 +538,8 @@ pub fn apply_finished_meshes(
 
 /// The child entities that draw a chunk's see-through faces: its own
 /// entity draws the opaque ones. Spawned the first time the chunk has any.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
 pub struct ChunkParts {
     pub cutout: Entity,
     pub translucent: Entity,
@@ -551,7 +548,8 @@ pub struct ChunkParts {
 /// Where the camera was, in its chunk-local [`TranslucentFaces`] sort's
 /// steps, when a translucent mesh's faces were last put in order. `None`
 /// until they first are.
-#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+#[reflect(Component)]
 pub struct SortedFrom(Option<IVec3>);
 
 fn show_meshes(
@@ -562,11 +560,15 @@ fn show_meshes(
     meshes: &mut Assets<Mesh>,
     material: &BlockMaterial,
 ) {
+    let ChunkMeshes {
+        opaque,
+        cutout,
+        translucent,
+        translucent_faces,
+    } = built;
     commands.entity(entity).insert(Meshed);
-    show_mesh(commands, entity, &built.opaque, meshes, &material.material);
-    let see_through = [Render::Cutout, Render::Translucent]
-        .iter()
-        .any(|&render| built.get(render).count_vertices() > 0);
+    show_mesh(commands, entity, opaque, meshes, &material.material);
+    let see_through = cutout.count_vertices() + translucent.count_vertices() > 0;
     let parts = match parts {
         Some(parts) => *parts,
         // Most chunks never need them.
@@ -590,23 +592,17 @@ fn show_meshes(
             parts
         }
     };
-    show_mesh(
-        commands,
-        parts.cutout,
-        &built.cutout,
-        meshes,
-        &material.cutout,
-    );
+    show_mesh(commands, parts.cutout, cutout, meshes, &material.cutout);
     show_mesh(
         commands,
         parts.translucent,
-        &built.translucent,
+        translucent,
         meshes,
         &material.translucent,
     );
     commands
         .entity(parts.translucent)
-        .insert((built.translucent_faces, SortedFrom::default()));
+        .insert((translucent_faces, SortedFrom::default()));
 }
 
 /// Draws `mesh` on `entity`, or nothing if it has no faces: chunks with
@@ -615,16 +611,13 @@ fn show_meshes(
 fn show_mesh(
     commands: &mut Commands,
     entity: Entity,
-    mesh: &Mesh,
+    mesh: Mesh,
     meshes: &mut Assets<Mesh>,
     material: &Handle<VoxelMaterial>,
 ) {
     let mut part = commands.entity(entity);
     if mesh.count_vertices() > 0 {
-        part.insert((
-            Mesh3d(meshes.add(mesh.clone())),
-            MeshMaterial3d(material.clone()),
-        ));
+        part.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
     } else {
         part.remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
     }
@@ -641,9 +634,24 @@ fn sort_step(distance: f32) -> i32 {
     }
 }
 
+/// Where the camera is, chunk-local (`eye`), rounded to the steps a
+/// translucent mesh is sorted at (see [`sort_step`]). Far chunks' steps are
+/// staggered by chunk, so crossing a chunk border doesn't sort every one of
+/// them on the same frame.
+fn sort_position(eye: Vec3, coord: ChunkCoord) -> IVec3 {
+    let middle = Vec3::splat(CHUNK_SIZE as f32 / 2.0);
+    let step = sort_step(eye.distance(middle));
+    let mut state = coord.0.x as u64 ^ (coord.0.y as u64) << 21 ^ (coord.0.z as u64) << 42;
+    let bits = splitmix64(&mut state);
+    let offset = IVec3::new(bits as i32, (bits >> 16) as i32, (bits >> 32) as i32)
+        .rem_euclid(IVec3::splat(step));
+    ((eye.floor().as_ivec3() + offset).div_euclid(IVec3::splat(step)) * step) - offset
+}
+
 /// Puts each translucent mesh's faces in order, farthest from the camera
 /// first, when it's new or the camera has moved far enough (see
-/// [`sort_step`]). Only the indices change.
+/// [`sort_position`]). Only the indices change. A mesh whose faces all lie
+/// in one plane (open water) never needs it.
 pub fn sort_translucent_faces(
     camera: Query<&Transform, With<FlyCamera>>,
     mut parts: Query<(&TranslucentFaces, &Mesh3d, &ChildOf, &mut SortedFrom)>,
@@ -654,13 +662,14 @@ pub fn sort_translucent_faces(
         return;
     };
     for (faces, mesh, parent, mut sorted) in &mut parts {
+        if !faces.needs_sorting() {
+            continue;
+        }
         let Ok(coord) = coords.get(parent.parent()) else {
             continue;
         };
         let eye = camera.translation - coord.origin().as_vec3();
-        let middle = Vec3::splat(CHUNK_SIZE as f32 / 2.0);
-        let step = sort_step(eye.distance(middle));
-        let at = eye.div_euclid(Vec3::splat(step as f32)).as_ivec3() * step;
+        let at = sort_position(eye, *coord);
         if sorted.0 == Some(at) {
             continue;
         }
@@ -1331,5 +1340,76 @@ mod tests {
             .z = -20.0;
         app.update();
         assert!(first_face_z(&app) > 10.0);
+
+        let set = |app: &mut App, pos: IVec3, state: BlockState| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| {
+                    voxels.set(pos, state);
+                })
+                .unwrap();
+            finish_meshing(app);
+            app.update();
+        };
+        // An edit rebuilds the mesh in the order it's built in, south pane
+        // (z = 2) first; it's sorted again without the camera moving.
+        set(&mut app, IVec3::new(6, 2, 7), block("glass"));
+        assert!(first_face_z(&app) > 10.0, "not sorted after an edit");
+
+        // A move within the same block doesn't sort it again.
+        let sorted = *app.world().get::<SortedFrom>(parts.translucent).unwrap();
+        let mesh = app.world().get::<Mesh3d>(parts.translucent).unwrap().id();
+        let mut events = app
+            .world()
+            .resource::<Messages<AssetEvent<Mesh>>>()
+            .get_cursor_current();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .z = -19.7;
+        app.update();
+        app.update();
+        assert_eq!(
+            *app.world().get::<SortedFrom>(parts.translucent).unwrap(),
+            sorted
+        );
+        let messages = app.world().resource::<Messages<AssetEvent<Mesh>>>();
+        assert!(
+            !events.read(messages).any(|e| e.is_modified(mesh)),
+            "re-sorted after a small move"
+        );
+
+        // Without glass, the translucent part draws nothing.
+        for z in [2, 7, 12] {
+            set(&mut app, IVec3::new(6, 2, z), BlockState::AIR);
+        }
+        assert!(app.world().get::<Mesh3d>(parts.translucent).is_none());
+        assert!(app.world().get::<Mesh3d>(parts.cutout).is_some());
+    }
+
+    /// Nearby, a translucent mesh is sorted again each block the camera
+    /// moves. Far away, each chunk every 16 blocks, but not all at the same
+    /// place, so crossing a line doesn't sort every far chunk on one frame.
+    #[test]
+    fn far_chunks_sort_at_staggered_places() {
+        let near = ChunkCoord(IVec3::ZERO);
+        for x in 0..20 {
+            let eye = Vec3::new(x as f32 + 0.5, 8.0, 8.0);
+            assert_eq!(sort_position(eye, near), eye.floor().as_ivec3());
+        }
+        // Flying 32 blocks along X, 100 blocks from each of 64 chunks: each
+        // sorts twice, at its own places.
+        let mut places = HashSet::new();
+        for i in 0..64 {
+            let coord = ChunkCoord(IVec3::new(i % 8, i / 8, 3));
+            let eye = |x: i32| Vec3::new(x as f32 + 0.5, 8.0, 108.0);
+            let changes: Vec<i32> = (1..=32)
+                .filter(|&x| sort_position(eye(x), coord) != sort_position(eye(x - 1), coord))
+                .collect();
+            assert_eq!(changes.len(), 2, "{coord:?}: {changes:?}");
+            assert_eq!(changes[1] - changes[0], 16);
+            places.insert(changes[0]);
+        }
+        assert!(places.len() >= 8, "only {} different places", places.len());
     }
 }

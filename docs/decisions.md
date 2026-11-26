@@ -38,7 +38,12 @@ the camera has moved a block (near chunks) or a chunk (far ones).
 **What's wrong with it.** Sorting by face centres and by chunk centres is
 an approximation: big faces at grazing angles, and translucent faces in
 neighbouring chunks that overlap on screen, can blend in the wrong order.
-Each re-sort uploads the chunk's mesh again, which adds up over a sea.
+The second shows plainly in anything built of water and glass across a
+chunk border, seen at an angle: a hard-edged band of a different shade
+along the border, since a whole chunk's faces draw before or after the
+next chunk's. Each re-sort uploads the chunk's mesh again. To keep that
+cheap, a mesh whose faces all lie in one plane (open water) is never
+sorted, and far chunks re-sort at staggered places (`sort_position`).
 Glass and water are double-sided, so a glass wall tints what's behind it
 twice (its near and far faces), and there's no tint or fog underwater.
 

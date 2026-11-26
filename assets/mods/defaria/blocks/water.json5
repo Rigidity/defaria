@@ -3,7 +3,7 @@
 // it and placing a block replaces it.
 {
   name: "Water",
-  model: "fluid",
+  model: "cube",
   render: "translucent",
   double_sided: true,
   fluid: true,

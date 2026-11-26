@@ -287,16 +287,15 @@ replaces an earlier one's.
 
 ### Fluids
 
-`fluid: true` makes a block a fluid: the crosshair passes through it (so
-you can't mine it), and placing a block where it is replaces it. Give it
-a model with `collision: []` (the base game's `fluid` model) to walk
-through it. Fluids don't flow yet.
+`fluid: true` makes a block a fluid: nothing bumps into it, whatever its
+model's `collision`, the crosshair passes through it (so you can't mine
+it), and placing a block where it is replaces it. Fluids don't flow yet.
 
 ```json5
 // blocks/water.json5
 {
   name: "Water",
-  model: "fluid",
+  model: "cube",
   render: "translucent",
   double_sided: true,
   fluid: true,
