@@ -1,0 +1,60 @@
+// A pipe's arm to the north side of its block: an 8-pixel box (4/16 to
+// 12/16 across) from the north face of `pipe_core` (at 3/16) out to the
+// block's north side. Its sides show `side`, an arm image whose band runs
+// left to right across the middle of the tile; on the top and bottom the
+// texture is turned a quarter so the band runs along the arm there too.
+// Its end shows `end` and is hidden when the neighbour covers that side.
+// It has no face against the core. Turn it to point another way:
+// `rotate: [0, 180, 0]` is south, `[0, 90, 0]` west, `[0, 270, 0]` east,
+// `[90, 0, 0]` up and `[270, 0, 0]` down.
+{
+  slots: { side: null, end: null },
+  occludes: [],
+  faces: [
+    {
+      texture: "end", cull: "north",
+      vertices: [
+        { pos: [0.75, 0.25, 0], uv: [0.25, 0.75] },
+        { pos: [0.25, 0.25, 0], uv: [0.75, 0.75] },
+        { pos: [0.25, 0.75, 0], uv: [0.75, 0.25] },
+        { pos: [0.75, 0.75, 0], uv: [0.25, 0.25] },
+      ],
+    },
+    {
+      texture: "side",
+      vertices: [
+        { pos: [0.75, 0.25, 0.1875], uv: [0.8125, 0.75] },
+        { pos: [0.75, 0.25, 0], uv: [1, 0.75] },
+        { pos: [0.75, 0.75, 0], uv: [1, 0.25] },
+        { pos: [0.75, 0.75, 0.1875], uv: [0.8125, 0.25] },
+      ],
+    },
+    {
+      texture: "side",
+      vertices: [
+        { pos: [0.25, 0.25, 0], uv: [0, 0.75] },
+        { pos: [0.25, 0.25, 0.1875], uv: [0.1875, 0.75] },
+        { pos: [0.25, 0.75, 0.1875], uv: [0.1875, 0.25] },
+        { pos: [0.25, 0.75, 0], uv: [0, 0.25] },
+      ],
+    },
+    {
+      texture: "side",
+      vertices: [
+        { pos: [0.25, 0.75, 0.1875], uv: [0.1875, 0.75] },
+        { pos: [0.75, 0.75, 0.1875], uv: [0.1875, 0.25] },
+        { pos: [0.75, 0.75, 0], uv: [0, 0.25] },
+        { pos: [0.25, 0.75, 0], uv: [0, 0.75] },
+      ],
+    },
+    {
+      texture: "side",
+      vertices: [
+        { pos: [0.25, 0.25, 0], uv: [0, 0.25] },
+        { pos: [0.75, 0.25, 0], uv: [0, 0.75] },
+        { pos: [0.75, 0.25, 0.1875], uv: [0.1875, 0.75] },
+        { pos: [0.25, 0.25, 0.1875], uv: [0.1875, 0.25] },
+      ],
+    },
+  ],
+}

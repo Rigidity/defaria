@@ -251,7 +251,7 @@ fills.
   (`models/slab.json5` gets `[0, 0, 0]` to `[1, 0.5, 1]` that way), or
   nothing if the faces are all in one plane. `collision: []` makes a block
   you walk through; the crosshair still picks it, as a whole block. Boxes
-  turn with the block's `rotate`.
+  turn with the block's `rotate` (or the part's: see [Parts](#parts)).
 
 ## Blocks
 
@@ -270,7 +270,8 @@ the model says. A texture is its id, or its id with materials for its
 inputs (see [Textures](#textures)). A face whose slot ends up with no texture is an error.
 Textures for slots a state's model doesn't have are ignored for that state,
 so a block can set textures for several models and switch between them in
-variants; naming a slot that none of the block's models has is an error.
+variants (or fill every model of its [parts](#parts)); naming a slot that
+none of the block's models has is an error.
 
 ### Light
 
@@ -509,6 +510,52 @@ A variant can also set `name`, which replaces the block's.
 
 A block may have up to 4096 states.
 
+### Parts
+
+A block's `parts` add models to a state, each where its `when` matches,
+so a pipe can be a core with an arm for every side it joins rather than
+a model for each of the 64 ways its arms can go:
+
+```json5
+// models/pipe_arm.json5 points north; each part turns it to its side.
+{
+  properties: {
+    north: ["false", "true"], south: ["false", "true"],
+    east: ["false", "true"], west: ["false", "true"],
+    up: ["false", "true"], down: ["false", "true"],
+  },
+  textures: { all: "pipe_core", side: "pipe_side", end: "pipe_end" },
+  parts: [
+    { model: "pipe_core" },                          // no `when`: always
+    { when: { north: "true" }, model: "pipe_arm" },
+    { when: { south: "true" }, model: "pipe_arm", rotate: [0, 180, 0] },
+    { when: { west: "true" }, model: "pipe_arm", rotate: [0, 90, 0] },
+    { when: { east: "true" }, model: "pipe_arm", rotate: [0, 270, 0] },
+    { when: { up: "true" }, model: "pipe_arm", rotate: [90, 0, 0] },
+    { when: { down: "true" }, model: "pipe_arm", rotate: [270, 0, 0] },
+  ],
+}
+```
+
+- A state is made of its own model (the block's `model`, or whatever its
+  variants chose), if it has one, then every part whose `when` matches,
+  in order. A block with `parts` doesn't need a `model`. `when` works as
+  a variant's (see [Conditions](#conditions)).
+- **`rotate`** turns only that part, about the block's center, as a
+  block's `rotate` does. The block's own `rotate` (and its variants')
+  turns only its own model, not the parts.
+- **`textures`**: a part's slots are filled from the state's textures
+  (the block's, with its variants'), then the part's own `textures`, which
+  are for that part only and must name slots its model has.
+- **`model`** may use `{property}`, as anywhere else.
+- The state is the union of its parts: all their faces, all their
+  collision boxes, and every side any of them `occludes`. Each part's
+  faces cull against the neighbours as they would on their own; parts in
+  the same block don't hide each other's faces, so leave out faces one
+  part covers inside another (the pipe's arm has no face against the
+  core).
+- A fluid can't have parts.
+
 ### Material properties
 
 A property can be a material instead of a list of words:
@@ -721,6 +768,7 @@ leave gaps in `order` so other mods can slot theirs between.
   part of that side.
 - Item data that isn't a fixed list of values, such as durability.
 - Variants can't change hardness, weight or stats.
+- Variants can't add or remove parts; a part's `when` does that.
 - Fluids' textures don't move, and their surfaces are flat steps rather
   than slopes.
 - Fluids only flow into air: not into blocks that don't fill their

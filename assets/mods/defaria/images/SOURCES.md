@@ -36,6 +36,26 @@ Re-run the script to redraw them.
   outward toward their tips, thicker near the ground, transparent around
   them.
 
+## Networks and machines
+
+The wire, pipe, tube and machine layers were drawn procedurally by
+`scripts/draw-machines.py` (2026-11-26). Re-run it to redraw them:
+`python3 scripts/draw-machines.py <out-dir> scripts/draw-machines-wrench.png`.
+It draws the whole set; each layer is added here as the content that
+uses it is.
+
+Arms run left to right in a band across the middle of the tile and tile
+horizontally, transparent above and below; a partial box samples the tile
+at its own position, so the band is where an arm box of that height
+samples it.
+
+- `pipe_side.png`: an 8-pixel pipe (rows 4–11), shaded round, one level
+  darker in the first and last column so joints show between blocks.
+- `pipe_end.png`: a pipe end-on, 8 pixels across: a lit flange ring around
+  a dark hollow.
+- `pipe_core.png`: the junction box face, 10 pixels (3–12): a bevelled
+  plate with four bolts and a round cap; transparent around it.
+
 ## Cracks (`cracks/`)
 
 `stage_0.png` to `stage_9.png`, the cracks drawn over a block being mined,

@@ -1,0 +1,6 @@
+// A pipe seen end-on: a ring around a dark hollow.
+{
+  layers: [
+    { image: "pipe_end", material: "$metal" },
+  ],
+}

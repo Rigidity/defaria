@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use super::{
     AIR, BakedFace, Block, BlockBox, BlockState, Category, Content, Direction, FULL_FLUID, Fluid,
     Item, ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Placement, Property,
-    State, Texture, TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*,
+    State, StatePart, Texture, TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*,
     state_count,
 };
 use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
@@ -1366,6 +1366,15 @@ fn add_block(
                 .map_err(|error| format!("variant {}: {error}", i + 1))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let part_whens = block
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            When::new(&part.when, &properties, &def.namespace, content)
+                .map_err(|error| format!("part {}: {error}", i + 1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let attributes = Attributes::new(
         block.hardness.as_ref(),
         block.weight.as_ref(),
@@ -1384,27 +1393,42 @@ fn add_block(
         if block.rotate.is_some() || block.variants.iter().any(|v| v.rotate.is_some()) {
             return Err("a fluid can't be rotated".into());
         }
+        if !block.parts.is_empty() {
+            return Err("a fluid has no `parts`: it's drawn as a box as high as it's full".into());
+        }
     }
 
-    // Each state's property values, look and model, last property fastest.
+    // Each state's property values, look and parts, last property fastest.
     let mut looks = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
         let look = look(block, &whens, &index);
-        let model = if block.fluid.is_some() {
-            fluid_box().clone()
+        let parts = if block.fluid.is_some() {
+            vec![Part {
+                model: fluid_box().clone(),
+                rotate: None,
+                textures: None,
+            }]
         } else {
-            look.model(&values, &def.namespace, content)
-                .map_err(|error| in_state(&values, error))?
-                .clone()
+            parts(
+                block,
+                &look,
+                &part_whens,
+                &index,
+                &values,
+                &def.namespace,
+                content,
+            )
+            .map_err(|error| in_state(&values, error))?
         };
-        looks.push((index, values, look, model));
+        looks.push((index, values, look, parts));
     }
-    // A slot is skipped where the state's model doesn't have it, so a
+    // A slot is skipped where the state's models don't have it, so a
     // variant can switch to a model with other slots; a slot no model has
     // is a mistake.
     let slots: BTreeSet<&str> = looks
         .iter()
-        .flat_map(|(_, _, _, model)| model.slots.keys().map(String::as_str))
+        .flat_map(|(_, _, _, parts)| parts.iter())
+        .flat_map(|part| part.model.slots.keys().map(String::as_str))
         .collect();
     let named = block
         .textures
@@ -1418,7 +1442,7 @@ fn add_block(
     }
     let index = content.blocks.len();
     let mut states = Vec::with_capacity(count);
-    for (value_index, values, look, model) in &looks {
+    for (value_index, values, look, parts) in &looks {
         let name = match look.name.or(block.name.as_deref()) {
             Some(name) => fill_name(name, &properties, value_index, content),
             None => Ok(title_case(&def.id)),
@@ -1430,7 +1454,7 @@ fn add_block(
                     attributes.values(&Numbers::default(), &properties, value_index, content);
                 bake_state(
                     look,
-                    model,
+                    parts,
                     values,
                     name,
                     numbers,
@@ -1513,30 +1537,85 @@ fn look<'d>(block: &'d BlockDef, whens: &[When], index: &[usize]) -> Look<'d> {
     look
 }
 
-impl Look<'_> {
-    /// The model, with `{property}` filled in.
-    fn model<'a>(
-        &self,
-        values: &[(String, String)],
-        namespace: &str,
-        content: &'a Content,
-    ) -> Result<&'a Model, String> {
-        let model = self.model.ok_or("no `model`")?;
-        let id = qualify(&fill(model, values)?, namespace)?;
-        content
-            .models
-            .get(&id)
-            .ok_or_else(|| format!("no model `{id}`"))
+/// One model of a block state: the state's own (from its look), or one of
+/// the block's `parts`.
+struct Part<'d> {
+    model: Model,
+    rotate: Option<[i32; 3]>,
+    /// The part's own textures, over the state's. `None` for the state's
+    /// own model.
+    textures: Option<&'d BTreeMap<String, TextureRef>>,
+}
+
+/// The model `id` names, with `{property}` filled in.
+fn find_model<'a>(
+    id: &str,
+    values: &[(String, String)],
+    namespace: &str,
+    content: &'a Content,
+) -> Result<&'a Model, String> {
+    let id = qualify(&fill(id, values)?, namespace)?;
+    content
+        .models
+        .get(&id)
+        .ok_or_else(|| format!("no model `{id}`"))
+}
+
+/// A state's parts: the model its look chose, if any, then every one of
+/// the block's `parts` that matches it. A block with no `parts` must
+/// have a model.
+fn parts<'d>(
+    block: &'d BlockDef,
+    look: &Look,
+    whens: &[When],
+    index: &[usize],
+    values: &[(String, String)],
+    namespace: &str,
+    content: &Content,
+) -> Result<Vec<Part<'d>>, String> {
+    let mut parts = Vec::new();
+    match look.model {
+        Some(id) => parts.push(Part {
+            model: find_model(id, values, namespace, content)?.clone(),
+            rotate: look.rotate,
+            textures: None,
+        }),
+        None if block.parts.is_empty() => return Err("no `model`".into()),
+        None => {}
     }
+    for (i, (part, when)) in block.parts.iter().zip(whens).enumerate() {
+        if !when.matches(index) {
+            continue;
+        }
+        let model = find_model(&part.model, values, namespace, content)
+            .map_err(|error| format!("part {}: {error}", i + 1))?;
+        if let Some(slot) = part
+            .textures
+            .keys()
+            .find(|slot| !model.slots.contains_key(slot.as_str()))
+        {
+            return Err(format!(
+                "part {}: model `{}` has no slot `{slot}`",
+                i + 1,
+                model.id
+            ));
+        }
+        parts.push(Part {
+            model: model.clone(),
+            rotate: part.rotate,
+            textures: Some(&part.textures),
+        });
+    }
+    Ok(parts)
 }
 
 /// Bakes one state of `def`, block number `block`, called `name`, with these
-/// numbers: the model's faces rotated and textured. Textures
-/// for slots the model doesn't have are left out. A fluid has nothing to
-/// bump into, whatever its model's collision.
+/// numbers: each part's faces rotated and textured, one after the other.
+/// Textures for slots a part's model doesn't have are left out of that
+/// part. A fluid has nothing to bump into, whatever its model's collision.
 fn bake_state(
     look: &Look,
-    model: &Model,
+    parts: &[Part],
     values: &[(String, String)],
     name: String,
     numbers: Numbers,
@@ -1546,7 +1625,6 @@ fn bake_state(
     content: &mut Content,
     textures: &Textures,
 ) -> Result<State, String> {
-    let rotation = rotation(look.rotate.unwrap_or([0; 3]))?;
     let light = look.light.unwrap_or_default();
     if let Some(level) = light.iter().find(|&&level| level > MAX_LIGHT) {
         return Err(format!(
@@ -1554,14 +1632,58 @@ fn bake_state(
         ));
     }
     let fluid = def.fluid.as_ref().map(bake_fluid).transpose()?;
+    let mut state = State {
+        block,
+        name,
+        values: values.to_vec(),
+        light,
+        render: look.render.unwrap_or_default(),
+        double_sided: def.double_sided,
+        hardness: numbers.hardness,
+        weight: numbers.weight,
+        stats: numbers.stats,
+        ..default()
+    };
+    for part in parts {
+        bake_part(
+            part, look, values, namespace, def, &mut state, content, textures,
+        )
+        .map_err(|error| match part.textures {
+            Some(_) => format!("part model `{}`: {error}", part.model.id),
+            None => error,
+        })?;
+    }
+    state.fluid = fluid;
+    Ok(state)
+}
+
+/// Adds one part's faces, boxes and covered sides to `state`.
+fn bake_part(
+    part: &Part,
+    look: &Look,
+    values: &[(String, String)],
+    namespace: &str,
+    def: &BlockDef,
+    state: &mut State,
+    content: &mut Content,
+    textures: &Textures,
+) -> Result<(), String> {
+    let model = &part.model;
+    let degrees = part.rotate.unwrap_or([0; 3]);
+    let rotation = rotation(degrees)?;
     // Turns a point in the block about the block's center.
     let turn = |p: Vec3| rotation * (p - Vec3::splat(0.5)) + Vec3::splat(0.5);
     let rotate_direction = |d: Direction| {
         Direction::from_normal((rotation * d.normal().as_vec3()).round().as_ivec3()).unwrap()
     };
 
+    // The state's textures, then the part's own.
+    let mut slots: BTreeMap<&str, &TextureRef> = look.textures.clone();
+    if let Some(own) = part.textures {
+        slots.extend(own.iter().map(|(slot, texture)| (slot.as_str(), texture)));
+    }
     let mut layers = HashMap::new();
-    for (&slot, texture) in &look.textures {
+    for (slot, texture) in slots {
         if !model.slots.contains_key(slot) {
             continue;
         }
@@ -1569,62 +1691,47 @@ fn bake_state(
         layers.insert(slot, layer);
     }
 
-    let faces = model
-        .faces
-        .iter()
-        .map(|face| {
-            let layer = slot_texture(&face.slot, model, &layers)?;
-            let vertices: Vec<Vertex> = face
+    let first_face = state.faces.len();
+    for face in &model.faces {
+        let layer = slot_texture(&face.slot, model, &layers)?;
+        state.faces.push(BakedFace {
+            // A quarter turn keeps it a unit vector, exactly.
+            normal: rotation * face.normal,
+            vertices: face
                 .vertices
                 .iter()
                 .map(|v| Vertex {
                     pos: turn(v.pos),
                     uv: v.uv,
                 })
-                .collect();
-            Ok(BakedFace {
-                // A quarter turn keeps it a unit vector, exactly.
-                normal: rotation * face.normal,
-                vertices,
-                layer,
-                cull: face.cull.map(rotate_direction),
-            })
-        })
-        .collect::<Result<_, String>>()?;
+                .collect(),
+            layer,
+            cull: face.cull.map(rotate_direction),
+        });
+    }
     let occludes = model
         .occludes
         .iter()
         .fold(0, |bits, &d| bits | rotate_direction(d).bit());
-    let boxes = if def.fluid.is_some() {
-        &[][..]
-    } else {
-        &model.collision
-    };
-    let collision = boxes
-        .iter()
-        .map(|b| {
+    state.occludes |= occludes;
+    let first_box = state.collision.len();
+    if def.fluid.is_none() {
+        state.collision.extend(model.collision.iter().map(|b| {
             let [a, c] = [b.min, b.max].map(turn);
             BlockBox {
                 min: a.min(c),
                 max: a.max(c),
             }
-        })
-        .collect();
-    Ok(State {
-        block,
-        name,
-        values: values.to_vec(),
-        faces,
-        collision,
+        }));
+    }
+    state.parts.push(StatePart {
+        model: model.id.clone(),
+        rotate: degrees,
+        faces: first_face..state.faces.len(),
+        collision: first_box..state.collision.len(),
         occludes,
-        light,
-        render: look.render.unwrap_or_default(),
-        fluid,
-        double_sided: def.double_sided,
-        hardness: numbers.hardness,
-        weight: numbers.weight,
-        stats: numbers.stats,
-    })
+    });
+    Ok(())
 }
 
 /// A block's `fluid`, with its amounts turned from blocks into
@@ -4189,5 +4296,254 @@ mod tests {
         assert!(stat("iron", "max_temperature") > stat("copper", "max_temperature"));
         assert!(stat("oak", "max_temperature") < stat("copper", "max_temperature"));
         assert!(stat("oak", "throughput") < stat("iron", "throughput"));
+    }
+
+    /// A plate over the block's north side, covering it, with a box to
+    /// bump into.
+    const PLATE: &str = r#"{
+        slots: { all: null },
+        occludes: ["north"],
+        collision: [{ from: [0, 0, 0], to: [1, 1, 0.125] }],
+        faces: [{
+            texture: "all", cull: "north",
+            vertices: [
+                { pos: [1, 0, 0], uv: [0, 1] },
+                { pos: [0, 0, 0], uv: [1, 1] },
+                { pos: [0, 1, 0], uv: [1, 0] },
+                { pos: [1, 1, 0], uv: [0, 0] },
+            ],
+        }],
+    }"#;
+
+    /// A small box in the middle, drawn as one face on its top.
+    const CORE: &str = r#"{
+        slots: { all: null },
+        collision: [{ from: [0.25, 0.25, 0.25], to: [0.75, 0.75, 0.75] }],
+        faces: [{
+            texture: "all",
+            vertices: [
+                { pos: [0.25, 0.75, 0.75], uv: [0, 1] },
+                { pos: [0.75, 0.75, 0.75], uv: [1, 1] },
+                { pos: [0.75, 0.75, 0.25], uv: [1, 0] },
+                { pos: [0.25, 0.75, 0.25], uv: [0, 0] },
+            ],
+        }],
+    }"#;
+
+    /// A block of a core and a plate on each side its properties say.
+    fn parts_mod(extra: &[(&str, &str)]) -> Content {
+        let mut files = vec![
+            ("models/plate.json5", PLATE),
+            ("models/core.json5", CORE),
+            (
+                "blocks/boxy.json5",
+                r#"{
+                    properties: { north: ["false", "true"], south: ["false", "true"] },
+                    textures: { all: "a" },
+                    parts: [
+                        { model: "core" },
+                        { when: { north: "true" }, model: "plate" },
+                        { when: { south: "true" }, model: "plate", rotate: [0, 180, 0] },
+                    ],
+                }"#,
+            ),
+        ];
+        files.extend_from_slice(extra);
+        content(&files)
+    }
+
+    fn boxy<'c>(content: &'c Content, north: &str, south: &str) -> (BlockState, &'c State) {
+        let block = content.block("test:boxy").unwrap();
+        let state = block.state(&[("north", north), ("south", south)]).unwrap();
+        (state, content.state(state))
+    }
+
+    #[test]
+    fn parts_add_to_the_states_own_model_only_where_they_match() {
+        let content = parts_mod(&[(
+            "blocks/flag.json5",
+            r#"{
+                properties: { flag: ["false", "true"] },
+                model: "quad",
+                textures: { all: "a" },
+                parts: [{ when: { flag: "true" }, model: "plate" }],
+            }"#,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let block = content.block("test:flag").unwrap();
+        // No part matches: just the block's own model.
+        let bare = content.state(block.state(&[("flag", "false")]).unwrap());
+        assert_eq!(bare.parts.len(), 1);
+        assert_eq!(bare.parts[0].model, "test:quad");
+        assert_eq!(bare.faces.len(), 1);
+        assert_eq!(bare.faces[0].cull, Some(Direction::Up));
+        // The block's own model comes first, then the part.
+        let flagged = content.state(block.state(&[("flag", "true")]).unwrap());
+        let models: Vec<&str> = flagged.parts.iter().map(|p| p.model.as_str()).collect();
+        assert_eq!(models, ["test:quad", "test:plate"]);
+        assert_eq!(flagged.faces.len(), 2);
+        assert_eq!(flagged.faces[0], bare.faces[0]);
+        assert_eq!(flagged.parts[1].faces, 1..2);
+        assert_eq!(flagged.faces[1].cull, Some(Direction::North));
+    }
+
+    #[test]
+    fn every_matching_part_is_added_turned_as_it_says() {
+        let content = parts_mod(&[]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let (_, core) = boxy(&content, "false", "false");
+        assert_eq!(core.parts.len(), 1);
+        assert_eq!(core.faces.len(), 1);
+
+        let (_, both) = boxy(&content, "true", "true");
+        let parts: Vec<(&str, [i32; 3])> = both
+            .parts
+            .iter()
+            .map(|p| (p.model.as_str(), p.rotate))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("test:core", [0, 0, 0]),
+                ("test:plate", [0, 0, 0]),
+                ("test:plate", [0, 180, 0]),
+            ]
+        );
+        assert_eq!(both.faces.len(), 3);
+        let south = &both.faces[both.parts[2].faces.clone()][0];
+        assert_eq!(south.cull, Some(Direction::South));
+        assert_eq!(south.normal, Vec3::Z);
+        assert!(south.vertices.iter().all(|v| v.pos.z == 1.0));
+    }
+
+    #[test]
+    fn covered_sides_and_culling_come_from_the_parts() {
+        let content = parts_mod(&[]);
+        let (core_state, core) = boxy(&content, "false", "false");
+        assert!(Direction::ALL.iter().all(|&d| !core.occludes(d)));
+        let (north_state, north) = boxy(&content, "true", "false");
+        assert!(north.occludes(Direction::North));
+        assert!(!north.occludes(Direction::South));
+        assert_eq!(north.parts[1].occludes, Direction::North.bit());
+        let (both_state, both) = boxy(&content, "true", "true");
+        assert!(both.occludes(Direction::North) && both.occludes(Direction::South));
+        assert!(!both.occludes(Direction::Up));
+        assert!(!both.is_opaque());
+
+        // A neighbour to the north hides a face against it only when one of
+        // its parts covers its south side.
+        assert!(!content.hides(core_state, north_state, Direction::North));
+        assert!(content.hides(core_state, both_state, Direction::North));
+        // The plate's face is hidden by a neighbour covering that side.
+        assert!(content.hides(north_state, both_state, Direction::North));
+        assert!(!content.hides(north_state, core_state, Direction::North));
+    }
+
+    #[test]
+    fn collision_is_every_parts_boxes() {
+        let content = parts_mod(&[]);
+        let core = BlockBox {
+            min: Vec3::splat(0.25),
+            max: Vec3::splat(0.75),
+        };
+        let north = BlockBox {
+            min: Vec3::ZERO,
+            max: Vec3::new(1.0, 1.0, 0.125),
+        };
+        let south = BlockBox {
+            min: Vec3::new(0.0, 0.0, 0.875),
+            max: Vec3::ONE,
+        };
+        assert_eq!(boxy(&content, "false", "false").1.collision, [core]);
+        assert_eq!(boxy(&content, "false", "true").1.collision, [core, south]);
+        let (_, both) = boxy(&content, "true", "true");
+        assert_eq!(both.collision, [core, north, south]);
+        assert_eq!(both.parts[2].collision, 2..3);
+    }
+
+    #[test]
+    fn a_parts_textures_go_over_the_blocks_for_that_part() {
+        let content = parts_mod(&[(
+            "blocks/two_tone.json5",
+            r#"{
+                textures: { all: "a" },
+                parts: [{ model: "core" }, { model: "plate", textures: { all: "b" } }],
+            }"#,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let state = content.state(content.default_state("test:two_tone").unwrap());
+        let layer = |id: &str| content.texture(id).unwrap();
+        assert_eq!(state.faces[0].layer, layer("test:a"));
+        assert_eq!(state.faces[1].layer, layer("test:b"));
+    }
+
+    #[test]
+    fn part_mistakes_are_reported() {
+        let cases = [
+            (
+                r#"{ textures: { all: "a" }, parts: [{ when: { open: "true" }, model: "core" }] }"#,
+                "part 1: no property `open`",
+            ),
+            (
+                r#"{ textures: { all: "a" }, parts: [{ model: "core" }, { model: "nothing" }] }"#,
+                "part 2: no model `test:nothing`",
+            ),
+            (
+                r#"{ textures: { all: "a" }, parts: [{ model: "core", textures: { side: "b" } }] }"#,
+                "part 1: model `test:core` has no slot `side`",
+            ),
+            (
+                r#"{ textures: { all: "a" }, parts: [{ model: "core", rotate: [45, 0, 0] }] }"#,
+                "multiples of 90",
+            ),
+            (r#"{ textures: { all: "a" } }"#, "no `model`"),
+        ];
+        for (block, error) in cases {
+            let content = parts_mod(&[("blocks/broken.json5", block)]);
+            let errors = errors(&content);
+            assert!(
+                errors.contains("broken.json5") && errors.contains(error),
+                "{block}: expected `{error}`, got:\n{errors}"
+            );
+            assert!(content.default_state("test:broken").is_none());
+        }
+    }
+
+    #[test]
+    fn the_base_pipe_has_an_arm_for_each_side_it_says() {
+        let content = crate::content::base();
+        let pipe = content.block("defaria:pipe").unwrap();
+        let core = content.state(pipe.default_state());
+        let models: Vec<&str> = core.parts.iter().map(|p| p.model.as_str()).collect();
+        assert_eq!(models, ["defaria:pipe_core"]);
+        assert!(Direction::ALL.iter().all(|&d| !core.occludes(d)));
+
+        for side in Direction::ALL {
+            let state = pipe.state(&[(side.name(), "true")]).unwrap();
+            let state = content.state(state);
+            assert_eq!(state.parts.len(), 2, "{side:?}");
+            let arm = &state.parts[1];
+            assert_eq!(arm.model, "defaria:pipe_arm");
+            // The arm's end is on that side, and hidden by what covers it.
+            let ends: Vec<_> = state.faces[arm.faces.clone()]
+                .iter()
+                .filter_map(|f| f.cull)
+                .collect();
+            assert_eq!(ends, [side], "{side:?}");
+            // Its box reaches that side of the block from the core.
+            let reach = state.collision[arm.collision.clone()][0];
+            let n = side.normal().as_vec3();
+            let far = if n.max_element() > 0.0 {
+                reach.max
+            } else {
+                reach.min
+            };
+            assert_eq!((far - Vec3::splat(0.5)).dot(n), 0.5, "{side:?}");
+        }
+
+        let all: Vec<(&str, &str)> = Direction::ALL.iter().map(|d| (d.name(), "true")).collect();
+        let all = content.state(pipe.state(&all).unwrap());
+        assert_eq!(all.parts.len(), 7);
+        assert_eq!(all.collision.len(), 7);
     }
 }
