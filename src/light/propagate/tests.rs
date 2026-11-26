@@ -136,6 +136,14 @@ impl TestWorld {
         queue.voxel_changed(pos);
     }
 
+    /// Takes the fluid out of the voxel at `pos`, as flow draining it does.
+    fn drain(&mut self, queue: &mut LightQueue, pos: IVec3) {
+        let (coord, local) = split(pos);
+        let chunk = &mut self.chunks.get_mut(&coord).unwrap().0;
+        chunk.set_fluid_at(local, None, crate::content::FULL_FLUID);
+        queue.voxel_changed(pos);
+    }
+
     fn light(&self, pos: IVec3) -> Light {
         let (coord, local) = split(pos);
         self.chunks[&coord].1.at(local)
@@ -1174,4 +1182,45 @@ fn a_voxel_is_lit_as_its_block_and_its_fluid() {
         "the sky is shut out"
     );
     world.assert_matches_reference();
+}
+
+/// A lake drained a layer at a time, across a chunk's top and bottom, as
+/// flow empties it: the sky light comes back down where the water was, as
+/// lighting the drained world from scratch gives it, and a lamp's light
+/// spreads further, undimmed by the water that's gone.
+#[test]
+fn draining_a_lake_relights_where_the_water_was() {
+    let (mut world, mut queue) = (TestWorld::new(1), LightQueue::default());
+    // Two chunks stacked: a stone floor, a lake from y 4 to y 24 across
+    // the border at 16, walled in, and open sky above.
+    let lake = |pos: IVec3| (2..14).contains(&pos.x) && (2..14).contains(&pos.z);
+    let fill = move |pos: IVec3| {
+        if pos.y < 4 || (pos.y < 25 && !lake(pos)) {
+            block("stone")
+        } else if pos.y < 25 {
+            block("water")
+        } else {
+            BlockState::AIR
+        }
+    };
+    for coord in [IVec3::ZERO, IVec3::Y] {
+        world.load(&mut queue, coord, fill);
+    }
+    world.set(&mut queue, IVec3::new(3, 4, 3), block("lamp"));
+    world.run(&mut queue);
+    world.assert_matches_reference();
+    for y in (10..25).rev() {
+        for x in 2..14 {
+            for z in 2..14 {
+                world.drain(&mut queue, IVec3::new(x, y, z));
+            }
+        }
+        world.run(&mut queue);
+        world.assert_matches_reference();
+    }
+    assert_eq!(
+        world.light(IVec3::new(8, 10, 8)).sky(),
+        MAX_LIGHT,
+        "the sky comes down"
+    );
 }
