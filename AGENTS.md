@@ -269,8 +269,12 @@ documented in `docs/modding.md`; keep that file, the serde types in
   `src/mining.rs`: breaking blocks by holding left click, for a time set
   by their hardness (`Mining`, on the camera, has the target and progress).
   `src/cracks.rs`: the crack overlay on the block being mined.
-- `src/hotbar.rs`: the nine-slot hotbar. `src/inventory.rs`: the inventory
-  screen (E).
+- `src/inventory/`: inventories. `model.rs` has `Inventory` (how many of
+  each item, limited only by weight), a component any entity can have;
+  `player.rs` the local player's (on the entity with `LocalPlayer`, saved
+  in `player.json5`); `screen.rs` the inventory screen (E).
+  `src/hotbar.rs`: the hotbar (`Hotbar`, nine slots naming kinds of item,
+  showing how many the player has) and `ActiveSlot`.
 - `src/physics.rs`: boxes colliding with block shapes (swept, sliding,
   stepping up), in `FixedUpdate`. `src/player.rs`: the player's
   Minecraft-style walking, jumping, sneaking, sprinting and flying, on a

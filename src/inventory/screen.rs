@@ -19,6 +19,7 @@ use bevy::{
 use crate::{
     content::{Content, ItemState},
     hotbar::{ActiveSlot, Hotbar, hotbar_height},
+    player::LocalPlayer,
     ui::{ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel, typing},
 };
 
@@ -29,9 +30,9 @@ pub const VISIBLE_ROWS: usize = 5;
 /// Space between the inventory's room and the hotbar, in logical pixels.
 const ABOVE_HOTBAR: f32 = 12.0;
 
-pub struct InventoryPlugin;
+pub struct ScreenPlugin;
 
-impl Plugin for InventoryPlugin {
+impl Plugin for ScreenPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<CatalogSlot>()
             .register_type::<InventoryScreen>()
@@ -67,8 +68,7 @@ fn toggle_inventory(
     screens: Query<(), With<UiScreen>>,
     theme: Res<UiTheme>,
     content: Res<Content>,
-    hotbar: Res<Hotbar>,
-    active: Res<ActiveSlot>,
+    player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
 ) {
     if !keys.just_pressed(KeyCode::KeyE) {
         return;
@@ -77,7 +77,8 @@ fn toggle_inventory(
         // Escape may close it this frame too.
         commands.entity(inventory).try_despawn();
     } else if screens.is_empty() {
-        spawn_inventory(&mut commands, &theme, &content, hotbar.active(*active));
+        let framed = player.and_then(|player| player.0.item(*player.1));
+        spawn_inventory(&mut commands, &theme, &content, framed);
     }
 }
 
@@ -156,8 +157,8 @@ fn spawn_inventory(
                                 item_slot(
                                     theme,
                                     ItemSlot {
-                                        item: Some(item),
                                         selected: framed == Some(item),
+                                        ..ItemSlot::item(item)
                                     },
                                 ),
                             ));
@@ -177,27 +178,30 @@ fn spawn_inventory(
 fn pick_item(
     click: On<PointerPress>,
     slots: Query<&CatalogSlot>,
-    active: Res<ActiveSlot>,
-    mut hotbar: ResMut<Hotbar>,
+    player: Option<Single<(&mut Hotbar, &ActiveSlot), With<LocalPlayer>>>,
 ) {
     if click.button != PointerButton::Primary {
         return;
     }
-    if let Ok(&CatalogSlot(item)) = slots.get(click.entity) {
-        hotbar.0[active.0] = Some(item);
+    if let (Ok(&CatalogSlot(item)), Some(player)) = (slots.get(click.entity), player) {
+        let (mut hotbar, active) = player.into_inner();
+        hotbar.assign(active.0, Some(item));
     }
 }
 
 /// Frames the grid slot holding the active hotbar slot's item.
 fn frame_active_item(
-    hotbar: Res<Hotbar>,
-    active: Res<ActiveSlot>,
+    player: Option<Single<(Ref<Hotbar>, Ref<ActiveSlot>), With<LocalPlayer>>>,
     mut slots: Query<(&CatalogSlot, &mut ItemSlot)>,
 ) {
+    let Some(player) = player else {
+        return;
+    };
+    let (hotbar, active) = player.into_inner();
     if !hotbar.is_changed() && !active.is_changed() {
         return;
     }
-    let item = hotbar.active(*active);
+    let item = hotbar.item(*active);
     for (&CatalogSlot(id), mut slot) in &mut slots {
         let selected = item == Some(id);
         if slot.selected != selected {
@@ -220,6 +224,21 @@ mod tests {
         ui_widgets::Scrollbar,
         window::{CursorGrabMode, CursorOptions},
     };
+
+    /// The item in the local player's hotbar slot `index`.
+    fn slot_item(app: &mut App, index: usize) -> Option<ItemState> {
+        let mut players = app
+            .world_mut()
+            .query_filtered::<&Hotbar, With<LocalPlayer>>();
+        players.single(app.world()).unwrap().0[index]
+    }
+
+    fn active(app: &mut App) -> ActiveSlot {
+        let mut players = app
+            .world_mut()
+            .query_filtered::<&ActiveSlot, With<LocalPlayer>>();
+        *players.single(app.world()).unwrap()
+    }
 
     fn is_open(app: &mut App) -> bool {
         let mut screens = app.world_mut().query::<&InventoryScreen>();
@@ -340,10 +359,10 @@ mod tests {
         let at = slot_at(&mut app, planks);
         run_more(&mut app, "hold Digit3 1\nwait 1");
         run_more(&mut app, &click("MouseRight", at));
-        assert_ne!(app.world().resource::<Hotbar>().0[2], Some(planks));
+        assert_ne!(slot_item(&mut app, 2), Some(planks));
         run_more(&mut app, &click("MouseLeft", at));
-        assert_eq!(app.world().resource::<Hotbar>().0[2], Some(planks));
-        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(2));
+        assert_eq!(slot_item(&mut app, 2), Some(planks));
+        assert_eq!(active(&mut app), ActiveSlot(2));
         assert_eq!(framed(&mut app), [planks]);
         // Clicking in the inventory didn't lock the cursor.
         assert_eq!(cursor(&mut app), CursorGrabMode::None);
@@ -351,9 +370,9 @@ mod tests {
         // Clicking a hotbar slot makes it active; right clicking empties it.
         let slot_5 = hotbar_slot_at(&mut app, 4);
         run_more(&mut app, &click("MouseLeft", slot_5));
-        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(4));
+        assert_eq!(active(&mut app), ActiveSlot(4));
         run_more(&mut app, &click("MouseRight", slot_5));
-        assert_eq!(app.world().resource::<Hotbar>().0[4], None);
+        assert_eq!(slot_item(&mut app, 4), None);
         assert_eq!(framed(&mut app), []);
 
         // The wheel over the grid scrolls it, and the slots move with it.
@@ -366,7 +385,7 @@ mod tests {
         assert_eq!(scrolled(&mut app), 2.0 * row);
         assert!(slot_at(&mut app, planks).y < at.y);
         // The wheel over the grid leaves the hotbar slot alone.
-        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(4));
+        assert_eq!(active(&mut app), ActiveSlot(4));
 
         // At the bottom: the row just above the view is scrolled out of
         // it, behind the panel's title. Clicking there does nothing; the
@@ -382,10 +401,10 @@ mod tests {
             "{hidden} above {grid_top}"
         );
         run_more(&mut app, &click("MouseLeft", hidden));
-        assert_eq!(app.world().resource::<Hotbar>().0[4], None);
+        assert_eq!(slot_item(&mut app, 4), None);
         let bottom = slot_at(&mut app, last);
         run_more(&mut app, &click("MouseLeft", bottom));
-        assert_eq!(app.world().resource::<Hotbar>().0[4], Some(last));
+        assert_eq!(slot_item(&mut app, 4), Some(last));
 
         run_more(&mut app, "hold KeyE 1\nwait 3");
         assert!(!is_open(&mut app));
@@ -423,7 +442,7 @@ mod tests {
         run_more(&mut app, &click("MouseLeft", slot_2));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
         run_more(&mut app, &click("MouseRight", slot_2));
-        assert!(app.world().resource::<Hotbar>().0[1].is_some());
+        assert!(slot_item(&mut app, 1).is_some());
         let mut slots = app
             .world_mut()
             .query::<(&HotbarSlot, &bevy::picking::hover::Hovered)>();

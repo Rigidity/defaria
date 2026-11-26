@@ -44,7 +44,7 @@ use bevy::prelude::*;
 
 pub use button::{UiButton, button};
 pub use icon::ItemIcon;
-pub use pointer::UiPointer;
+pub use pointer::{DRAG_DISTANCE, PointerTravel, UiPointer};
 pub use screen::{UiScreen, playing};
 pub use scroll::scroll_panel;
 pub use slot::{ItemSlot, item_slot};

@@ -1,6 +1,7 @@
-//! The item slot widget: a framed square showing an item's icon, which the
-//! pointer can hover (a lighter frame, and the item's name as a tooltip)
-//! and click. A selected slot has a gold frame.
+//! The item slot widget: a framed square showing an item's icon and, for
+//! more than one, how many in its corner. The pointer can hover it (a
+//! lighter frame, and the item's name as a tooltip) and click it. A
+//! selected slot has a gold frame.
 //!
 //! Slots don't know what clicking them means: whoever spawns one observes
 //! picking's events on it (such as `PointerPress`) and sets its
@@ -30,12 +31,51 @@ impl Plugin for SlotPlugin {
 #[require(Hovered, Tooltip)]
 pub struct ItemSlot {
     pub item: Option<ItemState>,
+    /// How many, shown when more than one (or for a dimmed slot).
+    pub count: u32,
     pub selected: bool,
+    /// Faded: none of the item is there, such as a hotbar slot whose item
+    /// ran out.
+    pub dimmed: bool,
+}
+
+impl ItemSlot {
+    /// A slot showing one `item`, with no count.
+    pub fn item(item: ItemState) -> Self {
+        Self {
+            item: Some(item),
+            count: 1,
+            ..default()
+        }
+    }
 }
 
 /// The icon inside an [`ItemSlot`].
 #[derive(Component, Debug, Clone, Copy)]
 struct SlotIcon;
+
+/// The count in an [`ItemSlot`]'s corner.
+#[derive(Component, Debug, Clone, Copy)]
+struct SlotCount;
+
+/// Text showing how many: nothing for one or none, and short for big numbers
+/// (`12k`, `4.1M`), to fit a slot's corner.
+pub fn count_text(count: u32) -> String {
+    fn short(value: f64, unit: &str) -> String {
+        if value < 10.0 {
+            let text = format!("{:.1}", (value * 10.0).floor() / 10.0);
+            format!("{}{unit}", text.trim_end_matches(".0"))
+        } else {
+            format!("{}{unit}", value.floor())
+        }
+    }
+    match count {
+        0 | 1 => String::new(),
+        2..10_000 => count.to_string(),
+        10_000..1_000_000 => short(f64::from(count) / 1000.0, "k"),
+        _ => short(f64::from(count) / 1_000_000.0, "M"),
+    }
+}
 
 /// An item slot, ready to spawn.
 pub fn item_slot(theme: &UiTheme, slot: ItemSlot) -> impl Bundle {
@@ -51,25 +91,45 @@ pub fn item_slot(theme: &UiTheme, slot: ItemSlot) -> impl Bundle {
         },
         BackgroundColor(theme.slot),
         BorderColor::all(theme.slot_edge),
-        children![(
-            SlotIcon,
-            ItemIcon(slot.item),
-            // Picking finds the slot itself.
-            Pickable::IGNORE,
-            Node {
-                width: px(theme.icon_size),
-                height: px(theme.icon_size),
-                ..default()
-            },
-        )],
+        children![
+            (
+                SlotIcon,
+                ItemIcon(slot.item),
+                // Picking finds the slot itself.
+                Pickable::IGNORE,
+                Node {
+                    width: px(theme.icon_size),
+                    height: px(theme.icon_size),
+                    ..default()
+                },
+            ),
+            (
+                SlotCount,
+                Text::new(count_text(slot.count)),
+                theme.text_font(),
+                TextColor(theme.text),
+                TextShadow {
+                    offset: Vec2::splat(1.0),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(2),
+                    bottom: px(0),
+                    ..default()
+                },
+                Pickable::IGNORE,
+            )
+        ],
     )
 }
 
-/// Passes each changed slot's item to its icon and its tooltip.
+/// Passes each changed slot's item to its icon, count and tooltip.
 fn show_slot_items(
     content: Res<Content>,
     mut slots: Query<(&ItemSlot, &Children, &mut Tooltip), Changed<ItemSlot>>,
     mut icons: Query<&mut ItemIcon, With<SlotIcon>>,
+    mut counts: Query<&mut Text, With<SlotCount>>,
 ) {
     for (slot, children, mut tooltip) in &mut slots {
         let name = slot.item.and_then(|item| content.item_name(item));
@@ -81,13 +141,43 @@ fn show_slot_items(
             if let Ok(mut icon) = icons.get_mut(child) {
                 icon.set_if_neq(ItemIcon(slot.item));
             }
+            if let Ok(mut text) = counts.get_mut(child) {
+                // A dimmed slot shows its 0.
+                let count = if slot.dimmed {
+                    slot.count.to_string()
+                } else {
+                    count_text(slot.count)
+                };
+                if text.0 != count {
+                    text.0 = count;
+                }
+            }
         }
     }
 }
 
-/// The frame color: gold when selected, light while hovered.
-fn style_slots(theme: Res<UiTheme>, mut slots: Query<(&ItemSlot, &Hovered, &mut BorderColor)>) {
-    for (slot, hovered, mut border) in &mut slots {
+/// The frame color (gold when selected, light while hovered), and the
+/// icon: faded while dimmed, and invisible with no item.
+fn style_slots(
+    theme: Res<UiTheme>,
+    mut slots: Query<(&ItemSlot, &Hovered, &mut BorderColor, &Children)>,
+    mut icons: Query<&mut ImageNode, With<SlotIcon>>,
+) {
+    for (slot, hovered, mut border, children) in &mut slots {
+        // No item: nothing at all. An image node without an image draws a
+        // white box, so it has to be see-through.
+        let tint = match (slot.item, slot.dimmed) {
+            (None, _) => Color::NONE,
+            (Some(_), true) => Color::WHITE.with_alpha(0.3),
+            (Some(_), false) => Color::WHITE,
+        };
+        for &child in children {
+            if let Ok(mut icon) = icons.get_mut(child)
+                && icon.color != tint
+            {
+                icon.color = tint;
+            }
+        }
         let color = if slot.selected {
             theme.slot_selected
         } else if hovered.get() {
@@ -102,6 +192,18 @@ fn style_slots(theme: Res<UiTheme>, mut slots: Query<(&ItemSlot, &Hovered, &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_fit_a_corner() {
+        let shown: Vec<String> = [0, 1, 2, 9999, 10_000, 12_345, 999_999, 1_000_000, 4_150_000]
+            .into_iter()
+            .map(count_text)
+            .collect();
+        assert_eq!(
+            shown,
+            ["", "", "2", "9999", "10k", "12k", "999k", "1M", "4.1M"]
+        );
+    }
     use crate::content::base;
 
     #[test]
@@ -119,12 +221,25 @@ mod tests {
             .id();
         app.update();
         let icon = app.world().get::<Children>(slot).unwrap()[0];
+        let tint = |app: &App| app.world().get::<ImageNode>(icon).unwrap().color;
         assert_eq!(app.world().get::<ItemIcon>(icon), Some(&ItemIcon(None)));
+        // Empty: nothing drawn, not a white box.
+        assert_eq!(tint(&app), Color::NONE);
 
         app.world_mut().get_mut::<ItemSlot>(slot).unwrap().item = stone;
         app.update();
         assert_eq!(app.world().get::<ItemIcon>(icon), Some(&ItemIcon(stone)));
         assert_eq!(app.world().get::<Tooltip>(slot).unwrap().0, "Stone");
+        assert_eq!(tint(&app), Color::WHITE);
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().dimmed = true;
+        app.update();
+        assert_eq!(tint(&app), Color::WHITE.with_alpha(0.3));
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().dimmed = false;
+        // Emptied again: hidden again.
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().item = None;
+        app.update();
+        assert_eq!(tint(&app), Color::NONE);
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().item = stone;
 
         // Selected and hovered: the selection shows.
         let mut entity = app.world_mut().entity_mut(slot);

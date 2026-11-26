@@ -102,8 +102,9 @@ fn spawn_gallery(commands: &mut Commands, theme: &UiTheme, content: &Content) {
                         slots.spawn(item_slot(
                             theme,
                             ItemSlot {
-                                item: Some(crate::content::ItemState(index)),
+                                count: index * 20,
                                 selected: index == 1,
+                                ..ItemSlot::item(crate::content::ItemState(index))
                             },
                         ));
                     }

@@ -3,6 +3,38 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Inventories count items, limited by a provisional weight (2026-11-25)
+
+**Context.** The inventory (#28) is limited by weight rather than slots
+or stack sizes: there are no stacks to arrange, any number of an item fits
+as long as the total weight does, and screens sort and filter what's
+there.
+
+**Decision.** An `Inventory` (`src/inventory/model.rs`) is a list of
+entries, each an item state, its `ItemData` (empty for now) and a count,
+with an optional weight limit. Equal entries merge; a `unique` item gets an
+entry per copy. It's a component, so it lives on an entity: the player's is
+on the player (with `LocalPlayer`). The hotbar (`Hotbar`) names kinds of
+items, persisting at 0 when they run out. The player can carry
+`PLAYER_MAX_WEIGHT`, 10,000 tonnes (`src/inventory/player.rs`).
+
+**What's wrong with it.** Blocks weigh what a cubic metre of their material
+does (stone 2,500 kg), so 10,000 tonnes is about 4,000 stone: a number picked
+so the system can be played with, not a design (#87). An entity has at most
+one inventory, so a machine with input, fuel and output would need child
+entities, and an item holding items (a bag in your inventory) has nowhere to
+keep them yet. A hotbar slot names an item state, so it can't pick out one
+particular unique item (one tool of several).
+
+**What should replace it.** Weights and the limit decided against real
+content (#87). Inventories described by data (sections with rules: take
+only, one kind), so mods can define machines. `ItemData` carrying wear and
+contents, including a nested inventory, and hotbar slots that can name one
+unique item.
+
+**When to revisit.** With #87, with chests or machines, or with items
+that hold items or wear out.
+
 ## Fluid flows a voxel at a time (2026-11-25)
 
 **Context.** Fluid is volumetric: each voxel holds an amount, and flow

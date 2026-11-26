@@ -591,7 +591,7 @@ Log and a Birch Log item, but no item per axis. Set `item: false` on a
 property to leave it out, or on the block to have no item at all.
 
 The item is as hard and as heavy as the block state it places. To change
-the item (its name, icon, stack size, hardness or weight), add an item file with
+the item (its name, icon, uniqueness, hardness or weight), add an item file with
 the same name: what it leaves out comes from the block. It can't add
 properties or a `block`.
 
@@ -608,7 +608,7 @@ properties or a `block`.
   },
   // The icon.
   texture: { texture: "pickaxe", materials: { head: "{head}", handle: "{handle}" } },
-  max_stack: 1,          // default 64
+  unique: true,          // each one its own entry; default false
   block: "stone",        // optional: the block it places
   // As for blocks: a number, or a base times its materials' average.
   hardness: { materials: { head: 3, handle: 1 } },
@@ -621,6 +621,11 @@ properties or a `block`.
 [blocks](#hardness-and-weight), with the item's own properties; weight is
 what one of the item weighs, in kilograms. Left out, they're those of the
 block state the item places, or 0 for an item that places none.
+
+Inventories count items, limited only by weight, so any number of an
+item fits in one entry. A `unique` item is the exception: every copy is
+its own entry, never counted with the others, since it will carry data of
+its own (such as wear). Tools are unique.
 
 Items have properties as blocks do, plain or material, and every
 combination is a separate item state: an item carries its property values

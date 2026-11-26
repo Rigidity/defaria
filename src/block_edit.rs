@@ -26,6 +26,7 @@ use crate::{
     fly_camera::{FlyCamera, FlyCameraSystems},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     physics::{Aabb, Body},
+    player::LocalPlayer,
     terrain::{RemeshChunks, Voxels},
     ui::{UiScreen, playing},
 };
@@ -217,8 +218,7 @@ fn edit_blocks(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
-    active: Res<ActiveSlot>,
-    hotbar: Res<Hotbar>,
+    player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
     content: Res<Content>,
     bodies: Query<&Body>,
     mut voxels: Voxels,
@@ -232,7 +232,10 @@ fn edit_blocks(
     let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
         return;
     };
-    let Some(block) = hotbar.active_block(*active, &content) else {
+    let Some((hotbar, active)) = player.as_deref() else {
+        return;
+    };
+    let Some(block) = hotbar.block(**active, &content) else {
         return;
     };
     let Some((pos, face)) = hit.place_at() else {
@@ -336,7 +339,8 @@ mod tests {
     use crate::{
         content::{base, block, grass, test_mod},
         headless::{Script, settle, test_game},
-        hotbar::{default_hotbar, select_with_keys},
+        hotbar::select_with_keys,
+        inventory::{Inventory, player::new_player},
         mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{
@@ -511,7 +515,7 @@ mod tests {
     /// and the edit, mining and remesh systems; no rendering.
     fn app() -> (App, Entity, Entity) {
         let content = base().clone();
-        let hotbar = Hotbar(default_hotbar(&content));
+        let (_, hotbar) = new_player(&content);
         let (mut app, left, right) = app_with(content, hotbar);
         let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
         // A wall at x = 14..=15 of the left chunk, on the chunk border.
@@ -526,7 +530,24 @@ mod tests {
         (app, left, right)
     }
 
-    /// [`app`] with `content` and `hotbar`, and both chunks empty.
+    /// The player's hotbar and active slot.
+    fn player(app: &mut App) -> (Hotbar, ActiveSlot) {
+        let mut players = app
+            .world_mut()
+            .query_filtered::<(&Hotbar, &ActiveSlot), With<LocalPlayer>>();
+        let (hotbar, active) = players.single(app.world()).unwrap();
+        (hotbar.clone(), *active)
+    }
+
+    fn set_hotbar(app: &mut App, hotbar: Hotbar) {
+        let mut players = app
+            .world_mut()
+            .query_filtered::<&mut Hotbar, With<LocalPlayer>>();
+        *players.single_mut(app.world_mut()).unwrap() = hotbar;
+    }
+
+    /// [`app`] with `content`, the player's hotbar `hotbar`, and both
+    /// chunks empty.
     fn app_with(content: Content, hotbar: Hotbar) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), MiningPlugin))
@@ -536,10 +557,8 @@ mod tests {
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .insert_resource(content)
-            .insert_resource(hotbar)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
-            .init_resource::<ActiveSlot>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
             .add_message::<crate::terrain::FluidChanged>()
@@ -575,6 +594,10 @@ mod tests {
         app.world_mut().spawn((
             FlyCamera::default(),
             Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
+            LocalPlayer,
+            Inventory::new(),
+            hotbar,
+            ActiveSlot::default(),
         ));
         (app, chunks[0], chunks[1])
     }
@@ -664,7 +687,7 @@ mod tests {
     fn right_click_places_the_active_block_against_the_face() {
         let (mut app, left, _) = app();
         press_key(&mut app, KeyCode::Digit6);
-        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(5));
+        assert_eq!(player(&mut app).1, ActiveSlot(5));
         // Against the west face, so the log runs along X.
         let log = base().block("defaria:log").unwrap();
         let log = log.state(&[("axis", "x")]).unwrap();
@@ -786,8 +809,8 @@ mod tests {
             ),
         ];
         for (item, from, at, pos, state) in expect {
-            let mut hotbar = Hotbar([None; crate::hotbar::HOTBAR_SLOTS]);
-            hotbar.0[0] = content.default_item(item);
+            let mut hotbar = Hotbar::default();
+            hotbar.assign(0, content.default_item(item));
             let (mut app, entity, _) = app_with(content.clone(), hotbar);
             app.world_mut().get_mut::<Chunk>(entity).unwrap().set(
                 8,
@@ -829,9 +852,10 @@ mod tests {
     fn right_click_with_an_item_that_places_nothing_does_nothing() {
         let (mut app, left, _) = app();
         let pickaxe = base().default_item("defaria:pickaxe");
-        let mut hotbar = app.world_mut().resource_mut::<Hotbar>();
-        hotbar.0[0] = pickaxe;
-        hotbar.0[1] = None;
+        let mut hotbar = player(&mut app).0;
+        hotbar.assign(0, pickaxe);
+        hotbar.assign(1, None);
+        set_hotbar(&mut app, hotbar);
         click(&mut app, MouseButton::Right);
         press_key(&mut app, KeyCode::Digit2);
         click(&mut app, MouseButton::Right);

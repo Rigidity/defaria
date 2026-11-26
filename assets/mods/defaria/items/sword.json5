@@ -6,7 +6,7 @@
     handle: { materials: "#wood", default: "oak" },
   },
   texture: { texture: "sword", materials: { head: "{head}", handle: "{handle}" } },
-  max_stack: 1,
+  unique: true,
   // Mostly as hard as its head.
   hardness: { materials: { head: 3, handle: 1 } },
   // 0.2 litres in all, head to handle 3 to 1 by volume.

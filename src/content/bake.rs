@@ -53,8 +53,6 @@ impl Kind {
 }
 /// Most states one block or item may have.
 const MAX_STATES: usize = 4096;
-/// Item stack size when nothing says otherwise.
-const DEFAULT_MAX_STACK: u32 = 64;
 
 /// A parsed definition and where it came from.
 struct Def<T> {
@@ -1732,8 +1730,8 @@ fn block_item(
         .map_err(|error| in_state(&values, error))?;
         states.push(info);
     }
-    let max_stack = max_stack(file.and_then(|file| file.def.max_stack))?;
-    push_item(id, properties, max_stack, states, content);
+    let unique = file.and_then(|file| file.def.unique).unwrap_or(false);
+    push_item(id, properties, unique, states, content);
     Ok(())
 }
 
@@ -1801,8 +1799,8 @@ fn standalone_item(
         .map_err(|error| in_state(&values, error))?;
         states.push(info);
     }
-    let max_stack = max_stack(item_def.max_stack)?;
-    push_item(&def.id, properties, max_stack, states, content);
+    let unique = item_def.unique.unwrap_or(false);
+    push_item(&def.id, properties, unique, states, content);
     Ok(())
 }
 
@@ -1824,17 +1822,10 @@ fn placed_state(block: &Block, values: &[(String, String)]) -> Result<BlockState
     })
 }
 
-fn max_stack(max_stack: Option<u32>) -> Result<u32, String> {
-    match max_stack {
-        Some(0) => Err("`max_stack` must be at least 1".into()),
-        other => Ok(other.unwrap_or(DEFAULT_MAX_STACK)),
-    }
-}
-
 fn push_item(
     id: &str,
     properties: Vec<Property>,
-    max_stack: u32,
+    unique: bool,
     states: Vec<ItemStateInfo>,
     content: &mut Content,
 ) {
@@ -1844,7 +1835,7 @@ fn push_item(
         properties,
         first_state: content.item_states.len() as u32,
         state_count: states.len() as u32,
-        max_stack,
+        unique,
     });
     content.item_states.extend(states);
 }
@@ -1878,10 +1869,7 @@ mod tests {
         let item = content.default_item_info("test:thing").unwrap();
         assert_eq!(item.block, Some(block.default_state()));
         assert_eq!(item.name, "Thing");
-        assert_eq!(
-            content.item("test:thing").unwrap().max_stack,
-            DEFAULT_MAX_STACK
-        );
+        assert!(!content.item("test:thing").unwrap().unique);
     }
 
     /// `light` gives a block's light per colour channel; variants replace
@@ -2282,7 +2270,7 @@ mod tests {
                 "blocks/sun.json5",
                 r#"{ model: "quad", textures: { all: "a" }, light: [16, 0, 0] }"#,
             ),
-            ("items/sun.json5", r#"{ max_stack: 7 }"#),
+            ("items/sun.json5", r#"{ unique: true }"#),
         ]);
         let all = errors(&content);
         assert_eq!(content.errors.len(), 2, "{all}");
@@ -2356,26 +2344,23 @@ mod tests {
                 "blocks/plain.json5",
                 r#"{ name: "Plain thing", model: "quad", textures: { all: "a" } }"#,
             ),
-            ("items/plain.json5", r#"{ max_stack: 8 }"#),
+            ("items/plain.json5", r#"{ unique: true }"#),
             (
                 "blocks/hidden.json5",
                 r#"{ model: "quad", textures: { all: "a" }, item: false }"#,
             ),
-            (
-                "items/thing.json5",
-                r#"{ name: "Special thing", max_stack: 16 }"#,
-            ),
+            ("items/thing.json5", r#"{ name: "Special thing" }"#),
             ("items/seeds.json5", r#"{ texture: "b", block: "hidden" }"#),
         ]);
         assert!(content.errors.is_empty(), "{}", errors(&content));
         let thing = content.default_item_info("test:thing").unwrap();
         assert_eq!(thing.name, "Special thing");
-        assert_eq!(content.item("test:thing").unwrap().max_stack, 16);
+        assert!(!content.item("test:thing").unwrap().unique);
         assert_eq!(thing.block, content.default_state("test:thing"));
         // What an item file leaves out comes from the block.
         let plain = content.default_item_info("test:plain").unwrap();
         assert_eq!(plain.name, "Plain thing");
-        assert_eq!(content.item("test:plain").unwrap().max_stack, 8);
+        assert!(content.item("test:plain").unwrap().unique);
         assert_eq!(plain.block, content.default_state("test:plain"));
         assert!(content.item("test:hidden").is_none());
         let seeds = content.default_item_info("test:seeds").unwrap();
@@ -2954,7 +2939,6 @@ mod tests {
                 r#"{ block: "nope" }"#,
                 "no block `test:nope`",
             ),
-            ("items/x.json5", r#"{ max_stack: 0 }"#, "at least 1"),
             ("blocks/Bad Name.json5", "{}", "must be"),
             ("stuff/x.json5", "{}", "not a definition"),
         ];
@@ -3235,7 +3219,7 @@ mod tests {
                     properties: { head: { materials: "#metal" }, wood: { materials: "#wood" } },
                     texture: { texture: "ore", materials: { rock: "{wood}", ore: "{head}" } },
                     block: "plank",
-                    max_stack: 1,
+                    unique: true,
                 }"##,
             ),
         ]);

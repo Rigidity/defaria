@@ -1686,7 +1686,10 @@ mod tests {
             .query_filtered::<&Window, With<PrimaryWindow>>();
         let window = windows.single(app.world()).unwrap();
         assert_eq!(window.cursor_position(), Some(Vec2::new(100.0, 200.5)));
-        assert_eq!(app.world().resource::<crate::hotbar::ActiveSlot>().0, 3);
+        let mut players = app
+            .world_mut()
+            .query_filtered::<&crate::hotbar::ActiveSlot, With<crate::player::LocalPlayer>>();
+        assert_eq!(players.single(app.world()).unwrap().0, 3);
     }
 
     /// End to end: the whole game, no GPU, driven by a script.
