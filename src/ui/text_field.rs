@@ -257,7 +257,10 @@ mod tests {
             "hold Digit7 1\nwait 1\nhold ArrowLeft 1\nwait 1\nhold Backspace 1\nwait 2",
         );
         assert_eq!(value(&app), "iro7");
-        assert_eq!(*app.world().resource::<ActiveSlot>(), ActiveSlot(0));
+        let mut players = app
+            .world_mut()
+            .query_filtered::<&ActiveSlot, With<crate::player::LocalPlayer>>();
+        assert_eq!(*players.single(app.world()).unwrap(), ActiveSlot(0));
 
         // Escape takes the keyboard, and closes the screen as ever.
         run_more(&mut app, "hold Escape 1\nwait 2");

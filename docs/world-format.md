@@ -16,15 +16,16 @@ unless they're given `--world`.
 ```text
 world/
   world.json5          the world's seed and format version
+  player.json5         what the player carries
   regions/
     r.0.0.0.dfr        chunks 0..16 on every axis
     r.-1.0.0.dfr       chunks -16..0 in X, 0..16 in Y and Z
     ...
 ```
 
-The code is in `src/save.rs` (folders and the store), `src/save/region.rs` and
-`src/save/chunk.rs`. Every format here has a version number. When a format
-changes, bump its version and keep reading the old one. A build that finds a
+The code is in `src/save.rs` (folders and the store), `src/save/region.rs`,
+`src/save/chunk.rs` and `src/save/player.rs`. Every format here has a version
+number. When a format changes, bump its version and keep reading the old one. A build that finds a
 version newer than it knows leaves the file alone: a newer `world.json5` means
 the world is played without saving; a newer region file or chunk means that
 region is played (generated afresh) but never written. A region file the game
@@ -41,6 +42,37 @@ can't read at all is treated the same way.
 
 Written when the world is created. A world keeps its seed for good, whatever
 seed the game would otherwise use.
+
+## `player.json5`
+
+```json5
+{
+  format: 1,          // this file's format
+  active_slot: 2,     // the hotbar slot in hand, 0 to 8
+  // Each hotbar slot's item, or null for an empty slot.
+  hotbar: ["defaria:dirt", null, "defaria:pickaxe[handle=defaria:oak,head=defaria:iron]"],
+  inventory: [        // what the inventory holds, how many of each
+    { item: "defaria:dirt", count: 1250 },
+    { item: "defaria:pickaxe[handle=defaria:oak,head=defaria:iron]", count: 1 },
+    { item: "defaria:pickaxe[handle=defaria:oak,head=defaria:iron]", count: 1 },
+  ],
+}
+```
+
+An inventory has no slots: it's how many of each item it holds, limited only
+by weight. A unique item (see `docs/modding.md`) is listed once per copy. The
+hotbar names kinds of items rather than holding them, so a slot can name
+something the inventory has none of.
+
+Items are saved by name, like blocks in chunks: the item's id, then its
+property values in brackets, sorted by property name, if it has any. An item
+no mod defines any more is left out when the file is read (with a warning); one
+whose properties changed comes back in its default state.
+
+Written every 30 seconds and when the game exits, to `player.json5.tmp` and then
+renamed over the old file. A world without one (a new world) gives the player
+a new player's inventory and hotbar. A newer `player.json5` is reported and
+ignored, and the player starts as a new player (and saving then replaces it).
 
 ## Chunks and regions
 

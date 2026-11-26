@@ -394,8 +394,10 @@ pub struct ItemDef {
     /// shares with the item set to the item's values.
     #[serde(default)]
     pub block: Option<String>,
+    /// Every one of it is unique: copies never merge into one count in an
+    /// inventory, as they will carry their own data (such as wear).
     #[serde(default)]
-    pub max_stack: Option<u32>,
+    pub unique: Option<bool>,
     /// How hard each state is. Left out, the block it places' (for a
     /// block's item, the state it places), or 0.
     #[serde(default)]

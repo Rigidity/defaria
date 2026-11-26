@@ -158,7 +158,8 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(give_the_camera_a_body)
+        app.register_type::<LocalPlayer>()
+            .add_observer(give_the_camera_a_body)
             .add_systems(Update, toggle_flying.run_if(crate::ui::playing))
             .add_systems(
                 FixedUpdate,
@@ -177,6 +178,14 @@ impl Plugin for PlayerPlugin {
 /// player moved runs after it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerMovement;
+
+/// The player this game is played as, as opposed to other players and
+/// mobs. Features that act for whoever is playing (the hotbar, the
+/// inventory screen, placing blocks) find the player with this. It's on the
+/// [`FlyCamera`] for now (see #67).
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct LocalPlayer;
 
 /// The player's movement state. Its [`Body`] is on the same entity, the
 /// [`FlyCamera`].
@@ -224,7 +233,7 @@ fn give_the_camera_a_body(
         .map_or(Vec3::ZERO, |transform| transform.translation);
     commands
         .entity(add.entity)
-        .insert_if_new((Player::default(), Player::body(eye)));
+        .insert_if_new((Player::default(), LocalPlayer, Player::body(eye)));
 }
 
 /// Double-tapping Space starts or stops flying.

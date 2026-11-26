@@ -15,7 +15,7 @@ mod fog;
 mod fov;
 pub mod headless;
 mod hotbar;
-mod inventory;
+pub mod inventory;
 mod light;
 mod mining;
 mod perlin;

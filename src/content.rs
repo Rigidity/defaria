@@ -478,7 +478,9 @@ pub struct Item {
     pub properties: Vec<Property>,
     pub first_state: u32,
     pub state_count: u32,
-    pub max_stack: u32,
+    /// Every one of it is its own entry in an inventory, never counted
+    /// together with others.
+    pub unique: bool,
 }
 
 impl Item {
@@ -776,6 +778,15 @@ pub fn grass() -> BlockState {
     block_with("soil", &[("turf", "defaria:grass")])
 }
 
+/// The base game's item for plain dirt: soil, no turf.
+#[cfg(test)]
+pub fn dirt_item() -> ItemState {
+    base()
+        .item("defaria:soil")
+        .and_then(|item| item.state(&[("soil", "defaria:dirt")]))
+        .expect("no dirt item")
+}
+
 /// Base game sand.
 #[cfg(test)]
 pub fn sand() -> BlockState {
@@ -925,7 +936,8 @@ mod tests {
         let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
         assert_eq!(pickaxe.block, None);
         assert_eq!(pickaxe.name, "Iron Pickaxe");
-        assert_eq!(content.item("defaria:pickaxe").unwrap().max_stack, 1);
+        assert!(content.item("defaria:pickaxe").unwrap().unique);
+        assert!(!content.item("defaria:stone").unwrap().unique);
         assert_eq!(
             pickaxe.texture,
             content.texture("defaria:pickaxe(handle=defaria:oak,head=defaria:iron)")

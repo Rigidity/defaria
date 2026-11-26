@@ -91,7 +91,7 @@ impl Plugin for StreamingPlugin {
 /// Runs after [`Last`], so it sees an [`AppExit`] sent anywhere in the
 /// frame (it's the frame's end: the app stops after it).
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
-struct SaveOnExit;
+pub struct SaveOnExit;
 
 /// How much of the world is loaded, and how fast.
 #[derive(Resource, Reflect, Debug, Clone)]

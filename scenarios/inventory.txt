@@ -25,7 +25,7 @@ wait 1
 hold MouseLeft 1                 # put it in slot 9
 wait 2
 screenshot target/scenarios/inventory/3-picked.png
-inspect Hotbar
+inspect ActiveSlot
 wait 1
 scroll -3                        # over the grid: scrolls toward the tools
 wait 2

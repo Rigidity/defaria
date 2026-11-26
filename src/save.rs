@@ -21,6 +21,7 @@
 //! use one, so scenarios always start from the same world.
 
 pub mod chunk;
+pub mod player;
 pub mod region;
 
 use std::{
