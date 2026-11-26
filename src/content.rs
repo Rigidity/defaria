@@ -727,6 +727,28 @@ pub fn block(name: &str) -> BlockState {
         .unwrap_or_else(|| panic!("no block defaria:{name}"))
 }
 
+/// The state of base game block `defaria:<name>` with these property
+/// values, the rest at their defaults.
+#[cfg(test)]
+pub fn block_with(name: &str, values: &[(&str, &str)]) -> BlockState {
+    base()
+        .block(&format!("defaria:{name}"))
+        .and_then(|block| block.state(values))
+        .unwrap_or_else(|| panic!("no block defaria:{name} with {values:?}"))
+}
+
+/// Base game dirt with grass on it, the terrain's top.
+#[cfg(test)]
+pub fn grass() -> BlockState {
+    block_with("soil", &[("turf", "defaria:grass")])
+}
+
+/// Base game sand.
+#[cfg(test)]
+pub fn sand() -> BlockState {
+    block_with("soil", &[("soil", "defaria:sand")])
+}
+
 /// A model with one face, on top of the block, in slot `side`, which
 /// falls back to `all`. It covers only its top.
 #[cfg(test)]
@@ -856,7 +878,7 @@ mod tests {
         assert_eq!(content.blocks[0].id, AIR);
         assert!(BlockState::AIR.is_air());
         assert!(content.state(BlockState::AIR).faces.is_empty());
-        for name in ["stone", "dirt", "grass", "sand", "gravel", "log", "planks"] {
+        for name in ["stone", "soil", "log", "planks"] {
             let id = format!("defaria:{name}");
             let state = content.default_state(&id).unwrap();
             assert_eq!(content.state(state).faces.len(), 6, "{id}");
@@ -912,12 +934,60 @@ mod tests {
         assert_eq!(content.block_of(BlockState(u16::MAX)).id, AIR);
     }
 
+    /// Soil is every soil material with or without every turf: bare, it's
+    /// its own texture all round; with a turf, the turf's on top, hanging
+    /// over the soil's sides, and the bottom is bare soil.
+    #[test]
+    fn soil_is_any_soil_with_or_without_turf() {
+        let content = base();
+        let soil = content.block("defaria:soil").unwrap();
+        let template = |state: BlockState, normal: Vec3| {
+            let face = content
+                .state(state)
+                .faces
+                .iter()
+                .find(|f| f.normal == normal);
+            content.textures[face.unwrap().layer as usize]
+                .template
+                .clone()
+        };
+        for (material, name) in [("dirt", "Dirt"), ("sand", "Sand"), ("gravel", "Gravel")] {
+            let id = format!("defaria:{material}");
+            let bare = soil.state(&[("soil", &id)]).unwrap();
+            assert_eq!(content.state(bare).name, name);
+            for normal in [Vec3::Y, Vec3::NEG_Y, Vec3::X] {
+                assert_eq!(template(bare, normal), id);
+            }
+            let turfed = soil
+                .state(&[("soil", &id), ("turf", "defaria:grass")])
+                .unwrap();
+            assert_eq!(content.state(turfed).name, format!("{name} with Grass"));
+            assert_eq!(template(turfed, Vec3::Y), "defaria:turf");
+            assert_eq!(template(turfed, Vec3::X), format!("{id}_turf"));
+            assert_eq!(template(turfed, Vec3::NEG_Y), id);
+            // Each one is its own item.
+            let item = content.item("defaria:soil").unwrap();
+            for (values, block) in [
+                (vec![("soil", id.as_str())], bare),
+                (
+                    vec![("soil", id.as_str()), ("turf", "defaria:grass")],
+                    turfed,
+                ),
+            ] {
+                let state = item.state(&values).unwrap();
+                assert_eq!(content.item_state(state).unwrap().block, Some(block));
+            }
+        }
+        assert_eq!(soil.default_state(), block("soil"));
+        assert_eq!(content.state(block("soil")).name, "Dirt");
+    }
+
     /// Every image the base game's textures use is in the image set, once.
     #[test]
     fn image_paths_are_listed_once() {
         let paths = base().image_paths();
         assert!(paths.contains(&"mods/defaria/images/dirt.png".to_string()));
-        // Dirt is under both dirt and grass_side but loads once.
+        // Dirt is under both dirt and dirt_turf but loads once.
         assert_eq!(paths.iter().filter(|p| p.ends_with("/dirt.png")).count(), 1);
     }
 }

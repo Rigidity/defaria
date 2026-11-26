@@ -3,6 +3,28 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Soils pick their textures by name (2026-11-25)
+
+**Context.** Soil is one block, `defaria:soil`, made of a `#soil` material
+(dirt, sand, gravel) with an optional `#turf` (grass) on it. Unlike rock,
+where one stone image colored by each rock's palette is enough, each soil
+has its own image: sand's fine grains, gravel's pebbles.
+
+**Decision.** A texture layer's image is fixed, so the block names its
+textures after the soil: `{soil}` for bare faces and `{soil}_turf` for the
+sides under a turf, which fill in as `defaria:sand` and
+`defaria:sand_turf`. Every soil material needs both textures, with those
+ids.
+
+**What's wrong with it.** It's a naming convention nothing checks until a
+state fails to load, and a mod adding a soil writes two near-identical
+texture files that only repeat its image.
+
+**What should replace it.** Let a material name its images by role, the way
+it names palettes (`images: { soil: "sand" }`), and let a layer take its
+image from its material (`image: "$soil"`), so one `soil` and one
+`soil_turf` texture cover every soil.
+
 ## See-through blocks let all light through (2026-11-25)
 
 **Context.** Leaves, glass, water and plants are drawn see-through

@@ -1,7 +1,0 @@
-// Grass hanging over the edge of a dirt side face.
-{
-  layers: [
-    { image: "dirt", material: "dirt" },
-    { image: "grass_side", material: "grass" },
-  ],
-}

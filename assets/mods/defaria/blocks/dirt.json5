@@ -1,7 +1,0 @@
-{
-  name: "Dirt",
-  model: "cube",
-  textures: { all: "dirt" },
-  hardness: 0.5,
-  weight: 1500,
-}

@@ -314,8 +314,8 @@ mod tests {
             let height = 6 + (pos.x + pos.z) % 3;
             let state = match pos.y {
                 y if y < height - 3 => block("stone"),
-                y if y < height - 1 => block("dirt"),
-                y if y < height => block("grass"),
+                y if y < height - 1 => block("soil"),
+                y if y < height => crate::content::grass(),
                 _ => BlockState::AIR,
             };
             ground.set_at(pos, state);
@@ -329,7 +329,10 @@ mod tests {
     fn states_are_saved_by_name() {
         let names = names();
         assert_eq!(names.name(BlockState::AIR), "air");
-        assert_eq!(names.name(block("dirt")), "defaria:dirt");
+        assert_eq!(
+            names.name(block("soil")),
+            "defaria:soil[soil=defaria:dirt,turf=none]"
+        );
         assert_eq!(
             names.name(block("stone")),
             "defaria:stone[ore=none,rock=defaria:stone]"

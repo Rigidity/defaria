@@ -1,0 +1,28 @@
+// Loose ground: a soil (dirt, sand, gravel, or any `#soil` material), with
+// or without a turf (grass, or any `#turf` material) growing on it. Turf
+// covers the top and hangs over the edge of the sides; the bottom is bare
+// soil. Each soil has a texture with its own id (`dirt`) for bare faces,
+// and one with `_turf` after it (`dirt_turf`) for sides under a turf,
+// whose `$turf` input is the turf.
+{
+  name: "{soil}",
+  properties: {
+    soil: { materials: ["dirt", "#soil"] },
+    turf: { materials: "#turf", optional: true },
+  },
+  model: "cube",
+  textures: { all: "{soil}" },
+  variants: [
+    {
+      when: { turf: { not: "none" } },
+      name: "{soil} with {turf}",
+      textures: {
+        up: { texture: "turf", materials: { turf: "{turf}" } },
+        side: { texture: "{soil}_turf", materials: { turf: "{turf}" } },
+      },
+    },
+  ],
+  // Mostly soil: the turf counts a quarter.
+  hardness: { materials: { soil: 3, turf: 1 } },
+  weight: { materials: { soil: 3, turf: 1 } },
+}

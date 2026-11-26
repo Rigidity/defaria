@@ -3,7 +3,7 @@
 //!
 //! Each column's height comes from noise mapped through splines, with
 //! plains, mountains, ridges and valleys (see [`shape`]). Below the surface
-//! is stone, then a few layers of dirt, then one layer of grass on top, except
+//! is stone, then a few layers of dirt, then one layer of dirt with grass on it, except
 //! high up and on cliffs, which are bare stone. Here and there a tuft of
 //! grass grows on the grass. Hollows below [`SEA_LEVEL`] fill with water,
 //! and the ground at and under the water's edge is sand. The world
@@ -254,6 +254,7 @@ impl Voxels<'_, '_> {
 /// The blocks the terrain is made of.
 #[derive(Debug, Clone, Copy)]
 pub struct TerrainBlocks {
+    /// Dirt with grass on it.
     pub grass: BlockState,
     pub dirt: BlockState,
     pub stone: BlockState,
@@ -263,11 +264,9 @@ pub struct TerrainBlocks {
 }
 
 impl TerrainBlocks {
-    const IDS: [&str; 6] = [
-        "defaria:grass",
-        "defaria:dirt",
+    const IDS: [&str; 4] = [
+        "defaria:soil",
         "defaria:stone",
-        "defaria:sand",
         "defaria:water",
         "defaria:tuft",
     ];
@@ -283,20 +282,23 @@ impl TerrainBlocks {
     /// The base game's blocks the terrain is made of. One that didn't load
     /// is reported and left as air.
     pub fn from_content(content: &Content) -> Self {
-        let block = |name: &str| {
+        let block = |name: &str, values: &[(&str, &str)]| {
             let id = format!("defaria:{name}");
-            content.default_state(&id).unwrap_or_else(|| {
-                error!("the terrain needs block `{id}`, which didn't load");
-                BlockState::AIR
-            })
+            content
+                .block(&id)
+                .and_then(|block| block.state(values))
+                .unwrap_or_else(|| {
+                    error!("the terrain needs block `{id}` with {values:?}, which didn't load");
+                    BlockState::AIR
+                })
         };
         Self {
-            grass: block("grass"),
-            dirt: block("dirt"),
-            stone: block("stone"),
-            sand: block("sand"),
-            water: block("water"),
-            tuft: block("tuft"),
+            grass: block("soil", &[("turf", "defaria:grass")]),
+            dirt: block("soil", &[]),
+            stone: block("stone", &[]),
+            sand: block("soil", &[("soil", "defaria:sand")]),
+            water: block("water", &[]),
+            tuft: block("tuft", &[]),
         }
     }
 }
@@ -763,7 +765,7 @@ mod tests {
         testing::{PATCH_SIZE, finish_meshing, patch_chunks, spawn_patch},
         *,
     };
-    use crate::content::{self, base, block};
+    use crate::content::{self, base, block, grass, sand};
 
     fn terrain() -> Terrain {
         terrain_with(TerrainSettings::default())
@@ -790,12 +792,12 @@ mod tests {
                 let top = if terrain.is_rock(x, z0) {
                     block("stone")
                 } else if h <= SEA_LEVEL {
-                    block("sand")
+                    sand()
                 } else {
-                    block("grass")
+                    grass()
                 };
                 assert_eq!(terrain.voxel(IVec3::new(x, h - 1, z0)), top);
-                if top != block("grass") {
+                if top != grass() {
                     let above = terrain.voxel(IVec3::new(x, h, z0));
                     assert_ne!(above, block("tuft"), "a tuft on {top:?} at ({x}, {z0})");
                 }
@@ -824,7 +826,7 @@ mod tests {
     #[test]
     fn columns_are_layered_grass_dirt_stone() {
         let terrain = terrain();
-        let (mut tufts, mut grass, mut ponds) = (0, 0, 0);
+        let (mut tufts, mut grassy, mut ponds) = (0, 0, 0);
         for (x, z) in columns() {
             let height = terrain.height(x, z);
             assert!(
@@ -834,9 +836,9 @@ mod tests {
             let at = |y| terrain.voxel(IVec3::new(x, y, z));
             let shore = height <= SEA_LEVEL;
             let (top, soil) = if shore {
-                (block("sand"), block("sand"))
+                (sand(), sand())
             } else {
-                (block("grass"), block("dirt"))
+                (grass(), block("soil"))
             };
             assert_eq!(at(height - 1), top);
             let mut above = height;
@@ -849,7 +851,7 @@ mod tests {
                 assert_eq!(at(y), block("water"), "({x}, {y}, {z})");
             }
             ponds += (height < SEA_LEVEL) as u32;
-            grass += !shore as u32;
+            grassy += !shore as u32;
             for y in above.max(SEA_LEVEL)..height + 100 {
                 assert_eq!(at(y), BlockState::AIR, "({x}, {y}, {z})");
             }
@@ -863,7 +865,7 @@ mod tests {
             }
         }
         // About 8% of the grass has a tuft, and the patch has a pond.
-        let share = tufts as f32 / grass as f32;
+        let share = tufts as f32 / grassy as f32;
         assert!(
             (0.06..0.10).contains(&share),
             "{share} of the grass has tufts"
@@ -997,7 +999,7 @@ mod tests {
     #[test]
     fn mountain_chunks_match_their_columns() {
         let terrain = terrain();
-        let (mut rock, mut grass) = (0, 0);
+        let (mut rock, mut grassy) = (0, 0);
         // East of the start, where the mountains are cliffs below the rock
         // line.
         for cx in 102..106 {
@@ -1019,16 +1021,16 @@ mod tests {
                             rock += 1;
                             assert_eq!(top, block("stone"), "at ({x}, {z})");
                         } else {
-                            grass += 1;
-                            assert_eq!(top, block("grass"), "at ({x}, {z})");
+                            grassy += 1;
+                            assert_eq!(top, grass(), "at ({x}, {z})");
                         }
                     }
                 }
             }
         }
         assert!(
-            rock > 50 && grass > 50,
-            "{rock} rock and {grass} grass columns"
+            rock > 50 && grassy > 50,
+            "{rock} rock and {grassy} grass columns"
         );
     }
 

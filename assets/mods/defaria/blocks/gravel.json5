@@ -1,7 +1,0 @@
-{
-  name: "Gravel",
-  model: "cube",
-  textures: { all: "gravel" },
-  hardness: 0.6,
-  weight: 1800,
-}

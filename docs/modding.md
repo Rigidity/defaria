@@ -116,7 +116,8 @@ give a busy one.
 stacking them, bottom layer first.
 
 ```json5
-// Grass hanging over the edge of a dirt side face.
+// textures/dirt_turf.json5 without its input: grass hanging over the
+// edge of a dirt side face.
 {
   layers: [
     { image: "dirt", material: "dirt" },
@@ -317,7 +318,7 @@ break; no unit, dirt about 0.5 and stone 1.5) and a weight in kilograms.
 Each is a number:
 
 ```json5
-{ name: "Dirt", model: "cube", textures: { all: "dirt" }, hardness: 0.5, weight: 1500 }
+{ name: "Lamp", model: "cube", textures: { all: "lamp" }, hardness: 0.3, weight: 500 }
 ```
 
 or, for something made of materials, a `base` times the weighted average
@@ -425,6 +426,40 @@ A property can be a material instead of a list of words:
 - **Names.** In `name`, `{property}` gives the material's name
   ("Granite"), nothing for `none` (spaces left over are dropped), or a
   plain property's value as it's written.
+
+A material's id in a texture name picks a texture per material, for
+materials whose images differ and not just their colors. Soil is any
+`#soil` material, with or without a `#turf` growing on it, and dirt, sand
+and gravel each have their own image:
+
+```json5
+// blocks/soil.json5
+{
+  name: "{soil}",
+  properties: {
+    soil: { materials: ["dirt", "#soil"] },
+    turf: { materials: "#turf", optional: true },
+  },
+  model: "cube",
+  // Texture `defaria:sand` for sand.
+  textures: { all: "{soil}" },
+  variants: [
+    {
+      when: { turf: { not: "none" } },
+      name: "{soil} with {turf}",
+      textures: {
+        up: { texture: "turf", materials: { turf: "{turf}" } },
+        // `defaria:sand_turf`: the turf hanging over sand.
+        side: { texture: "{soil}_turf", materials: { turf: "{turf}" } },
+      },
+    },
+  ],
+}
+```
+
+So a mod adding a soil, say `clay`, gives the material the `soil` tag and
+adds textures `clay` and `clay_turf` (with a `$turf` input); a mod adding a
+turf, say `moss`, needs only the material, tagged `turf`.
 
 The long form works for plain values too: `{ values: ["y", "x", "z"] }`.
 

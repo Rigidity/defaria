@@ -2700,8 +2700,12 @@ mod tests {
         assert_eq!(ore, (3.0 * 1.5 + 3.0) / 4.0);
         let slab = content.state(content.default_state("defaria:stone_slab").unwrap());
         assert_eq!((slab.hardness, slab.weight), (1.5, 1300.0));
-        let dirt = content.state(content.default_state("defaria:dirt").unwrap());
+        let soil = content.block("defaria:soil").unwrap();
+        let dirt = content.state(soil.default_state());
         assert_eq!(dirt.hardness, 0.5);
+        // Soil counts three times as much as turf.
+        let grass = content.state(soil.state(&[("turf", "defaria:grass")]).unwrap());
+        assert_eq!(grass.hardness, (3.0 * 0.5 + 0.6) / 4.0);
         // An iron pickaxe on an oak handle weighs a kilogram or two.
         let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
         assert!((1.0..3.0).contains(&pickaxe.weight), "{}", pickaxe.weight);
