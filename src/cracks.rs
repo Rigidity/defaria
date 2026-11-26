@@ -433,9 +433,9 @@ mod tests {
         assert_eq!((stage, visibility), (None, Visibility::Hidden));
     }
 
-    /// Faces next to see-through blocks show, so they crack: a stone
-    /// walled in by leaves, glass and water on every side but its top
-    /// (the slab) has five faces to crack.
+    /// Faces next to see-through blocks show, so they crack: a stone with
+    /// leaves, glass, water and a tuft on its four sides, the slab on top
+    /// and nothing under it has five faces to crack.
     #[test]
     fn faces_beside_see_through_blocks_crack() {
         let mut app = app();

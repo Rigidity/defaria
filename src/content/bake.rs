@@ -1671,7 +1671,8 @@ mod tests {
         // What hides a block's bottom face, from below.
         let hides = |block, neighbour| content.hides(block, neighbour, Direction::Down);
         assert!(hides(clear, solid) && hides(leafy, solid));
-        assert!(!hides(clear, pool), "an opaque fluid hides only itself");
+        assert!(hides(clear, pool), "an opaque fluid hides see-through faces");
+        assert!(!hides(solid, pool), "but not a solid opaque block's");
         assert!(hides(pool, pool), "an opaque fluid hides itself");
         assert!(hides(clear, clear), "the same translucent block");
         assert!(

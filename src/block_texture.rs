@@ -479,7 +479,8 @@ mod tests {
     /// transparent, and not marked.
     #[test]
     fn see_through_tiles_have_the_alpha_their_blocks_need() {
-        let (_, tiles, errors) = build(&base().textures, |path| layers_on_disk_cached().get(path));
+        let (image, tiles, errors) =
+            build(&base().textures, |path| layers_on_disk_cached().get(path));
         assert!(errors.is_empty(), "{errors:?}");
         let tile = |id: &str| &tiles[base().texture(id).unwrap() as usize];
         let marked = |id: &str| base().textures[base().texture(id).unwrap() as usize].cutout;
@@ -488,7 +489,6 @@ mod tests {
         }
         assert!(!marked("defaria:stone(rock=defaria:stone)"));
         // The texture `build` makes keeps the leaves' coverage in the mips.
-        let (image, _, _) = build(&base().textures, |path| layers_on_disk_cached().get(path));
         let leaves = base().texture("defaria:leaves(wood=defaria:oak)").unwrap();
         let full = coverage(tile("defaria:leaves(wood=defaria:oak)"), 1.0);
         for mip in 1..mip_levels(TILE_SIZE) {

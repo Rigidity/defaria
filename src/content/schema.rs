@@ -311,15 +311,15 @@ pub struct VariantDef {
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Render {
-    /// Every pixel drawn solid. Its covered sides hide the faces next to
-    /// them and stop light.
+    /// Every pixel drawn solid. Its covered sides stop light and hide the
+    /// faces next to them (a fluid's only some: see `Content::hides`).
     #[default]
     Opaque,
-    /// Fully transparent pixels are holes; the rest are solid. Hides no
-    /// faces next to it, and lets light through.
+    /// Pixels with alpha under one half are holes; the rest are solid.
+    /// Hides no faces next to it, and lets light through.
     Cutout,
     /// Pixels blend with what's behind them by their alpha. Hides only the
-    /// same block's faces next to it, and lets light through.
+    /// same block's translucent faces next to it, and lets light through.
     Translucent,
 }
 

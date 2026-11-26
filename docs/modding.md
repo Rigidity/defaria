@@ -275,25 +275,29 @@ corners of the faces next to it (ambient occlusion).
   the same block, since you can see through its holes.
 - **`"translucent"`**: pixels blend with what's behind them by their
   alpha, from the image or the palette (`#rrggbbaa`). For glass and
-  water. A side it covers hides only the same block's face against it,
-  so a wall of glass or a pond of water looks like one body.
+  water. A side it covers hides only the same block's translucent faces
+  against it, so a wall of glass or a pond of water looks like one body.
 
-Light passes through every side of a cut-out or translucent block, and
-they cast no ambient occlusion.
+Variants can set `render`; a later one replaces an earlier one's. Light
+passes through every side of a cut-out or translucent block, and they
+cast no ambient occlusion.
 
 `double_sided: true` draws each face from behind as well, lit as its front
 is: the far side of a glass block shows through the near side, and
-water's surface shows from underneath. Variants can set `render`; a later one
-replaces an earlier one's.
+water's surface shows from underneath. It's set on the block, not in
+variants.
 
 ### Fluids
 
 `fluid: true` makes a block a fluid: nothing bumps into it, whatever its
 model's `collision`, the crosshair passes through it (so you can't mine
 it), and placing a block where it is replaces it. Since you can be inside
-one, a fluid hides only its own faces, even an opaque one like lava; make
-it `double_sided` too, so its surface shows from inside. Fluids don't flow
-yet.
+one, even an opaque fluid like lava doesn't hide the faces of solid opaque
+blocks next to it, so the floor and walls of a lava pool show from inside;
+it still hides its own faces, and those of anything else see-through
+(water, glass, leaves), so only one face is drawn where they meet. Make a
+fluid `double_sided` too, so its surface shows from inside. Fluids don't
+flow yet.
 
 ```json5
 // blocks/water.json5

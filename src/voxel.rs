@@ -1277,16 +1277,23 @@ mod tests {
         assert_eq!(split(&[(A, "lava")]), [12, 0, 0]);
     }
 
-    /// You can be inside a fluid, so even opaque lava hides only its own
-    /// faces: the floor and walls around a lava pool are still drawn, and
-    /// seen from inside it the world doesn't show through them.
+    /// You can be inside a fluid, so even opaque lava doesn't hide a solid
+    /// opaque block's face: the floor and walls around a lava pool are
+    /// still drawn, and seen from inside it the world doesn't show through
+    /// them. Against anything else, only one face is drawn where they
+    /// meet, so the two don't fight over the same plane: lava's (double
+    /// sided, 12 faces alone).
     #[test]
-    fn fluids_hide_only_their_own_faces() {
+    fn fluids_keep_solid_faces_and_draw_one_face_elsewhere() {
         // Stone's face against the lava stays; the lava's against the
         // stone goes.
         assert_eq!(split(&[(A, "stone"), (B, "lava")]), [6 + 10, 0, 0]);
         assert_eq!(split(&[(A, "lava"), (B, "lava")]), [20, 0, 0]);
         assert_eq!(split(&[(A, "stone"), (B, "water")]), [6, 0, 10]);
+        // Water, glass and leaves lose their face against lava.
+        assert_eq!(split(&[(A, "water"), (B, "lava")]), [12, 0, 10]);
+        assert_eq!(split(&[(A, "glass"), (B, "lava")]), [12, 0, 10]);
+        assert_eq!(split(&[(A, "leaves"), (B, "lava")]), [12, 5, 0]);
     }
 
     /// Nothing is hidden next to a cut-out block, not even another one:
