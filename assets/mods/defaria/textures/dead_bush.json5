@@ -1,0 +1,4 @@
+// Dry, sun-bleached twigs.
+{
+  layers: [{ image: "dead_bush", palette: ["#2e2014", "#5a4028", "#8a6a44", "#b89c70"] }],
+}

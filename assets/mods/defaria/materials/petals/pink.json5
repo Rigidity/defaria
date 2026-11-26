@@ -1,0 +1,7 @@
+{
+  name: "Pink",
+  tags: ["petals"],
+  palette: ["#6a2240", "#b44c7c", "#e68ab2", "#ffd0e2"],
+  hardness: 0.05,
+  weight: 100,
+}

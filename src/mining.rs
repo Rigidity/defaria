@@ -30,6 +30,7 @@ use crate::{
     inventory::Inventory,
     meshing::RemeshChunks,
     player::{Eyes, LocalPlayer},
+    support::unsupported,
     ui::{UiScreen, playing},
     world::Voxels,
 };
@@ -174,16 +175,26 @@ fn mine(
     }
     let needed = Duration::from_secs_f32(seconds);
     if mining.elapsed + TOLERANCE >= needed {
+        let mut carrier = carrier.map(Single::into_inner);
         // In survival the block's item has to fit in the miner's
         // inventory, or it stays put.
-        if let Some(carrier) = carrier
-            && let (mut inventory, mode) = carrier.into_inner()
-            && !harvest(*mode, &mut inventory, &content, target.1)
+        if let Some((inventory, mode)) = &mut carrier
+            && !harvest(**mode, inventory, &content, target.1)
         {
             mining.progress = 1.0;
             return;
         }
         voxels.set(hit.block, BlockState::AIR);
+        // What stood on it and needed it (a flower on grass) breaks with
+        // it, into the same inventory if it fits. (Otherwise `support`
+        // breaks it, giving nothing.)
+        let above = hit.block + IVec3::Y;
+        if let Some(plant) = unsupported(&content, &voxels, above) {
+            if let Some((inventory, mode)) = &mut carrier {
+                harvest(**mode, inventory, &content, plant);
+            }
+            voxels.set(above, BlockState::AIR);
+        }
         *mining = Mining {
             armed: true,
             delay: BREAK_DELAY,
@@ -511,5 +522,86 @@ mod tests {
         app.world_mut().spawn(UiScreen);
         frame(&mut app, false);
         assert_eq!(mining(&mut app), Mining::default());
+    }
+
+    /// Mining the grass under a flower in survival gives the flower too;
+    /// in creative it breaks with the grass, giving nothing.
+    #[test]
+    fn mining_the_ground_under_a_plant_harvests_it_too() {
+        for mode in [GameMode::Survival, GameMode::Creative] {
+            let mut app = app();
+            let ground = IVec3::new(5, 1, 7);
+            let flower = ground + IVec3::Y;
+            set(&mut app, ground, crate::content::grass());
+            set(&mut app, flower, block("daisy"));
+            let player = crate::player::tests::local(&mut app);
+            app.world_mut()
+                .entity_mut(player)
+                .insert((Inventory::new(), mode));
+            look_at(&mut app, ground.as_vec3() + Vec3::new(0.5, 0.9, 0.5));
+            frame(&mut app, true);
+            for _ in 0..frames_to_break(crate::content::grass()) {
+                frame(&mut app, false);
+            }
+            assert_eq!(at(&mut app, ground), BlockState::AIR, "{mode:?}");
+            assert_eq!(at(&mut app, flower), BlockState::AIR, "{mode:?}");
+            let daisy = crate::game_mode::item_for_block(base(), block("daisy")).unwrap();
+            let inventory = app.world().get::<Inventory>(player).unwrap();
+            let expected = if mode.is_creative() { 0 } else { 1 };
+            assert_eq!(inventory.count(daisy), expected, "{mode:?}");
+        }
+    }
+
+    /// In survival, a plant whose item doesn't fit breaks anyway, giving
+    /// nothing, as long as the ground under it fits.
+    #[test]
+    fn a_plant_that_doesnt_fit_breaks_without_its_item() {
+        let mut app = app();
+        let ground = IVec3::new(5, 1, 7);
+        let flower = ground + IVec3::Y;
+        set(&mut app, ground, crate::content::grass());
+        set(&mut app, flower, block("daisy"));
+        let grass = crate::game_mode::item_for_block(base(), crate::content::grass()).unwrap();
+        let daisy = crate::game_mode::item_for_block(base(), block("daisy")).unwrap();
+        // Room for the grass and not a gram more.
+        let room = crate::inventory::model::item_weight(base(), grass);
+        let player = crate::player::tests::local(&mut app);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((Inventory::new().with_max_weight(room), GameMode::Survival));
+        look_at(&mut app, ground.as_vec3() + Vec3::new(0.5, 0.9, 0.5));
+        frame(&mut app, true);
+        for _ in 0..frames_to_break(crate::content::grass()) {
+            frame(&mut app, false);
+        }
+        assert_eq!(at(&mut app, ground), BlockState::AIR);
+        assert_eq!(at(&mut app, flower), BlockState::AIR);
+        let inventory = app.world().get::<Inventory>(player).unwrap();
+        assert_eq!(inventory.count(grass), 1);
+        assert_eq!(inventory.count(daisy), 0);
+    }
+
+    /// A block on the one mined that doesn't need support (a log on the
+    /// grass) stays, and isn't harvested.
+    #[test]
+    fn mining_leaves_blocks_that_need_no_support() {
+        let mut app = app();
+        let ground = IVec3::new(5, 1, 7);
+        let log = ground + IVec3::Y;
+        set(&mut app, ground, crate::content::grass());
+        set(&mut app, log, block("log"));
+        let player = crate::player::tests::local(&mut app);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((Inventory::new(), GameMode::Survival));
+        look_at(&mut app, ground.as_vec3() + Vec3::new(0.5, 0.9, 0.5));
+        frame(&mut app, true);
+        for _ in 0..frames_to_break(crate::content::grass()) {
+            frame(&mut app, false);
+        }
+        assert_eq!(at(&mut app, ground), BlockState::AIR);
+        assert_eq!(at(&mut app, log), block("log"));
+        let inventory = app.world().get::<Inventory>(player).unwrap();
+        assert_eq!(inventory.entries().len(), 1, "only the grass");
     }
 }

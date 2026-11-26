@@ -1,0 +1,7 @@
+{
+  layers: [
+    { image: "daisy_stem", material: "grass" },
+    { image: "daisy_petals", material: "petals/white" },
+    { image: "daisy_center", material: "petals/yellow" },
+  ],
+}

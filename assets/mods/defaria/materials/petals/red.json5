@@ -1,0 +1,8 @@
+// Petals, for the flowers whose bloom comes in several colors.
+{
+  name: "Red",
+  tags: ["petals"],
+  palette: ["#4a0c14", "#8e1a22", "#cf3333", "#f27a62"],
+  hardness: 0.05,
+  weight: 100,
+}

@@ -187,3 +187,26 @@ redraw them: `python3 scripts/draw-stone.py assets/mods/defaria/images`.
 - `smooth_stone.png`: a flat polished face (level 4, a few level-5
   flecks) inside a one-pixel bevel: level 6 along the top and left, 2
   along the bottom and right, 4 in the two corners where they meet.
+
+## Plants
+
+The flowers, the fern and the mushroom were generated in color by Retro
+Diffusion, then split by `scripts/split-plants.py` into one layer per part
+(by hue), so each part takes its own palette: the green parts the grass
+material, as `tuft.png` does, and the blooms the `petals` materials, so one
+tulip shape gives tulips of every petal color. Each part's luminance is
+stretched to its own range of levels (green parts 2–6, like the tufts;
+blooms 1–6; the daisy's petals 2–7, its center and the mushroom's stalk
+2–6) and rounded, and every plant moved down to stand on the bottom row.
+The untouched downloads are kept in `scripts/split-plants-raw/`; re-run
+`python3 scripts/split-plants.py <out-dir>` to redraw the layers. The dead
+bush was drawn by script, as the generated ones were too chunky.
+
+| File | Source | Date | Style | Prompt | Request id | Plan usage left after |
+|---|---|---|---|---|---|---|
+| `tulip_stem.png`, `tulip_bloom.png` | Retro Diffusion, split by hue (red bloom, green stem and leaves); by hand, a stem pixel at (7, 8) joins the bloom, which floated a pixel above the stem | 2026-11-26 | `rd_fast__mc_item` | a single tulip flower standing upright, a straight green stem with two long leaves at the bottom and a closed cup-shaped red bloom at the top, on a plain white background | `722147b7-5440-4991-a30c-ee069303f8b4` | 97% |
+| `daisy_stem.png`, `daisy_petals.png`, `daisy_center.png` | Retro Diffusion, split by hue and saturation (gray-white petals, yellow center, green stem) | 2026-11-26 | `rd_fast__mc_item` | a single daisy flower standing upright, a thin green stem with small leaves and an open bloom of white petals around a yellow center at the top, on a plain blue background | `188e4f3b-2e6d-49d2-bffa-e0eb03040d74` | 97% |
+| `bluebell_stem.png`, `bluebell_bloom.png` | Retro Diffusion, split by hue (blue bell, green stem and leaves) | 2026-11-26 | `rd_fast__mc_item` | a bluebell plant, a curved green stem arching over with three small drooping blue bell-shaped flowers hanging from it, thin leaves at the base, on a plain white background | `9ee8f270-c5e5-4bc7-8a55-1b12a9b41325` | 97% |
+| `fern.png` | Retro Diffusion, one layer | 2026-11-26 | `rd_fast__mc_item` | a small fern plant with several long feathery green fronds arching outward from the ground, on a plain white background | `c309b6fb-2067-4cf1-b5b4-0406b402a45e` | 97% |
+| `mushroom_cap.png`, `mushroom_stalk.png` | Retro Diffusion, split into the cap (rows 0–7) and the stalk; by hand, the patch of grass it stood on cut away and the stalk's foot filled in where the grass covered it | 2026-11-26 | `rd_fast__mc_item` | a small wild mushroom with a pale thick stalk and a round domed red cap with a few white spots, standing on the ground, on a plain white background | `8bd6c6d6-ae95-4a5d-bf8f-fa46b6cb7e76` | 97% |
+| `dead_bush.png` | Drawn by `dead_bush()` in `scripts/draw-layers.py`: one-pixel twigs forking up and out from one point on the bottom edge, darker at the ground, lighter toward the tips. The two generations (below) came back too chunky | 2026-11-26 | `rd_fast__mc_item` (unused) | a small dead dry desert shrub, bare thin twigs branching out from the ground with no leaves, on a plain white background; and a sparse dead tumbleweed bush made of very thin one pixel wide dry brown twigs spreading out in a wide fan from a single point at the ground, lots of empty space between the twigs, on a plain white background | `af07f461-99b9-4789-8de7-808530617773`, `5bc31531-dfd4-4647-9c0e-e04eb928d21d` | 97% |

@@ -1,0 +1,4 @@
+// Shown flat, like the plant's texture, rather than as the crossed quads.
+{
+  texture: "dead_bush",
+}

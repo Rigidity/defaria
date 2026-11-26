@@ -1,0 +1,10 @@
+// A red cap on a pale stalk.
+{
+  layers: [
+    { image: "mushroom_stalk", palette: ["#5c4a3c", "#a08a74", "#d8c6ae", "#f4ead8"] },
+    {
+      image: "mushroom_cap",
+      palette: ["#3c0a0e", "#7a161a", "#b42a24", "#d8402e", "#e8603a", "#f08a5a", "#f8b890", "#fff0e0"],
+    },
+  ],
+}

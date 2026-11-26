@@ -1,0 +1,16 @@
+// A fern, drawn as two crossed quads like the grass tuft. It stands on
+// grass, or bare dirt or loam.
+{
+  name: "Fern",
+  model: "cross",
+  render: "cutout",
+  textures: { all: "fern" },
+  hardness: 0.05,
+  weight: 0.05,
+  category: "natural",
+  // Dirt or loam, grassy or bare, and any soil under grass.
+  support: [
+    { block: "soil", when: { soil: ["dirt", "loam"] } },
+    { block: "soil", when: { turf: "grass" } },
+  ],
+}

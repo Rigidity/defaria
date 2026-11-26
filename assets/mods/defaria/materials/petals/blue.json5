@@ -1,0 +1,7 @@
+{
+  name: "Blue",
+  tags: ["petals"],
+  palette: ["#181c56", "#333ea6", "#6474e2", "#a6b4ff"],
+  hardness: 0.05,
+  weight: 100,
+}
