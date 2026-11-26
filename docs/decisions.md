@@ -231,6 +231,77 @@ separate from blocks if blocks ever need to hand data on to each other.
 **When to revisit.** When machine simulation (#114, #112) shows up in
 frame times, or when a feature needs data to survive a block swap.
 
+## Mod scripts are Luau, run through mlua (2026-11-26)
+
+**Context.** Mods need scripts for what data can't describe (#105).
+The spike (#116) prototyped three runtimes outside the repo, each running
+the same `on_tick` (read a machine's stored energy, give some, set a
+state) for 1,000 machines, 200 ticks, release build, Apple M3 Max:
+
+| | 1,000 `on_tick`s | per engine call | clean build added | binary added |
+|---|---|---|---|---|
+| Luau (mlua 0.12) | 0.38 ms mean, 0.41 worst | 35 ns | 14 s wall, 31 s CPU | ~2 MB |
+| Rhai 1.27 | 0.95 ms mean, 2.4 worst | 94 ns | 13 s wall, 39 s CPU | ~4 MB |
+| wasmtime 40 (hand-written WAT guest) | 0.03 ms mean | 4 ns | 36 s wall, 290 s CPU | ~9 MB |
+
+Luau's figures are with the instruction-budget interrupt on and the
+machine passed as userdata borrowed for the call (`Lua::scope`), as the
+engine will; 'static userdata made once is 0.22 ms. At 20 Hz that's
+under 1% of a core for 1,000 scripted machines. A Luau state with the
+script and 1,000 userdata uses about 650 KiB. The runtime as built
+(`src/script/`: a scope and a budget per call, a globals table per
+script, in a dev build) takes 0.58 ms mean and 1.0 ms worst for 1,000
+calls of a hook that fills a tank.
+
+**Decision.** Luau through `mlua` (`features = ["luau", "send"]`). It has
+a sandbox built in (read-only globals and libraries), an interrupt for
+budgets and a per-state memory limit; scripts reload by just loading the
+new text; modders need no toolchain, and Lua is what game modders know.
+Errors read well: `mods/m/scripts/broken.luau:3: Expected identifier when
+parsing expression, got ')'`. Luau's C++ is compiled by `luau-src` once
+(it's a dependency, so it never rebuilds Bevy) and linked statically,
+so `cargo dist` still makes one binary: on macOS it needs only
+`libc++`, which every Mac has (checked with `otool -L` on the
+prototype), on Linux `libstdc++` like any C++ program, and on Windows
+the MSVC runtime the Rust binary already uses. Each mod gets its own
+Luau state (own globals, own memory cap) and each script its own
+globals table within it. The runtime is `src/script/`; how it looks to
+modders is `docs/scripting.md`.
+
+Rhai is pure Rust but 2.5 times slower per tick and per call, with worse
+worst cases, and few modders know it. Wasmtime is ten times faster than
+Luau, but that's a hand-written WAT guest with no strings or tables; a
+real guest pays for marshalling. It costs 290 s of CPU to build, 9 MB,
+and every modder a compiler toolchain, and hot reloading means
+rebuilding the module.
+
+**What's wrong with it.** The budget counts Luau's interrupts (loop back
+edges and calls), not instructions, so a step is a rough unit: a long
+straight run of code with no loops or calls costs one step, and a
+library call such as `string.rep` with a huge count can take far longer
+than its one step (a loop of 200 `table.sort`s of a 200,000-entry table
+took 1.3 s in 402 steps). So each call also has a wall-clock limit
+(`ScriptSettings::time_limit`, 20 ms), read every 16 steps; it's a
+safety net, not deterministic, and one library call between two reads
+can still overrun it (bounded by what the memory cap lets it build).
+Memory is capped per mod, not per script, so one
+script can use up its mod's share. Determinism across platforms is
+likely but unproven: Luau numbers are doubles and `math.sin` and friends
+come from the platform's C library, which can differ in the last bit;
+`math.random` is seeded the same everywhere. Each mod's state starts with
+Luau's libraries (about 400 KiB), so a hundred scripted mods cost 40 MB.
+
+**What should replace it.** If the server needs bit-identical results,
+replace the transcendental math functions with Rust implementations. If
+step counts turn out too coarse, charge library functions steps for
+the work they do (by wrapping `table.sort`, `string.rep` and the like),
+so the deterministic limit covers them too. WASM stays an option
+for heavy, performance-critical mods later, beside Luau rather than
+instead of it.
+
+**When to revisit.** With the server split (#50), if mods' scripts show
+up in frame times, or if modders ask for another language.
+
 ## Inventories count items, limited by a provisional weight (2026-11-25)
 
 **Context.** The inventory (#28) is limited by weight rather than slots

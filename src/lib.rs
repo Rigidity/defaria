@@ -26,6 +26,7 @@ mod perlin;
 mod physics;
 mod player;
 pub mod save;
+pub mod script;
 mod spline;
 pub mod streaming;
 mod terrain;
@@ -72,6 +73,7 @@ impl Plugin for GamePlugin {
             connections::ConnectionsPlugin,
             network::NetworkPlugin,
             block_entity::BlockEntityPlugin,
+            script::ScriptPlugin,
         ));
     }
 }

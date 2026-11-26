@@ -1,0 +1,5 @@
+{
+  id: "scripted",
+  name: "Scripted test mod",
+  description: "Scripts that work and scripts that fail, for src/script/tests.rs.",
+}

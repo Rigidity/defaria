@@ -29,11 +29,14 @@ pub struct ModFiles {
     pub files: BTreeMap<String, String>,
     /// Every `.png` file's path in the folder.
     pub images: BTreeSet<String>,
+    /// Every `.luau` file, by its path in the folder, with its text. They're
+    /// mod scripts (`src/script.rs`, `docs/scripting.md`).
+    pub scripts: BTreeMap<String, String>,
 }
 
 impl ModFiles {
     /// An in-memory mod with `files` (path, text). `.png` paths become
-    /// images; their text is ignored.
+    /// images, their text ignored, and `.luau` paths scripts.
     #[cfg(test)]
     pub fn new(dir: &str, manifest: &str, files: &[(&str, &str)]) -> Self {
         let mut mod_files = Self {
@@ -44,6 +47,8 @@ impl ModFiles {
         for &(path, text) in files {
             if path.ends_with(".png") {
                 mod_files.images.insert(path.into());
+            } else if path.ends_with(".luau") {
+                mod_files.scripts.insert(path.into(), text.into());
             } else {
                 mod_files.files.insert(path.into(), text.into());
             }
@@ -94,7 +99,7 @@ fn read_mod(folder: &Path, dir: String) -> Result<ModFiles, String> {
     Ok(mod_files)
 }
 
-/// Collects the definition files and images under `folder`, which is at
+/// Collects the definition files, images and scripts under `folder`, which is at
 /// `prefix` within the mod.
 fn walk(folder: &Path, prefix: &str, mod_files: &mut ModFiles) -> Result<(), String> {
     let entries = fs::read_dir(folder).map_err(|error| format!("{prefix}: {error}"))?;
@@ -111,6 +116,9 @@ fn walk(folder: &Path, prefix: &str, mod_files: &mut ModFiles) -> Result<(), Str
             mod_files.files.insert(relative, text);
         } else if name.ends_with(".png") {
             mod_files.images.insert(relative);
+        } else if name.ends_with(".luau") {
+            let text = fs::read_to_string(&path).map_err(|error| format!("{relative}: {error}"))?;
+            mod_files.scripts.insert(relative, text);
         }
     }
     Ok(())
