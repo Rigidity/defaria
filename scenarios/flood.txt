@@ -1,7 +1,9 @@
-# A flood spreading over many chunks (#102): a 16-block cube of water
-# let go in the middle of a walled stone floor ten chunks across, high
-# in the sky so nothing else is near. `systems` every second shows what
-# remeshing for the moving water costs, frame by frame.
+# A flood spreading over many chunks (#102): water two deep over half of
+# a walled stone floor ten chunks across, let go at once, high in the sky
+# so nothing else is near, its front running across ten chunk columns.
+# `systems` every second shows what remeshing for the moving water costs,
+# frame by frame. It needs the default radius: at CI's the water lands in
+# chunks that aren't loaded.
 # Run: cargo headless scenarios/flood.txt
 camera 80 260 -40 180 -45
 settle
@@ -13,7 +15,7 @@ fill 159 200 0 159 201 159 stone
 wait 30
 timing
 systems
-fill 72 200 72 87 215 87 water
+fill 1 200 1 158 201 79 water
 wait 1
 screenshot target/scenarios/flood/0-poured.png
 wait 60
