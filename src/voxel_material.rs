@@ -483,6 +483,24 @@ mod tests {
         );
     }
 
+    /// The three chunk materials blend as their names say: opaque, cut out
+    /// with alpha to coverage, and blended.
+    #[test]
+    fn each_material_draws_its_way() {
+        let app = app();
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        let modes = block.all().map(|h| materials.get(h).unwrap().alpha_mode);
+        assert_eq!(
+            modes,
+            [
+                AlphaMode::Opaque,
+                AlphaMode::AlphaToCoverage,
+                AlphaMode::Blend
+            ]
+        );
+    }
+
     /// Once built, nothing is rebuilt until a layer changes.
     #[test]
     fn the_texture_is_left_alone_while_no_layer_changes() {

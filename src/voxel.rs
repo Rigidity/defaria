@@ -498,7 +498,8 @@ impl TranslucentFaces {
             })
         });
         Self {
-            faces,
+            // Open water would keep hundreds of faces it never sorts.
+            faces: if needs_sorting { faces } else { Vec::new() },
             needs_sorting,
         }
     }
@@ -1272,8 +1273,20 @@ mod tests {
         assert_eq!(split(&[(A, "leaves")]), [0, 6, 0]);
         assert_eq!(split(&[(A, "glass")]), [0, 0, 12]);
         assert_eq!(split(&[(A, "water")]), [0, 0, 12]);
-        // Lava glows, but it's opaque.
-        assert_eq!(split(&[(A, "lava")]), [6, 0, 0]);
+        // Lava glows, but it's opaque; double-sided like water.
+        assert_eq!(split(&[(A, "lava")]), [12, 0, 0]);
+    }
+
+    /// You can be inside a fluid, so even opaque lava hides only its own
+    /// faces: the floor and walls around a lava pool are still drawn, and
+    /// seen from inside it the world doesn't show through them.
+    #[test]
+    fn fluids_hide_only_their_own_faces() {
+        // Stone's face against the lava stays; the lava's against the
+        // stone goes.
+        assert_eq!(split(&[(A, "stone"), (B, "lava")]), [6 + 10, 0, 0]);
+        assert_eq!(split(&[(A, "lava"), (B, "lava")]), [20, 0, 0]);
+        assert_eq!(split(&[(A, "stone"), (B, "water")]), [6, 0, 10]);
     }
 
     /// Nothing is hidden next to a cut-out block, not even another one:
@@ -1420,6 +1433,26 @@ mod tests {
         deeper[0].0.y = 6;
         assert!(needs(&deeper));
         assert!(needs(&[(A, "glass")]));
+    }
+
+    /// Faces facing the same way in different planes, like two water
+    /// surfaces at different heights, need sorting too.
+    #[test]
+    fn parallel_planes_need_sorting() {
+        let face = |y: f32, first: u32| SortFace {
+            center: Vec3::new(0.5, y, 0.5),
+            normal: Vec3::Y,
+            first,
+            indices: &[0, 1, 2, 0, 2, 3],
+        };
+        assert!(!TranslucentFaces::new(vec![face(5.0, 0), face(5.0, 4)]).needs_sorting());
+        assert!(TranslucentFaces::new(vec![face(5.0, 0), face(7.0, 4)]).needs_sorting());
+        // A face and its back share their plane.
+        assert_eq!(either_way(Vec3::NEG_Y), Vec3::Y);
+        assert_eq!(
+            either_way(Vec3::new(-1.0, 0.0, 1.0)),
+            Vec3::new(1.0, 0.0, -1.0)
+        );
     }
 
     /// Translucent faces sort farthest first from the eye, as whole faces.

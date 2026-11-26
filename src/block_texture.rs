@@ -487,6 +487,18 @@ mod tests {
             assert!(is_cutout(tile(id)) && marked(id), "{id}");
         }
         assert!(!marked("defaria:stone(rock=defaria:stone)"));
+        // The texture `build` makes keeps the leaves' coverage in the mips.
+        let (image, _, _) = build(&base().textures, |path| layers_on_disk_cached().get(path));
+        let leaves = base().texture("defaria:leaves(wood=defaria:oak)").unwrap();
+        let full = coverage(tile("defaria:leaves(wood=defaria:oak)"), 1.0);
+        for mip in 1..mip_levels(TILE_SIZE) {
+            let size = TILE_SIZE >> mip;
+            let level: Vec<u8> = (0..size)
+                .flat_map(|y| (0..size).map(move |x| (x, y)))
+                .flat_map(|(x, y)| pixel(&image, leaves, mip, x, y))
+                .collect();
+            assert!(coverage(&level, 1.0) >= full, "leaves' mip {mip}");
+        }
         for id in ["defaria:glass", "defaria:water"] {
             assert!(!marked(id), "{id}");
             let alphas: Vec<u8> = tile(id).iter().skip(3).step_by(4).copied().collect();
@@ -501,13 +513,20 @@ mod tests {
     }
 
     /// Smaller mips average in premultiplied color: a clear pixel's color
-    /// doesn't darken the solid one next to it.
+    /// doesn't bleed into the solid one next to it, and partly clear
+    /// pixels count by their alpha.
     #[test]
     fn clear_pixels_dont_bleed_into_mips() {
-        let mut pixels = vec![0u8; 2 * 2 * 4];
-        pixels[..4].copy_from_slice(&[200, 100, 50, 255]);
-        let half = downsample(&pixels, 2);
-        assert_eq!(half, [200, 100, 50, 64]);
+        let clear = std::iter::repeat_n([0, 255, 0, 0], 3).flatten();
+        let pixels: Vec<u8> = [200, 100, 50, 255].into_iter().chain(clear).collect();
+        assert_eq!(downsample(&pixels, 2), [200, 100, 50, 64]);
+        // Opaque red and quarter-alpha blue: four parts red to one blue.
+        let pixels: Vec<u8> = [255, 0, 0, 255, 0, 0, 255, 64, 0, 0, 0, 0, 0, 0, 0, 0].to_vec();
+        let [r, g, b, a] = downsample(&pixels, 2)[..] else {
+            panic!("one pixel");
+        };
+        assert_eq!((g, a), (0, 80));
+        assert!(r > 220 && (100..140).contains(&b), "({r}, {b})");
     }
 
     /// A cut-out's mips keep at least the share of pixels drawn that the

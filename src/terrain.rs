@@ -795,6 +795,10 @@ mod tests {
                     block("grass")
                 };
                 assert_eq!(terrain.voxel(IVec3::new(x, h - 1, z0)), top);
+                if top != block("grass") {
+                    let above = terrain.voxel(IVec3::new(x, h, z0));
+                    assert_ne!(above, block("tuft"), "a tuft on {top:?} at ({x}, {z0})");
+                }
                 assert!(
                     !content::base()
                         .state(terrain.voxel(IVec3::new(x, h, z0)))
@@ -865,6 +869,29 @@ mod tests {
             "{share} of the grass has tufts"
         );
         assert!(ponds > 0, "no water in the patch");
+    }
+
+    /// Tufts grow only on grass: never on the bare rock of mountains and
+    /// cliffs, though the hash picks some of those columns too.
+    #[test]
+    fn tufts_grow_only_on_grass() {
+        let terrain = terrain();
+        let mut rock = 0;
+        for x in 1500..1564 {
+            for z in -400..-336 {
+                if !terrain.is_rock(x, z) {
+                    continue;
+                }
+                rock += 1;
+                let h = terrain.height(x, z);
+                assert_ne!(
+                    terrain.voxel(IVec3::new(x, h, z)),
+                    block("tuft"),
+                    "({x}, {z})"
+                );
+            }
+        }
+        assert!(rock > 500, "only {rock} rock columns");
     }
 
     /// Chunks generated whole match the voxels column by column, water and
@@ -1265,24 +1292,41 @@ mod tests {
         chunk.set(4, 2, 2, block("leaves"));
         chunk.set(6, 2, 2, block("glass"));
         chunk.set(6, 2, 12, block("glass"));
+        // Away from the origin, so sorting from the world-space eye would
+        // put the panes in the other order.
+        let coord = ChunkCoord(IVec3::new(2, 0, -2));
+        let origin = coord.origin();
         let camera = app
             .world_mut()
-            .spawn((FlyCamera::default(), Transform::from_xyz(6.5, 2.5, 30.0)))
+            .spawn((
+                FlyCamera::default(),
+                Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, 30.0)),
+            ))
             .id();
-        let (plain, see_through) = app
+        // A pond walled in with stone: its faces are all in one plane.
+        let mut pond = Chunk::default();
+        for (x, y, z) in Chunk::positions() {
+            let edge = x == 0 || x == 15 || z == 0 || z == 15;
+            match y {
+                1 => pond.set(x, y, z, block("stone")),
+                2 if edge => pond.set(x, y, z, block("stone")),
+                2 => pond.set(x, y, z, block("water")),
+                _ => {}
+            }
+        }
+        let (plain, see_through, water) = app
             .world_mut()
             .run_system_once(move |mut commands: Commands, mut map: ResMut<ChunkMap>| {
                 let mut plain = Chunk::default();
                 plain.set(1, 1, 1, block("stone"));
-                let a = spawn_chunk(&mut commands, &mut map, ChunkCoord(IVec3::X), plain, ());
-                let b = spawn_chunk(
-                    &mut commands,
-                    &mut map,
-                    ChunkCoord(IVec3::ZERO),
-                    chunk.clone(),
-                    (),
-                );
-                (a, b)
+                let mut spawn = |at: IVec3, chunk: Chunk| {
+                    spawn_chunk(&mut commands, &mut map, ChunkCoord(at), chunk, ())
+                };
+                (
+                    spawn(IVec3::ZERO, plain),
+                    spawn(coord.0, chunk.clone()),
+                    spawn(IVec3::new(2, 0, 1), pond.clone()),
+                )
             })
             .unwrap();
         finish_meshing(&mut app);
@@ -1337,7 +1381,7 @@ mod tests {
             .get_mut::<Transform>(camera)
             .unwrap()
             .translation
-            .z = -20.0;
+            .z = origin.z as f32 - 20.0;
         app.update();
         assert!(first_face_z(&app) > 10.0);
 
@@ -1352,7 +1396,7 @@ mod tests {
         };
         // An edit rebuilds the mesh in the order it's built in, south pane
         // (z = 2) first; it's sorted again without the camera moving.
-        set(&mut app, IVec3::new(6, 2, 7), block("glass"));
+        set(&mut app, origin + IVec3::new(6, 2, 7), block("glass"));
         assert!(first_face_z(&app) > 10.0, "not sorted after an edit");
 
         // A move within the same block doesn't sort it again.
@@ -1366,7 +1410,7 @@ mod tests {
             .get_mut::<Transform>(camera)
             .unwrap()
             .translation
-            .z = -19.7;
+            .z = origin.z as f32 - 19.7;
         app.update();
         app.update();
         assert_eq!(
@@ -1380,8 +1424,13 @@ mod tests {
         );
 
         // Without glass, the translucent part draws nothing.
+        // The pond's surface never needed sorting, however the camera moved.
+        let pond = app.world().get::<ChunkParts>(water).unwrap().translucent;
+        assert!(app.world().get::<Mesh3d>(pond).is_some());
+        assert_eq!(app.world().get::<SortedFrom>(pond), Some(&SortedFrom(None)));
+
         for z in [2, 7, 12] {
-            set(&mut app, IVec3::new(6, 2, z), BlockState::AIR);
+            set(&mut app, origin + IVec3::new(6, 2, z), BlockState::AIR);
         }
         assert!(app.world().get::<Mesh3d>(parts.translucent).is_none());
         assert!(app.world().get::<Mesh3d>(parts.cutout).is_some());

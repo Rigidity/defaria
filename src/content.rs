@@ -566,17 +566,22 @@ impl Content {
     }
 
     /// Whether `neighbour`, next to `block` on its `side`, hides that
-    /// side, so the block's faces culled against it aren't drawn: it covers
-    /// the side facing the block and can't be seen through, or it's
-    /// translucent and the same block (water against water, glass against
-    /// glass). Cut-out blocks hide nothing.
+    /// side, so the block's faces culled against it aren't drawn. It must
+    /// cover the side facing the block, and then:
+    ///
+    /// - an opaque block hides it, unless it's a fluid: you can be inside a
+    ///   fluid, so it hides only its own faces (lava against lava);
+    /// - a translucent one hides only the same block's translucent faces
+    ///   (water against water, glass against glass);
+    /// - a cut-out one hides nothing.
     pub fn hides(&self, block: BlockState, neighbour: BlockState, side: Direction) -> bool {
-        let next = self.state(neighbour);
+        let (own, next) = (self.state(block), self.state(neighbour));
+        let same = next.block == own.block;
         next.occludes(side.opposite())
             && match next.render {
-                Render::Opaque => true,
+                Render::Opaque => !next.fluid || same,
                 Render::Cutout => false,
-                Render::Translucent => next.block == self.state(block).block,
+                Render::Translucent => same && own.render == Render::Translucent,
             }
     }
 

@@ -268,7 +268,8 @@ corners of the faces next to it (ambient occlusion).
 ```
 
 - **`"opaque"`**, the default: every pixel is solid, and alpha is ignored.
-  A side the model covers hides the neighbour's face against it.
+  A side the model covers hides the neighbour's face against it, unless
+  the block is a fluid (see [Fluids](#fluids)).
 - **`"cutout"`**: pixels with alpha under one half are holes, the rest
   solid. For leaves and plants. Nothing is hidden next to it, not even
   the same block, since you can see through its holes.
@@ -289,7 +290,10 @@ replaces an earlier one's.
 
 `fluid: true` makes a block a fluid: nothing bumps into it, whatever its
 model's `collision`, the crosshair passes through it (so you can't mine
-it), and placing a block where it is replaces it. Fluids don't flow yet.
+it), and placing a block where it is replaces it. Since you can be inside
+one, a fluid hides only its own faces, even an opaque one like lava; make
+it `double_sided` too, so its surface shows from inside. Fluids don't flow
+yet.
 
 ```json5
 // blocks/water.json5
