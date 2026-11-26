@@ -8,7 +8,9 @@
 //!   hotbar places its items whether you have any or not), there's no
 //!   weight limit, and the inventory screen has the catalog of every item.
 //!
-//! The mode is a component of the player ([`GameMode`]), saved with them.
+//! The mode is a component of the player ([`GameMode`]), saved with them;
+//! anything without one plays as in creative, the default. The rules for
+//! using items up are [`harvest`] and [`use_up`].
 //! C switches it while playing. New players start in creative.
 
 use bevy::prelude::*;
@@ -107,6 +109,16 @@ pub fn item_for_block(content: &Content, state: BlockState) -> Option<ItemState>
         .map(|(_, std::cmp::Reverse(index))| ItemState(index as u32))
 }
 
+/// Whether someone in `mode` can place `item`, using one up from
+/// `inventory` if so: in creative always, using nothing; in survival only
+/// with one to use. No inventory has nothing to use.
+pub fn use_up(mode: GameMode, inventory: Option<&mut Inventory>, item: ItemState) -> bool {
+    if mode.is_creative() {
+        return true;
+    }
+    inventory.is_some_and(|inventory| inventory.remove(item, 1))
+}
+
 /// What breaking `state` gives someone in `mode`, if it can be broken: in
 /// survival its item goes into `inventory`, and a block whose item is too
 /// heavy to carry isn't broken (`false`). Blocks with no item always break.
@@ -163,6 +175,21 @@ mod tests {
             item_for_block(content, content.default_state("defaria:water").unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn survival_uses_items_up_and_creative_doesnt() {
+        let content = base();
+        let stone = content.default_item("defaria:stone").unwrap();
+        let mut inventory = Inventory::new();
+        inventory.add(content, ItemStack::one(stone));
+        assert!(use_up(GameMode::Creative, Some(&mut inventory), stone));
+        assert!(use_up(GameMode::Creative, None, stone));
+        assert_eq!(inventory.count(stone), 1);
+        assert!(use_up(GameMode::Survival, Some(&mut inventory), stone));
+        assert!(!use_up(GameMode::Survival, Some(&mut inventory), stone));
+        assert!(!use_up(GameMode::Survival, None, stone));
+        assert!(inventory.is_empty());
     }
 
     #[test]

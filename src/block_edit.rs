@@ -24,7 +24,7 @@ use bevy::{
 use crate::{
     content::{BlockBox, BlockState, Content, Direction},
     fly_camera::{FlyCamera, FlyCameraSystems},
-    game_mode::GameMode,
+    game_mode::{GameMode, use_up},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     inventory::Inventory,
     physics::{Aabb, Body},
@@ -247,19 +247,10 @@ fn edit_blocks(
     let Some(player) = player else {
         return;
     };
-    let (hotbar, active, mut inventory, mode) = player.into_inner();
-    let survival = mode.is_some_and(|mode| !mode.is_creative());
+    let (hotbar, active, inventory, mode) = player.into_inner();
     let Some(item) = hotbar.item(*active) else {
         return;
     };
-    // In survival, only what you have.
-    if survival
-        && inventory
-            .as_ref()
-            .is_none_or(|inventory| inventory.count(item) == 0)
-    {
-        return;
-    }
     let Some(block) = hotbar.block(*active, &content) else {
         return;
     };
@@ -280,11 +271,12 @@ fn edit_blocks(
     if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps {
         return;
     }
-    voxels.set(pos, block);
-    // In survival, placing uses the item up.
-    if survival && let Some(inventory) = &mut inventory {
-        inventory.remove(item, 1);
+    // In survival, only what you have, and placing uses it up.
+    let mode = mode.copied().unwrap_or_default();
+    if !use_up(mode, inventory.map(Mut::into_inner), item) {
+        return;
     }
+    voxels.set(pos, block);
 }
 
 /// Outlines the block under the crosshair while the cursor is locked.

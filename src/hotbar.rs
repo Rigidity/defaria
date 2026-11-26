@@ -271,8 +271,8 @@ fn show_hotbar(
         return;
     };
     let (hotbar, inventory, active, mode) = player.into_inner();
-    // In creative there's always more: nothing dims.
-    let creative = mode.as_ref().is_some_and(|mode| mode.is_creative());
+    // In creative (the default) there's always more: nothing dims.
+    let creative = mode.as_ref().is_none_or(|mode| mode.is_creative());
     let changed = hotbar.is_changed()
         || inventory.is_changed()
         || active.is_changed()
@@ -377,7 +377,14 @@ mod tests {
             .add_plugins(HotbarPlugin);
         let (inventory, hotbar) = new_player(base());
         app.world_mut()
-            .spawn((LocalPlayer, inventory, hotbar, ActiveSlot::default()));
+            // In survival, where a slot whose item ran out dims.
+            .spawn((
+                LocalPlayer,
+                inventory,
+                hotbar,
+                ActiveSlot::default(),
+                GameMode::Survival,
+            ));
         app.update();
         app
     }
