@@ -11,12 +11,15 @@
 //! Items show in [`Content::items`] order: blocks' items first, then the
 //! rest, each in load order.
 
-use bevy::prelude::*;
+use bevy::{
+    picking::{events::PointerPress, pointer::PointerButton},
+    prelude::*,
+};
 
 use crate::{
     content::{Content, ItemState},
     hotbar::{ActiveSlot, Hotbar, hotbar_height},
-    ui::{Clicked, ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel},
+    ui::{ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel},
 };
 
 /// Slots in a row of the grid.
@@ -107,6 +110,8 @@ fn spawn_inventory(
                 ..default()
             },
             BackgroundColor(theme.backdrop),
+            // Over the hotbar, which stays clickable.
+            Pickable::IGNORE,
         ))
         .with_children(|root| {
             root.spawn((
@@ -167,12 +172,12 @@ fn spawn_inventory(
 
 /// Clicking an item puts it in the active hotbar slot.
 fn pick_item(
-    click: On<Clicked>,
+    click: On<PointerPress>,
     slots: Query<&CatalogSlot>,
     active: Res<ActiveSlot>,
     mut hotbar: ResMut<Hotbar>,
 ) {
-    if click.button != MouseButton::Left {
+    if click.button != PointerButton::Primary {
         return;
     }
     if let Ok(&CatalogSlot(item)) = slots.get(click.entity) {
@@ -402,6 +407,24 @@ mod tests {
         run_more(&mut app, "hold Escape 1\nwait 2");
         assert!(!is_open(&mut app));
         assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
+    }
+
+    /// While playing, the pointer doesn't reach the HUD: right clicking
+    /// with the cursor over a hotbar slot (it was left there when the
+    /// inventory closed) doesn't empty it.
+    #[test]
+    fn the_hotbar_isnt_clicked_while_playing() {
+        let mut app = test_game(Script::parse("wait 1").unwrap());
+        settle(&mut app);
+        let slot_2 = hotbar_slot_at(&mut app, 1);
+        run_more(&mut app, &click("MouseLeft", slot_2));
+        assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
+        run_more(&mut app, &click("MouseRight", slot_2));
+        assert!(app.world().resource::<Hotbar>().0[1].is_some());
+        let mut slots = app
+            .world_mut()
+            .query::<(&HotbarSlot, &bevy::picking::hover::Hovered)>();
+        assert!(slots.iter(app.world()).all(|(_, hovered)| !hovered.get()));
     }
 
     /// E doesn't open the inventory over another screen.

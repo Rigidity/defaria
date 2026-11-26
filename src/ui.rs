@@ -4,7 +4,8 @@
 //! - [`screen`]: the [`UiScreen`] marker on an open screen's root, which
 //!   takes the mouse and keyboard from the game, and the [`playing`] run
 //!   condition for gameplay input.
-//! - [`pointer`]: hovering and clicking nodes ([`Hoverable`], [`Clicked`]).
+//! - [`pointer`]: the mouse over the UI, through Bevy's picking
+//!   ([`UiPointer`]); widgets observe picking's pointer events.
 //! - [`scroll`]: wheel scrolling and scrollbars ([`scroll_panel`]).
 //! - [`icon`]: item icons drawn from the block textures ([`ItemIcon`]).
 //! - [`slot`]: the item slot widget ([`item_slot`]).
@@ -13,8 +14,10 @@
 //! Widgets are bundle-returning functions (or, where one part needs
 //! another's entity, functions that spawn and return it, like
 //! [`scroll_panel`]) plus the components and systems that keep them up to
-//! date. They don't decide what a click does: the code
-//! that spawns one observes its [`Clicked`]. Features build their own UI out
+//! date. They don't decide what a click does: the code that spawns one
+//! observes picking's events on it (`PointerPress`, `PointerClick`,
+//! `PointerDragDrop`, …), which bubble up from the node under the pointer
+//! to its ancestors. Features build their own UI out
 //! of these in their own modules (`hotbar`, `inventory`).
 //!
 //! The widgets are meant to stay small and data-driven, so that a later
@@ -31,9 +34,9 @@ pub mod tooltip;
 use bevy::prelude::*;
 
 pub use icon::ItemIcon;
-pub use pointer::{Clicked, Hoverable, Hovered, UiPointer, UiPointerSystems};
+pub use pointer::UiPointer;
 pub use screen::{UiScreen, playing};
-pub use scroll::{Scrollable, scroll_panel};
+pub use scroll::scroll_panel;
 pub use slot::{ItemSlot, item_slot};
 pub use theme::UiTheme;
 pub use tooltip::Tooltip;

@@ -3,27 +3,30 @@
 //!
 //! [`scroll_panel`] spawns both. The scrollbar is Bevy's
 //! (`bevy::ui_widgets::Scrollbar`), which sizes and places its thumb from
-//! the scrolled node; it's left out while everything fits. Only vertical
-//! scrolling for now.
+//! the scrolled node, and can be dragged; it's left out while everything
+//! fits. Only vertical scrolling for now.
+//!
+//! The wheel arrives as picking's `PointerScroll`, bubbling up from the
+//! node under the pointer to the [`Scrollable`] holding it. It isn't
+//! Bevy's `ScrollArea`, which scrolls every list by the same fixed 100
+//! pixels a notch: a slot grid scrolls a row of slots.
 
 use bevy::{
-    input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+    input::mouse::MouseScrollUnit,
+    picking::events::PointerScroll,
     prelude::*,
     ui::UiSystems,
     ui_widgets::{ControlOrientation, Scrollbar, ScrollbarThumb},
 };
 
-use super::{
-    UiTheme,
-    pointer::{HitTestData, UiPointer},
-};
+use super::UiTheme;
 
 pub struct ScrollPlugin;
 
 impl Plugin for ScrollPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Scrollable>()
-            .add_systems(Update, scroll_with_wheel)
+            .add_observer(scroll_with_wheel)
             .add_systems(
                 PostUpdate,
                 (keep_scroll_in_range, hide_idle_scrollbars).after(UiSystems::Layout),
@@ -105,30 +108,24 @@ pub fn max_scroll(node: &ComputedNode) -> f32 {
     (node.content_size.y - view).max(0.0) * node.inverse_scale_factor
 }
 
-/// The wheel scrolls the top scrollable node the pointer is over, or the
-/// one whose scrollbar it's over.
+/// The wheel scrolls the scrollable node it's over, or the one whose
+/// scrollbar it's over, and goes no further up.
 fn scroll_with_wheel(
-    wheel: Res<AccumulatedMouseScroll>,
-    pointer: Res<UiPointer>,
-    targets: Query<HitTestData, Or<(With<Scrollable>, With<Scrollbar>)>>,
+    mut scroll: On<PointerScroll>,
     bars: Query<&Scrollbar>,
     mut nodes: Query<(&Scrollable, &mut ScrollPosition, &ComputedNode)>,
 ) {
-    if wheel.delta.y == 0.0 {
-        return;
-    }
-    let target = pointer
-        .topmost(&targets)
-        .map(|entity| bars.get(entity).map_or(entity, |bar| bar.target));
-    let Some((scrollable, mut position, node)) =
-        target.and_then(|entity| nodes.get_mut(entity).ok())
-    else {
+    let target = bars
+        .get(scroll.entity)
+        .map_or(scroll.entity, |bar| bar.target);
+    let Ok((scrollable, mut position, node)) = nodes.get_mut(target) else {
         return;
     };
-    let pixels = match wheel.unit {
-        MouseScrollUnit::Line => wheel.delta.y * scrollable.line,
+    scroll.propagate(false);
+    let pixels = match scroll.unit {
+        MouseScrollUnit::Line => scroll.y * scrollable.line,
         // Physical pixels, from a touchpad.
-        MouseScrollUnit::Pixel => wheel.delta.y * node.inverse_scale_factor,
+        MouseScrollUnit::Pixel => scroll.y * node.inverse_scale_factor,
     };
     // The wheel turned toward you (negative) scrolls down.
     position.y = (position.y - pixels).clamp(0.0, max_scroll(node));
@@ -170,33 +167,58 @@ fn hide_idle_scrollbars(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::pointer::tests as pointer;
+    use bevy::{
+        camera::NormalizedRenderTarget,
+        input::touch::TouchPhase,
+        picking::{
+            backend::HitData,
+            events::Pointer,
+            pointer::{Location, PointerId},
+        },
+    };
 
     fn app() -> (App, Entity) {
-        let mut app = pointer::app();
-        app.add_plugins(ScrollPlugin)
-            .init_resource::<AccumulatedMouseScroll>();
-        pointer::open_screen(&mut app);
-        let list = pointer::node(&mut app, Vec2::new(100.0, 100.0), 100.0, 1);
-        app.world_mut().entity_mut(list).insert((
-            Scrollable { line: 20.0 },
-            ComputedNode {
-                size: Vec2::splat(100.0),
-                content_size: Vec2::new(100.0, 250.0),
-                inverse_scale_factor: 0.5,
-                ..default()
-            },
-        ));
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ScrollPlugin));
+        // Picking's events bubble up by a query that reads windows.
+        app.world_mut().register_component::<Window>();
+        let list = app
+            .world_mut()
+            .spawn((
+                Scrollable { line: 20.0 },
+                ComputedNode {
+                    size: Vec2::splat(100.0),
+                    content_size: Vec2::new(100.0, 250.0),
+                    inverse_scale_factor: 0.5,
+                    ..default()
+                },
+            ))
+            .id();
         (app, list)
     }
 
-    fn turn(app: &mut App, unit: MouseScrollUnit, y: f32) {
-        app.insert_resource(AccumulatedMouseScroll {
+    /// Picking's wheel event on `entity`.
+    fn turn(app: &mut App, entity: Entity, unit: MouseScrollUnit, y: f32) {
+        let target = NormalizedRenderTarget::None {
+            width: 1280,
+            height: 720,
+        };
+        app.world_mut().trigger(PointerScroll {
+            entity,
+            pointer: Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    target,
+                    position: Vec2::ZERO,
+                },
+            ),
             unit,
-            delta: Vec2::new(0.0, y),
+            x: 0.0,
+            y,
+            hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+            phase: TouchPhase::Moved,
         });
         app.update();
-        app.insert_resource(AccumulatedMouseScroll::default());
     }
 
     fn scrolled(app: &App, list: Entity) -> f32 {
@@ -204,49 +226,38 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_scrolls_the_node_under_the_pointer_within_its_content() {
+    fn the_wheel_scrolls_the_node_within_its_content() {
         let (mut app, list) = app();
-        // Not over it: nothing.
-        pointer::move_to(&mut app, Vec2::new(400.0, 400.0));
-        turn(&mut app, MouseScrollUnit::Line, -1.0);
-        assert_eq!(scrolled(&app, list), 0.0);
-
-        pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
-        turn(&mut app, MouseScrollUnit::Line, -2.0);
+        turn(&mut app, list, MouseScrollUnit::Line, -2.0);
         assert_eq!(scrolled(&app, list), 40.0);
         // Pixels are physical: 20 of them at scale 2 is 10 logical.
-        turn(&mut app, MouseScrollUnit::Pixel, -20.0);
+        turn(&mut app, list, MouseScrollUnit::Pixel, -20.0);
         assert_eq!(scrolled(&app, list), 50.0);
         // 150 physical pixels past the view is as far as it goes: 75.
-        turn(&mut app, MouseScrollUnit::Line, -10.0);
+        turn(&mut app, list, MouseScrollUnit::Line, -10.0);
         assert_eq!(scrolled(&app, list), 75.0);
-        turn(&mut app, MouseScrollUnit::Line, 100.0);
+        turn(&mut app, list, MouseScrollUnit::Line, 100.0);
         assert_eq!(scrolled(&app, list), 0.0);
     }
 
+    /// The wheel over a node inside the list (a slot) bubbles up to it.
     #[test]
-    fn a_hidden_scrollable_doesnt_take_the_wheel() {
+    fn the_wheel_over_a_child_scrolls_the_list() {
         let (mut app, list) = app();
-        app.world_mut()
-            .entity_mut(list)
-            .insert(InheritedVisibility::HIDDEN);
-        pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
-        turn(&mut app, MouseScrollUnit::Line, -2.0);
-        assert_eq!(scrolled(&app, list), 0.0);
+        let child = app.world_mut().spawn(ChildOf(list)).id();
+        turn(&mut app, child, MouseScrollUnit::Line, -1.0);
+        assert_eq!(scrolled(&app, list), 20.0);
     }
 
     /// Over its scrollbar, the wheel scrolls what the bar scrolls.
     #[test]
     fn the_wheel_over_a_scrollbar_scrolls_its_target() {
         let (mut app, list) = app();
-        let bar = pointer::node(&mut app, Vec2::new(160.0, 100.0), 10.0, 1);
-        app.world_mut().entity_mut(bar).insert(Scrollbar::new(
-            list,
-            ControlOrientation::Vertical,
-            10.0,
-        ));
-        pointer::move_to(&mut app, Vec2::new(160.0, 100.0));
-        turn(&mut app, MouseScrollUnit::Line, -1.0);
+        let bar = app
+            .world_mut()
+            .spawn(Scrollbar::new(list, ControlOrientation::Vertical, 10.0))
+            .id();
+        turn(&mut app, bar, MouseScrollUnit::Line, -1.0);
         assert_eq!(scrolled(&app, list), 20.0);
     }
 
@@ -254,8 +265,7 @@ mod tests {
     #[test]
     fn the_position_is_clamped_when_the_content_shrinks() {
         let (mut app, list) = app();
-        pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
-        turn(&mut app, MouseScrollUnit::Line, -10.0);
+        turn(&mut app, list, MouseScrollUnit::Line, -10.0);
         assert_eq!(scrolled(&app, list), 75.0);
         app.world_mut()
             .get_mut::<ComputedNode>(list)

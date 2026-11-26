@@ -1,10 +1,10 @@
 //! Tooltips: text shown beside the pointer while it's over a node with a
 //! [`Tooltip`]. One tooltip box exists, drawn above everything, and moves
-//! to whatever is hovered.
+//! to whatever is hovered. Picking passes through it.
 
-use bevy::{prelude::*, window::PrimaryWindow};
+use bevy::{picking::hover::Hovered, prelude::*, window::PrimaryWindow};
 
-use super::{UiPointer, UiPointerSystems, UiTheme};
+use super::{UiPointer, UiTheme};
 
 pub struct TooltipPlugin;
 
@@ -12,7 +12,7 @@ impl Plugin for TooltipPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Tooltip>()
             .add_systems(Startup, spawn_tooltip)
-            .add_systems(PreUpdate, show_tooltip.after(UiPointerSystems));
+            .add_systems(Update, show_tooltip);
     }
 }
 
@@ -20,6 +20,7 @@ impl Plugin for TooltipPlugin {
 /// nothing.
 #[derive(Component, Reflect, Debug, Clone, Default, PartialEq, Eq)]
 #[reflect(Component)]
+#[require(Hovered)]
 pub struct Tooltip(pub String);
 
 /// The tooltip box.
@@ -42,6 +43,7 @@ fn spawn_tooltip(mut commands: Commands, theme: Res<UiTheme>) {
         BackgroundColor(theme.tooltip),
         BorderColor::all(theme.panel_border),
         GlobalZIndex(i32::MAX),
+        Pickable::IGNORE,
         Visibility::Hidden,
         Text::default(),
         TextFont::from_font_size(theme.font_size),
@@ -50,20 +52,18 @@ fn spawn_tooltip(mut commands: Commands, theme: Res<UiTheme>) {
 }
 
 fn show_tooltip(
-    pointer: Res<UiPointer>,
-    tips: Query<&Tooltip>,
+    pointer: UiPointer,
+    tips: Query<(&Tooltip, &Hovered)>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     mut boxes: Query<(&mut Node, &mut Text, &mut Visibility, &ComputedNode), With<TooltipBox>>,
 ) {
-    let tip = pointer
-        .hovered
-        .and_then(|entity| tips.get(entity).ok())
-        .filter(|tip| !tip.0.is_empty());
-    let (scale, screen) = window.map_or((1.0, Vec2::INFINITY), |window| {
-        (window.scale_factor(), window.size())
-    });
+    let tip = tips
+        .iter()
+        .find(|(tip, hovered)| hovered.get() && !tip.0.is_empty())
+        .map(|(tip, _)| tip);
+    let screen = window.map_or(Vec2::INFINITY, |window| window.size());
     for (mut node, mut text, mut visibility, computed) in &mut boxes {
-        let (Some(tip), Some(at)) = (tip, pointer.position) else {
+        let (Some(tip), Some(at)) = (tip, pointer.position()) else {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
         };
@@ -73,7 +73,7 @@ fn show_tooltip(
         }
         // Last frame's size, which is this text's unless it just changed.
         let size = computed.size * computed.inverse_scale_factor;
-        let at = place(at / scale, size, screen);
+        let at = place(at, size, screen);
         let (left, top) = (px(at.x), px(at.y));
         if node.left != left || node.top != top {
             node.left = left;
@@ -101,7 +101,6 @@ pub fn place(pointer: Vec2, size: Vec2, screen: Vec2) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{Hoverable, pointer::tests as pointer};
 
     #[test]
     fn tooltips_sit_beside_the_pointer_and_stay_on_screen() {
@@ -120,56 +119,34 @@ mod tests {
         assert_eq!(place(Vec2::new(5.0, 5.0), screen * 2.0, screen), Vec2::ZERO);
     }
 
-    /// On a scale-2 window the pointer is in physical pixels and the box
-    /// is placed in logical ones, flipping by its logical size at the edge.
+    /// Through the real game: the pointer over a slot in the inventory
+    /// shows its item's name beside it, and off it the box hides.
     #[test]
-    fn hovering_a_node_with_a_tooltip_shows_it() {
-        let mut app = pointer::app();
-        app.init_resource::<UiTheme>().add_plugins(TooltipPlugin);
-        let mut windows = app.world_mut().query::<&mut Window>();
-        windows
-            .single_mut(app.world_mut())
+    fn hovering_a_slot_shows_its_name() {
+        use crate::headless::{Script, run_more, settle, test_game};
+        let mut app = test_game(Script::parse("wait 1").unwrap());
+        settle(&mut app);
+        run_more(&mut app, "hold KeyE 1\nwait 3");
+        let mut slots = app
+            .world_mut()
+            .query::<(&Tooltip, &bevy::ui::UiGlobalTransform)>();
+        let at = slots
+            .iter(app.world())
+            .find(|(tip, _)| tip.0 == "Stone")
             .unwrap()
-            .resolution
-            .set_scale_factor_override(Some(2.0));
-        pointer::open_screen(&mut app);
-        for (at, name) in [
-            (Vec2::new(100.0, 100.0), "Stone"),
-            (Vec2::new(1260.0, 700.0), "Dirt"),
-        ] {
-            let node = pointer::node(&mut app, at, 20.0, 1);
-            app.world_mut()
-                .entity_mut(node)
-                .insert((Hoverable, Tooltip(name.into())));
-        }
-        app.update();
-        // The box's size from layout: 200×60 physical, 100×30 logical.
+            .1
+            .translation;
+        run_more(&mut app, &format!("cursor {} {}\nwait 2", at.x, at.y));
         let mut boxes = app
             .world_mut()
-            .query_filtered::<(&Node, &Text, &Visibility, &mut ComputedNode), With<TooltipBox>>();
-        *boxes.single_mut(app.world_mut()).unwrap().3 = ComputedNode {
-            size: Vec2::new(200.0, 60.0),
-            inverse_scale_factor: 0.5,
-            ..default()
-        };
-
-        pointer::move_to(&mut app, Vec2::new(100.0, 100.0));
-        app.update();
-        let (style, text, visibility, _) = boxes.single(app.world()).unwrap();
+            .query_filtered::<(&Node, &Text, &Visibility), With<TooltipBox>>();
+        let (node, text, visibility) = boxes.single(app.world()).unwrap();
         assert_eq!(text.0, "Stone");
         assert_eq!(*visibility, Visibility::Inherited);
-        assert_eq!((style.left, style.top), (px(64.0), px(64.0)));
+        assert_eq!((node.left, node.top), (px(at.x + 14.0), px(at.y + 14.0)));
 
-        // At (630, 350) logical in a 640×360 window: above and left.
-        pointer::move_to(&mut app, Vec2::new(1260.0, 700.0));
-        app.update();
-        let (style, text, ..) = boxes.single(app.world()).unwrap();
-        assert_eq!(text.0, "Dirt");
-        assert_eq!((style.left, style.top), (px(516.0), px(306.0)));
-
-        pointer::move_to(&mut app, Vec2::new(600.0, 50.0));
-        app.update();
-        let (_, _, visibility, _) = boxes.single(app.world()).unwrap();
+        run_more(&mut app, "cursor 5 5\nwait 2");
+        let (_, _, visibility) = boxes.single(app.world()).unwrap();
         assert_eq!(*visibility, Visibility::Hidden);
     }
 }

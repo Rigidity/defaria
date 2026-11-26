@@ -12,13 +12,14 @@
 
 use bevy::{
     input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+    picking::{events::PointerPress, pointer::PointerButton},
     prelude::*,
     window::PrimaryWindow,
 };
 
 use crate::{
     content::{BlockState, Content, ItemState},
-    ui::{Clicked, ItemSlot, UiTheme, item_slot, playing},
+    ui::{ItemSlot, UiTheme, item_slot, playing},
 };
 
 pub const HOTBAR_SLOTS: usize = 9;
@@ -226,7 +227,7 @@ fn spawn_hotbar(mut commands: Commands, theme: Res<UiTheme>) {
 
 /// Left click makes the slot active; right click empties it.
 fn click_slot(
-    click: On<Clicked>,
+    click: On<PointerPress>,
     slots: Query<&HotbarSlot>,
     mut hotbar: ResMut<Hotbar>,
     mut active: ResMut<ActiveSlot>,
@@ -234,9 +235,9 @@ fn click_slot(
     let Ok(&HotbarSlot(index)) = slots.get(click.entity) else {
         return;
     };
-    if click.button == MouseButton::Left {
+    if click.button == PointerButton::Primary {
         active.set_if_neq(ActiveSlot(index));
-    } else if click.button == MouseButton::Right {
+    } else if click.button == PointerButton::Secondary {
         hotbar.0[index] = None;
     }
 }
