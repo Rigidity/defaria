@@ -669,6 +669,99 @@ mod tests {
 
     /// Both lists group their items under headings: the catalog all four
     /// of the base game's, the inventory those of what's carried.
+    /// A list's children in the order they're drawn: `#Name` for a
+    /// heading, the item's name for an entry; and their entities.
+    fn shown(app: &mut App, source: ListSource) -> (Vec<String>, Vec<Entity>) {
+        let mut lists = app.world_mut().query::<(&ItemList, &Children)>();
+        let children: Vec<Entity> = lists
+            .iter(app.world())
+            .find(|(list, _)| list.source == source)
+            .map(|(_, children)| children.iter().collect())
+            .unwrap();
+        let content = app.world().resource::<Content>();
+        let names = children
+            .iter()
+            .map(|&child| {
+                if let Some(entry) = app.world().get::<ListEntry>(child) {
+                    content.item_name(entry.stack.item).unwrap().to_owned()
+                } else {
+                    format!("#{}", app.world().get::<Text>(child).unwrap().0)
+                }
+            })
+            .collect();
+        (names, children)
+    }
+
+    /// What the player's list should show, from the model.
+    fn expected(app: &mut App) -> Vec<String> {
+        let content = app.world().resource::<Content>().clone();
+        let entries = crate::inventory::list::sorted_entries(&inventory(app));
+        crate::inventory::list::sections(&content, entries)
+            .into_iter()
+            .flat_map(|section| {
+                let heading = section.category.map_or("Other".to_owned(), |index| {
+                    content.categories[index].name.clone()
+                });
+                std::iter::once(format!("#{heading}")).chain(
+                    section
+                        .entries
+                        .into_iter()
+                        .map(|stack| content.item_name(stack.item).unwrap().to_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// The player's list stays in step with the inventory, in order:
+    /// a count changing keeps the same entities; a category emptied and
+    /// filled again (Building, between Natural and Lighting) comes back in
+    /// its place.
+    #[test]
+    fn lists_stay_in_order_as_the_inventory_changes() {
+        let mut app = open_inventory();
+        let mine = ListSource::Inventory(Owner::LocalPlayer);
+        let (names, entities) = shown(&mut app, mine);
+        assert_eq!(names, expected(&mut app));
+
+        // One more stone: same entities, same order.
+        let stone = item(&app, "defaria:stone");
+        let at = catalog_at(&mut app, stone);
+        run_more(&mut app, &click("MouseLeft", at));
+        let (names, again) = shown(&mut app, mine);
+        assert_eq!(names, expected(&mut app));
+        assert_eq!(again, entities);
+
+        // Empty Building (planks and the stone slab), then add planks back.
+        let (planks, slab) = (
+            item(&app, "defaria:planks"),
+            item(&app, "defaria:stone_slab"),
+        );
+        let change = |app: &mut App, change: &dyn Fn(&mut Inventory)| {
+            let mut players = app
+                .world_mut()
+                .query_filtered::<&mut Inventory, With<LocalPlayer>>();
+            change(&mut players.single_mut(app.world_mut()).unwrap());
+            run_more(app, "wait 2");
+        };
+        change(&mut app, &|inventory| {
+            let (p, s) = (inventory.count(planks), inventory.count(slab));
+            inventory.remove(planks, p);
+            inventory.remove(slab, s);
+        });
+        let (names, _) = shown(&mut app, mine);
+        assert!(!names.contains(&"#Building".to_owned()), "{names:?}");
+        assert_eq!(names, expected(&mut app));
+        let content = app.world().resource::<Content>().clone();
+        change(&mut app, &|inventory| {
+            inventory.add(&content, crate::inventory::ItemStack::one(planks));
+        });
+        let (names, _) = shown(&mut app, mine);
+        assert_eq!(names, expected(&mut app));
+        let position = |name: &str| names.iter().position(|n| n == name).unwrap();
+        assert!(position("#Natural") < position("#Building"));
+        assert!(position("#Building") < position("#Lighting"));
+    }
+
     #[test]
     fn lists_show_category_headings() {
         let mut app = open_inventory();
