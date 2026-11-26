@@ -293,6 +293,7 @@ mod tests {
     use bevy::{platform::collections::HashSet, time::TimeUpdateStrategy};
 
     use super::*;
+    use crate::testing::insert_chunk;
 
     fn settings() -> StreamingSettings {
         StreamingSettings {
@@ -468,10 +469,7 @@ mod tests {
     /// Spawns a drawn chunk entity at each of `chunks`, in the chunk map.
     fn draw(app: &mut App, chunks: impl IntoIterator<Item = IVec3>) {
         for chunk in chunks {
-            let entity = app.world_mut().spawn((ChunkCoord(chunk), Meshed)).id();
-            app.world_mut()
-                .resource_mut::<ChunkMap>()
-                .insert(ChunkCoord(chunk), entity);
+            insert_chunk(app, chunk, Meshed);
         }
     }
 

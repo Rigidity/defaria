@@ -2,17 +2,17 @@
 //! hand, with the energy solver and recipes but no rendering. The base
 //! game's solar panel is tested in the whole game, in `solar_panel`.
 
-use std::{collections::BTreeMap, path::Path, sync::OnceLock, time::Duration};
+use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
+use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
 use crate::{
     block_entity::{BlockData, BlockEntities, BlockEntityPlugin, Value},
     connections::ConnectionsPlugin,
     content::{
-        BlockState, FULL_FLUID, ItemState, MODS_DIR,
-        load::{ModFiles, order, read_mods},
+        BlockState, FULL_FLUID, ItemState,
+        load::{ModFiles, order},
     },
     inventory::ItemStack,
     light::{ChunkLight, Light},
@@ -20,7 +20,8 @@ use crate::{
     network::{NetworkCorePlugin, energy::EnergyPlugin, energy::EnergyReport},
     recipe::RecipePlugin,
     script::{BlockUsed, ScriptPlugin, ScriptSettings, source::ScriptSources},
-    world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
+    testing::{chunk_app, insert_chunk, test_mods, unload_chunk},
+    world::{Chunk, ChunkCoord, ChunkMap, Voxels},
 };
 
 const COUNTER: &str = r#"
@@ -135,8 +136,6 @@ const PORTS: &str =
 
 /// The base game and mod `test`, with a machine for each script.
 fn mods() -> Vec<ModFiles> {
-    let (mut mods, errors) = read_mods(Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
     let counter = machine_file(
         "counter",
         &format!("{PORTS}, energy: {{ capacity: 100, max_in: 10 }}"),
@@ -166,31 +165,26 @@ fn mods() -> Vec<ModFiles> {
         ),
         "done: 0, back: 0",
     );
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[
-            ("blocks/counter.json5", &counter),
-            ("blocks/thief.json5", &thief),
-            ("blocks/forger.json5", &forger),
-            ("blocks/dynamo.json5", &dynamo),
-            ("blocks/mover.json5", &mover),
-            ("blocks/reacher.json5", &reacher),
-            ("blocks/stretcher.json5", &stretcher),
-            ("blocks/meter.json5", &meter),
-            ("blocks/oven.json5", &oven),
-            ("scripts/counter.luau", COUNTER),
-            ("scripts/thief.luau", THIEF),
-            ("scripts/forger.luau", FORGER),
-            ("scripts/dynamo.luau", DYNAMO),
-            ("scripts/mover.luau", MOVER),
-            ("scripts/reacher.luau", REACHER),
-            ("scripts/stretcher.luau", STRETCHER),
-            ("scripts/meter.luau", METER),
-            ("scripts/oven.luau", OVEN),
-        ],
-    ));
-    mods
+    test_mods(&[
+        ("blocks/counter.json5", &counter),
+        ("blocks/thief.json5", &thief),
+        ("blocks/forger.json5", &forger),
+        ("blocks/dynamo.json5", &dynamo),
+        ("blocks/mover.json5", &mover),
+        ("blocks/reacher.json5", &reacher),
+        ("blocks/stretcher.json5", &stretcher),
+        ("blocks/meter.json5", &meter),
+        ("blocks/oven.json5", &oven),
+        ("scripts/counter.luau", COUNTER),
+        ("scripts/thief.luau", THIEF),
+        ("scripts/forger.luau", FORGER),
+        ("scripts/dynamo.luau", DYNAMO),
+        ("scripts/mover.luau", MOVER),
+        ("scripts/reacher.luau", REACHER),
+        ("scripts/stretcher.luau", STRETCHER),
+        ("scripts/meter.luau", METER),
+        ("scripts/oven.luau", OVEN),
+    ])
 }
 
 fn content() -> &'static Content {
@@ -221,17 +215,9 @@ fn block(id: &str) -> BlockState {
 /// Machines, networks, energy, recipes and scripts over chunk (0, 0, 0),
 /// dark but for what a test lights, stepping 10 ms a frame.
 fn app() -> App {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-            10,
-        )))
-        .insert_resource(content().clone())
+    let mut app = chunk_app(content().clone(), Duration::from_millis(10));
+    app.add_plugins(AssetPlugin::default())
         .insert_resource(runtime())
-        .init_resource::<ChunkMap>()
-        .add_message::<VoxelChanged>()
-        .add_message::<FluidChanged>()
-        .add_message::<PropertiesUpdated>()
         .add_plugins((
             ConnectionsPlugin,
             NetworkCorePlugin,
@@ -248,25 +234,7 @@ fn app() -> App {
 }
 
 fn spawn(app: &mut App, coord: IVec3, chunk: Chunk) {
-    let world = app.world_mut();
-    let entity = world
-        .spawn((ChunkCoord(coord), chunk, ChunkLight::default()))
-        .id();
-    world
-        .resource_mut::<ChunkMap>()
-        .insert(ChunkCoord(coord), entity);
-}
-
-fn unload(app: &mut App, coord: IVec3) -> Chunk {
-    let entity = app
-        .world_mut()
-        .resource_mut::<ChunkMap>()
-        .remove(ChunkCoord(coord))
-        .unwrap();
-    let chunk = app.world().get::<Chunk>(entity).unwrap().clone();
-    app.world_mut().despawn(entity);
-    app.update();
-    chunk
+    insert_chunk(app, coord, (chunk, ChunkLight::default()));
 }
 
 fn set(app: &mut App, voxels: &[(IVec3, BlockState)]) {
@@ -650,7 +618,7 @@ fn a_machine_on_a_frozen_network_doesnt_tick() {
     voxels.extend((13..20).map(|x| (v(x, 4, 4), block("defaria:wire"))));
     set(&mut app, &voxels);
     ticks(&mut app, 2);
-    let saved = unload(&mut app, IVec3::X);
+    let saved = unload_chunk(&mut app, IVec3::X);
     let frozen = int(&app, at, "ticks");
     ticks(&mut app, 10);
     assert_eq!(int(&app, at, "ticks"), frozen);

@@ -3,22 +3,20 @@
 
 use std::{path::Path, sync::OnceLock, time::Duration};
 
-use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
+use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
 use crate::{
     block_entity::{BlockData, BlockEntities, BlockEntityPlugin, Value},
-    content::{
-        MODS_DIR,
-        load::{ModFiles, order, read_mods},
-    },
+    content::load::{ModFiles, order},
     inventory::ItemStack,
     script::{
         ScriptPlugin, ScriptSettings,
         random_tick::{RandomTicks, TickingChunks},
         source::ScriptSources,
     },
-    world::{Chunk, ChunkCoord, ChunkMap, FluidChanged, Voxels},
+    testing::{chunk_app, insert_chunk, test_mods},
+    world::{Chunk, ChunkCoord, Voxels},
 };
 
 const SWITCH: &str = r#"
@@ -163,8 +161,6 @@ fn block_file(script: &str, extra: &str) -> String {
 
 /// The base game and mod `test`, with a block or item for each script.
 fn mods() -> Vec<ModFiles> {
-    let (mut mods, errors) = read_mods(Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
     let switch = block_file(
         "switch",
         r#"properties: { lit: { values: ["false", "true"] } }, block_entity: {}"#,
@@ -192,39 +188,34 @@ fn mods() -> Vec<ModFiles> {
         "toggler",
         r#"properties: { lit: { values: ["false", "true"] } }"#,
     );
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[
-            ("blocks/switch.json5", &switch),
-            ("blocks/marker.json5", &marker),
-            ("blocks/grower.json5", &grower),
-            ("blocks/faulty.json5", &faulty),
-            ("blocks/greedy.json5", &greedy),
-            ("blocks/keeper.json5", &keeper),
-            ("blocks/reader.json5", &reader),
-            ("blocks/far.json5", &far),
-            ("blocks/setter.json5", &setter),
-            ("blocks/peeker.json5", &peeker),
-            ("blocks/spoiler.json5", &spoiler),
-            ("blocks/toggler.json5", &toggler),
-            ("items/wand.json5", r#"{ script: "wand" }"#),
-            ("scripts/switch.luau", SWITCH),
-            ("scripts/marker.luau", MARKER),
-            ("scripts/grower.luau", GROWER),
-            ("scripts/wand.luau", WAND),
-            ("scripts/faulty.luau", FAULTY),
-            ("scripts/greedy.luau", GREEDY),
-            ("scripts/keeper.luau", KEEPER),
-            ("scripts/reader.luau", READER),
-            ("scripts/far.luau", FAR),
-            ("scripts/setter.luau", SETTER),
-            ("scripts/peeker.luau", PEEKER),
-            ("scripts/spoiler.luau", SPOILER),
-            ("scripts/toggler.luau", TOGGLER),
-        ],
-    ));
-    mods
+    test_mods(&[
+        ("blocks/switch.json5", &switch),
+        ("blocks/marker.json5", &marker),
+        ("blocks/grower.json5", &grower),
+        ("blocks/faulty.json5", &faulty),
+        ("blocks/greedy.json5", &greedy),
+        ("blocks/keeper.json5", &keeper),
+        ("blocks/reader.json5", &reader),
+        ("blocks/far.json5", &far),
+        ("blocks/setter.json5", &setter),
+        ("blocks/peeker.json5", &peeker),
+        ("blocks/spoiler.json5", &spoiler),
+        ("blocks/toggler.json5", &toggler),
+        ("items/wand.json5", r#"{ script: "wand" }"#),
+        ("scripts/switch.luau", SWITCH),
+        ("scripts/marker.luau", MARKER),
+        ("scripts/grower.luau", GROWER),
+        ("scripts/wand.luau", WAND),
+        ("scripts/faulty.luau", FAULTY),
+        ("scripts/greedy.luau", GREEDY),
+        ("scripts/keeper.luau", KEEPER),
+        ("scripts/reader.luau", READER),
+        ("scripts/far.luau", FAR),
+        ("scripts/setter.luau", SETTER),
+        ("scripts/peeker.luau", PEEKER),
+        ("scripts/spoiler.luau", SPOILER),
+        ("scripts/toggler.luau", TOGGLER),
+    ])
 }
 
 fn content() -> &'static Content {
@@ -255,26 +246,12 @@ fn state(id: &str, values: &[(&str, &str)]) -> BlockState {
 /// The scripts and block entities over two empty chunks, (0, 0, 0) and
 /// the one above it, stepping 50 ms (three ticks) a frame.
 fn app() -> App {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-            50,
-        )))
-        .insert_resource(content().clone())
+    let mut app = chunk_app(content().clone(), Duration::from_millis(50));
+    app.add_plugins(AssetPlugin::default())
         .insert_resource(runtime())
-        .init_resource::<ChunkMap>()
-        .add_message::<VoxelChanged>()
-        .add_message::<PropertiesUpdated>()
-        .add_message::<FluidChanged>()
         .add_plugins((BlockEntityPlugin, ScriptPlugin));
     for coord in [IVec3::ZERO, IVec3::Y] {
-        let entity = app
-            .world_mut()
-            .spawn((ChunkCoord(coord), Chunk::default()))
-            .id();
-        app.world_mut()
-            .resource_mut::<ChunkMap>()
-            .insert(ChunkCoord(coord), entity);
+        insert_chunk(&mut app, coord, Chunk::default());
     }
     app.update();
     app
@@ -444,10 +421,7 @@ fn chunks_loaded_with_random_ticking_blocks_are_found() {
     let mut chunk = Chunk::default();
     chunk.set_at(IVec3::new(1, 1, 1), state("test:grower", &[]));
     let coord = ChunkCoord(IVec3::X);
-    let entity = app.world_mut().spawn((coord, chunk)).id();
-    app.world_mut()
-        .resource_mut::<ChunkMap>()
-        .insert(coord, entity);
+    insert_chunk(&mut app, coord.0, chunk);
     frames(&mut app, 1);
     assert!(app.world().resource::<TickingChunks>().contains(coord));
 }

@@ -32,6 +32,8 @@ pub mod recipe;
 pub mod save;
 pub mod script;
 pub mod streaming;
+#[cfg(test)]
+mod testing;
 pub mod ui;
 mod view_bob;
 mod voxel_material;

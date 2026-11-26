@@ -721,13 +721,11 @@ mod tests {
     use super::*;
     use crate::{
         content::{BlockState, base, block},
-        light::{LightPlugin, MAX_LIGHT},
-        meshing::MeshingPlugin,
-        meshing::testing::finish_meshing,
+        light::MAX_LIGHT,
         save::tests::temp_folder,
-        voxel_material::BlockMaterial,
-        world::{Voxels, WorldPlugin},
-        worldgen::testing::{PATCH, spawn_patch},
+        testing::{move_loader, patch_app, settle, world_app},
+        world::Voxels,
+        worldgen::testing::PATCH,
     };
 
     fn settings() -> StreamingSettings {
@@ -746,44 +744,12 @@ mod tests {
     }
 
     fn app_with_seed(folder: Option<&Path>, at: Vec3, seed: u64) -> App {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
-            .insert_resource(base().clone())
-            .add_plugins((WorldPlugin, MeshingPlugin, LightPlugin, StreamingPlugin))
-            .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial::unloaded(Handle::default()))
-            .insert_resource(settings())
-            .insert_resource(TerrainSettings { seed, ..default() });
-        if let Some(folder) = folder {
-            app.insert_resource(WorldFolder(folder.to_path_buf()));
-        }
-        app.world_mut()
-            .spawn((ChunkLoader, Transform::from_translation(at)));
-        settle(&mut app);
-        app
-    }
-
-    fn settle(app: &mut App) {
-        // Two frames first: a moved loader's transform reaches the plan a
-        // frame late.
-        app.update();
-        app.update();
-        for _ in 0..2000 {
-            app.update();
-            if app.world().resource::<StreamingStatus>().settled {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        panic!("never settled");
-    }
-
-    fn move_loader(app: &mut App, to: Vec3) {
-        let mut loaders = app
-            .world_mut()
-            .query_filtered::<&mut Transform, With<ChunkLoader>>();
-        loaders.single_mut(app.world_mut()).unwrap().translation = to;
-        settle(app);
+        world_app(base().clone())
+            .resource(settings())
+            .resource(TerrainSettings { seed, ..default() })
+            .folder(folder)
+            .home(at)
+            .build()
     }
 
     fn loaded(app: &App) -> HashSet<IVec3> {
@@ -1037,17 +1003,11 @@ mod tests {
     #[test]
     fn worlds_arent_saved_without_the_terrains_blocks() {
         let folder = temp_folder("no-blocks");
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
-            .insert_resource(crate::content::test_mod(&[]))
-            .add_plugins((WorldPlugin, MeshingPlugin, LightPlugin, StreamingPlugin))
-            .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial::unloaded(Handle::default()))
-            .insert_resource(settings())
-            .insert_resource(WorldFolder(folder.clone()));
-        app.world_mut()
-            .spawn((ChunkLoader, Transform::from_translation(Vec3::splat(8.0))));
-        settle(&mut app);
+        let mut app = world_app(crate::content::test_mod(&[]))
+            .resource(settings())
+            .folder(Some(&folder))
+            .home(Vec3::splat(8.0))
+            .build();
         app.world_mut().write_message(AppExit::Success);
         app.update();
         assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
@@ -1083,15 +1043,7 @@ mod tests {
     #[test]
     fn streamed_light_matches_light_worked_out_in_place() {
         let streamed = app(None, Vec3::new(4.0 * 16.0, 40.0, 4.0 * 16.0));
-        let mut patch = App::new();
-        patch
-            .add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .insert_resource(base().clone())
-            .add_plugins((WorldPlugin, MeshingPlugin, LightPlugin))
-            .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial::unloaded(Handle::default()));
-        spawn_patch(patch.world_mut());
-        finish_meshing(&mut patch);
+        let patch = patch_app(base().clone());
         // Chunks in the middle of both, away from either's edge.
         for x in 3..=5 {
             for y in 0..PATCH.y {

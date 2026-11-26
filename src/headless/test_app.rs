@@ -1,14 +1,11 @@
 //! Test helpers: the whole game with no GPU, driven by scripts.
 
-use std::time::Duration;
-
 use bevy::prelude::*;
 
 use super::{HeadlessPlugin, SETTLE_TIMEOUT_FRAMES, Script, default_plugins, runner::ScriptRunner};
 use crate::{
     light::{ChunkLight, Light},
     player::{LocalPlayer, Look, Player, eyes},
-    streaming::StreamingStatus,
     world::{ChunkCoord, ChunkMap},
 };
 
@@ -51,22 +48,7 @@ pub fn run_more(app: &mut App, script: &str) {
     panic!("the script never finished");
 }
 
-/// Updates `app` until the world around its camera has loaded. Unlike the
-/// script's `settle`, it doesn't wait for the fog to open, which tests that
-/// look at the world rather than the view don't need.
-pub fn settle(app: &mut App) {
-    // A camera moved this frame reaches the loading a frame late.
-    app.update();
-    app.update();
-    for _ in 0..SETTLE_TIMEOUT_FRAMES {
-        app.update();
-        if app.world().resource::<StreamingStatus>().settled {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    panic!("the world never settled");
-}
+pub use crate::testing::settle;
 
 /// Runs the whole game with no GPU until the script ends, and returns
 /// how it exited.

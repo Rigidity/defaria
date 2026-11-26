@@ -166,6 +166,7 @@ mod tests {
     use super::*;
     use crate::{
         content::{base, block},
+        testing::{ChunkMapPlugin, insert_chunk},
         world::WorldPlugin,
         worldgen::{
             Terrain, TerrainBlocks, TerrainSettings,
@@ -207,21 +208,14 @@ mod tests {
     #[test]
     fn fluid_changes_remesh_only_when_the_height_changes() {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .init_resource::<ChunkMap>()
-            .add_message::<VoxelChanged>()
-            .add_message::<PropertiesUpdated>()
-            .add_message::<FluidChanged>();
+        app.add_plugins((MinimalPlugins, ChunkMapPlugin));
         let edge = IVec3::new(15, 5, 5);
         for coord in [IVec3::ZERO, IVec3::X] {
             let mut chunk = Chunk::default();
             if coord == IVec3::ZERO {
                 chunk.set_at(edge, block("water"));
             }
-            let entity = app.world_mut().spawn((ChunkCoord(coord), chunk)).id();
-            app.world_mut()
-                .resource_mut::<ChunkMap>()
-                .insert(ChunkCoord(coord), entity);
+            insert_chunk(&mut app, coord, chunk);
         }
         let changed = app.world_mut().register_system(
             |chunks: Query<(&ChunkCoord, Ref<Chunk>)>| -> Vec<IVec3> {
@@ -252,19 +246,12 @@ mod tests {
     #[test]
     fn setting_fluid_over_itself_fills_it() {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .init_resource::<ChunkMap>()
-            .add_message::<VoxelChanged>()
-            .add_message::<PropertiesUpdated>()
-            .add_message::<FluidChanged>();
+        app.add_plugins((MinimalPlugins, ChunkMapPlugin));
         let pos = IVec3::new(3, 4, 5);
         let mut chunk = Chunk::default();
         chunk.set_at(pos, block("water"));
         chunk.set_fluid_at(pos, 250);
-        let entity = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), chunk)).id();
-        app.world_mut()
-            .resource_mut::<ChunkMap>()
-            .insert(ChunkCoord(IVec3::ZERO), entity);
+        let entity = insert_chunk(&mut app, IVec3::ZERO, chunk);
         let set = |app: &mut App| {
             app.world_mut()
                 .run_system_once(move |mut voxels: Voxels| voxels.set(pos, block("water")))

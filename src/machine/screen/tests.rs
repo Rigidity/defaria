@@ -8,6 +8,7 @@ use crate::{
     content::ItemState,
     headless::{Script, run_more, settle, test_game},
     inventory::{ItemStack, screen::InventoryScreen},
+    testing::{test_content, test_mods},
 };
 
 /// Where the furnace goes: three blocks in front of the camera.
@@ -258,28 +259,16 @@ fn dragging_onto_the_machine_moves_it_all() {
 /// which don't take them.
 #[test]
 fn dropping_on_a_group_puts_items_there() {
-    use crate::content::{
-        MODS_DIR,
-        load::{ModFiles, read_mods},
-    };
-    let (mut mods, errors) = read_mods(std::path::Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[
-            (
-                "blocks/bench.json5",
-                r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { work: 1, catalyst: 1, done: 1 }, recipes: { type: "polish", inputs: ["work"], outputs: ["done"] } } }"#,
-            ),
-            (
-                "recipes/polish.json5",
-                r#"{ type: "polish", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], time: 1 }"#,
-            ),
-        ],
-    ));
-    let content = Content::from_mods(mods);
-    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let content = test_content(&[
+        (
+            "blocks/bench.json5",
+            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { work: 1, catalyst: 1, done: 1 }, recipes: { type: "polish", inputs: ["work"], outputs: ["done"] } } }"#,
+        ),
+        (
+            "recipes/polish.json5",
+            r#"{ type: "polish", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], time: 1 }"#,
+        ),
+    ]);
     let catalyst = content
         .machine(content.default_state("test:bench").unwrap())
         .unwrap()
@@ -438,28 +427,16 @@ fn slot_groups_are_square_ish() {
 /// once, with the inputs.
 #[test]
 fn a_group_both_in_and_out_is_drawn_once() {
-    use crate::content::{
-        MODS_DIR,
-        load::{ModFiles, read_mods},
-    };
-    let (mut mods, errors) = read_mods(std::path::Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[
-            (
-                "blocks/bench.json5",
-                r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { work: 2, spare: 1 }, recipes: { type: "polish", inputs: ["work"], outputs: ["work"] } } }"#,
-            ),
-            (
-                "recipes/polish.json5",
-                r#"{ type: "polish", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], time: 1 }"#,
-            ),
-        ],
-    ));
-    let content = Content::from_mods(mods);
-    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let content = test_content(&[
+        (
+            "blocks/bench.json5",
+            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { work: 2, spare: 1 }, recipes: { type: "polish", inputs: ["work"], outputs: ["work"] } } }"#,
+        ),
+        (
+            "recipes/polish.json5",
+            r#"{ type: "polish", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], time: 1 }"#,
+        ),
+    ]);
     let state = content.default_state("test:bench").unwrap();
     let mut world = World::new();
     let screen = MachineScreen {
@@ -520,22 +497,10 @@ fn the_panel_stays_put_between_machines() {
 /// wraps them onto more lines: the whole screen stays in the window.
 #[test]
 fn wide_machines_wrap_to_fit_the_window() {
-    use crate::content::{
-        MODS_DIR,
-        load::{ModFiles, read_mods},
-    };
-    let (mut mods, errors) = read_mods(std::path::Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[(
-            "blocks/wide.json5",
-            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { a: 40, b: 40, c: 40 } } }"#,
-        )],
-    ));
-    let content = Content::from_mods(mods);
-    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let content = test_content(&[(
+        "blocks/wide.json5",
+        r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { a: 40, b: 40, c: 40 } } }"#,
+    )]);
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
     app.insert_resource(content);
     settle(&mut app);
@@ -585,23 +550,10 @@ fn wide_machines_wrap_to_fit_the_window() {
 
 /// The base game and a test mod with `big_crate`: 54 slots, six rows.
 fn big_crate_content() -> Content {
-    use crate::content::{
-        MODS_DIR,
-        load::{ModFiles, read_mods},
-    };
-    let (mut mods, errors) = read_mods(std::path::Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[(
-            "blocks/big_crate.json5",
-            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { items: 54 } } }"#,
-        )],
-    ));
-    let content = Content::from_mods(mods);
-    assert!(content.errors.is_empty(), "{:?}", content.errors);
-    content
+    test_content(&[(
+        "blocks/big_crate.json5",
+        r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { items: 54 } } }"#,
+    )])
 }
 
 /// A slot group too tall for the screen scrolls, so the screen fits in
@@ -669,27 +621,16 @@ fn a_big_slot_group_scrolls() {
 /// The base game and a test mod with a machine that has slots (so a
 /// screen) and a script counting its uses.
 fn scripted_machine_mods() -> Vec<crate::content::load::ModFiles> {
-    use crate::content::{
-        MODS_DIR,
-        load::{ModFiles, read_mods},
-    };
-    let (mut mods, errors) = read_mods(std::path::Path::new("assets/mods"), MODS_DIR);
-    assert!(errors.is_empty(), "{errors:?}");
-    mods.push(ModFiles::new(
-        "mods/test",
-        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-        &[
-            (
-                "blocks/box.json5",
-                r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, script: "box", machine: { slots: { items: 1 } } }"#,
-            ),
-            (
-                "scripts/box.luau",
-                "function on_used(block, player)\n\tblock.data.used = (block.data.used or 0) + 1\nend\n",
-            ),
-        ],
-    ));
-    mods
+    test_mods(&[
+        (
+            "blocks/box.json5",
+            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, script: "box", machine: { slots: { items: 1 } } }"#,
+        ),
+        (
+            "scripts/box.luau",
+            "function on_used(block, player)\n\tblock.data.used = (block.data.used or 0) + 1\nend\n",
+        ),
+    ])
 }
 
 /// Right click on a machine whose script has `on_used` runs the script

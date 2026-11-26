@@ -137,6 +137,7 @@ mod tests {
         content::{base, block},
         inventory::model::item_weight,
         machine::SLOT_SIZE,
+        testing::test_content,
     };
 
     fn item(id: &str) -> ItemStack {
@@ -299,28 +300,16 @@ mod tests {
     /// can't be chosen.
     #[test]
     fn items_put_on_a_group_go_there_first() {
-        use crate::content::{
-            MODS_DIR,
-            load::{ModFiles, read_mods},
-        };
-        let (mut mods, errors) = read_mods(std::path::Path::new("assets/mods"), MODS_DIR);
-        assert!(errors.is_empty(), "{errors:?}");
-        mods.push(ModFiles::new(
-            "mods/test",
-            r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
-            &[
-                (
-                    "blocks/bench.json5",
-                    r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { work: 1, catalyst: 1, done: 1 }, recipes: { type: "polish", inputs: ["work"], outputs: ["done"] } } }"#,
-                ),
-                (
-                    "recipes/polish.json5",
-                    r#"{ type: "polish", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], time: 1 }"#,
-                ),
-            ],
-        ));
-        let content = Content::from_mods(mods);
-        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let content = test_content(&[
+            (
+                "blocks/bench.json5",
+                r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { work: 1, catalyst: 1, done: 1 }, recipes: { type: "polish", inputs: ["work"], outputs: ["done"] } } }"#,
+            ),
+            (
+                "recipes/polish.json5",
+                r#"{ type: "polish", inputs: [{ item: "defaria:planks" }], outputs: [{ item: "defaria:glass" }], time: 1 }"#,
+            ),
+        ]);
         let state = content.default_state("test:bench").unwrap();
         let machine = content.machine(state).unwrap();
         let group = |name| machine.slot_group(name).unwrap();
