@@ -4,7 +4,6 @@
 // runs quickly and spreads thin.
 {
   name: "Water",
-  model: "cube",
   render: "translucent",
   double_sided: true,
   fluid: {

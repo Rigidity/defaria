@@ -4,7 +4,6 @@
 // spreading while it's still a quarter of a block deep.
 {
   name: "Lava",
-  model: "cube",
   fluid: {
     rate: 2,
     fall: 0.5,

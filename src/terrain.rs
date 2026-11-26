@@ -37,10 +37,7 @@ use crate::{
     fly_camera::FlyCamera,
     light::ChunkLight,
     perlin::splitmix64,
-    voxel::{
-        CHUNK_SIZE, Chunk, ChunkMeshes, Neighborhood, TranslucentFaces, fluid_step,
-        touching_offsets,
-    },
+    voxel::{CHUNK_SIZE, Chunk, ChunkMeshes, Neighborhood, TranslucentFaces, touching_offsets},
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
@@ -289,17 +286,24 @@ impl Voxels<'_, '_> {
     /// Sets the amount of fluid in the fluid voxel at a world position,
     /// from 1 to [`FULL_FLUID`], and returns whether it's loaded. The chunks
     /// that show it are remeshed only if its drawn height changes (see
-    /// [`fluid_step`]). Sends [`FluidChanged`] if the amount changed.
+    /// [`Chunk::set_fluid_at`]). Sends [`FluidChanged`] if the amount changed.
     pub fn set_fluid(&mut self, pos: IVec3, amount: u16) -> bool {
-        self.change_fluid(pos, amount, false)
+        self.change_fluid(pos, amount, false, false)
     }
 
     /// [`Voxels::set_fluid`], for flow moving fluid.
     pub fn flow_fluid(&mut self, pos: IVec3, amount: u16) -> bool {
-        self.change_fluid(pos, amount, true)
+        self.change_fluid(pos, amount, true, false)
     }
 
-    fn change_fluid(&mut self, pos: IVec3, amount: u16, by_flow: bool) -> bool {
+    /// Sets the voxel at a world position to `amount` of the fluid `state`,
+    /// for flow moving fluid into it. It starts out not drawn until there's
+    /// enough to show (see [`Chunk::start_fluid_at`]).
+    pub fn flow_into(&mut self, pos: IVec3, state: BlockState, amount: u16) -> bool {
+        self.set(pos, state) && self.change_fluid(pos, amount, true, true)
+    }
+
+    fn change_fluid(&mut self, pos: IVec3, amount: u16, by_flow: bool, fresh: bool) -> bool {
         let (coord, local) = ChunkCoord::split(pos);
         let Some(mut chunk) = self
             .map
@@ -312,8 +316,13 @@ impl Voxels<'_, '_> {
         if before == amount {
             return true;
         }
-        chunk.bypass_change_detection().set_fluid_at(local, amount);
-        if fluid_step(before) != fluid_step(amount) {
+        let chunk = chunk.bypass_change_detection();
+        let redraw = if fresh {
+            chunk.start_fluid_at(local, amount)
+        } else {
+            chunk.set_fluid_at(local, amount)
+        };
+        if redraw {
             self.touched(pos);
         }
         self.fluid_changes.write(FluidChanged { pos, by_flow });

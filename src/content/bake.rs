@@ -235,6 +235,23 @@ fn parse_file(
     Ok(())
 }
 
+/// The box every fluid is drawn as (`fluid_box.json5`), built into the
+/// engine rather than taken from a mod.
+fn fluid_box() -> &'static Model {
+    static BOX: std::sync::LazyLock<Model> = std::sync::LazyLock::new(|| {
+        let def: ModelDef =
+            json5::from_str(include_str!("fluid_box.json5")).expect("the fluid box is valid JSON5");
+        model(&Def {
+            id: "fluid box".into(),
+            namespace: String::new(),
+            file: "src/content/fluid_box.json5".into(),
+            def,
+        })
+        .expect("the fluid box is a valid model")
+    });
+    &BOX
+}
+
 /// A palette from 2 to 8 hex colors, darkest first.
 fn palette(colors: &[String]) -> Result<Palette, String> {
     if !(2..=8).contains(&colors.len()) {
@@ -1219,14 +1236,28 @@ fn add_block(
         None,
     )?;
 
+    // A fluid is drawn as a box of its height, by the engine.
+    if block.fluid.is_some() {
+        let named = block.model.is_some() || block.variants.iter().any(|v| v.model.is_some());
+        if named {
+            return Err("a fluid has no `model`: it's drawn as a box as high as it's full".into());
+        }
+        if block.rotate.is_some() || block.variants.iter().any(|v| v.rotate.is_some()) {
+            return Err("a fluid can't be rotated".into());
+        }
+    }
+
     // Each state's property values, look and model, last property fastest.
     let mut looks = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
         let look = look(block, &whens, &index);
-        let model = look
-            .model(&values, &def.namespace, content)
-            .map_err(|error| in_state(&values, error))?
-            .clone();
+        let model = if block.fluid.is_some() {
+            fluid_box().clone()
+        } else {
+            look.model(&values, &def.namespace, content)
+                .map_err(|error| in_state(&values, error))?
+                .clone()
+        };
         looks.push((index, values, look, model));
     }
     // A slot is skipped where the state's model doesn't have it, so a
@@ -1903,7 +1934,7 @@ mod tests {
     fn fluid_amounts_are_baked_to_thousandths() {
         let content = content(&[(
             "blocks/pool.json5",
-            r##"{ model: "quad", textures: { all: "a" }, fluid: {
+            r##"{ textures: { all: "a" }, fluid: {
                 rate: 4, fall: 0.0001, film: 0.25, ripple: 0.05, move_speed: 0.3,
                 view: { color: "#102030", distance: 3 },
             } }"##,
@@ -1942,17 +1973,15 @@ mod tests {
             ),
             (
                 "blocks/pool.json5",
-                &format!(r#"{{ model: "quad", textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
+                &format!(r#"{{ textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
             ),
             (
                 "blocks/tar.json5",
-                &format!(r#"{{ model: "quad", textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
+                &format!(r#"{{ textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
             ),
             (
                 "blocks/deep.json5",
-                &format!(
-                    r#"{{ model: "pair", textures: {{ top: "a", bottom: "a" }}, {TEST_FLUID} }}"#
-                ),
+                &format!(r#"{{ textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
             ),
             (
                 "blocks/box.json5",
@@ -1976,7 +2005,7 @@ mod tests {
         let pool = content.default_state("test:pool").unwrap();
         assert!(content.state(pool).is_fluid() && !content.state(solid).is_fluid());
         assert_eq!(render(pool), Render::Opaque);
-        // A fluid has no collision, though its model has.
+        // A fluid has no collision.
         let collision = |id| &content.state(content.default_state(id).unwrap()).collision;
         assert_eq!(collision("test:box"), &[BlockBox::FULL]);
         assert!(collision("test:deep").is_empty());
@@ -2784,42 +2813,52 @@ mod tests {
             ("blocks/defaria:x.json5", "{}", "must be"),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 0, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "a fluid has no `model`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ rotate: [0, 90, 0], textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "a fluid can't be rotated",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 0, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
                 "fluid `rate` is 0; it must be above 0",
             ),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1.5, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1.5, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
                 "fluid `fall` is 1.5; it must be from 0 to 1 block",
             ),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: -0.1, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: -0.1, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
                 "fluid `film` is -0.1",
             ),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.001, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.001, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
                 "fluid `ripple` is 0.001; it must be at least 0.002",
             ),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 2, view: { color: "#203060", distance: 12 } } }"##,
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 2, view: { color: "#203060", distance: 12 } } }"##,
                 "fluid `move_speed` is 2",
             ),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 0 } } }"##,
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 0 } } }"##,
                 "fluid view `distance` is 0",
             ),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "blue", distance: 12 } } }"##,
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "blue", distance: 12 } } }"##,
                 "`blue` isn't a hex color",
             ),
             (
                 "blocks/x.json5",
-                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 }, depth: 3 } }"##,
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 }, depth: 3 } }"##,
                 "unknown field `depth`",
             ),
             (

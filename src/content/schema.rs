@@ -261,9 +261,10 @@ pub struct BlockDef {
     /// translucent.
     #[serde(default)]
     pub render: Option<Render>,
-    /// A fluid: nothing bumps into it whatever its model's collision, the
-    /// crosshair passes through it, and placing a block replaces it. It
-    /// flows, and the player swims in it, as this says.
+    /// A fluid: nothing bumps into it, the crosshair passes through it, and
+    /// placing a block replaces it. It flows, and the player swims in it,
+    /// as this says. It has no `model`: it's drawn as a box as high as it's
+    /// full.
     #[serde(default)]
     pub fluid: Option<FluidDef>,
     /// Its faces show from behind as well as in front.

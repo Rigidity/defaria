@@ -1,0 +1,77 @@
+// The box every fluid is drawn as: the engine's, not a mod's. The mesher
+// cuts each face to the fluid's height (see `src/voxel.rs`). Its slots are a
+// full block's: `all`, `side` and `end`, or each face's own.
+{
+  // A block fills slots with textures. A slot it leaves empty takes the
+  // texture of the slot it falls back to: `all` fills every face, `side`
+  // the four sides and `end` the top and bottom.
+  slots: {
+    all: null,
+    side: "all",
+    end: "all",
+    up: "end",
+    down: "end",
+    north: "side",
+    south: "side",
+    east: "side",
+    west: "side",
+  },
+  // Every face is fully covered, so it hides its neighbours' faces.
+  occludes: ["up", "down", "north", "south", "east", "west"],
+  faces: [
+    {
+      texture: "east", cull: "east",
+      vertices: [
+        { pos: [1, 0, 1], uv: [0, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "west", cull: "west",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 1], uv: [1, 1] },
+        { pos: [0, 1, 1], uv: [1, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "up", cull: "up",
+      vertices: [
+        { pos: [0, 1, 1], uv: [0, 1] },
+        { pos: [1, 1, 1], uv: [1, 1] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "down", cull: "down",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 0, 1], uv: [1, 0] },
+        { pos: [0, 0, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "south", cull: "south",
+      vertices: [
+        { pos: [0, 0, 1], uv: [0, 1] },
+        { pos: [1, 0, 1], uv: [1, 1] },
+        { pos: [1, 1, 1], uv: [1, 0] },
+        { pos: [0, 1, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "north", cull: "north",
+      vertices: [
+        { pos: [1, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 0], uv: [1, 1] },
+        { pos: [0, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 0], uv: [0, 0] },
+      ],
+    },
+  ],
+}

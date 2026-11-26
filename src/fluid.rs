@@ -140,12 +140,15 @@ impl FluidView<'_, '_> {
     /// The fluid in the voxel at `pos`, and how high its surface is above
     /// the voxel's bottom, as it's drawn (see [`fluid_surface`]).
     pub fn surface(&self, pos: IVec3) -> Option<(BlockState, f32)> {
-        let Some(Cell::Fluid(kind, amount)) = self.cell(pos) else {
+        let (coord, local) = ChunkCoord::split(pos);
+        let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
+        let kind = chunk.at(local);
+        if !self.content.state(kind).is_fluid() {
             return None;
-        };
+        }
         let covered =
             matches!(self.cell(pos + IVec3::Y), Some(Cell::Fluid(above, _)) if above == kind);
-        Some((kind, fluid_surface(amount, covered)))
+        Some((kind, fluid_surface(chunk.fluid_step_at(local), covered)))
     }
 
     /// The fluid `point` is in, below its surface.
@@ -192,11 +195,12 @@ impl Cells for WorldCells<'_, '_> {
                 self.voxels.set(pos, BlockState::AIR);
             }
             Cell::Fluid(kind, amount) => {
-                // Only a new block: setting fluid over itself would fill it.
-                if self.voxels.get(pos) != Some(kind) {
-                    self.voxels.set(pos, kind);
+                // Setting fluid over itself would fill it.
+                if self.voxels.get(pos) == Some(kind) {
+                    self.voxels.flow_fluid(pos, amount);
+                } else {
+                    self.voxels.flow_into(pos, kind, amount);
                 }
-                self.voxels.flow_fluid(pos, amount);
             }
             Cell::Closed => unreachable!("flow only opens and fills cells"),
         }
@@ -376,6 +380,7 @@ mod tests {
     use crate::{
         content::{base, block},
         terrain::FluidChanged,
+        voxel::FLUID_STEPS,
     };
 
     /// The flow systems alone, on chunks spawned by the test.
@@ -631,5 +636,76 @@ mod tests {
         assert_eq!(set(&mut app, 1, block("lava")), 2000);
         assert_eq!(set(&mut app, 2, BlockState::AIR), 2000);
         assert_eq!(set(&mut app, 3, block("water")), 2000, "topped up");
+    }
+
+    /// A pond draining through a gap in its side goes down steadily as it's
+    /// drawn: no voxel's drawn height ever goes back up, so nothing blinks.
+    #[test]
+    fn a_pond_draining_through_its_side_never_blinks() {
+        let mut app = app();
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )));
+        // A floor at y 0; a 6×6 basin two deep, its south wall open at the
+        // water, onto the floor a block lower outside.
+        let mut chunk = Chunk::default();
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 0, z, block("stone"));
+            }
+        }
+        for x in 2..10 {
+            for z in 2..10 {
+                for y in 1..4 {
+                    chunk.set(x, y, z, block("stone"));
+                }
+            }
+        }
+        let pond: Vec<IVec3> = (3..9)
+            .flat_map(|x| (3..9).flat_map(move |z| [IVec3::new(x, 2, z), IVec3::new(x, 3, z)]))
+            .collect();
+        for &pos in &pond {
+            chunk.set_at(pos, block("water"));
+        }
+        for x in 3..9 {
+            for y in 2..4 {
+                chunk.set(x, y, 9, BlockState::AIR);
+            }
+        }
+        spawn(&mut app, IVec3::ZERO, chunk);
+        let steps = |app: &App| -> Vec<u16> {
+            let entity = app
+                .world()
+                .resource::<ChunkMap>()
+                .get(ChunkCoord(IVec3::ZERO))
+                .unwrap();
+            let chunk = app.world().get::<Chunk>(entity).unwrap();
+            // As drawn: none, full under the same fluid, or its height.
+            pond.iter()
+                .map(|&pos| {
+                    if chunk.at(pos).is_air() {
+                        0
+                    } else if chunk.at(pos + IVec3::Y) == chunk.at(pos) {
+                        FLUID_STEPS
+                    } else {
+                        chunk.fluid_step_at(pos)
+                    }
+                })
+                .collect()
+        };
+        let mut last = steps(&app);
+        for frame in 0..900 {
+            app.update();
+            let now = steps(&app);
+            for (i, (&before, &after)) in last.iter().zip(&now).enumerate() {
+                assert!(
+                    after <= before,
+                    "frame {frame}: {} rose from {before} to {after}",
+                    pond[i]
+                );
+            }
+            last = now;
+        }
+        assert!(last.iter().sum::<u16>() < 72 * FLUID_STEPS, "it drained");
     }
 }

@@ -336,7 +336,10 @@ itself over any edge it can run off, straight into the voxel below the
 edge. Levels only ever move toward each
 other, so a draining pond goes down smoothly. Fluid only flows into air
 and into the same fluid: two different fluids that touch stop there.
-Model a fluid as a `"cube"`; its faces are cut to its height.
+A fluid has no `model` (nor `rotate`): the engine draws it as a box as
+high as it's full, its sides cut to fit with their texture cut off rather
+than squashed. Give it textures as for a full block: `all`, or `side` and
+`end`, or each face's own (`up`, `down`, `north` and so on).
 
 `fluid` says how it flows and what it's like to be in, with amounts in
 blocks (1 is a full block):
@@ -345,7 +348,6 @@ blocks (1 is a full block):
 // blocks/water.json5
 {
   name: "Water",
-  model: "cube",
   render: "translucent",
   double_sided: true,
   fluid: {

@@ -18,7 +18,8 @@
 //!   the edge itself, it would fill and empty the edge step after step.)
 //!
 //! What spreads is worked out from where the fluid is once it has fallen,
-//! and then moved all at once, so the order cells are visited in doesn't
+//! and then moved all at once (and whatever spreads onto room falls into it
+//! straight away), so the order cells are visited in doesn't
 //! matter and flow has no favourite direction. An eighth is small enough
 //! that what a cell gives never drops it below a neighbour it gives to,
 //! even giving to four at once, so levels drift toward each other rather
@@ -505,7 +506,7 @@ impl Simulation {
                 stepped += 1;
                 if step.visited == step.visits() {
                     let step = queue.step.take().expect("started");
-                    finish_step(cells, step, &mut queue.next, &mut changed);
+                    finish_step(cells, flow, step, &mut queue.next, &mut changed);
                 }
             }
         }
@@ -537,12 +538,29 @@ impl Queue {
 /// `next` to step again.
 fn finish_step(
     cells: &mut impl Cells,
+    fluid: &Fluid,
     mut step: Step,
     next: &mut HashSet<IVec3>,
     changed: &mut Vec<IVec3>,
 ) {
-    for transfer in std::mem::take(&mut step.transfers) {
+    let transfers = std::mem::take(&mut step.transfers);
+    let mut landed: Vec<IVec3> = transfers.iter().map(|transfer| transfer.to).collect();
+    for transfer in transfers {
         apply(&*cells, &mut step.changes, transfer);
+    }
+    // What spread onto fluid that's drained in the same step falls into it
+    // now, bottom up, rather than showing on top for a step and then
+    // dropping in.
+    landed.sort_unstable_by_key(|pos| (pos.y, pos.x, pos.z));
+    landed.dedup();
+    for pos in landed {
+        let layer = Layer {
+            world: &*cells,
+            changes: &step.changes,
+        };
+        if let Some(falls) = fall(&layer, fluid, pos, &mut step.meetings) {
+            apply(&*cells, &mut step.changes, falls);
+        }
     }
     let stale = step
         .changes
