@@ -19,6 +19,11 @@ use crate::{
 
 const MIB: f64 = 1024.0 * 1024.0;
 
+/// The most voxels a `lookups` box may hold: 16 Mi, a fraction of a
+/// second a way. More is a mistake (it would take minutes, or count past
+/// what fits).
+pub const MAX_LOOKUP_VOXELS: u64 = 1 << 24;
+
 /// What the loaded chunks hold, counted from their data structures (not
 /// the process's memory), so it's the same every run of the same world.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -38,6 +43,9 @@ pub struct ChunkMemory {
     /// are one value throughout (and so could hold none; see
     /// [`crate::world::ChunkArray::compact`]).
     pub uniform_dense: usize,
+    /// Chunks whose blocks or light are one value throughout but still
+    /// kept a value per voxel: 0 once compaction has caught up.
+    pub uniform_dense_chunks: usize,
     /// Voxels holding less than a full block of fluid, which each chunk
     /// keeps in a map.
     pub partial_fluid: usize,
@@ -82,8 +90,9 @@ impl ChunkMemory {
             Some(_) => self.solid += 1,
             None => {}
         }
+        let mut uniform_dense = 0;
         if voxels.uniform().is_some() {
-            self.uniform_dense += voxels.heap_bytes();
+            uniform_dense += voxels.heap_bytes();
         }
         let partial = chunk.partial_fluid().count();
         self.partial_fluid += partial;
@@ -94,8 +103,12 @@ impl ChunkMemory {
             self.light += levels.heap_bytes();
             if levels.uniform().is_some() {
                 self.even_light += 1;
-                self.uniform_dense += levels.heap_bytes();
+                uniform_dense += levels.heap_bytes();
             }
+        }
+        self.uniform_dense += uniform_dense;
+        if uniform_dense > 0 {
+            self.uniform_dense_chunks += 1;
         }
     }
 }
@@ -108,8 +121,8 @@ impl fmt::Display for ChunkMemory {
             f,
             "memory: {} chunks ({} all air, {} one other block throughout, {} one light \
              throughout); blocks {:.1} MiB, light {:.1} MiB, fluid {:.2} MiB ({} partial \
-             voxels): {:.1} MiB of chunk storage, {:.1} MiB of it in chunks of one value; \
-             {} meshes holding {:.1} MiB",
+             voxels): {:.1} MiB of chunk storage, {} KiB of it in {} chunks of one value \
+             kept dense; {} meshes holding {:.1} MiB",
             self.chunks,
             self.air,
             self.solid,
@@ -119,7 +132,8 @@ impl fmt::Display for ChunkMemory {
             mib(self.fluid),
             self.partial_fluid,
             mib(storage),
-            mib(self.uniform_dense),
+            self.uniform_dense / 1024,
+            self.uniform_dense_chunks,
             self.meshes,
             mib(self.mesh_bytes),
         )
@@ -139,9 +153,9 @@ fn mesh_bytes(mesh: &Mesh) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LookupCost {
     /// Voxels in the box.
-    pub voxels: usize,
+    pub voxels: u64,
     /// Of them, the ones in loaded chunks.
-    pub loaded: usize,
+    pub loaded: u64,
     /// Each through [`Voxels::get`]: a hash and a query per voxel.
     pub by_position: Duration,
     /// A chunk at a time: a hash and a query per chunk, then its array.
@@ -167,13 +181,20 @@ impl fmt::Display for LookupCost {
 
 /// Reads every voxel between two corners (both included), first one at a
 /// time by world position as most systems do, then a chunk at a time.
+/// A box of more than [`MAX_LOOKUP_VOXELS`] is an error.
 pub fn measure_lookups(
     In((min, max)): In<(IVec3, IVec3)>,
     mut params: ParamSet<(Voxels, (Res<ChunkMap>, Query<&Chunk>))>,
-) -> LookupCost {
+) -> Result<LookupCost, String> {
     let (min, max) = (min.min(max), min.max(max));
-    let size = (max - min + IVec3::ONE).as_uvec3();
-    let count = (size.x * size.y * size.z) as usize;
+    let count = (max.as_i64vec3() - min.as_i64vec3() + bevy::math::I64Vec3::ONE)
+        .as_u64vec3()
+        .element_product();
+    if count > MAX_LOOKUP_VOXELS {
+        return Err(format!(
+            "lookups: the box holds {count} voxels, over the most, {MAX_LOOKUP_VOXELS}"
+        ));
+    }
 
     let start = Instant::now();
     let mut loaded = 0;
@@ -219,12 +240,12 @@ pub fn measure_lookups(
     let by_chunk = start.elapsed();
     debug_assert_eq!(sum, chunk_sum);
     black_box((sum, chunk_sum));
-    LookupCost {
+    Ok(LookupCost {
         voxels: count,
         loaded,
         by_position,
         by_chunk,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -281,6 +302,7 @@ mod tests {
         assert_eq!(memory.blocks, 2 * 4096 * 2);
         assert_eq!(memory.light, 4096 * 2);
         assert_eq!(memory.uniform_dense, 4096 * 2);
+        assert_eq!(memory.uniform_dense_chunks, 1);
         assert_eq!(memory.partial_fluid, 0);
         assert_eq!(memory.meshes, 0);
         let line = memory.to_string();
@@ -302,12 +324,39 @@ mod tests {
                 measure_lookups,
                 (IVec3::new(8, 0, 0), IVec3::new(23, 31, 15)),
             )
+            .unwrap()
             .unwrap();
         assert_eq!(cost.voxels, 16 * 32 * 16);
         assert_eq!(cost.loaded, 16 * 16 * 16);
         assert!(
             cost.to_string()
                 .starts_with("lookups: 8192 voxels (4096 loaded)")
+        );
+    }
+
+    /// A box too big to read in a sensible time (and whose voxels don't
+    /// fit in a `u32`) is refused rather than read.
+    #[test]
+    fn lookups_refuse_a_huge_box() {
+        let mut world = world_with(vec![(IVec3::ZERO, Chunk::filled(BlockState(2)))]);
+        let error = world
+            .run_system_cached_with(measure_lookups, (IVec3::splat(-1000), IVec3::splat(1000)))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("8012006001 voxels"), "{error}");
+        let side = 1 << 8;
+        assert!(
+            world
+                .run_system_cached_with(measure_lookups, (IVec3::ZERO, IVec3::splat(side - 1)))
+                .unwrap()
+                .is_ok(),
+            "exactly the most"
+        );
+        assert!(
+            world
+                .run_system_cached_with(measure_lookups, (IVec3::ZERO, IVec3::splat(side)))
+                .unwrap()
+                .is_err()
         );
     }
 }

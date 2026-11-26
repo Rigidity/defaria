@@ -32,12 +32,12 @@
 //! | `put <x> <y> <z> <name> <amount> <what>` | Put something in the machine at that voxel: `amount` of an item (named as blocks are for `fill`, `stone[ore=defaria:iron]`) into its slot group `name`, or `amount` blocks of a fluid (`lava`) into its tank `name`, as a tube or a pipe would. The run fails if there's no machine there, it has no such slot group or tank, or not all of it fits. |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, fluid networks' pipes and machines' tanks, in thousandths of a block (with where it is, for a fluid that's in pipes or tanks too), and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
-//! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start), and if any `fill` ran since, how many voxels they set and how long that took (setting them, not relighting or remeshing, which come in the frames after). |
+//! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start), and if any `fill` ran since, how many voxels they changed (not ones already that block, nor ones in unloaded chunks) and how long the fills took (setting them, not relighting or remeshing, which come in the frames after). |
 //! | `type <text>` | Type the text (the rest of the line), a key press and release per character, into whatever has the keyboard. |
 //! | `random-ticks <n>` | Pick `n` voxels in each loaded chunk for random ticks each tick (1 by default), so blocks that grow or spread on random ticks (see `script::random_tick`) do it quickly enough to watch. |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance, and print how many frames and seconds that took. |
-//! | `memory` | Print what the loaded chunks hold, counted from their data rather than the process's memory, so it's the same every run: how many chunks, how many are air or one other block throughout and how many have one light level throughout, the bytes of block states, light and partial fluid, how much of that is in chunks of one value, and the chunk meshes and the bytes of vertices and indices they keep in the main world. |
-//! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`], a hash and a query per voxel), then a chunk at a time, and print both. |
+//! | `memory` | Print what the loaded chunks hold, counted from their data rather than the process's memory, so it's the same every run: how many chunks, how many are air or one other block throughout and how many have one light level throughout, the bytes of block states, light and partial fluid, how much of that (in KiB) is in chunks that are one value throughout but still kept a value per voxel, and how many such chunks there are (0 once compaction has caught up), and the chunk meshes and the bytes of vertices and indices they keep in the main world. |
+//! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`], a hash and a query per voxel), then a chunk at a time, and print both. A box of more than 16,777,216 voxels (256 a side) fails the run. |
 //!
 //! The mouse commands (`cursor`, mouse buttons, `scroll`) also drive
 //! `bevy_picking`'s mouse pointer, aimed at the image the frame renders
@@ -210,7 +210,12 @@ impl Plugin for HeadlessPlugin {
                     .before(InputSystems)
                     .before(PickingSystems::ProcessInput),
             )
-            .add_systems(Last, (record_frame_time, observe, exit_when_done).chain());
+            .add_systems(
+                Last,
+                (record_frame_time, observe, exit_when_done)
+                    .chain()
+                    .after(crate::world::ChunkCompaction),
+            );
         if self.rendering {
             app.add_systems(PreStartup, create_render_target)
                 .add_observer(render_to_image);
@@ -534,7 +539,8 @@ struct ScriptRunner {
     memory_report: bool,
     /// When the current settle began.
     settle_started: Option<Instant>,
-    /// Voxels `fill` has set since the last `timing`, and how long it took.
+    /// Voxels `fill` has changed since the last `timing`, and how long the
+    /// fills took.
     filled: (usize, Duration),
     /// `network` reports due at the end of this frame.
     network_reports: Vec<IVec3>,
@@ -885,19 +891,21 @@ fn apply_world_commands(world: &mut World) {
                     .run_system_cached_with(fill, (min, max, block))
                     .map_err(|error| error.to_string())
                     .and_then(|result| result);
-                let voxels = (max - min + IVec3::ONE).as_uvec3();
-                let filled = &mut world.resource_mut::<ScriptRunner>().filled;
-                filled.0 += (voxels.x * voxels.y * voxels.z) as usize;
-                filled.1 += start.elapsed();
-                result
+                let elapsed = start.elapsed();
+                result.map(|set| {
+                    let filled = &mut world.resource_mut::<ScriptRunner>().filled;
+                    filled.0 += set;
+                    filled.1 += elapsed;
+                })
             }
             Command::Lookups { min, max } => world
                 .run_system_cached_with(memory::measure_lookups, (min, max))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result)
                 .map(|cost| {
                     let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
                     println!("[frame {frame}] {cost}");
-                })
-                .map_err(|error| error.to_string()),
+                }),
             Command::Pour { pos, fluid, amount } => world
                 .run_system_cached_with(pour, (pos, fluid, amount))
                 .map_err(|error| error.to_string())
@@ -987,20 +995,29 @@ fn fill(
     In((min, max, id)): In<(IVec3, IVec3, String)>,
     content: Res<Content>,
     mut voxels: Voxels,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let state = if id == crate::content::AIR {
         BlockState::AIR
     } else {
         fill_state(&content, &id).map_err(|error| format!("fill: {error}"))?
     };
+    // The voxels it changed: not ones already full of `state`, nor ones
+    // in chunks that aren't loaded.
+    let mut set = 0;
     for x in min.x..=max.x {
         for y in min.y..=max.y {
             for z in min.z..=max.z {
-                voxels.set(IVec3::new(x, y, z), state);
+                let pos = IVec3::new(x, y, z);
+                let changes = voxels
+                    .get_with_fluid(pos)
+                    .is_some_and(|before| before != (state, None));
+                if voxels.set(pos, state) && changes {
+                    set += 1;
+                }
             }
         }
     }
-    Ok(())
+    Ok(set)
 }
 
 fn pour(
@@ -1805,6 +1822,8 @@ mod tests {
              wait 1\n",
         );
         assert_eq!(exit, AppExit::Success);
+        let runner = app.world().resource::<ScriptRunner>();
+        assert_eq!(runner.settle_started, None, "the settle's timing ended");
         let red = crate::content::base()
             .state(crate::content::block("red_lamp"))
             .light;
@@ -1925,7 +1944,15 @@ mod tests {
     /// starts over.
     #[test]
     fn timing_counts_filled_voxels() {
-        let (app, exit) = run_game("fill 0 100 0 1 101 1 air\nwait 1\n");
+        // Eight voxels of sky above the start set to stone, then the same again (changing
+        // nothing), then a box in unloaded chunks far below.
+        let (app, exit) = run_game(
+            "fill 64 70 80 65 71 81 stone\n\
+             wait 1\n\
+             fill 64 70 80 65 71 81 stone\n\
+             fill 0 -100000 0 1 -99999 1 stone\n\
+             wait 1\n",
+        );
         assert_eq!(exit, AppExit::Success);
         assert_eq!(app.world().resource::<ScriptRunner>().filled.0, 8);
         let (app, exit) = run_game("fill 0 100 0 1 101 1 air\nwait 1\ntiming\nwait 1\n");
@@ -1934,10 +1961,20 @@ mod tests {
     }
 
     /// `memory` measures the loaded world: its chunks, their light and
-    /// their meshes, which stay in the main world.
+    /// their meshes, which stay in the main world. A chunk filled with
+    /// stone and dug back out to air through the game's edits is kept as
+    /// one value again.
     #[test]
     fn memory_measures_the_loaded_world() {
-        let (mut app, exit) = run_game("memory\nlookups -32 0 -32 31 31 31\nwait 1\n");
+        let (mut app, exit) = run_game(
+            "memory\n\
+             lookups -32 0 -32 31 31 31\n\
+             wait 1\n\
+             fill 64 64 80 79 79 95 stone\n\
+             wait 1\n\
+             fill 64 64 80 79 79 95 air\n\
+             wait 2\n",
+        );
         assert_eq!(exit, AppExit::Success);
         assert!(!app.world().resource::<ScriptRunner>().memory_report);
         let memory = memory::ChunkMemory::measure(app.world_mut());
@@ -1952,7 +1989,17 @@ mod tests {
             "{memory}"
         );
         assert_eq!(memory.uniform_dense, 0, "{memory}");
+        assert_eq!(memory.uniform_dense_chunks, 0, "{memory}");
         assert!(memory.meshes > 0 && memory.mesh_bytes > 0, "{memory}");
+        let dug = app
+            .world()
+            .resource::<ChunkMap>()
+            .get(ChunkCoord(IVec3::new(4, 4, 5)))
+            .unwrap();
+        assert!(matches!(
+            app.world().get::<Chunk>(dug).unwrap().voxels(),
+            crate::world::ChunkArray::Uniform(BlockState::AIR)
+        ));
     }
 
     #[test]

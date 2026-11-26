@@ -120,13 +120,14 @@ changes.
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons, and
-   how long the `fill`s since then took) and
+   how many voxels the `fill`s since then changed and how long they took) and
    `settle` (wait for the world around the camera to load and clear of fog,
    after a `camera` jump somewhere new, and print how many frames and
    seconds that took) and `memory` (what the loaded chunks hold: how many,
    how many are one block or light throughout, the bytes of their blocks,
-   light, fluid and meshes) and `lookups` (time reading every voxel in a
-   box by world position and a chunk at a time) and `random-ticks` (pick more
+   light, fluid and meshes, and how many chunks of one value are still
+   kept dense) and `lookups` (time reading every voxel in a box of at
+   most 256³ by world position and a chunk at a time) and `random-ticks` (pick more
    voxels a chunk for random ticks, so scripted blocks grow or spread
    quickly enough to watch). The full format is documented at the top of
    `src/headless.rs`. The world loads around the camera in the background;

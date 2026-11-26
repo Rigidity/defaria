@@ -5,7 +5,7 @@ what should replace them. Newest first.
 
 ## Chunk storage: uniform chunks hold one value; voxels are still found by hash (2026-11-26)
 
-**Measured** (#71) with `scenarios/chunk-storage.txt` at the default
+**Context.** Measured (#71) with `scenarios/chunk-storage.txt` at the default
 radius (16 by 12 up and down), headless, the `dev` profile (the game
 crate at opt-level 1), on an Apple Silicon Mac that other builds were
 loading heavily (load average 40 to 80), so the times are rough:
@@ -36,29 +36,33 @@ MiB to 21 MiB and peak memory from 914 MB to 416 MB. Frame times around
 the big fills came out the same within the noise (best of six runs at
 radius 8: pit 300 → 216 ms, roof 341 → 364 ms, refill 1,167 → 1,043 ms).
 
-**The shortcut.** Voxels are still found one at a time through
+**What's wrong with it.** Voxels are still found one at a time through
 `ChunkMap` (a hash) and a query, in `Voxels::get`, light propagation,
 fluid flow and physics. That's 16 times slower than reading a chunk
 directly, but about a tenth of a big edit's frame, and nothing in normal
-play. Mixed chunks are dense (8 KiB each for blocks and for light); a
-palette (4 or 8 bits a voxel) would shrink them further, but they're 6%
-of chunks and 21 MiB.
+play. Mixed chunks are dense (8 KiB each for blocks and for light), but
+they're 6% of chunks and 21 MiB. And chunk meshes keep a copy of their
+vertices and indices in the main world (101 MiB), more than all of
+chunk storage now.
 
-**Revisit when** any of:
+**What should replace it.**
+
+- Looking a chunk up once per run of voxels: a cache of the last chunk
+  in `Voxels`, or a dense array of the loaded chunks around each loader,
+  starting with light propagation, which does the most lookups.
+- A palette for dense chunks (4 or 8 bits a voxel).
+- Chunk meshes kept in the render world only (`RENDER_WORLD`), if
+  nothing reads them back on the CPU: #161.
+
+**When to revisit.** Any of:
 
 - a profile of real play (fluids, machines, a server's chunks) shows
   voxel lookups (`ChunkMap` hashing and `Query::get`) above about 25% of
   a frame, or a common action (a fluid spreading, an explosion) takes
-  more than a frame's budget in lookups: then look a chunk up once per
-  run of voxels (a cache of the last chunk in `Voxels`, or a dense array
-  of the loaded chunks around each loader), starting with light
-  propagation, which does the most;
+  more than a frame's budget in lookups: the per-run lookup;
 - mixed (dense) chunks pass about 100 MiB (a much larger radius, or a
-  server keeping several players' areas): then a palette for dense
-  chunks;
-- chunk meshes' main-world copy (101 MiB now) matters more than chunk
-  storage, which it already does: meshes could be `RENDER_WORLD` only if
-  nothing reads them back on the CPU.
+  server keeping several players' areas): the palette;
+- the meshes' main-world copy is already due, and tracked in #161.
 
 ## Beyond the loaded area: chunk loaders first, then networks that remember unloaded conduits (2026-11-26)
 

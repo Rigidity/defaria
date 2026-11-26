@@ -264,19 +264,39 @@ mod tests {
         ChunkArray::Uniform(BlockState::AIR).get(CHUNK_VOLUME);
     }
 
+    /// What the chunk's change detection said, frame by frame, to a
+    /// system that runs before compaction (as meshing and lighting do).
+    #[derive(Resource, Default)]
+    struct SeenChanged(Vec<(bool, bool)>);
+
+    fn record_changes(chunk: Single<(Ref<Chunk>, Ref<ChunkLight>)>, mut seen: ResMut<SeenChanged>) {
+        let (chunk, light) = chunk.into_inner();
+        seen.0.push((chunk.is_changed(), light.is_changed()));
+    }
+
     /// Chunks that changed this frame are compacted, without marking them
-    /// changed again.
+    /// changed again, so nothing remeshes or relights for it next frame.
     #[test]
     fn compacts_changed_chunks() {
         let mut app = App::new();
-        app.add_systems(Update, compact_changed_chunks);
-        let mut chunk = Chunk::filled(BlockState::AIR);
+        app.init_resource::<SeenChanged>()
+            .add_systems(Update, record_changes)
+            .add_systems(Last, compact_changed_chunks);
+        let entity = app
+            .world_mut()
+            .spawn((Chunk::filled(BlockState::AIR), ChunkLight::default()))
+            .id();
+        // Clears the spawn's change.
+        app.update();
+        app.update();
+
+        // An edit that ends where it began, through change detection.
+        let mut chunk = app.world_mut().get_mut::<Chunk>(entity).unwrap();
         chunk.set(0, 0, 0, BlockState(2));
         chunk.set(0, 0, 0, BlockState::AIR);
-        let mut light = ChunkLight::default();
+        let mut light = app.world_mut().get_mut::<ChunkLight>(entity).unwrap();
         light.set_at(IVec3::ZERO, crate::light::Light(15));
         light.set_at(IVec3::ZERO, crate::light::Light::DARK);
-        let entity = app.world_mut().spawn((chunk, light)).id();
         assert!(matches!(
             app.world().get::<Chunk>(entity).unwrap().voxels(),
             ChunkArray::Dense(_)
@@ -291,5 +311,12 @@ mod tests {
             world.get::<ChunkLight>(entity).unwrap().levels(),
             ChunkArray::Uniform(_)
         ));
+
+        // Nothing touched it since.
+        app.update();
+        assert_eq!(
+            app.world().resource::<SeenChanged>().0,
+            [(true, true), (false, false), (true, true), (false, false)]
+        );
     }
 }
