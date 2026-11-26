@@ -1,0 +1,16 @@
+// A lamp with a switch: using it (right click) turns it on and off, and
+// it counts how often it's been switched (scripts/switch_lamp.luau).
+{
+  name: "Switched Lamp",
+  properties: { lit: { values: ["false", "true"] } },
+  model: "cube",
+  textures: { all: "lamp_off" },
+  variants: [
+    { when: { lit: "true" }, textures: { all: "lamp" }, light: [15, 14, 12] },
+  ],
+  hardness: 0.3,
+  weight: 500,
+  category: "lighting",
+  block_entity: { data: { switched: 0 } },
+  script: "switch_lamp",
+}

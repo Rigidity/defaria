@@ -364,6 +364,8 @@ pub struct Block {
     pub connections: Option<Connections>,
     /// Its voxels' block entity, if they have one.
     pub block_entity: Option<schema::BlockEntityDef>,
+    /// The id of the script whose hooks run for it.
+    pub script: Option<String>,
 }
 
 impl Block {
@@ -598,6 +600,8 @@ pub struct Item {
     pub category: Option<usize>,
     /// What using it does, besides placing its block.
     pub action: Option<ItemAction>,
+    /// The id of the script whose `on_use` runs when it's used.
+    pub script: Option<String>,
 }
 
 impl Item {

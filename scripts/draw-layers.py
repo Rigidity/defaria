@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Draw the procedural layer images: glass, water, lava, a grass tuft and
-an ingot.
+"""Draw the procedural layer images: glass, water, lava, a grass tuft, an
+ingot and moss.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
 src/block_texture/layer.rs checks) into OUT_DIR:
@@ -15,6 +15,8 @@ src/block_texture/layer.rs checks) into OUT_DIR:
   around them, for the crossed-quad plant model.
 - items/ingot.png: a metal bar seen from above and in front, its top
   lit, outlined, transparent around it: the ingot item's icon.
+- moss.png: soft clumps of moss, transparent between them, to lay over
+  stone. Wraps at the edges.
 
 Each tiles with itself where it needs to (water and lava wrap at the
 edges). Deterministic: the same seed always draws the same images.
@@ -187,6 +189,25 @@ def ingot():
     return rows
 
 
+def moss(rng):
+    noise = wrapping_noise(rng, 4)
+    fine = wrapping_noise(rng, 16)
+    rows = [[CLEAR for _ in range(SIZE)] for _ in range(SIZE)]
+    for y in range(SIZE):
+        for x in range(SIZE):
+            v = noise(x, y) * 0.6 + fine(x, y) * 0.4
+            if v < 0.47:
+                continue
+            # Thicker toward the middle of a clump, darker at its ragged
+            # edge, with single lit tufts here and there.
+            t = min(1.0, (v - 0.47) / 0.3)
+            level = 1 + round(t * 4)
+            if fine(x, y) > 0.72 and t > 0.3:
+                level = 6
+            rows[y][x] = px(level)
+    return rows
+
+
 def preview(path, images):
     scale, gap = 8, 8
     width = len(images) * (SIZE * scale + gap) + gap
@@ -216,6 +237,7 @@ def main():
         "lava": lava(rng),
         "tuft": tuft(rng),
         "items/ingot": ingot(),
+        "moss": moss(rng),
     }
     for name, rows in images.items():
         path = os.path.join(args.out_dir, f"{name}.png")

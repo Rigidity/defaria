@@ -34,6 +34,7 @@
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //! | `type <text>` | Type the text (the rest of the line), a key press and release per character, into whatever has the keyboard. |
+//! | `random-ticks <n>` | Pick `n` voxels in each loaded chunk for random ticks each tick (1 by default), so blocks that grow or spread on random ticks (see `script::random_tick`) do it quickly enough to watch. |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
 //!
 //! The mouse commands (`cursor`, mouse buttons, `scroll`) also drive
@@ -126,6 +127,7 @@ use crate::{
     machine::{Slots, Tanks},
     physics::Body,
     player::{EYE_HEIGHT, LocalPlayer, Player},
+    script::random_tick::RandomTicks,
     streaming::StreamingStatus,
     terrain::Voxels,
     view_bob::ViewBob,
@@ -270,6 +272,8 @@ pub enum Command {
     Settle,
     /// Type this text, a key press and release per character.
     Type(String),
+    /// Voxels picked for random ticks in each chunk each tick.
+    RandomTicks(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -423,6 +427,10 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
                 slot: slot - 1,
                 item: args[1].to_string(),
             });
+        }
+        "random-ticks" => {
+            expect(1)?;
+            commands.push(Command::RandomTicks(parse_number(args[0])?));
         }
         "network" => {
             expect(3)?;
@@ -707,7 +715,8 @@ fn run_script(
             | Command::Pour { .. }
             | Command::Put { .. }
             | Command::Camera { .. }
-            | Command::Hotbar { .. } => runner.world_commands.push(command),
+            | Command::Hotbar { .. }
+            | Command::RandomTicks(_) => runner.world_commands.push(command),
             Command::Fluids => runner.fluid_report = true,
             Command::Network(pos) => runner.network_reports.push(pos),
             Command::Type(text) => {
@@ -854,6 +863,10 @@ fn apply_world_commands(world: &mut World) {
                 .run_system_cached_with(hold_item, (slot, item))
                 .map_err(|error| error.to_string())
                 .and_then(|result| result),
+            Command::RandomTicks(per_chunk) => {
+                world.resource_mut::<RandomTicks>().per_chunk = per_chunk;
+                Ok(())
+            }
             _ => Ok(()),
         };
         if let Err(error) = result {
@@ -1551,8 +1564,9 @@ mod tests {
              pour 4 -5 6 water 0.25\n\
              fluids\n\
              network 1 -2 3\n\
-             put 1 2 3 input 4 stone[ore=defaria:iron]\n\
-             type  Iron ore 2 \n",
+             put 1 2 3 input 4 stone[ore=defaria:iron]
+             type  Iron ore 2 \n\
+             random-ticks 64\n",
         )
         .unwrap();
         assert_eq!(
@@ -1596,6 +1610,7 @@ mod tests {
                     what: "stone[ore=defaria:iron]".into(),
                 },
                 Command::Type("Iron ore 2".into()),
+                Command::RandomTicks(64),
             ]
         );
     }
@@ -1623,6 +1638,8 @@ mod tests {
         assert!(Script::parse("pour 1 2 3 water").is_err());
         assert!(Script::parse("pour 1 2 3 water lots").is_err());
         assert!(Script::parse("fluids all").is_err());
+        assert!(Script::parse("random-ticks").is_err());
+        assert!(Script::parse("random-ticks many").is_err());
     }
 
     /// Runs the whole game with no GPU until the script ends, and returns
@@ -1674,6 +1691,41 @@ mod tests {
         assert!((camera.pitch + 10f32.to_radians()).abs() < 1e-5);
         // Yaw 180 faces south (+Z), at the lamp.
         assert!(transform.forward().z > 0.9);
+    }
+
+    /// End to end: `random-ticks` speeds random ticks up, so mossy stone
+    /// spreads over a stone wall within a second; right click on the
+    /// switched lamp turns it on through its script, without placing.
+    #[test]
+    fn scripted_blocks_run_in_the_game() {
+        let (mut app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 54 22 50 stone\n\
+             fill 50 20 50 50 20 50 mossy_stone\n\
+             fill 52 24 52 52 24 52 switch_lamp\n\
+             camera 52.5 26.5 52.5 0 -89\n\
+             random-ticks 512\n\
+             hold MouseLeft 1\n\
+             wait 2\n\
+             hold MouseRight 1\n\
+             wait 60\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let base = crate::content::base();
+        let mut at = |pos: IVec3| -> BlockState {
+            use bevy::ecs::system::RunSystemOnce;
+            app.world_mut()
+                .run_system_once(move |voxels: Voxels| voxels.get(pos))
+                .unwrap()
+                .unwrap()
+        };
+        let mossy = crate::content::block("mossy_stone");
+        let wall = (50..=54).flat_map(|x| (20..=22).map(move |y| IVec3::new(x, y, 50)));
+        let mossy_count = wall.filter(|&pos| at(pos) == mossy).count();
+        assert!(mossy_count > 3, "{mossy_count}");
+        let lit = base.block_state("defaria:switch_lamp", &[("lit", "true")]);
+        assert_eq!(Some(at(IVec3::new(52, 24, 52))), lit);
+        assert!(at(IVec3::new(52, 25, 52)).is_air());
     }
 
     /// End to end: pipes `fill` sets in the game join the pipes next to

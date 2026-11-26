@@ -1,0 +1,10 @@
+// A clump of moss. Used on bare stone, it makes it mossy, and is used up
+// (scripts/moss.luau).
+{
+  name: "Moss",
+  texture: "moss",
+  hardness: 0.1,
+  weight: 0.1,
+  category: "natural",
+  script: "moss",
+}

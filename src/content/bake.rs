@@ -138,6 +138,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             state_count: 1,
             connections: None,
             block_entity: None,
+            script: None,
         }],
         states: vec![State {
             name: "Air".into(),
@@ -1562,6 +1563,12 @@ fn add_block(
         .as_ref()
         .map(|machine| MachineMix::new(machine, &def.namespace, &properties, content))
         .transpose()?;
+    let script = block
+        .script
+        .as_ref()
+        .map(|script| qualify(script, &def.namespace))
+        .transpose()
+        .map_err(|error| format!("`script`: {error}"))?;
     let count = check_count(&properties)?;
     if content.states.len() + count > u16::MAX as usize + 1 {
         return Err("out of block states: there are too many blocks".into());
@@ -1705,6 +1712,7 @@ fn add_block(
             .block_entity
             .clone()
             .or_else(|| (block.machine.is_some() || block.conduit.is_some()).then(default)),
+        script,
     });
     content.block_index.insert(def.id.clone(), index);
     for state in states.iter().filter(|s| s.render == Render::Cutout) {
@@ -2220,8 +2228,15 @@ fn block_item(
         states.push(info);
     }
     let unique = file.and_then(|file| file.def.unique).unwrap_or(false);
+    let script = file
+        .and_then(|file| Some((file.def.script.as_ref()?, &file.namespace)))
+        .map(|(script, namespace)| qualify(script, namespace))
+        .transpose()
+        .map_err(|error| format!("`script`: {error}"))?;
     let action = file.and_then(|file| file.def.action);
-    push_item(id, properties, unique, action, category, states, content);
+    push_item(
+        id, properties, unique, action, category, script, states, content,
+    );
     Ok(())
 }
 
@@ -2294,12 +2309,19 @@ fn standalone_item(
         states.push(info);
     }
     let unique = item_def.unique.unwrap_or(false);
+    let script = item_def
+        .script
+        .as_ref()
+        .map(|script| qualify(script, &def.namespace))
+        .transpose()
+        .map_err(|error| format!("`script`: {error}"))?;
     push_item(
         &def.id,
         properties,
         unique,
         item_def.action,
         category,
+        script,
         states,
         content,
     );
@@ -2339,6 +2361,7 @@ fn push_item(
     unique: bool,
     action: Option<ItemAction>,
     category: Option<usize>,
+    script: Option<String>,
     states: Vec<ItemStateInfo>,
     content: &mut Content,
 ) {
@@ -2351,6 +2374,7 @@ fn push_item(
         unique,
         category,
         action,
+        script,
     });
     content.item_states.extend(states);
 }

@@ -4,7 +4,9 @@
 //! A block whose `connections` property becomes six sides (see
 //! `content::connect`) has each side set from the block next to it,
 //! through [`Content::connected`]. That happens for every voxel near one
-//! that changed ([`VoxelChanged`], which `fill` in scenarios sends too) and
+//! that changed ([`VoxelChanged`], which `fill` in scenarios sends too),
+//! or that the engine or a script updated in more than its sides
+//! ([`PropertiesUpdated`]: a cable recoloured, a machine turned), and
 //! for every connecting block in a chunk that's just loaded, and along the
 //! faces of the loaded chunks next to it, so a pipe placed against an
 //! unloaded chunk catches up when it loads. A side facing a chunk that
@@ -26,7 +28,7 @@ use crate::{
     block_entity::{BlockEntities, BlockEntity, BlockEntityPart, Value},
     content::{BlockState, Content, Direction},
     mining::MiningSystems,
-    terrain::{ChunkCoord, ChunkMap, RemeshChunks, VoxelChanged, Voxels},
+    terrain::{ChunkCoord, ChunkMap, PropertiesUpdated, RemeshChunks, VoxelChanged, Voxels},
     voxel::{CHUNK_SIZE, Chunk},
 };
 
@@ -35,11 +37,19 @@ pub struct ConnectionsPlugin;
 impl Plugin for ConnectionsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Unconnected>()
+            .init_resource::<LoadedChunks>()
+            .add_observer(note_loaded_chunk)
             .register_type::<BlockedFaces>()
             .add_observer(around_unblocked)
             .add_systems(
                 Update,
-                (around_blocked, around_edits, in_loaded_chunks, connect)
+                (
+                    around_blocked,
+                    around_edits,
+                    around_updates,
+                    in_loaded_chunks,
+                    connect,
+                )
                     .chain()
                     .in_set(ConnectionSystems)
                     .after(BlockEditSystems)
@@ -149,6 +159,27 @@ fn around_edits(mut changes: MessageReader<VoxelChanged>, mut pending: ResMut<Un
     }
 }
 
+/// Each voxel updated in more than its sides (a cable recoloured or a
+/// machine turned, by a script's `set_state`), and the six around it: what
+/// it offers them may have changed. One updated in its sides alone, as
+/// [`connect`] does, offers its neighbours the same, so only it is checked
+/// again (a script may have set its sides), which comes out unchanged
+/// after [`connect`]'s own updates, so this settles.
+fn around_updates(
+    mut updates: MessageReader<PropertiesUpdated>,
+    content: Res<Content>,
+    mut pending: ResMut<Unconnected>,
+) {
+    let bare = |state| content.connected_unless(state, |_| true, |_| None);
+    for update in updates.read() {
+        if bare(update.before) == bare(update.after) {
+            pending.0.insert(update.pos);
+        } else {
+            pending.around(update.pos);
+        }
+    }
+}
+
 /// Each conduit whose blocked faces changed, or that's new with some
 /// blocked (loaded from the save), and the six around it.
 fn around_blocked(
@@ -178,17 +209,34 @@ fn around_unblocked(
     }
 }
 
+/// Chunks spawned since [`in_loaded_chunks`] last ran, noted as they're
+/// added: an `Added<Chunk>` query would look at every loaded chunk on
+/// every frame.
+#[derive(Resource, Debug, Default)]
+struct LoadedChunks(Vec<Entity>);
+
+fn note_loaded_chunk(add: On<Add<Chunk>>, mut loaded: ResMut<LoadedChunks>) {
+    loaded.0.push(add.entity);
+}
+
 /// The connecting blocks in each chunk that's just loaded, and in the
 /// layer of each loaded chunk next to it that touches it.
 fn in_loaded_chunks(
-    added: Query<(&ChunkCoord, &Chunk), Added<Chunk>>,
+    mut loaded: ResMut<LoadedChunks>,
+    added: Query<&ChunkCoord>,
     chunks: Query<&Chunk>,
     map: Res<ChunkMap>,
     content: Res<Content>,
     mut pending: ResMut<Unconnected>,
 ) {
+    if loaded.0.is_empty() {
+        return;
+    }
     let last = CHUNK_SIZE as i32 - 1;
-    for (coord, chunk) in &added {
+    for entity in loaded.0.drain(..) {
+        let (Ok(coord), Ok(chunk)) = (added.get(entity), chunks.get(entity)) else {
+            continue;
+        };
         let origin = coord.origin();
         for (index, &state) in chunk.voxels().iter().enumerate() {
             if content.connects(state) {
@@ -273,7 +321,12 @@ mod tests {
             .add_message::<FluidChanged>()
             .add_message::<PropertiesUpdated>()
             .init_resource::<Unconnected>()
-            .add_systems(Update, (around_edits, in_loaded_chunks, connect).chain());
+            .init_resource::<LoadedChunks>()
+            .add_observer(note_loaded_chunk)
+            .add_systems(
+                Update,
+                (around_edits, around_updates, in_loaded_chunks, connect).chain(),
+            );
         app
     }
 
@@ -410,6 +463,59 @@ mod tests {
             edits.iter().all(|&after| after == stale || after == pipe()),
             "{edits:?}"
         );
+    }
+
+    /// An update that changes what a block offers its neighbours, such as
+    /// a script recolouring a cable, lets go of them and joins anew; one
+    /// to a block's sides alone is put right.
+    #[test]
+    fn updates_that_change_what_joins_reconnect_around_them() {
+        let content = crate::content::test_mod(&[
+            ("models/m.json5", "{ faces: [] }"),
+            (
+                "networks/power.json5",
+                r#"{ name: "Power", solver: "energy" }"#,
+            ),
+            (
+                "blocks/cable.json5",
+                r#"{ model: "m", properties: { color: ["red", "blue"], connect: { connections: true } },
+                     conduit: { network: "power", group: "{color}_cable", capacity: 0, throughput: 5 } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let cable = |color, sides: &[Direction]| {
+            let mut values = vec![("color", color)];
+            values.extend(sides.iter().map(|side| (side.name(), "true")));
+            content.block_state("test:cable", &values).unwrap()
+        };
+        let mut app = app();
+        app.insert_resource(content.clone());
+        spawn(&mut app, IVec3::ZERO, Chunk::default());
+        app.update();
+        let (a, b) = (IVec3::new(4, 4, 4), IVec3::new(5, 4, 4));
+        set(&mut app, a, cable("red", &[]));
+        set(&mut app, b, cable("red", &[]));
+        assert_eq!(get(&mut app, a), cable("red", &[E]));
+        assert_eq!(get(&mut app, b), cable("red", &[W]));
+
+        let update = |app: &mut App, pos: IVec3, state: BlockState| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| assert!(voxels.update(pos, state)))
+                .unwrap();
+            app.update();
+            app.update();
+        };
+        // Recoloured blue, still joined west: both let go.
+        update(&mut app, b, cable("blue", &[W]));
+        assert_eq!(get(&mut app, a), cable("red", &[]));
+        assert_eq!(get(&mut app, b), cable("blue", &[]));
+        // Back to red: they join again.
+        update(&mut app, b, cable("red", &[]));
+        assert_eq!(get(&mut app, a), cable("red", &[E]));
+        assert_eq!(get(&mut app, b), cable("red", &[W]));
+        // Sides set by hand are put right.
+        update(&mut app, b, cable("red", &[W, N]));
+        assert_eq!(get(&mut app, b), cable("red", &[W]));
     }
 
     #[test]

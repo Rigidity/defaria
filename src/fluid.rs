@@ -222,7 +222,7 @@ pub fn cell_of(content: &Content, state: BlockState, partial: Option<u16>) -> Ce
 }
 
 /// Steps the fluid, at most [`FluidSettings::cells_per_tick`] voxels a tick.
-fn run_flow(
+pub(crate) fn run_flow(
     time: Res<Time>,
     settings: Res<FluidSettings>,
     mut sim: ResMut<FluidSim>,

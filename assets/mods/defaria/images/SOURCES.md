@@ -25,9 +25,10 @@ update the row when a layer is replaced.
 
 ## Drawn by script
 
-`glass.png`, `water.png`, `lava.png`, `tuft.png` and `items/ingot.png` were
-drawn procedurally by `scripts/draw-layers.py` (no Retro Diffusion),
-2026-11-25 (the ingot 2026-11-26). Re-run the script to redraw them.
+`glass.png`, `water.png`, `lava.png`, `tuft.png`, `items/ingot.png` and
+`moss.png` were drawn procedurally by `scripts/draw-layers.py` (no Retro
+Diffusion), 2026-11-25 (the ingot and moss 2026-11-26). Re-run the script
+to redraw them.
 
 - `glass.png`: a solid one-pixel frame, lit from the top left, two short
   highlight streaks, and a nearly clear middle (alpha 40). Partly
@@ -43,6 +44,10 @@ drawn procedurally by `scripts/draw-layers.py` (no Retro Diffusion),
   (levels 6–7) over a darker front (5 to 3) with a glint, outlined in
   level 1, transparent around it. The ingot item's icon, colored by its
   metal.
+- `moss.png`: soft clumps of moss from two layers of wrapping value noise,
+  darker at their ragged edges with a few lit tufts, covering about 60%
+  and transparent between, laid over `stone.png` for mossy stone (and the
+  moss item's icon). Wraps at the edges.
 
 ## Networks and machines
 

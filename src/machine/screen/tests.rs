@@ -665,3 +665,79 @@ fn a_big_slot_group_scrolls() {
     let (node, at) = panels.single(world).unwrap();
     assert_eq!(at.translation.y - node.size.y / 2.0, machine_top);
 }
+
+/// The base game and a test mod with a machine that has slots (so a
+/// screen) and a script counting its uses.
+fn scripted_machine_mods() -> Vec<crate::content::load::ModFiles> {
+    use crate::content::{
+        MODS_DIR,
+        load::{ModFiles, read_mods},
+    };
+    let (mut mods, errors) = read_mods(std::path::Path::new("assets/mods"), MODS_DIR);
+    assert!(errors.is_empty(), "{errors:?}");
+    mods.push(ModFiles::new(
+        "mods/test",
+        r#"{ id: "test", name: "Test", dependencies: ["defaria"] }"#,
+        &[
+            (
+                "blocks/box.json5",
+                r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, script: "box", machine: { slots: { items: 1 } } }"#,
+            ),
+            (
+                "scripts/box.luau",
+                "function on_used(block, player)\n\tblock.data.used = (block.data.used or 0) + 1\nend\n",
+            ),
+        ],
+    ));
+    mods
+}
+
+/// Right click on a machine whose script has `on_used` runs the script
+/// instead of opening its screen; with a wrench in hand, the wrench takes
+/// the click and neither happens.
+#[test]
+fn a_scripted_machine_is_used_rather_than_opened() {
+    use crate::{
+        block_entity::{BlockData, Value},
+        content::load::order,
+        script::{ScriptIndex, ScriptRuntime, ScriptSources},
+    };
+    let content = Content::from_mods(scripted_machine_mods());
+    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let sources = ScriptSources::from_mods(&order(scripted_machine_mods(), &mut Vec::new()));
+    let runtime = ScriptRuntime::new(sources, default());
+    let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
+    app.insert_resource(ScriptIndex::new(&content, &runtime))
+        .insert_resource(runtime)
+        .insert_resource(content);
+    settle(&mut app);
+    let used = |app: &mut App| {
+        let entity = app
+            .world()
+            .resource::<BlockEntities>()
+            .get(FURNACE)
+            .unwrap();
+        app.world()
+            .get::<BlockData>(entity)
+            .and_then(|data| data.0.get("used").cloned())
+    };
+    run_more(
+        &mut app,
+        "fill 60 66 84 68 74 92 air\n\
+         fill 64 70 89 64 70 89 test:box\n\
+         wait 2\n\
+         hold MouseLeft 1\n\
+         wait 1\n\
+         hold MouseRight 1\n\
+         wait 5",
+    );
+    assert!(!is_open(&mut app));
+    assert_eq!(used(&mut app), Some(Value::Int(1)));
+
+    run_more(
+        &mut app,
+        "hotbar 1 wrench\nwait 1\nhold MouseRight 1\nwait 5",
+    );
+    assert!(!is_open(&mut app));
+    assert_eq!(used(&mut app), Some(Value::Int(1)));
+}

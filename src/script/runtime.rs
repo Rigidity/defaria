@@ -25,6 +25,8 @@ pub enum Caller {
     Entity(Entity),
     /// A block with no entity of its own.
     Block(IVec3),
+    /// A kind of item, by its index in [`Content::items`](crate::content::Content::items).
+    Item(usize),
     /// Anything else, such as a test.
     Other(u64),
 }
@@ -65,6 +67,8 @@ pub struct ScriptRuntime {
     disabled: HashSet<Caller>,
     log: Arc<LogHistory>,
     generation: u64,
+    /// The steps every hook call has used, since the scripts loaded.
+    spent: u64,
 }
 
 impl ScriptRuntime {
@@ -90,6 +94,7 @@ impl ScriptRuntime {
             disabled: HashSet::default(),
             log,
             generation,
+            spent: 0,
         };
         for scripts in &sources.mods {
             let meter = Arc::new(Meter::new(runtime.settings.time_limit));
@@ -192,6 +197,12 @@ impl ScriptRuntime {
         self.disabled.contains(&caller)
     }
 
+    /// Enables `caller` again after an error disabled it, such as a block
+    /// position when another block is placed there.
+    pub fn enable(&mut self, caller: Caller) {
+        self.disabled.remove(&caller);
+    }
+
     /// The most recent lines the scripts logged, oldest first.
     pub fn log_lines(&self) -> Vec<LogLine> {
         self.log.lines()
@@ -206,6 +217,14 @@ impl ScriptRuntime {
     /// The steps the last call (or load) in mod `mod_id` used.
     pub fn steps_used(&self, mod_id: &str) -> Option<u64> {
         Some(self.mods.iter().find(|m| m.id == mod_id)?.meter.used())
+    }
+
+    /// The steps every hook call has used since the scripts last loaded,
+    /// so callers can tell what a run of calls cost:
+    /// `runtime.steps_spent() - before`. A call that ran out (of steps
+    /// or time) counts as its whole budget.
+    pub fn steps_spent(&self) -> u64 {
+        self.spent
     }
 
     /// Calls `hook` of script `id` for `caller`, with the arguments `args`
@@ -228,6 +247,24 @@ impl ScriptRuntime {
         A: IntoLuaMulti,
         R: FromLuaMulti,
     {
+        self.call_scoped(caller, id, hook, |_, scope, function| {
+            function.call::<R>(args(scope)?)
+        })
+    }
+
+    /// [`ScriptRuntime::call`] for callers that set more up around the
+    /// call: `call` gets the mod's state, the call's [`Scope`] and the
+    /// hook, and calls it itself, within the budget. What it returns is
+    /// the call's result; an error from it fails the call as the hook's
+    /// own would. (`ScriptWorld::call` puts the world in the registry this
+    /// way, and saves blocks' data after the hook returns.)
+    pub fn call_scoped<'env, R>(
+        &mut self,
+        caller: Caller,
+        id: &str,
+        hook: &str,
+        call: impl for<'scope> FnOnce(&Lua, &'scope Scope<'scope, 'env>, &Function) -> mlua::Result<R>,
+    ) -> Result<Option<R>, CallError> {
         if self.disabled.contains(&caller) {
             return Err(CallError::Disabled);
         }
@@ -259,7 +296,14 @@ impl ScriptRuntime {
         };
         let state = &self.mods[script.mod_index];
         state.meter.start(self.settings.step_budget);
-        let result = state.lua.scope(|scope| function.call::<R>(args(scope)?));
+        let result = state.lua.scope(|scope| call(&state.lua, scope, function));
+        // A call stopped for running out is charged its whole budget,
+        // even if the clock stopped it after a few slow steps.
+        self.spent += if state.meter.overran() {
+            self.settings.step_budget
+        } else {
+            state.meter.used()
+        };
         match result {
             Ok(value) => Ok(Some(value)),
             Err(error) => {

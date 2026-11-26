@@ -1,0 +1,4 @@
+// A clump of moss, on its own: the moss item's icon.
+{
+  layers: [{ image: "moss", material: "grass" }],
+}

@@ -806,9 +806,35 @@ removes it.
 }
 ```
 
-`block_entity: {}` gives the block one with no data of its own. Features
-of the game (machines, conduits, scripts) add their own parts to the
-block entities of the blocks they apply to.
+`block_entity: {}` gives the block one with no data of its own (or an
+empty table, for a block with a [script](#scripts)). Features of the
+game (machines, conduits, scripts) add their own parts to the block
+entities of the blocks they apply to.
+
+### Scripts
+
+`script` names a [Luau script](scripting.md) whose hooks run for the
+block: when it's used (right click), placed, broken, when a block next
+to it changes, and on random ticks. `"lamp"` is this mod's
+`scripts/lamp.luau`; `"other:lamp"` is another mod's.
+
+```json5
+// blocks/switch_lamp.json5
+{
+  name: "Switched Lamp",
+  properties: { lit: { values: ["false", "true"] } },
+  model: "cube",
+  textures: { all: "lamp_off" },
+  variants: [{ when: { lit: "true" }, textures: { all: "lamp" }, light: [15, 14, 12] }],
+  block_entity: { data: { switched: 0 } },  // its script keeps a count here
+  script: "switch_lamp",
+}
+```
+
+A scripted block changes its state (`block:set_state { lit = true }`)
+and the blocks next to it. Only a block with a `block_entity` keeps data
+of its own (`block.data`) between calls. The block's item doesn't take
+its script: give the item its own with an item file.
 
 ### Machines
 
@@ -947,6 +973,7 @@ an item or material that doesn't exist, is an error.
   weight: { base: 0.0007, materials: { head: 1, handle: 3 } },
   stats: { reach: 4.5 },  // other numbers, by name
   action: "wrench",      // optional: what using it (right click) does
+  script: "pickaxe",      // optional: its `on_use` runs when it's used
 }
 ```
 
@@ -958,7 +985,7 @@ an item or material that doesn't exist, is an error.
   arm, so it's opened again from the core's face there, or from the face
   of the block next to it (a machine's port). It places nothing, and
   while it's in hand right click on any block is its own: it doesn't
-  open machines' screens.
+  open machines' screens or use scripted blocks.
 
 `hardness`, `weight` and `stats` work as they do for
 [blocks](#hardness-weight-and-stats), with the item's own properties;
@@ -966,6 +993,10 @@ weight is what one of the item weighs, in kilograms. Left out, hardness
 and weight are those of the block state the item places, or 0 for an
 item that places none. An item has the stats of the block state it
 places as well as its own, its own winning where both have one.
+
+`script` names a [Luau script](scripting.md) whose `on_use` hook runs
+when a player uses the item (right click with it in hand) instead of
+placing its block. The base game's Moss turns bare stone mossy.
 
 Inventories count items, limited only by weight, so any number of an
 item fits in one entry. A `unique` item is the exception: every copy is
