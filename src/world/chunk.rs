@@ -240,7 +240,7 @@ pub fn fluid_step(amount: u16) -> u16 {
 /// nudges amounts by a few thousandths as it levels off, and without this,
 /// an amount at the edge between two heights would make the surface
 /// blink between them.
-pub fn sticky_step(amount: u16, before: u16) -> u16 {
+fn sticky_step(amount: u16, before: u16) -> u16 {
     let step = fluid_step(amount);
     let size = FULL_FLUID as f32 / FLUID_STEPS as f32;
     let (low, high) = ((before as f32 - 1.5) * size, (before as f32 + 0.5) * size);
