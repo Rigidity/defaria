@@ -1,7 +1,8 @@
 //! The hotbar: nine item slots along the bottom of the screen, one of them
 //! active. Right click places the active slot's block (see `block_edit`).
 //!
-//! - The number keys 1–9 pick the active slot, in game or in a screen.
+//! - The number keys 1–9 pick the active slot, in game or in a screen
+//!   (unless a text field has the keyboard).
 //! - The mouse wheel steps through the slots while playing: away from you
 //!   is the slot to the left, toward you the one to the right, wrapping.
 //! - Switching slots shows the item's name above the hotbar for a moment.
@@ -19,7 +20,7 @@ use bevy::{
 
 use crate::{
     content::{BlockState, Content, ItemState},
-    ui::{ItemSlot, UiTheme, item_slot, playing},
+    ui::{ItemSlot, UiTheme, item_slot, playing, typing},
 };
 
 pub const HOTBAR_SLOTS: usize = 9;
@@ -86,7 +87,11 @@ impl Plugin for HotbarPlugin {
             .add_systems(
                 Update,
                 (
-                    (select_with_keys, cycle_with_wheel.run_if(playing)).in_set(HotbarInput),
+                    (
+                        select_with_keys.run_if(not(typing)),
+                        cycle_with_wheel.run_if(playing),
+                    )
+                        .in_set(HotbarInput),
                     (show_hotbar, show_active_name).after(HotbarInput),
                 ),
             );
@@ -205,7 +210,7 @@ fn spawn_hotbar(mut commands: Commands, theme: Res<UiTheme>) {
             root.spawn((
                 ActiveItemName::default(),
                 Text::default(),
-                TextFont::from_font_size(theme.title_font_size),
+                theme.title_font(),
                 TextColor(Color::NONE),
                 name_shadow(0.0),
             ));
@@ -294,9 +299,17 @@ fn show_active_name(
     }
 }
 
+/// A shadow one pixel of the pixel font down and right.
+fn text_shadow() -> TextShadow {
+    TextShadow {
+        offset: Vec2::splat(1.0),
+        ..default()
+    }
+}
+
 /// The name's shadow, as visible as the text at `alpha`.
 fn name_shadow(alpha: f32) -> TextShadow {
-    let shadow = TextShadow::default();
+    let shadow = text_shadow();
     TextShadow {
         color: shadow.color.with_alpha(shadow.color.alpha() * alpha),
         ..shadow
@@ -441,7 +454,7 @@ mod tests {
         let (text, color, shadow, _) = names.single(app.world()).unwrap();
         assert_eq!(text.0, "Oak Log");
         assert_eq!(color.0.alpha(), 1.0);
-        assert_eq!(shadow.color, TextShadow::default().color);
+        assert_eq!(shadow.color, text_shadow().color);
         // 0.1 s a frame: 1.6 s on, 0.4 s are left, partway through the fade.
         for _ in 0..16 {
             app.update();
@@ -453,7 +466,7 @@ mod tests {
             "{}",
             color.0.alpha()
         );
-        let full = TextShadow::default().color.alpha();
+        let full = text_shadow().color.alpha();
         assert!(
             (shadow.color.alpha() - full * alpha).abs() < 1e-3,
             "{}",

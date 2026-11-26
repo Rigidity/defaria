@@ -19,7 +19,7 @@ use bevy::{
 use crate::{
     content::{Content, ItemState},
     hotbar::{ActiveSlot, Hotbar, hotbar_height},
-    ui::{ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel},
+    ui::{ItemSlot, UiScreen, UiTheme, item_slot, scroll_panel, typing},
 };
 
 /// Slots in a row of the grid.
@@ -37,7 +37,10 @@ impl Plugin for InventoryPlugin {
             .register_type::<InventoryScreen>()
             .register_type::<InventoryGrid>()
             .add_observer(pick_item)
-            .add_systems(Update, (toggle_inventory, frame_active_item));
+            .add_systems(
+                Update,
+                (toggle_inventory.run_if(not(typing)), frame_active_item),
+            );
     }
 }
 
@@ -128,7 +131,7 @@ fn spawn_inventory(
             .with_children(|panel| {
                 panel.spawn((
                     Text::new("Items"),
-                    TextFont::from_font_size(theme.title_font_size),
+                    theme.title_font(),
                     TextColor(theme.text),
                 ));
                 scroll_panel(
@@ -163,7 +166,7 @@ fn spawn_inventory(
                 );
                 panel.spawn((
                     Text::new("Click an item to put it in the selected hotbar slot"),
-                    TextFont::from_font_size(theme.font_size - 2.0),
+                    theme.text_font(),
                     TextColor(theme.text_dim),
                 ));
             });

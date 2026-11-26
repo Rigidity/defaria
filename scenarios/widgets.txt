@@ -1,0 +1,39 @@
+# The widget gallery (F10, dev builds): hover and click a button, then
+# type into a text field and edit what's typed.
+# Run: cargo headless scenarios/widgets.txt
+camera 64 56 92 0 -37.9          # the start's view, flying
+wait 2
+hold F10 1                       # open the gallery
+wait 3
+cursor 513 301                   # hover the button
+wait 2
+screenshot target/scenarios/widgets/0-hover.png
+wait 1
+hold MouseLeft 1                 # click it twice
+wait 1
+hold MouseLeft 1
+wait 2
+inspect Gallery
+cursor 640 349                   # click the text field: it takes the keyboard
+wait 1
+hold MouseLeft 1
+wait 1
+type Hello wordl
+hold Backspace 1                 # fix the typo: "wordl" -> "world"
+wait 1
+hold Backspace 1
+wait 1
+type ld
+hold Digit3 1                    # with the keyboard taken, 3 is text, not a hotbar slot
+wait 1
+hold ArrowLeft 1
+wait 1
+hold Backspace 1                 # delete the "d" before the cursor: "worl3"
+wait 2
+inspect TextField
+inspect ActiveSlot
+screenshot target/scenarios/widgets/1-typed.png
+wait 1
+hold Escape 1                    # Escape drops the keyboard and closes the screen
+wait 2
+screenshot target/scenarios/widgets/2-closed.png

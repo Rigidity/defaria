@@ -46,7 +46,7 @@ fn spawn_tooltip(mut commands: Commands, theme: Res<UiTheme>) {
         Pickable::IGNORE,
         Visibility::Hidden,
         Text::default(),
-        TextFont::from_font_size(theme.font_size),
+        theme.text_font(),
         TextColor(theme.text),
     ));
 }

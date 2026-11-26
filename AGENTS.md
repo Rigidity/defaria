@@ -91,9 +91,11 @@ changes.
    `grain` (a texture-noise number for the frame; lower is smoother, and only
    comparable between runs with the same view and art), `inspect`, `fill`
    (set a box of voxels to a block, to build a test scene), `cursor` and
-   `scroll` (point at and wheel over UI, such as the inventory), `pour` (put
-   an amount of a fluid in a voxel) and `fluids` (each fluid's total in the
-   loaded world and how much of it is active), `camera` (put the
+   `scroll` (point at and wheel over UI, such as the inventory; they drive
+   Bevy's picking as a real mouse does), `type` (type text into whatever
+   has the keyboard, such as a text field), `pour` (put an amount of a
+   fluid in a voxel) and `fluids` (each fluid's total in the loaded world
+   and how much of it is active), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -258,9 +260,11 @@ documented in `docs/modding.md`; keep that file, the serde types in
   translucent faces sorted back to front. `src/voxel.rs` builds the meshes.
 - `src/ui.rs` (and `src/ui/`): the UI toolkit that the HUD and screens are
   built from: the theme, screens (`UiScreen`, and the `playing` run
-  condition gameplay input runs under), pointer hover and clicks, scrolling,
-  item icons, item slots and tooltips. Build new UI from these, in the
-  feature's own module.
+  condition gameplay input runs under), the pointer (Bevy's picking),
+  scrolling, the pixel font, buttons, text fields (and the `typing` run
+  condition), item icons, item slots and tooltips. Build new UI from these,
+  in the feature's own module. F10 opens a gallery of the widgets in dev
+  builds (`src/ui/gallery.rs`), for working on how they look.
 - `src/block_edit.rs`: the crosshair, its target and placing blocks.
   `src/mining.rs`: breaking blocks by holding left click, for a time set
   by their hardness (`Mining`, on the camera, has the target and progress).
