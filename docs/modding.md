@@ -1280,8 +1280,7 @@ and tanks (a player, a tube, a pipe, a script), it runs on them the same.
 - A light filter dims every colour alike, so water doesn't tint what's
   under it, and a fluid's is the same however full it is.
 - Variants can't add or remove parts; a part's `when` does that.
-- Fluids' textures don't move, and their surfaces are flat steps rather
-  than slopes.
+- Fluids' textures don't move.
 - Fluids only flow into air: not into blocks that don't fill their
   voxel, such as slabs and plants.
 - Models are block-only so far: no bones or animation for entities.

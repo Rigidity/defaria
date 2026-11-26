@@ -42,7 +42,7 @@ use bevy::{
 use crate::{
     content::{BakedFace, BlockState, Content, Direction, MAX_LIGHT, Render, Vertex},
     light::{ChunkLight, Light},
-    world::{CHUNK_SIZE, Chunk, FLUID_STEPS, axis_of, fluid_surface},
+    world::{CHUNK_SIZE, Chunk, FLUID_STEPS, FluidTop, axis_of},
 };
 
 /// Where a vertex sits on its face, for blending the corners: `(0, 0)` at
@@ -71,15 +71,16 @@ pub const BACK_FACE: u32 = 1 << 31;
 /// full sky light, so faces at the edge of the world are lit.
 const OPEN_SKY: Light = Light::new(MAX_LIGHT, [0; 3]);
 
-/// `high` up the block, with its texture cut off rather than squashed: a
-/// vertex keeps the texture coordinate it had at its new height, along the
-/// face's vertical edge.
-fn cut_face(face: &BakedFace, low: f32, high: f32) -> BakedFace {
+/// `face` (of a block from 0 to 1 high) squeezed to run from the bottom
+/// up to `top`, with its texture cut off rather than squashed: a vertex
+/// keeps the texture coordinate it had at its new height, along the face's
+/// vertical edge.
+fn cut_face(face: &BakedFace, top: &FluidTop) -> BakedFace {
     let vertices = face
         .vertices
         .iter()
         .map(|vertex| {
-            let y = low + vertex.pos.y * (high - low);
+            let y = vertex.pos.y * top.at_vertex(vertex.pos);
             let partner = face
                 .vertices
                 .iter()
@@ -202,26 +203,23 @@ impl Neighborhood {
         self.light[Self::index(pos)]
     }
 
-    /// How high the fluid of block `fluid` at `pos` is drawn (see
-    /// [`fluid_surface`]); 0 where there's none.
-    fn fluid_height(&self, fluid: BlockState, pos: IVec3) -> f32 {
-        if self.block(pos) != fluid {
-            return 0.0;
-        }
-        let above = pos + IVec3::Y;
-        let inside = above.cmple(IVec3::splat(CHUNK_SIZE as i32)).all();
-        let step = self.steps[Self::index(pos)];
-        fluid_surface(step, inside && self.block(above) == fluid)
+    /// The top of the fluid of block `fluid` at `pos` (see [`FluidTop`]),
+    /// from the voxels around it, which are all in the neighbourhood for a
+    /// voxel of the middle chunk.
+    fn fluid_top(&self, fluid: BlockState, pos: IVec3) -> FluidTop {
+        FluidTop::of(fluid, pos, |at| {
+            Some((self.block(at), self.steps[Self::index(at)]))
+        })
     }
 
     /// The faces of the fluid voxel at `pos`, and their backs if it's
-    /// double-sided, cut to the height it's drawn at:
+    /// double-sided, cut to its surface (see [`FluidTop`]):
     ///
-    /// - its top at its height, unless the same fluid is above it; below a
-    ///   full block, the top is hidden as any face is ([`Content::hides`]);
-    /// - each side from the height of the same fluid next to it (none if
-    ///   that's as high), or from the bottom against anything else, which
-    ///   hides it as usual;
+    /// - its top, unless the same fluid is above it; a full block high,
+    ///   it's hidden as any face is ([`Content::hides`]);
+    /// - each side up to the corners of its top, unless the same fluid is
+    ///   next to it, whose top meets this one's at the same corners;
+    ///   anything else hides it as usual;
     /// - its bottom, unless the same fluid is below it.
     fn fluid_faces(
         &self,
@@ -232,40 +230,30 @@ impl Neighborhood {
     ) {
         let voxel = self.block(pos);
         let state = content.state(voxel);
-        let height = self.fluid_height(voxel, pos);
+        // Built only once a face shows: most of a sea shows none.
+        let mut top = None;
         for face in &state.faces {
             let Some(side) = face.cull else {
                 continue;
             };
             let next = pos + side.normal();
             let neighbour = self.block(next);
-            let same = neighbour == voxel;
-            let low = match side {
-                Direction::Up | Direction::Down if same => continue,
-                Direction::Up if height < 1.0 => None,
-                Direction::Up | Direction::Down => Some(0.0),
-                _ if same => {
-                    let low = self.fluid_height(voxel, next);
-                    if low >= height {
-                        continue;
-                    }
-                    Some(low)
-                }
-                _ => Some(0.0),
-            };
-            let face = match low {
+            if neighbour == voxel {
+                continue;
+            }
+            let top = *top.get_or_insert_with(|| self.fluid_top(voxel, pos));
+            let face = if side == Direction::Up && !top.is_full() {
                 // A lowered top lies inside the voxel, so it's shaded from
                 // the voxel itself, and nothing beside it can hide it.
-                None => BakedFace {
+                BakedFace {
                     cull: None,
-                    ..cut_face(face, 0.0, height)
-                },
-                Some(low) => {
-                    if !same && content.hides(voxel, neighbour, side) {
-                        continue;
-                    }
-                    cut_face(face, low, height)
+                    ..cut_face(face, &top)
                 }
+            } else {
+                if content.hides(voxel, neighbour, side) {
+                    continue;
+                }
+                cut_face(face, &top)
             };
             let shading = self.shade_face(pos, &face, state.emits_light(), opaque);
             builder.push(pos.as_vec3(), &face, &shading, false);

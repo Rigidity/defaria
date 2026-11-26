@@ -1,0 +1,37 @@
+# Water let out of a reservoir runs down a long ramp of one-block steps,
+# a step every three blocks, and spreads out across the flat floor at the
+# bottom. Its surface slopes down the ramp and thins out at the front
+# rather than standing in flat terraces, and the pool it leaves at the
+# bottom settles flat.
+# Run: cargo headless scenarios/fluid-slope.txt
+camera 37 70 33 0 -72
+settle
+fill 18 30 18 56 50 32 stone
+# The reservoir at the top, then the ramp down along +X, then the flat.
+fill 20 46 22 25 50 28 air
+fill 26 45 22 28 50 28 air
+fill 29 44 22 31 50 28 air
+fill 32 43 22 34 50 28 air
+fill 35 42 22 37 50 28 air
+fill 38 41 22 40 50 28 air
+fill 41 40 22 43 50 28 air
+fill 44 39 22 54 50 28 air
+fill 20 46 22 25 48 28 water
+wait 1
+fluids
+screenshot target/scenarios/fluid-slope/0-reservoir.png
+wait 90
+screenshot target/scenarios/fluid-slope/1-running.png
+wait 1
+# From the bottom end of the channel, looking up the ramp.
+camera 54 46 25 90 -18
+wait 60
+screenshot target/scenarios/fluid-slope/2-up-the-ramp.png
+wait 1
+camera 37 70 33 0 -72
+wait 60
+screenshot target/scenarios/fluid-slope/3-spreading.png
+wait 1800
+fluids
+inspect FluidStats
+screenshot target/scenarios/fluid-slope/4-settled.png

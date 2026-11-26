@@ -260,17 +260,13 @@ fn sticky_step(amount: u16, before: u16) -> u16 {
     }
 }
 
-/// How high a voxel's fluid surface is, in blocks above the voxel's
-/// bottom: the whole voxel if the same fluid is above it (`covered`), so a
-/// column has no seams, and otherwise the height it's drawn at, one of the
-/// [`FLUID_STEPS`] (see [`Chunk::fluid_step_at`]). This is the surface you
-/// see, swim at, and see the fog start at.
-pub fn fluid_surface(step: u16, covered: bool) -> f32 {
-    if covered {
-        1.0
-    } else {
-        step as f32 / FLUID_STEPS as f32
-    }
+/// How high one voxel's own fluid is, in blocks above its bottom: the
+/// height it's drawn at, one of the [`FLUID_STEPS`] (see
+/// [`Chunk::fluid_step_at`]). The surface you see, swim at and see the fog
+/// start at blends this with the voxels around it: see
+/// [`FluidTop`](super::FluidTop).
+pub(super) fn fluid_surface(step: u16) -> f32 {
+    step as f32 / FLUID_STEPS as f32
 }
 
 /// The amount of fluid in a voxel of block `state`, with `partial` the

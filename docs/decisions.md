@@ -1249,18 +1249,35 @@ fluid and a block that doesn't fill it, such as a slab in a pond
 layer as its amount, so a voxel holds a block and a fluid, and let
 `cell_of` give a block that doesn't fill its voxel room for some fluid.
 
-## Fluid surfaces are flat steps (2026-11-25)
+## Fluid surfaces slope between corners averaged from the same fluid (2026-11-26)
 
 **Context.** A fluid voxel is drawn at one of 16 heights by its amount.
+Its top slopes: each corner is at the average height of the voxels of the
+same fluid around it, or a full block beside a column (`FluidTop`, in
+`src/world/fluid_top.rs`). Swimming and the fog inside fluid use the same
+corners.
 
-**Decision.** Its top is flat at that height, and its sides are cut to
-it.
+**Decision.** Only the same fluid counts toward a corner; air and other
+blocks around it are left out. The top is drawn as two triangles, but
+swimming and fog blend the four corners (bilinear), which can differ from
+the drawn triangles by up to the slope inside one voxel. The sloped top
+keeps a straight-up normal, so its lighting doesn't see the slope.
 
-**What's wrong with it.** Flowing water looks like terraces rather than a
-slope.
+**What's wrong with it.** Water at the edge of a drop doesn't dip toward
+it, as it would if air beside a corner pulled it down. And when a thin
+voxel empties, it stops counting toward its corners, so they jump up to
+the average of what's left: a draining edge can step up a little before
+going on down. Counting air as empty (height 0) would fix both, but on
+its own it turns a lone block of water into a low tent; Minecraft weights
+nearly full voxels far more heavily to avoid that. The eyes can be a hair
+above or below the drawn surface right at it. A slope isn't shaded as
+one.
 
-**What should replace it.** Average each corner's height with the voxels
-around it, as Minecraft does, so the surface slopes toward the flow.
+**What should replace it.** Count open air beside a corner as an empty
+voxel, weighted so a lone full block stays nearly full and flat pools
+against walls stay flat; follow the drawn triangles exactly in
+`FluidTop::at`; give a sloped top its real normal.
+
 ## Images are named after their materials (2026-11-25)
 
 **Context.** Each soil (dirt, sand, gravel) has its own image, not just its
