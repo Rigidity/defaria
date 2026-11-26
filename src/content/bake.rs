@@ -959,30 +959,28 @@ fn property(
     for_block: bool,
 ) -> Result<Property, String> {
     let mut property = listed_property(name, def, namespace, content, for_block)?;
-    let (default, place) = match def {
-        PropertyDef::Full(PropertySpec {
-            default: Some(default),
-            place,
-            ..
-        }) => (default, place),
-        _ => return Ok(property),
+    let PropertyDef::Full(spec) = def else {
+        return Ok(property);
     };
-    let default = if property.materials && default != NONE {
-        qualify(default, namespace)?
-    } else {
-        default.clone()
-    };
-    let at = property
-        .values
-        .iter()
-        .position(|value| *value == default)
-        .ok_or_else(|| format!("the default `{default}` isn't one of its values"))?;
-    // The default is the first value: a block's default state has every
-    // property at its first.
-    let value = property.values.remove(at);
-    property.values.insert(0, value);
-    // Placement refers to values by position, so it's worked out again.
-    if let Some(place) = place {
+    if let Some(default) = &spec.default {
+        let default = if property.materials && default != NONE {
+            qualify(default, namespace)?
+        } else {
+            default.clone()
+        };
+        let at = property
+            .values
+            .iter()
+            .position(|value| *value == default)
+            .ok_or_else(|| format!("the default `{default}` isn't one of its values"))?;
+        // The default is the first value: a block's default state has every
+        // property at its first.
+        let value = property.values.remove(at);
+        property.values.insert(0, value);
+    }
+    // Placement refers to values by position, so it's worked out from the
+    // final order.
+    if let Some(place) = &spec.place {
         property.place = Some(Placement::new(
             place.from,
             &property.values,
@@ -992,7 +990,8 @@ fn property(
     Ok(property)
 }
 
-/// A property with its values in the order they're listed.
+/// A property with its values in the order they're listed, and no
+/// placement yet.
 fn listed_property(
     name: &str,
     def: &PropertyDef,
@@ -1014,16 +1013,9 @@ fn listed_property(
     }
     match (&spec.values, &spec.materials) {
         (Some(values), None) if !spec.optional => {
-            let mut property = plain_property(name, values, spec.item.unwrap_or(false))?;
-            if let Some(place) = &spec.place {
-                if property.item {
-                    return Err("a property set by `place` can't be part of the item".into());
-                }
-                property.place = Some(Placement::new(
-                    place.from,
-                    &property.values,
-                    place.values.as_ref(),
-                )?);
+            let property = plain_property(name, values, spec.item.unwrap_or(false))?;
+            if spec.place.is_some() && property.item {
+                return Err("a property set by `place` can't be part of the item".into());
             }
             Ok(property)
         }

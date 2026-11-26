@@ -243,7 +243,7 @@ pub struct BlockDef {
     /// `{property}` is replaced by its value, or its material's name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Each property's values; the first is the default.
+    /// Each property's values and default.
     #[serde(default)]
     pub properties: BTreeMap<String, PropertyDef>,
     #[serde(default)]
@@ -350,8 +350,8 @@ pub struct ItemDef {
     /// `{property}` is replaced by its value, or its material's name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Each property's values; the first is the default. Not for a block's
-    /// own item, which has the block's.
+    /// Each property's values and default. Not for a block's own item,
+    /// which has the block's.
     #[serde(default)]
     pub properties: BTreeMap<String, PropertyDef>,
     /// The icon.
