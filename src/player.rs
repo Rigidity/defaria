@@ -669,21 +669,14 @@ pub(crate) mod tests {
         let mut entity = world.entity_mut(player);
         entity.insert(Look::from_rotation(eyes.rotation));
         let height = entity.get::<Player>().unwrap().drawn_eye_height;
-        // Some tests' players are only eyes, with no body in the way.
-        let had_body = entity.contains::<Body>();
-        let mut body = (entity.get::<Body>().cloned())
-            .unwrap_or_else(|| Body::new(DVec3::ZERO, SIZE, STEP_HEIGHT));
+        let eyes = eyes.translation.as_dvec3();
         let mut transform = *entity.get::<Transform>().unwrap();
-        super::put_eyes(
-            eyes.translation.as_dvec3(),
-            height,
-            &mut body,
-            &mut transform,
-        );
-        entity.insert(transform);
-        if had_body {
-            entity.insert(body);
+        match entity.get_mut::<Body>() {
+            Some(mut body) => super::put_eyes(eyes, height, &mut body, &mut transform),
+            // Some tests' players are only eyes, with no body in the way.
+            None => transform.translation = feet_below(eyes, height).as_vec3(),
         }
+        entity.insert(transform);
     }
 
     /// The local player.

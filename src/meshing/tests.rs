@@ -320,11 +320,11 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
         positions[indices[0] as usize][2]
     };
     assert!(first_face_z(&app) < 4.0);
-    app.world_mut()
-        .entity_mut(player)
-        .insert(local_player_at(Transform::from_translation(
-            origin.as_vec3() + Vec3::new(6.5, 2.5, -20.0),
-        )));
+    crate::player::tests::put_eyes(
+        app.world_mut(),
+        player,
+        Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, -20.0)),
+    );
     app.update();
     assert!(first_face_z(&app) > 10.0);
 
@@ -349,11 +349,11 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
         .world()
         .resource::<Messages<AssetEvent<Mesh>>>()
         .get_cursor_current();
-    app.world_mut()
-        .entity_mut(player)
-        .insert(local_player_at(Transform::from_translation(
-            origin.as_vec3() + Vec3::new(6.5, 2.5, -19.7),
-        )));
+    crate::player::tests::put_eyes(
+        app.world_mut(),
+        player,
+        Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, -19.7)),
+    );
     app.update();
     app.update();
     assert_eq!(

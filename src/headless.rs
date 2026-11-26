@@ -2483,7 +2483,7 @@ mod tests {
         assert!(fov > FOV * 1.1, "{fov}");
     }
 
-    /// `camera` puts the eyes exactly where it says, level, even straight
+    /// `camera` puts the eyes where it says (to within f32 rounding), level, even straight
     /// after sneaking along the ground (lower eyes, a swaying view).
     #[test]
     fn camera_resets_sneaking_eyes_and_the_sway() {
