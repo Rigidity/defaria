@@ -119,7 +119,7 @@ use bevy::{
 
 use crate::{
     block_entity::BlockEntities,
-    content::{BlockState, Content, FULL_FLUID, ItemState},
+    content::{BlockState, Content, FULL_FLUID, ItemState, StateName},
     fluid::FluidStats,
     fly_camera::{FlyCamera, MAX_PITCH},
     fog::ChunkFog,
@@ -875,39 +875,22 @@ fn apply_world_commands(world: &mut World) {
     }
 }
 
-/// An id and its `[property=value,…]` pairs, the id qualified with
+/// The state name `name` (see [`StateName`]), its id qualified with
 /// `defaria:` if it has no mod.
-fn split_name(name: &str) -> Result<(String, Vec<(&str, &str)>), String> {
-    let (id, values) = match name.split_once('[') {
-        Some((id, rest)) => {
-            let values = rest
-                .strip_suffix(']')
-                .ok_or_else(|| format!("`{name}` has a `[` with no `]`"))?;
-            (id, values)
-        }
-        None => (name, ""),
-    };
-    let id = if id.contains(':') {
-        id.to_owned()
-    } else {
-        format!("defaria:{id}")
-    };
-    let pairs = values
-        .split(',')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            pair.split_once('=')
-                .ok_or_else(|| format!("`{pair}` isn't `property=value`"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((id, pairs))
+fn split_name(name: &str) -> Result<StateName, String> {
+    let mut parsed = StateName::parse(name)?;
+    if !parsed.id.contains(':') {
+        parsed.id = format!("defaria:{}", parsed.id);
+    }
+    Ok(parsed)
 }
 
 /// The item state `name` means, named as for [`fill_state`].
 fn item_state(content: &Content, name: &str) -> Result<ItemState, String> {
-    let (id, pairs) = split_name(name)?;
-    let item = content.item(&id).ok_or_else(|| format!("no item `{id}`"))?;
-    item.state(&pairs)
+    let parsed = split_name(name)?;
+    let id = &parsed.id;
+    let item = content.item(id).ok_or_else(|| format!("no item `{id}`"))?;
+    item.state(&parsed.pairs())
         .ok_or_else(|| format!("item `{id}` has no state `{name}`"))
 }
 
@@ -929,12 +912,13 @@ fn hold_item(
 /// The state `name` means: a block id (the base game's without
 /// `defaria:`), with `[property=value,…]` setting some of its properties.
 fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
-    let (id, pairs) = split_name(name)?;
+    let parsed = split_name(name)?;
+    let id = &parsed.id;
     let block = content
-        .block(&id)
+        .block(id)
         .ok_or_else(|| format!("no block `{id}`"))?;
     block
-        .state(&pairs)
+        .state(&parsed.pairs())
         .ok_or_else(|| format!("block `{id}` has no state `{name}`"))
 }
 
@@ -978,36 +962,6 @@ fn pour(
     Ok(())
 }
 
-/// The item `name` means: an item id (the base game's without
-/// `defaria:`), with `[property=value,…]` setting some of its properties.
-fn item_named(content: &Content, name: &str) -> Result<ItemState, String> {
-    let (id, values) = match name.split_once('[') {
-        Some((id, rest)) => {
-            let values = rest
-                .strip_suffix(']')
-                .ok_or_else(|| format!("`{name}` has a `[` with no `]`"))?;
-            (id, values)
-        }
-        None => (name, ""),
-    };
-    let id = if id.contains(':') {
-        id.to_owned()
-    } else {
-        format!("defaria:{id}")
-    };
-    let item = content.item(&id).ok_or_else(|| format!("no item `{id}`"))?;
-    let pairs = values
-        .split(',')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            pair.split_once('=')
-                .ok_or_else(|| format!("`{pair}` isn't `property=value`"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    item.state(&pairs)
-        .ok_or_else(|| format!("item `{id}` has no state `{name}`"))
-}
-
 fn put(
     In((pos, name, amount, what)): In<(IVec3, String, f32, String)>,
     content: Res<Content>,
@@ -1048,7 +1002,7 @@ fn put(
         .map(|slots| slots.into_inner())
         .and_then(|slots| slots.group_mut(&name))
     {
-        let item = item_named(&content, &what).map_err(at)?;
+        let item = item_state(&content, &what).map_err(at)?;
         if amount < 1.0 || amount.fract() != 0.0 {
             return Err(at(format!("{amount} isn't a whole number of items")));
         }

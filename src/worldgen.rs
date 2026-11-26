@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 
 use crate::{
-    content::{BlockState, Content},
+    content::{BlockState, Content, StateName},
     perlin::splitmix64,
     world::{CHUNK_SIZE, Chunk, ChunkCoord},
 };
@@ -117,13 +117,7 @@ impl TerrainBlocks {
             .iter()
             .zip(Self::states(content))
             .filter(|(_, state)| state.is_none())
-            .map(|((id, values), _)| match values {
-                [] => id.to_string(),
-                values => {
-                    let values: Vec<_> = values.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                    format!("{id}[{}]", values.join(","))
-                }
-            })
+            .map(|((id, values), _)| StateName::new(*id, values.iter().copied()).to_string())
             .collect()
     }
 

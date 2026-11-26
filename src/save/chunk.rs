@@ -15,7 +15,7 @@ use bevy::{platform::collections::HashMap, prelude::*};
 
 use crate::{
     block_entity::{BlockEntityData, SavedPart, read_text, read_value, write_text, write_value},
-    content::{BlockState, Content, FULL_FLUID},
+    content::{BlockState, Content, FULL_FLUID, StateName},
     world::{CHUNK_VOLUME, Chunk},
 };
 
@@ -42,17 +42,11 @@ impl StateNames {
             .states
             .iter()
             .map(|state| {
-                let id = &content.blocks[state.block].id;
-                if state.values.is_empty() {
-                    id.clone()
-                } else {
-                    let values: Vec<String> = state
-                        .values
-                        .iter()
-                        .map(|(k, v)| format!("{k}={v}"))
-                        .collect();
-                    format!("{id}[{}]", values.join(","))
-                }
+                StateName::new(
+                    &content.blocks[state.block].id,
+                    state.values.iter().cloned(),
+                )
+                .to_string()
             })
             .collect();
         let by_name = names
@@ -83,8 +77,7 @@ impl StateNames {
 
     /// The id of the block of `state`.
     pub fn block_id(&self, state: BlockState) -> &str {
-        let name = self.name(state);
-        name.split_once('[').map_or(name, |(id, _)| id)
+        StateName::id_of(self.name(state))
     }
 
     /// The state saved as `name`. A block that's gone (its mod was removed)
@@ -94,8 +87,10 @@ impl StateNames {
         if let Some(&state) = self.by_name.get(name) {
             return state;
         }
-        let block = name.split_once('[').map_or(name, |(id, _)| id);
-        self.by_block.get(block).copied().unwrap_or(BlockState::AIR)
+        self.by_block
+            .get(StateName::id_of(name))
+            .copied()
+            .unwrap_or(BlockState::AIR)
     }
 }
 
