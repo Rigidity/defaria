@@ -1,0 +1,18 @@
+// A metal head on a wooden handle, like the other tools. Right click with
+// it on a wire, pipe or tube blocks the face aimed at, so it joins
+// nothing there, and again opens it (see `action` in docs/modding.md).
+{
+  name: "{head} Wrench",
+  properties: {
+    head: { materials: "#metal", default: "iron" },
+    handle: { materials: "#wood", default: "oak" },
+  },
+  texture: { texture: "wrench", materials: { head: "{head}", handle: "{handle}" } },
+  unique: true,
+  action: "wrench",
+  // Mostly as hard as its head.
+  hardness: { materials: { head: 3, handle: 1 } },
+  // 0.15 litres in all, head to handle 2 to 1 by volume.
+  weight: { base: 0.00015, materials: { head: 2, handle: 1 } },
+  category: "tools",
+}

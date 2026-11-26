@@ -488,6 +488,11 @@ impl ChunkSaver<'_, '_> {
             if !seen.insert(local) {
                 continue;
             }
+            // Nothing to keep (a wire with every face open): it's made
+            // afresh when the chunk loads.
+            if parts.0.is_empty() {
+                continue;
+            }
             let kind = self.content.block_of(saved.at(local)).id.clone();
             let parts = parts.0.clone();
             saved.set_block_entity_at(local, BlockEntityData { kind, parts });

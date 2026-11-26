@@ -2220,7 +2220,8 @@ fn block_item(
         states.push(info);
     }
     let unique = file.and_then(|file| file.def.unique).unwrap_or(false);
-    push_item(id, properties, unique, category, states, content);
+    let action = file.and_then(|file| file.def.action);
+    push_item(id, properties, unique, action, category, states, content);
     Ok(())
 }
 
@@ -2293,7 +2294,15 @@ fn standalone_item(
         states.push(info);
     }
     let unique = item_def.unique.unwrap_or(false);
-    push_item(&def.id, properties, unique, category, states, content);
+    push_item(
+        &def.id,
+        properties,
+        unique,
+        item_def.action,
+        category,
+        states,
+        content,
+    );
     Ok(())
 }
 
@@ -2328,6 +2337,7 @@ fn push_item(
     id: &str,
     properties: Vec<Property>,
     unique: bool,
+    action: Option<ItemAction>,
     category: Option<usize>,
     states: Vec<ItemStateInfo>,
     content: &mut Content,
@@ -2340,6 +2350,7 @@ fn push_item(
         state_count: states.len() as u32,
         unique,
         category,
+        action,
     });
     content.item_states.extend(states);
 }

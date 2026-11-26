@@ -3,6 +3,61 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Blocked conduit faces: a mask in the block entity, drawn as no arm (2026-11-26)
+
+**Context.** A wrench (#121) blocks a conduit's face so it doesn't join
+what's next to it. Where that's kept decides what it costs: as block
+state properties it'd be three values per face (open, joined, blocked),
+729 states per combination of the block's other properties.
+
+**Decision.** Every conduit has a block entity (`Block::has_block_entity`
+is true for blocks that connect by their `conduit`), which while some
+face is blocked has a `blocked_faces` part, `BlockedFaces`, a six-bit
+mask, defined in `connections.rs` and registered by the wrench's plugin
+(the wrench adds it with the first face it blocks and takes it off with
+the last it opens). `connect` passes it to `Content::connected_unless`, so
+a face blocked on either side is never joined, and every change to it
+(and a conduit loading with some blocked, or going with some) brings that
+voxel and its neighbours up to date, as an edit does. The networks follow
+the connection properties, so they split and join with no code of their
+own. The wrench (`src/wrench.rs`, an item with `action: "wrench"`)
+toggles the face aimed at: on an arm (a collision box that reaches one
+side of the block) that arm's side, otherwise the face clicked. Aimed at
+a conduit's open face toward another conduit that has blocked its face
+back, it opens that one's instead, so a face blocked between two
+conduits opens from either side, as it does from a machine's face
+(provisional, for the user to confirm: controls).
+
+**What's wrong with it.**
+
+- A blocked face is drawn only as the arm missing: no cap, and nothing
+  shows it's blocked rather than just facing nothing. Drawing one needs
+  the mesher to read block entities (or a state property only for
+  drawing), which it doesn't.
+- With no arm there, there's nothing to aim at where the face was
+  blocked: it's opened again by aiming at the core's face on that side,
+  which for a thin wire is a small target, or at the face of the block
+  the arm reached (a machine's port), which the wrench takes as the
+  conduit's. With a wrench in hand, right click on any block is the
+  wrench's, so it never opens a machine's screen (provisional, for the
+  user to confirm: controls).
+- Every conduit has a block entity, an entity each in memory, though a
+  wire or tube keeps nothing in it until a face is blocked (one with
+  nothing to save isn't written to disk). Deferred: giving a voxel a
+  block entity only once it has a part needs block entities that come
+  and go per voxel rather than per block, and the save and load to
+  follow; a long wire run costs an entity a voxel until then.
+- The face's change takes effect in `Update` with the other connection
+  updates, a frame after a chunk with blocked faces loads at worst,
+  while its block entity spawns: the networks may join through the face
+  for that frame and split again.
+
+**What should replace it.** A cap model drawn on blocked faces, from a
+property the mesher can see or a per-voxel overlay like the crack
+overlay, which would also give the face a box to aim at. Saving block
+entities per voxel, only while they hold something, would remove the
+entity a bare wire or tube has.
+
 ## Items move instantly along tubes, round-robin, inputs first (2026-11-26)
 
 **Context.** The item solver (#120) needs to decide how items get from a

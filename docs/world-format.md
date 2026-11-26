@@ -161,18 +161,21 @@ A **value** is a tag byte and what it says follows:
 
 Lists and tables nest at most 32 deep.
 
-The parts the game saves, each at version 1:
+The parts the base game saves:
 
-| Key | Who has it | Value |
-|---|---|---|
-| `data` | blocks with `block_entity: { data }`, and scripts | a table of plain values |
-| `energy` | machines with `energy` | the integer energy stored |
-| `tanks` | machines with `tanks` | a table by tank name of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block; an empty tank is left out |
-| `slots` | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`) |
-| `recipe` | machines with `recipes` | `{ recipe, ticks }` while one is running: the recipe's id (`defaria:smelt_ore[ore=defaria:iron]` for one of a templated recipe's materials) and how many of its network ticks have run; `{}` when none is. Its inputs were taken when it started, so they're in no slot |
-| `pipe` | conduits on a network the `fluid` solver runs (pipes) | a list of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block: the pipe's share of its network's fluid when its chunk was saved; an empty list when it held none |
+| Key | Version | Who has it | Value |
+|---|---|---|---|
+| `data` | 1 | blocks with `block_entity: { data }`, and scripts | a table of plain values |
+| `energy` | 1 | machines with `energy` | the integer energy stored |
+| `tanks` | 1 | machines with `tanks` | a table by tank name of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block; an empty tank is left out |
+| `slots` | 1 | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`) |
+| `recipe` | 1 | machines with `recipes` | `{ recipe, ticks }` while one is running: the recipe's id (`defaria:smelt_ore[ore=defaria:iron]` for one of a templated recipe's materials) and how many of its network ticks have run; `{}` when none is. Its inputs were taken when it started, so they're in no slot |
+| `pipe` | 1 | conduits on a network the `fluid` solver runs (pipes) | a list of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block: the pipe's share of its network's fluid when its chunk was saved; an empty list when it held none |
+| `blocked_faces` | 1 | conduits with a face blocked with a wrench | an int, a bit for each side, `1 << side` with up 0, down 1, north 2, south 3, east 4, west 5; only while some face is blocked: a conduit with every face open has none |
 
-Every conduit (wire, pipe, tube) has a block entity, even with no parts.
+Every conduit (wire, pipe, tube) has a block entity, but a block entity
+with no parts to save (a wire or tube with every face open) gets no
+entry: it's made afresh when its chunk loads.
 A fluid network's fluid is kept for the network while it's loaded, not
 per pipe: just before a chunk is saved, each of its pipes gets its share
 of its network's fluid (divided by capacity) in `pipe`, and when the

@@ -813,6 +813,17 @@ pub struct ItemDef {
     /// block's item is in the block's.
     #[serde(default)]
     pub category: Option<String>,
+    /// What using it (right click) does, besides placing its block.
+    #[serde(default)]
+    pub action: Option<ItemAction>,
+}
+
+/// A built-in thing an item does when it's used (right clicked).
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemAction {
+    /// Blocks a conduit's face, or opens it again (see `wrench`).
+    Wrench,
 }
 
 /// `categories/<name>.json5`: a heading items are listed under in the

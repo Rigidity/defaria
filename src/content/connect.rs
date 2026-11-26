@@ -116,6 +116,18 @@ impl Content {
     pub fn connected(
         &self,
         state: BlockState,
+        neighbour: impl FnMut(Direction) -> Option<BlockState>,
+    ) -> BlockState {
+        self.connected_unless(state, |_| false, neighbour)
+    }
+
+    /// As [`Content::connected`], but a side that's `blocked` (a conduit's
+    /// face closed with a wrench, on either side) is never joined, whatever
+    /// is there, loaded or not.
+    pub fn connected_unless(
+        &self,
+        state: BlockState,
+        blocked: impl Fn(Direction) -> bool,
         mut neighbour: impl FnMut(Direction) -> Option<BlockState>,
     ) -> BlockState {
         let block = self.block_of(state);
@@ -128,10 +140,14 @@ impl Content {
         let offset = (state.0 - block.first_state) as usize;
         let mut index = index_of(&block.properties, offset);
         for side in Direction::ALL {
-            if let Some(next) = neighbour(side) {
-                let joined = self.accepts(next, joins, side.opposite());
-                index[connections.sides[side as usize]] = joined as usize;
-            }
+            let joined = if blocked(side) {
+                false
+            } else if let Some(next) = neighbour(side) {
+                self.accepts(next, joins, side.opposite())
+            } else {
+                continue;
+            };
+            index[connections.sides[side as usize]] = joined as usize;
         }
         BlockState(block.first_state + offset_of(&block.properties, &index) as u16)
     }
@@ -230,6 +246,33 @@ mod tests {
             content
                 .block_state("defaria:wire", &[("east", "true"), ("up", "true")])
                 .unwrap()
+        );
+    }
+
+    /// A blocked side is never joined: not to a pipe that would join it,
+    /// and not when its neighbour isn't loaded, which otherwise keeps it.
+    #[test]
+    fn blocked_sides_never_join() {
+        let content = base();
+        let lone = pipe(content, &[]);
+        let joined = pipe(content, &[Direction::East, Direction::Up]);
+        let neighbour = |side| (side != Direction::Up).then_some(lone);
+        let state = content.connected_unless(
+            joined,
+            |side| matches!(side, Direction::East | Direction::Up),
+            neighbour,
+        );
+        assert_eq!(
+            state,
+            pipe(
+                content,
+                &[
+                    Direction::North,
+                    Direction::South,
+                    Direction::West,
+                    Direction::Down
+                ]
+            )
         );
     }
 

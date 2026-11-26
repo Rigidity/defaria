@@ -12,12 +12,19 @@
 //!
 //! The update goes through [`Voxels::update`]: it isn't an edit, so it
 //! wakes no fluid, and each chunk it touches is remeshed once.
+//!
+//! A conduit's faces can be blocked (with a wrench, see `wrench`): its
+//! block entity's [`BlockedFaces`] names them, and a blocked face is never
+//! joined, from either side. Changing them brings that voxel and its
+//! neighbours up to date, as an edit would, and so does a conduit with
+//! blocked faces loading or going away.
 
-use bevy::{platform::collections::HashSet, prelude::*};
+use bevy::{ecs::system::SystemParam, platform::collections::HashSet, prelude::*};
 
 use crate::{
     block_edit::BlockEditSystems,
-    content::{Content, Direction},
+    block_entity::{BlockEntities, BlockEntity, BlockEntityPart, Value},
+    content::{BlockState, Content, Direction},
     mining::MiningSystems,
     terrain::{ChunkCoord, ChunkMap, RemeshChunks, VoxelChanged, Voxels},
     voxel::{CHUNK_SIZE, Chunk},
@@ -27,15 +34,91 @@ pub struct ConnectionsPlugin;
 
 impl Plugin for ConnectionsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Unconnected>().add_systems(
-            Update,
-            (around_edits, in_loaded_chunks, connect)
-                .chain()
-                .in_set(ConnectionSystems)
-                .after(BlockEditSystems)
-                .after(MiningSystems)
-                .before(RemeshChunks),
-        );
+        app.init_resource::<Unconnected>()
+            .register_type::<BlockedFaces>()
+            .add_observer(around_unblocked)
+            .add_systems(
+                Update,
+                (around_blocked, around_edits, in_loaded_chunks, connect)
+                    .chain()
+                    .in_set(ConnectionSystems)
+                    .after(BlockEditSystems)
+                    .after(MiningSystems)
+                    .before(RemeshChunks),
+            );
+    }
+}
+
+/// The faces of a conduit that are blocked, which never join anything, as
+/// a bit for each [`Direction`] (`1 << side`). Part of a conduit's block
+/// entity only while some face is blocked (the wrench adds it, once its
+/// plugin registers it, and takes it off when it opens the last), so the
+/// many conduits with every face open neither keep nor save one.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[reflect(Component)]
+pub struct BlockedFaces(pub u8);
+
+impl BlockedFaces {
+    /// Every face.
+    pub const ALL: u8 = 0b11_1111;
+
+    /// Whether `side` is blocked.
+    pub fn has(self, side: Direction) -> bool {
+        self.0 & (1 << side as u8) != 0
+    }
+
+    /// Blocks `side` if it's open, and opens it if it's blocked.
+    pub fn toggle(&mut self, side: Direction) {
+        self.0 ^= 1 << side as u8;
+    }
+
+    /// Whether no face is blocked.
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl BlockEntityPart for BlockedFaces {
+    const KEY: &'static str = "blocked_faces";
+
+    /// A conduit starts with every face open: none.
+    fn new(_: BlockState, _: &Content) -> Option<Self> {
+        None
+    }
+
+    fn save(&self, _: &Content) -> Value {
+        Value::Int(self.0.into())
+    }
+
+    fn load(value: &Value, version: u32, state: BlockState, content: &Content) -> Option<Self> {
+        if !content.block_of(state).is_conduit() {
+            return None;
+        }
+        let mask = value.as_int().filter(|_| version == 1)?;
+        u8::try_from(mask)
+            .ok()
+            .filter(|&mask| mask & !Self::ALL == 0)
+            .map(Self)
+    }
+}
+
+/// The blocked faces of conduits, by position.
+#[derive(SystemParam)]
+pub struct Blocked<'w, 's> {
+    index: Option<Res<'w, BlockEntities>>,
+    faces: Query<'w, 's, &'static BlockedFaces>,
+}
+
+impl Blocked<'_, '_> {
+    /// The blocked faces of the conduit at `pos`: none if it isn't loaded
+    /// or isn't a conduit.
+    pub fn at(&self, pos: IVec3) -> BlockedFaces {
+        self.index
+            .as_ref()
+            .and_then(|index| index.get(pos))
+            .and_then(|entity| self.faces.get(entity).ok())
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -49,13 +132,49 @@ pub struct ConnectionSystems;
 #[derive(Resource, Debug, Default)]
 struct Unconnected(HashSet<IVec3>);
 
+impl Unconnected {
+    /// `pos`, and the six around it, whose neighbour it is.
+    fn around(&mut self, pos: IVec3) {
+        self.0.insert(pos);
+        for side in Direction::ALL {
+            self.0.insert(pos + side.normal());
+        }
+    }
+}
+
 /// Each voxel that changed, and the six around it, whose neighbour it is.
 fn around_edits(mut changes: MessageReader<VoxelChanged>, mut pending: ResMut<Unconnected>) {
     for change in changes.read() {
-        pending.0.insert(change.pos);
-        for side in Direction::ALL {
-            pending.0.insert(change.pos + side.normal());
+        pending.around(change.pos);
+    }
+}
+
+/// Each conduit whose blocked faces changed, or that's new with some
+/// blocked (loaded from the save), and the six around it.
+fn around_blocked(
+    changed: Query<(&BlockEntity, Ref<BlockedFaces>), Changed<BlockedFaces>>,
+    mut pending: ResMut<Unconnected>,
+) {
+    for (entity, faces) in &changed {
+        if !faces.is_added() || !faces.is_empty() {
+            pending.around(entity.pos);
         }
+    }
+}
+
+/// Each conduit with blocked faces that's gone (broken, replaced or
+/// unloaded), and the six around it: its faces were put right as it
+/// changed, but with its old blocked faces, which only go once its block
+/// entity does, after that.
+fn around_unblocked(
+    remove: On<Remove<BlockedFaces>>,
+    entities: Query<(&BlockEntity, &BlockedFaces)>,
+    mut pending: ResMut<Unconnected>,
+) {
+    if let Ok((entity, faces)) = entities.get(remove.entity)
+        && !faces.is_empty()
+    {
+        pending.around(entity.pos);
     }
 }
 
@@ -104,8 +223,14 @@ pub(crate) fn face_voxel(side: Direction, a: i32, b: i32, last: i32) -> IVec3 {
     }
 }
 
-/// Sets each waiting voxel's sides from its neighbours.
-fn connect(content: Res<Content>, mut pending: ResMut<Unconnected>, mut voxels: Voxels) {
+/// Sets each waiting voxel's sides from its neighbours, leaving out the
+/// faces blocked on either side.
+fn connect(
+    content: Res<Content>,
+    mut pending: ResMut<Unconnected>,
+    blocked: Blocked,
+    mut voxels: Voxels,
+) {
     for pos in pending.0.drain() {
         let Some(state) = voxels.get(pos) else {
             continue;
@@ -113,7 +238,12 @@ fn connect(content: Res<Content>, mut pending: ResMut<Unconnected>, mut voxels: 
         if !content.connects(state) {
             continue;
         }
-        let joined = content.connected(state, |side| voxels.get(pos + side.normal()));
+        let own = blocked.at(pos);
+        let joined = content.connected_unless(
+            state,
+            |side| own.has(side) || blocked.at(pos + side.normal()).has(side.opposite()),
+            |side| voxels.get(pos + side.normal()),
+        );
         voxels.update(pos, joined);
     }
 }

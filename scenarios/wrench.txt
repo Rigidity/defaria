@@ -1,0 +1,52 @@
+# The wrench: a pipe line and a copper wire on a stone platform, each one
+# network. Right click with a wrench on the arm between two pipes blocks
+# that face: the arms there go and the line splits in two, printed with
+# `network`. The same on the wire. A blocked face has no arm to aim at,
+# so to open it again the wrench is aimed at the face of the core where
+# the arm was: that joins the pipe's halves again; the wire stays parted.
+# Run: cargo headless scenarios/wrench.txt
+camera 26 50.5 37.5 0 -40                                 # south of it, looking down
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 18 47 22 34 52 36 air                                # room above it
+fill 20 45 24 32 45 34 stone                              # the platform
+fill 22 46 30 30 46 30 pipe                               # the pipe line
+fill 22 46 27 30 46 27 wire                               # the wire
+wait 1
+network 22 46 30
+network 22 46 27
+wait 2
+screenshot target/scenarios/wrench/0-joined.png
+wait 1
+hotbar 1 wrench
+hold MouseLeft 1                                          # lock the cursor
+camera 26.9 48.5 30.5 0 -89.4                             # straight down at the arm east of 26 46 30
+wait 2
+hold MouseRight 1                                         # block it
+wait 1
+camera 25.9 48.5 27.5 0 -89.4                             # and the wire's, east of 25 46 27
+wait 2
+hold MouseRight 1
+wait 1
+network 22 46 30
+network 30 46 30
+network 22 46 27
+network 30 46 27
+camera 26 50.5 37.5 0 -40
+wait 2
+screenshot target/scenarios/wrench/1-blocked.png
+wait 1
+camera 26.5 48 33 0 -35                                   # close up on the gaps
+wait 2
+screenshot target/scenarios/wrench/2-close.png
+wait 1
+camera 28.5 49.5 30.5 90 -60.64                           # west, at the east face of 26 46 30's core
+wait 2
+hold MouseRight 1                                         # open it
+wait 1
+network 22 46 30
+network 30 46 30
+camera 26.5 48 33 0 -35
+wait 2
+screenshot target/scenarios/wrench/3-reopened.png
+wait 1

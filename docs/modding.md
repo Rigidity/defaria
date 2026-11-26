@@ -755,6 +755,12 @@ loads. Networks are worked out from the world as chunks load; nothing
 about them is saved but what pipes hold (see [Fluid networks](#fluid-networks)). A conduit joins a block that isn't a conduit only
 on a face where that block has a [port](#machines) of its kind.
 
+Every conduit has a [block entity](#block-entities), which keeps which of
+its faces are blocked: a [wrench](#items) closes a face, and a blocked
+face is never joined, from either side, whatever is next to it. So two
+pipes side by side can be kept apart, and a wire kept off a machine's
+face. The block doesn't have to ask for the block entity.
+
 ### Conditions
 
 A `when` gives each property it cares about one of:
@@ -940,8 +946,19 @@ an item or material that doesn't exist, is an error.
   // 0.7 litres, a quarter of it the head.
   weight: { base: 0.0007, materials: { head: 1, handle: 3 } },
   stats: { reach: 4.5 },  // other numbers, by name
+  action: "wrench",      // optional: what using it (right click) does
 }
 ```
+
+`action` gives the item something built in to do when it's used:
+
+- `"wrench"`: on a [conduit](#conduits), blocks the face aimed at, or
+  opens it if it's blocked. On one of the conduit's arms, that's the side
+  the arm reaches; on its core, the face clicked. A blocked face has no
+  arm, so it's opened again from the core's face there, or from the face
+  of the block next to it (a machine's port). It places nothing, and
+  while it's in hand right click on any block is its own: it doesn't
+  open machines' screens.
 
 `hardness`, `weight` and `stats` work as they do for
 [blocks](#hardness-weight-and-stats), with the item's own properties;
