@@ -321,10 +321,10 @@ fn cannot_run(
             && machine.ports.iter().any(|port| {
                 port.role.takes() && content.networks[port.network].solver == Solver::Energy
             });
-        if !fed && energy.generate == 0 {
+        if !fed && energy.generate == 0 && energy.max_generate == 0 {
             return Some(
                 "uses energy, and nothing can fill the machine's buffer (no port taking it \
-                 with a `max_in`, and no `generate`)"
+                 with a `max_in`, and no `generate` or `max_generate`)"
                     .into(),
             );
         }

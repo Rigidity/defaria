@@ -145,6 +145,9 @@ pub struct EnergyBuffer {
     pub max_out: u64,
     /// What it makes on its own in a second (a creative generator).
     pub generate: u64,
+    /// The most its script may make in a second (see
+    /// `docs/scripting.md`).
+    pub max_generate: u64,
     /// What it uses up in a second while it works (a powered lamp).
     pub uses: u64,
 }
@@ -157,6 +160,7 @@ impl EnergyBuffer {
             max_in: spec.max_in,
             max_out: spec.max_out,
             generate: spec.generate,
+            max_generate: spec.max_generate,
             uses: spec.uses,
         }
     }

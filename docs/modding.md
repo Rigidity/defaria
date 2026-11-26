@@ -831,6 +831,10 @@ to it changes, and on random ticks. `"lamp"` is this mod's
 }
 ```
 
+A machine's script also runs on network ticks (`on_tick`) and when it
+finishes a recipe, and moves energy, fluid and items through its
+buffer, tanks and slots ([scripting.md](scripting.md#machines)).
+
 A scripted block changes its state (`block:set_state { lit = true }`)
 and the blocks next to it. Only a block with a `block_entity` keeps data
 of its own (`block.data`) between calls. The block's item doesn't take
@@ -903,6 +907,11 @@ Every field is optional; `machine: {}` is a machine with nothing.
   second while it works: it works, and is in its `active_state`, exactly
   while its buffer pays for that (a powered lamp). Machines that do work
   for recipes or scripts leave `use` out and are made active by those.
+  **`max_generate`**, also 0 if left out, is the most the machine's
+  [script](scripting.md#machines) may make each second, for a generator
+  whose output depends on its surroundings (the base game's solar panel
+  makes up to 60 W as the sky above it allows). Without it a script
+  can't make energy.
 - **`tanks`**: each by name, with a **`capacity`** in blocks of fluid and
   the fluids it **`accepts`** (blocks with `fluid`); left out, any. A tank
   holds one fluid at a time.
@@ -1223,7 +1232,8 @@ tanks for it hold together, inputs or outputs needing more tanks (one
 fluid each) than the machine has for them, or more slots (64 of one kind
 of item, or one unique item, each) than its
 slot groups have slots, energy with no buffer or nothing to fill it (no
-`consume` or `store` energy port with a `max_in`, and no `generate`), or
+`consume` or `store` energy port with a `max_in`, and no `generate` or
+`max_generate`), or
 more energy in one tick than the buffer holds. A machine that can run
 only some of them, and a recipe type no machine runs, are warnings.
 

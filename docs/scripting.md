@@ -8,7 +8,8 @@ sandboxed dialect of Lua 5.1 with optional types (why Luau: see
 
 Blocks and items name a script with `script` (see
 [modding.md](modding.md#scripts)), and its hooks run as things happen to
-them. Machines' hooks come with #118.
+them. A machine is a block, so it names its script the same way, and has
+hooks and an API of its own besides ([Machines](#machines)).
 
 ## Where scripts go
 
@@ -28,10 +29,10 @@ every frame, only when a hook is called; a script that doesn't define a
 hook costs nothing for it.
 
 ```lua
--- scripts/counter.luau
+-- scripts/counter.luau, a machine's script
 local count = 0
 
-function on_tick(dt: number)
+function on_tick(m, dt: number)
 	count += 1
 	log.info("ticked", count, "times")
 end
@@ -44,7 +45,8 @@ everything that uses the script and they're lost when the scripts reload,
 so state that belongs to one block goes in its saved data ([Data](#data)).
 
 The hooks themselves and what they're passed are below, for
-[blocks and items](#block-and-item-hooks); machines' come with #118.
+[blocks and items](#block-and-item-hooks) and for
+[machines](#machines).
 
 ## Block and item hooks
 
@@ -54,7 +56,7 @@ A block's script (`script` in its file) can define:
 |---|---|
 | `on_used(block, player)` | A player used the block: right click on it. Using a block whose script defines this doesn't place a block against it; sneaking with something in hand does. On a machine it takes the click from the machine's screen, and with a wrench in hand the wrench takes it. `player` may be nil for uses that aren't a player's. |
 | `on_placed(block)` | The block was put in its voxel, by anyone: a player, a script, a scenario. |
-| `on_broken(block, old)` | It was replaced by another block (air, when broken). `block` is the voxel as it is now, and `old` what was there: `{ id, name, state }`. Its block entity, and with it its `data`, is already gone. |
+| `on_broken(block, old)` | It was replaced by another block (air, when broken). `block` is the voxel as it is now, and `old` what was there: `{ id, name, state }`. Its block entity, and with it its `data`, is already gone (a machine's too: it gets a block handle, not its machine handle). |
 | `on_neighbour_changed(block, face)` | The block on that face of it (`"up"`, `"north"`, ...) changed, or its properties did. |
 | `on_random_tick(block)` | Now and then, at random: about once a minute on average. For things that grow or spread at their own pace. |
 
@@ -92,6 +94,7 @@ A hook's `block` is a handle on a block by position:
 | `block.name` | Its state's name: `"Granite Iron Ore"`. |
 | `block.state` | Its property values, a table: `true`/`false` for the properties whose values are `"true"`/`"false"`, text otherwise (`block.state.rock == "defaria:granite"`). |
 | `block.data` | Its block entity's data, a table, or nil for a block with no `block_entity` (see [Data](#data)). |
+| `block.light` | The light in its voxel, `{ sky, red, green, blue }`, each 0 to 15, or nil where none is worked out yet. A solid block's own voxel is dark: read the light of the voxel next to it (`block:neighbour("up").light`). |
 | `block:stat(name)` | A stat of its state (`hardness`, `weight` or one of the block's `stats`), or nil. |
 | `block:neighbour(face)` | The block next to it on that face, or nil if that isn't loaded. |
 | `block:set_state(values)` | Sets some of its properties: `block:set_state({ lit = true })`. Returns whether it changed. A property or value the block doesn't have is an error. |
@@ -116,6 +119,7 @@ variable and using it in a later call is an error.
 | `world.block(pos)` | A handle on the block at `pos` (a vector, or `x, y, z`), or nil if it isn't loaded. |
 | `world.block_def(id)` | What a block is: `{ id, name, properties, script }`, with `properties` each property's values (`properties.lit == { "false", "true" }`), or nil if there's no such block. |
 | `world.item_def(id)` | What an item is: `{ id, name, block, script }`, `block` the id of the block it places, or nil if there's no such item. |
+| `world.material_def(id)` | What a material is: `{ id, name, tags, stats }`, `tags` a list and `stats` its stats by name (`hardness`, `weight` and its own), or nil if there's no such material. |
 | `world.faces` | The six faces' names: `up`, `down`, `north`, `south`, `east`, `west`. |
 
 ### Players and items
@@ -153,6 +157,120 @@ voxels a chunk instead, to watch growth quickly.
 
 `math.random` is seeded the same way every time the scripts load, so
 headless runs repeat.
+
+## Machines
+
+A machine (a block with `machine`, see
+[modding.md](modding.md#machines)) whose block names a `script` gets
+every [block hook](#block-and-item-hooks), and two of its own:
+
+| Hook | When |
+|---|---|
+| `on_tick(m, dt)` | Every network tick, 20 times a second, `dt` (0.05) the tick's length in seconds. Machines' ticks are spread over the frames between network ticks (by position), so some run on the network tick, after the networks moved things, and some a frame or two later. Not while any network on its ports is frozen (it reaches into a chunk that isn't loaded), as the solvers skip those too. |
+| `on_recipe_finished(m, recipe)` | A recipe machine finished a recipe: its outputs went in. `recipe` is `{ id, type, ticks, energy }`, `energy` the joules it used (negative for a generator's recipe, which makes them). |
+
+They run after the network solvers and the recipe machines on the same
+tick, so a script sees what the tick moved, and what it makes or moves
+reaches the networks on the next one. Machines tick in order of position,
+so runs repeat. A tick's `on_recipe_finished`s share a pool of steps and
+time the size of block hooks'; those that don't fit run on the next
+network tick. A machine broken or replaced before its hook runs doesn't
+get it.
+
+In every hook of a machine, `on_used` and `on_placed` too, the block
+handle is the machine's own **machine handle**, `m`: everything a
+[block handle](#blocks) has, and
+
+| | |
+|---|---|
+| `m.energy` | Its energy buffer, or nil if it has none (below). |
+| `m.tanks` | Its tanks by name: `m.tanks.fuel` (below). |
+| `m.slots` | Its slot groups by name: `m.slots.input` (below). |
+| `m.ports` | Its ports, a list of `{ face, kind, role, network, frozen }`: the face (`"north"`), the network kind's id, the role (`"produce"`), the id of the network joined to it or nil, and whether that network is frozen. |
+| `m.active` | Whether it's working. |
+| `m:set_active(on)` | Sets it working or not, which puts its block in its `active_state` (or back). A recipe machine, or one with `energy.use`, sets this itself every tick, over the script's. Returns whether it changed. |
+
+**Energy** is in joules, rates in watts:
+
+| | |
+|---|---|
+| `m.energy.stored`, `.capacity`, `.room` | What it holds, could hold, and has room for. Read-only. |
+| `m.energy.max_in`, `.max_out`, `.max_generate` | Its rates, from its definition. |
+| `m.energy:take(n)` | Uses up to `n` of what it holds (it's spent, as a lamp spends it), and returns how much. |
+| `m.energy:generate(n)` | Makes up to `n`, and returns how much: no more than its `max_generate` allows this tick (a watt of it is a twentieth of a joule a tick, spread so a second adds up exactly), nor than it has room for. Only in `on_tick`; in any other hook it makes nothing. A machine with no `max_generate` makes nothing. |
+
+**Tanks** count fluid in thousandths of a block (1000 is a block):
+
+| | |
+|---|---|
+| `tank.name`, `.fluid`, `.amount`, `.capacity`, `.room` | Its name, the id of the fluid it holds (nil while empty), how much, and how much more it holds. |
+| `tank:move_to(other, n?)` | Moves up to `n` (as much as it can, if left out) into another of the machine's tanks (a tank or its name), if that takes the fluid. |
+| `tank:pour(target, n?)` | Pours up to `n` into the voxel `target`: a face (`"up"`) or a block handle, next to the machine. Into air, or onto the same fluid, as much as the voxel holds (a block). |
+| `tank:draw(target, n?)` | Takes up to `n` of the fluid in the voxel `target`, if the tank takes it. A voxel it empties becomes air. |
+
+**Slots** hold items, up to 64 of one item each (one of a unique item):
+
+| | |
+|---|---|
+| `slots.name`, `#slots` | Its name, and how many slots it has. |
+| `slots:get(i)` | What slot `i` (counting from 1) holds, `{ id, name, state, count }`, or nil. |
+| `slots:count(id?)` | How many items it holds, of item `id` or in all. |
+| `slots:move(i, to, n?)` | Moves up to `n` (all it can, if left out) out of slot `i` into another of the machine's slot groups (a group or its name), onto slots of the same kind first. |
+
+Each of these returns how much moved.
+
+**Nothing is made or lost.** These go through the same code the
+engine's own machines use, and they only move things: fluid and items
+between the machine's own tanks and slots, or between a tank and the
+world next to it; energy only out of the machine, spent. A script makes
+energy only with `generate`, within the `max_generate` its definition
+gives it; fluid it can't make at all, and items only as any script can,
+by `set`ting a plain block that's then mined (that's what recipes and a
+definition's `emits` are for). Moving items into a recipe machine's
+input slots takes only what its recipes use, as a tube or the player's
+hand does. Fields are read-only: `m.energy.stored =
+1000` is an error. A handle works only in the hooks of its own machine.
+
+What a failing hook moved before it failed stays moved (each move is
+whole on its own), but its `data` is left as it was before the hook, and
+the machine's script is disabled, as a block's is. Other machines carry
+on.
+
+A scripted generator, the base game's solar panel:
+
+```lua
+-- scripts/solar_panel.luau: up to max_generate (60 W) in open sky.
+function on_tick(panel, dt)
+	local above = panel:neighbour("up")
+	local light = above and above.light
+	local sky = if light then light.sky else 0
+	local energy, data = panel.energy, panel.data
+	local owed = energy.max_generate * dt * sky / 15 + data.carry
+	local whole = math.floor(owed)
+	local made = energy:generate(whole)
+	data.carry = owed - whole
+	data.made += made
+	panel:set_active(made > 0)
+end
+```
+
+Each read of a handle's field or method that reaches the world
+(`m.energy`, `m.data`, `block.light`, `block:neighbour(...)`) asks the
+engine, and costs about half a microsecond; read each once into a local,
+as above, when a script uses it more than once. A thousand scripted
+machines a tick add up.
+
+```json5
+// blocks/solar_panel.json5 (in part)
+{
+  block_entity: { data: { made: 0, carry: 0 } },
+  script: "solar_panel",
+  machine: {
+    ports: [{ faces: ["down", "north", "south", "east", "west"], network: "electric", role: "produce" }],
+    energy: { capacity: 2000, max_out: 1000, max_generate: 60 },
+  },
+}
+```
 
 ## Modules
 
@@ -222,7 +340,12 @@ is split into a client and a server.
   tick (`HookSettings::steps_per_tick`), about 3 ms of work. Once they're
   spent, the hooks still waiting run on the next tick, oldest first, so
   scripted blocks that keep setting each other off slow down rather than
-  slowing the game.
+  slowing the game. Machines' `on_tick`s get as many again each network
+  tick, split between the frames they're spread over; once a frame's
+  share is spent, the rest skip that tick, and the next one starts with
+  them. Their `on_recipe_finished`s get as many again each network tick,
+  a pool of their own; those that don't fit wait for the next network
+  tick, oldest first (and past 65,536 waiting, new ones are dropped).
 - **Memory.** Each mod's scripts may use 32 MiB between them by default
   (`ScriptSettings::memory_limit`). An allocation past that fails with an
   error.
@@ -236,7 +359,10 @@ is split into a client and a server.
 - **Time a tick.** For the same reason, block hooks may take only 4 ms of
   wall clock between them in one tick (`HookSettings::time_per_tick`);
   once that's passed, the rest wait for the next tick, as when the steps
-  run out (the first hook of a tick always runs). A call stopped for
+  run out (the first hook of a tick always runs). Machines' `on_tick`s
+  get as much again each network tick, split as their steps are, and
+  their `on_recipe_finished`s as much again, waiting oldest first once
+  it's passed. A call stopped for
   running out of steps or time counts as its whole step budget against
   the tick's steps, however few it used.
 
@@ -299,5 +425,17 @@ runtime.call_scoped(caller, script, "on_tick", |lua, scope, hook| {
 they define, rebuilt when the scripts reload. Random ticks are in
 `script::random_tick` (`RandomTicks` sets their rate and cap).
 
+Machines' hooks are called in `script::machine` (`MachineScriptPlugin`,
+in `MachineScriptSystems`), with a `MachineRef` made by
+`MachineRef::create(lua, pos)` for the call's origin. `ScriptWorld` reaches
+the machine's `EnergyBuffer`, `Tanks`, `Slots`, `Ports` and
+`MachineActive`; `api::handle(lua, pos, machine)` makes a machine handle
+or a block handle. `WorldCall::allow_generating(n)` lets the call's
+machine make up to `n` joules (`on_tick` gives it the tick's share of
+`max_generate`); without it, `generate` makes nothing.
+`RecipeFinished` messages, from the recipe machines, run
+`on_recipe_finished`.
+
 Tests use the test mods in `tests/fixtures/script-mods/`, and the hooks'
-tests a test mod of their own (`src/script/hooks/tests.rs`).
+and machines' tests test mods of their own (`src/script/hooks/tests.rs`,
+`src/script/machine/tests.rs`).

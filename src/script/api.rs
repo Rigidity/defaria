@@ -1,9 +1,11 @@
-//! What scripts are handed: block handles ([`BlockRef`]), the `world`
-//! global, players and items, and blocks' `data`. Hooks are called with
+//! What scripts are handed: block handles ([`BlockRef`]), machines'
+//! handles on themselves ([`MachineRef`]), the `world` global, players and
+//! items, and blocks' `data`. Hooks are called with
 //! [`ScriptWorld::call`], which sets them up for the call and saves what
 //! changed. Documented for modders in `docs/scripting.md`.
 
 mod block;
+mod machine;
 mod value;
 mod world;
 
@@ -11,14 +13,25 @@ use bevy::prelude::*;
 use mlua::{Lua, Table};
 
 pub use block::{BlockRef, face_named, vector};
+pub use machine::{EnergyRef, MachineRef, SlotsRef, TankRef};
 pub use value::{MAX_DATA_BYTES, table_from_lua, table_to_lua, to_lua};
-pub use world::ScriptWorld;
 pub(crate) use world::world_table;
+pub use world::{ScriptWorld, WorldCall};
 
 use crate::{
     content::{Content, Direction, ItemState},
     game_mode::GameMode,
 };
+
+/// The handle a hook on the block at `pos` gets: a [`MachineRef`] for a
+/// machine, a [`BlockRef`] for anything else.
+pub fn handle(lua: &Lua, pos: IVec3, machine: bool) -> mlua::Result<mlua::AnyUserData> {
+    if machine {
+        MachineRef::create(lua, pos)
+    } else {
+        BlockRef::create(lua, pos)
+    }
+}
 
 /// A player, as a hook's `player` argument sees them.
 #[derive(Debug, Clone, Copy, PartialEq)]

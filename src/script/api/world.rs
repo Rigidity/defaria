@@ -3,9 +3,10 @@
 //!
 //! Block handles ([`BlockRef`]) and the `world` global are plain Lua
 //! values that reach the world through one function the call puts in the
-//! Lua registry for as long as it lasts, made in the call's scope. So a
-//! handle a script keeps past its call stops working: the function is
-//! gone, and a handle from an earlier call is refused by its serial.
+//! Lua state's app data for as long as it lasts, made in the call's
+//! scope. So a handle a script keeps past its call stops working: the
+//! function is gone, and a handle from an earlier call is refused by its
+//! serial.
 
 use std::{
     cell::RefCell,
@@ -22,12 +23,16 @@ use super::{
 use crate::{
     block_entity::{BlockData, BlockEntities},
     content::{BlockState, Content, Direction},
+    light::ChunkLight,
+    machine::{EnergyBuffer, MachineActive, Ports, Slots, Tanks},
+    network::{Networks, energy::EnergyReport},
     script::{CallError, Caller, ScriptRuntime},
-    terrain::Voxels,
+    terrain::{ChunkCoord, ChunkMap, Voxels},
 };
 
-/// The registry key of the current call's world function.
-const WORLD: &str = "defaria.world";
+/// The running call's world function, as app data: looked up on every
+/// world operation, so it's kept where that's cheapest.
+struct CallWorld(Function);
 
 /// Every call's serial, so a handle can tell its call is over.
 static SERIAL: AtomicU64 = AtomicU64::new(1);
@@ -50,10 +55,29 @@ pub(super) enum Op {
     Data,
     BlockDef,
     ItemDef,
+    MaterialDef,
+    Light,
+    // A machine's own handle's, in its own hooks: see `machine.rs`.
+    Active,
+    SetActive,
+    Ports,
+    TankNames,
+    SlotNames,
+    Energy,
+    EnergyTake,
+    EnergyGenerate,
+    Tank,
+    TankMove,
+    TankPour,
+    TankDraw,
+    Slots,
+    SlotGet,
+    SlotCount,
+    SlotMove,
 }
 
 impl Op {
-    const ALL: [Op; 10] = [
+    const ALL: [Op; 28] = [
         Op::Loaded,
         Op::Id,
         Op::Name,
@@ -64,7 +88,30 @@ impl Op {
         Op::Data,
         Op::BlockDef,
         Op::ItemDef,
+        Op::MaterialDef,
+        Op::Light,
+        Op::Active,
+        Op::SetActive,
+        Op::Ports,
+        Op::TankNames,
+        Op::SlotNames,
+        Op::Energy,
+        Op::EnergyTake,
+        Op::EnergyGenerate,
+        Op::Tank,
+        Op::TankMove,
+        Op::TankPour,
+        Op::TankDraw,
+        Op::Slots,
+        Op::SlotGet,
+        Op::SlotCount,
+        Op::SlotMove,
     ];
+
+    /// Whether it's a machine handle's, for the machine the call is about.
+    fn is_machine(self) -> bool {
+        self as u8 >= Op::Active as u8
+    }
 }
 
 /// Asks the current call's world for `op` at `pos`, for a handle made in
@@ -76,7 +123,7 @@ pub(super) fn world_op(
     pos: IVec3,
     args: impl IntoLuaMulti,
 ) -> mlua::Result<Value> {
-    let function: Option<Function> = lua.named_registry_value(WORLD)?;
+    let function = lua.app_data_ref::<CallWorld>().map(|world| world.0.clone());
     let Some(function) = function else {
         return Err(mlua::Error::runtime(
             "the world can only be reached while a hook runs",
@@ -101,17 +148,33 @@ pub(super) fn current_serial(lua: &Lua) -> u64 {
         .map_or(0, |serial| serial.0)
 }
 
+/// The parts of a machine's block entity a machine handle reaches.
+pub(super) type MachineParts = (
+    Option<&'static mut EnergyBuffer>,
+    Option<&'static mut Tanks>,
+    Option<&'static mut Slots>,
+    Option<&'static Ports>,
+    Option<&'static mut MachineActive>,
+);
+
 /// The world as hooks see it: blocks to read and change through
 /// [`Voxels`] (so every change is an ordinary edit, with its
 /// [`VoxelChanged`](crate::terrain::VoxelChanged) or
 /// [`PropertiesUpdated`](crate::terrain::PropertiesUpdated)), the content,
-/// and the [`BlockData`] of block entities, a scripted block's `data`.
+/// the [`BlockData`] of block entities, a scripted block's `data`, and
+/// the light. A machine's hooks also reach its own energy buffer, tanks
+/// and slots, through the same methods the engine's solvers use.
 #[derive(SystemParam)]
 pub struct ScriptWorld<'w, 's> {
     pub content: Res<'w, Content>,
     pub voxels: Voxels<'w, 's>,
     block_entities: Res<'w, BlockEntities>,
     data: Query<'w, 's, &'static mut BlockData>,
+    map: Res<'w, ChunkMap>,
+    lights: Query<'w, 's, &'static ChunkLight>,
+    machines: Query<'w, 's, MachineParts>,
+    networks: Option<Res<'w, Networks>>,
+    report: Option<ResMut<'w, EnergyReport>>,
 }
 
 impl<'w, 's> ScriptWorld<'w, 's> {
@@ -164,15 +227,26 @@ impl<'w, 's> ScriptWorld<'w, 's> {
             voxels,
             block_entities,
             data,
+            map,
+            lights,
+            machines,
+            networks,
+            report,
         } = self;
         WorldCall(RefCell::new(Call {
             content,
             voxels,
             block_entities,
             data,
+            map,
+            lights,
+            machines,
+            networks: networks.as_deref(),
+            report: report.as_deref_mut(),
             origin,
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             tables: Vec::new(),
+            generate: 0,
         }))
     }
 
@@ -192,6 +266,15 @@ impl<'w, 's> ScriptWorld<'w, 's> {
 pub struct WorldCall<'a, 'w, 's>(RefCell<Call<'a, 'w, 's>>);
 
 impl WorldCall<'_, '_, '_> {
+    /// Lets the machine at the call's origin make up to `energy` with
+    /// `m.energy:generate(n)` during the call: its definition's
+    /// `max_generate` share of a network tick, for `on_tick`. Without it,
+    /// a call makes none.
+    pub fn allow_generating(self, energy: u64) -> Self {
+        self.0.borrow_mut().generate = energy;
+        self
+    }
+
     /// Calls `hook` with the arguments `args` makes, with the world
     /// reachable while it runs, then saves the `data` it changed. Call it
     /// in [`ScriptRuntime::call_scoped`]'s closure, with what that gets.
@@ -218,25 +301,32 @@ impl WorldCall<'_, '_, '_> {
                     .dispatch(lua, serial, op, IVec3::new(x, y, z), args)
             },
         )?;
-        lua.set_named_registry_value(WORLD, dispatch)?;
+        lua.set_app_data(CallWorld(dispatch));
         let result = args(lua, content)
             .and_then(|args| hook.call::<R>(args))
             .and_then(|result| self.0.borrow_mut().save_data().map(|()| result));
-        lua.unset_named_registry_value(WORLD)?;
+        lua.remove_app_data::<CallWorld>();
         result
     }
 }
 
 /// One call's view of the world.
-struct Call<'a, 'w, 's> {
-    content: &'a Content,
-    voxels: &'a mut Voxels<'w, 's>,
-    block_entities: &'a BlockEntities,
+pub(super) struct Call<'a, 'w, 's> {
+    pub(super) content: &'a Content,
+    pub(super) voxels: &'a mut Voxels<'w, 's>,
+    pub(super) block_entities: &'a BlockEntities,
     data: &'a mut Query<'w, 's, &'static mut BlockData>,
-    origin: Option<IVec3>,
+    map: &'a ChunkMap,
+    lights: &'a Query<'w, 's, &'static ChunkLight>,
+    pub(super) machines: &'a mut Query<'w, 's, MachineParts>,
+    pub(super) networks: Option<&'a Networks>,
+    pub(super) report: Option<&'a mut EnergyReport>,
+    pub(super) origin: Option<IVec3>,
     serial: u64,
     /// The `data` tables handed out, to save when the hook returns.
     tables: Vec<(IVec3, Table)>,
+    /// What the origin's machine may still make in this call.
+    pub(super) generate: u64,
 }
 
 impl Call<'_, '_, '_> {
@@ -257,15 +347,18 @@ impl Call<'_, '_, '_> {
         let op = *Op::ALL
             .get(op as usize)
             .ok_or_else(|| mlua::Error::runtime("no such world operation"))?;
+        if op.is_machine() {
+            return self.machine_op(lua, op, pos, args);
+        }
         let mut args = args.into_iter();
         let mut arg = move || args.next().unwrap_or(Value::Nil);
         let content = self.content;
-        if let Op::BlockDef | Op::ItemDef = op {
+        if let Op::BlockDef | Op::ItemDef | Op::MaterialDef = op {
             let id: String = lua.unpack(arg())?;
-            return if op == Op::BlockDef {
-                block_def(lua, content, &id)
-            } else {
-                item_def(lua, content, &id)
+            return match op {
+                Op::BlockDef => block_def(lua, content, &id),
+                Op::ItemDef => item_def(lua, content, &id),
+                _ => material_def(lua, content, &id),
             };
         }
         let Some(state) = self.voxels.get(pos) else {
@@ -335,21 +428,33 @@ impl Call<'_, '_, '_> {
                 }
             }
             Op::Data => self.data_table(lua, pos)?.map_or(Value::Nil, Value::Table),
-            Op::BlockDef | Op::ItemDef => unreachable!(),
+            Op::Light => self.light(lua, pos)?,
+            _ => unreachable!(),
         })
+    }
+
+    /// `block.light`: the light at `pos`, or nil where there's none.
+    fn light(&self, lua: &Lua, pos: IVec3) -> mlua::Result<Value> {
+        let (coord, local) = ChunkCoord::split(pos);
+        let Some(light) = self
+            .map
+            .get(coord)
+            .and_then(|chunk| self.lights.get(chunk).ok())
+            .map(|light| light.at(local))
+        else {
+            return Ok(Value::Nil);
+        };
+        let table = lua.create_table_with_capacity(0, 4)?;
+        for (channel, name) in ["sky", "red", "green", "blue"].into_iter().enumerate() {
+            table.raw_set(name, light.get(channel))?;
+        }
+        Ok(Value::Table(table))
     }
 
     /// Whether the call may change the block at `pos`: within one step of
     /// its origin.
     fn check_writable(&self, pos: IVec3) -> mlua::Result<()> {
-        match self.origin {
-            Some(origin) if (pos - origin).abs().element_sum() <= 1 => Ok(()),
-            _ => Err(mlua::Error::runtime(format!(
-                "can't change the block at ({}, {}, {}): a hook can change only its own \
-                 block and the six next to it",
-                pos.x, pos.y, pos.z
-            ))),
-        }
+        check_writable(self.origin, pos)
     }
 
     /// The `data` table of the block entity at `pos`, the same one each
@@ -407,6 +512,20 @@ impl Call<'_, '_, '_> {
             }
         }
         Ok(())
+    }
+}
+
+/// Whether a call with `origin` may change the block at `pos`: within one
+/// step of it.
+pub(super) fn check_writable(origin: Option<IVec3>, pos: IVec3) -> mlua::Result<()> {
+    match origin {
+        // In i64: any two positions' distance fits.
+        Some(origin) if (pos.as_i64vec3() - origin.as_i64vec3()).abs().element_sum() <= 1 => Ok(()),
+        _ => Err(mlua::Error::runtime(format!(
+            "can't change the block at ({}, {}, {}): a hook can change only its own \
+             block and the six next to it",
+            pos.x, pos.y, pos.z
+        ))),
     }
 }
 
@@ -515,8 +634,31 @@ fn item_def(lua: &Lua, content: &Content, id: &str) -> mlua::Result<Value> {
     Ok(Value::Table(table))
 }
 
-/// The `world` global: `world.block(pos)`, `world.block_def(id)` and
-/// `world.item_def(id)`. Read-only.
+/// `world.material_def(id)`: a material's id, name, tags and stats, or
+/// nil.
+fn material_def(lua: &Lua, content: &Content, id: &str) -> mlua::Result<Value> {
+    let Some(material) = content.materials.get(id) else {
+        return Ok(Value::Nil);
+    };
+    let table = lua.create_table()?;
+    table.raw_set("id", material.id.as_str())?;
+    table.raw_set("name", material.name.as_str())?;
+    table.raw_set(
+        "tags",
+        lua.create_sequence_from(material.tags.iter().map(String::as_str))?,
+    )?;
+    let stats = lua.create_table()?;
+    stats.raw_set("hardness", material.hardness)?;
+    stats.raw_set("weight", material.weight)?;
+    for (name, value) in &material.stats {
+        stats.raw_set(name.as_str(), *value)?;
+    }
+    table.raw_set("stats", stats)?;
+    Ok(Value::Table(table))
+}
+
+/// The `world` global: `world.block(pos)`, `world.block_def(id)`,
+/// `world.item_def(id)` and `world.material_def(id)`. Read-only.
 pub(crate) fn world_table(lua: &Lua) -> mlua::Result<Table> {
     let table = lua.create_table()?;
     table.raw_set(
@@ -536,6 +678,12 @@ pub(crate) fn world_table(lua: &Lua) -> mlua::Result<Table> {
         "item_def",
         lua.create_function(|lua, id: String| {
             world_op(lua, current_serial(lua), Op::ItemDef, IVec3::ZERO, id)
+        })?,
+    )?;
+    table.raw_set(
+        "material_def",
+        lua.create_function(|lua, id: String| {
+            world_op(lua, current_serial(lua), Op::MaterialDef, IVec3::ZERO, id)
         })?,
     )?;
     let faces = lua.create_sequence_from(Direction::ALL.map(Direction::name))?;
