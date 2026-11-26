@@ -1,0 +1,69 @@
+# A flood spreading over many chunks (#102): a 16-block cube of water
+# let go in the middle of a walled stone floor ten chunks across, high
+# in the sky so nothing else is near. `systems` every second shows what
+# remeshing for the moving water costs, frame by frame.
+# Run: cargo headless scenarios/flood.txt
+camera 80 260 -40 0 -40
+settle
+fill 0 199 0 159 199 159 stone
+fill 0 200 0 159 201 0 stone
+fill 0 200 159 159 201 159 stone
+fill 0 200 0 0 201 159 stone
+fill 159 200 0 159 201 159 stone
+wait 30
+timing
+systems
+fill 72 200 72 87 215 87 water
+wait 1
+screenshot target/scenarios/flood/0-poured.png
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+screenshot target/scenarios/flood/1-spreading.png
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+wait 60
+timing
+inspect FluidStats
+systems 8
+screenshot target/scenarios/flood/2-spread.png
+wait 1
