@@ -20,7 +20,10 @@
 
 use bevy::{
     ecs::system::SystemParam,
-    picking::pointer::{PointerId, PointerLocation},
+    picking::{
+        events::{PointerDrag, PointerPress},
+        pointer::{PointerId, PointerLocation},
+    },
     prelude::*,
     ui::picking_backend::UiPickingSettings,
 };
@@ -31,10 +34,13 @@ pub struct PointerPlugin;
 
 impl Plugin for PointerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            PreUpdate,
-            pick_only_in_screens.before(bevy::picking::PickingSystems::Backend),
-        );
+        app.init_resource::<PointerTravel>()
+            .add_observer(start_travel)
+            .add_observer(track_travel)
+            .add_systems(
+                PreUpdate,
+                pick_only_in_screens.before(bevy::picking::PickingSystems::Backend),
+            );
     }
 }
 
@@ -52,6 +58,36 @@ fn pick_only_in_screens(
     if settings.require_markers != require_markers {
         settings.require_markers = require_markers;
     }
+}
+
+/// How far a press has to move, in logical pixels, to be a drag rather
+/// than a click.
+pub const DRAG_DISTANCE: f32 = 6.0;
+
+/// The furthest the mouse has got from where a button was last pressed,
+/// in logical pixels. Picking sends a click whenever a button is released
+/// over the node it was pressed on, even after a drag that came back; a
+/// click that should only count when the pointer stayed put checks
+/// [`PointerTravel::is_click`].
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct PointerTravel(pub f32);
+
+impl PointerTravel {
+    /// Whether the press being released stayed within [`DRAG_DISTANCE`].
+    pub fn is_click(self) -> bool {
+        self.0 <= DRAG_DISTANCE
+    }
+}
+
+fn start_travel(press: On<PointerPress>, mut travel: ResMut<PointerTravel>) {
+    // Once, not again for each ancestor it bubbles to.
+    if press.entity == press.original_event_target() {
+        travel.0 = 0.0;
+    }
+}
+
+fn track_travel(drag: On<PointerDrag>, mut travel: ResMut<PointerTravel>) {
+    travel.0 = travel.0.max(drag.distance.length());
 }
 
 /// The mouse pointer's position. What it's over is picking's: observe its

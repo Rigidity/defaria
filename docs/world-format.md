@@ -71,8 +71,9 @@ whose properties changed comes back in its default state.
 
 Written every 30 seconds and when the game exits, to `player.json5.tmp` and then
 renamed over the old file. A world without one (a new world) gives the player
-a new player's inventory and hotbar. A newer `player.json5` is reported and
-ignored, and the player starts as a new player (and saving then replaces it).
+a new player's inventory and hotbar. A `player.json5` that can't be read (newer
+than the build, or damaged) is reported and left alone: the player starts as a
+new player, and nothing is saved over the file while the world is open.
 
 ## Chunks and regions
 

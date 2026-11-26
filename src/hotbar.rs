@@ -20,7 +20,7 @@
 
 use bevy::{
     input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
-    picking::{events::PointerPress, pointer::PointerButton},
+    picking::{events::PointerClick, pointer::PointerButton},
     prelude::*,
     window::PrimaryWindow,
 };
@@ -29,7 +29,7 @@ use crate::{
     content::{BlockState, Content, ItemState},
     inventory::Inventory,
     player::LocalPlayer,
-    ui::{ItemSlot, UiTheme, item_slot, playing, typing},
+    ui::{ItemSlot, PointerTravel, UiTheme, item_slot, playing, typing},
 };
 
 pub const HOTBAR_SLOTS: usize = 9;
@@ -225,15 +225,21 @@ fn spawn_hotbar(mut commands: Commands, theme: Res<UiTheme>) {
         });
 }
 
-/// Left click makes the slot active; right click clears it.
+/// Left click makes the slot active; right click clears it. On the click,
+/// not the press, and not at the end of a drag, so dragging a slot doesn't
+/// do either.
 fn click_slot(
-    click: On<PointerPress>,
+    click: On<PointerClick>,
+    travel: Res<PointerTravel>,
     slots: Query<&HotbarSlot>,
     player: Option<Single<(&mut Hotbar, &mut ActiveSlot), With<LocalPlayer>>>,
 ) {
     let (Ok(&HotbarSlot(index)), Some(player)) = (slots.get(click.entity), player) else {
         return;
     };
+    if !travel.is_click() {
+        return;
+    }
     let (mut hotbar, mut active) = player.into_inner();
     if click.button == PointerButton::Primary {
         active.set_if_neq(ActiveSlot(index));

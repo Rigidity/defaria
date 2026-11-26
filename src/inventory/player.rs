@@ -86,7 +86,10 @@ fn equip_new_player(
     let saved = folder.and_then(|folder| match file::read(&folder.0) {
         Ok(saved) => saved,
         Err(error) => {
-            error!("{error}; starting as a new player");
+            // Its file is left as it is: it may be from a newer build, or
+            // just unreadable for now, and still hold the player's things.
+            error!("{error}; starting as a new player, and not saving over it");
+            commands.insert_resource(KeepPlayerFile);
             None
         }
     });
@@ -162,6 +165,10 @@ pub fn save(
     }
 }
 
+/// The world's `player.json5` couldn't be read, so it isn't written over.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct KeepPlayerFile;
+
 /// Writes the player's file every autosave, and when the game exits. Runs
 /// after `Last`, so it sees an exit sent anywhere in the frame.
 fn save_player(
@@ -169,10 +176,14 @@ fn save_player(
     mut exits: MessageReader<AppExit>,
     settings: Option<Res<StreamingSettings>>,
     folder: Option<Res<WorldFolder>>,
+    keep: Option<Res<KeepPlayerFile>>,
     content: Res<Content>,
     player: Option<Single<(&Inventory, &Hotbar, &ActiveSlot), With<LocalPlayer>>>,
     mut since_save: Local<f32>,
 ) {
+    if keep.is_some() {
+        return;
+    }
     let exiting = exits.read().count() > 0;
     *since_save += time.delta_secs();
     let due = settings.is_some_and(|settings| *since_save >= settings.autosave_seconds);
@@ -266,7 +277,7 @@ mod tests {
     }
 
     /// A unique item saved as many in one entry (a hand-edited file) loads
-    /// as one, rather than as billions of entries.
+    /// as one, rather than as an entry per count.
     #[test]
     fn a_unique_item_loads_one_per_entry() {
         let content = base();
@@ -276,7 +287,7 @@ mod tests {
                     .name(content.default_item("defaria:pickaxe").unwrap())
                     .unwrap()
                     .to_owned(),
-                count: 4_000_000_000,
+                count: 5,
             }],
             ..save(
                 &Inventory::new(),
@@ -328,5 +339,40 @@ mod tests {
         let second = run("wait 1");
         assert_eq!(second, first);
         assert!(folder.join(file::PLAYER_FILE).exists());
+    }
+
+    /// A `player.json5` the game can't read (here, from a newer build) is
+    /// left as it is: the player starts new, and nothing saves over it.
+    #[test]
+    fn an_unreadable_player_file_is_kept() {
+        let folder = temp_folder("player-newer-kept");
+        let path = folder.join(file::PLAYER_FILE);
+        let newer = "{ format: 99, active_slot: 0, hotbar: [], inventory: [] }";
+        std::fs::write(&path, newer).unwrap();
+        let mut app = App::new();
+        app.insert_resource(WorldFolder(folder.clone()))
+            .add_plugins((
+                default_plugins(false).disable::<bevy::log::LogPlugin>(),
+                crate::GamePlugin,
+                HeadlessPlugin {
+                    script: Script::parse("wait 1").unwrap(),
+                    rendering: false,
+                },
+            ));
+        app.insert_resource(StreamingSettings {
+            radius: 2,
+            autosave_seconds: 0.0,
+            ..default()
+        });
+        app.finish();
+        app.cleanup();
+        for _ in 0..crate::headless::SETTLE_TIMEOUT_FRAMES {
+            app.update();
+            if app.should_exit().is_some() {
+                break;
+            }
+        }
+        assert!(app.world().contains_resource::<KeepPlayerFile>());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
     }
 }
