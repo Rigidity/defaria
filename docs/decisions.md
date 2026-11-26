@@ -3,27 +3,25 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
-## Soils pick their textures by name (2026-11-25)
+## Images are named after their materials (2026-11-25)
 
-**Context.** Soil is one block, `defaria:soil`, made of a `#soil` material
-(dirt, sand, gravel) with an optional `#turf` (grass) on it. Unlike rock,
-where one stone image colored by each rock's palette is enough, each soil
-has its own image: sand's fine grains, gravel's pebbles.
+**Context.** Each soil (dirt, sand, gravel) has its own image, not just its
+own colors, so the soil textures pick the image by material: `{soil}` in a
+layer's `image` is the soil material's name (see Textures in
+`docs/modding.md`).
 
-**Decision.** A texture layer's image is fixed, so the block names its
-textures after the soil: `{soil}` for bare faces and `{soil}_turf` for the
-sides under a turf, which fill in as `defaria:sand` and
-`defaria:sand_turf`. Every soil material needs both textures, with those
-ids.
+**Decision.** A material's image is found by name: a soil `clay` in mod
+`clay` is drawn with `clay:clay`, so a mod adding a soil names its image
+after the material.
 
-**What's wrong with it.** It's a naming convention nothing checks until a
-state fails to load, and a mod adding a soil writes two near-identical
-texture files that only repeat its image.
+**What's wrong with it.** It's a convention: nothing in the material file
+says which image is its own, and a material can have only one image per
+mod name.
 
-**What should replace it.** Let a material name its images by role, the way
-it names palettes (`images: { soil: "sand" }`), and let a layer take its
-image from its material (`image: "$soil"`), so one `soil` and one
-`soil_turf` texture cover every soil.
+**What should replace it.** If materials ever need several images, or
+images shared between them, let a material name its images by role, the
+way it names palettes (`images: { soil: "sand" }`), and have `{soil}` look
+there first.
 
 ## See-through blocks let all light through (2026-11-25)
 

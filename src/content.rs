@@ -941,30 +941,49 @@ mod tests {
     fn soil_is_any_soil_with_or_without_turf() {
         let content = base();
         let soil = content.block("defaria:soil").unwrap();
-        let template = |state: BlockState, normal: Vec3| {
+        // The texture on a face, and its images' names.
+        let texture = |state: BlockState, normal: Vec3| {
             let face = content
                 .state(state)
                 .faces
                 .iter()
                 .find(|f| f.normal == normal);
-            content.textures[face.unwrap().layer as usize]
-                .template
-                .clone()
+            let texture = &content.textures[face.unwrap().layer as usize];
+            let images: Vec<&str> = texture
+                .layers
+                .iter()
+                .map(|layer| layer.image.rsplit('/').next().unwrap())
+                .collect();
+            (texture.id.clone(), images.join(" "))
         };
         for (material, name) in [("dirt", "Dirt"), ("sand", "Sand"), ("gravel", "Gravel")] {
             let id = format!("defaria:{material}");
+            let image = format!("{material}.png");
             let bare = soil.state(&[("soil", &id)]).unwrap();
             assert_eq!(content.state(bare).name, name);
+            let soil_texture = (format!("defaria:soil(soil={id})"), image.clone());
             for normal in [Vec3::Y, Vec3::NEG_Y, Vec3::X] {
-                assert_eq!(template(bare, normal), id);
+                assert_eq!(texture(bare, normal), soil_texture);
             }
             let turfed = soil
                 .state(&[("soil", &id), ("turf", "defaria:grass")])
                 .unwrap();
             assert_eq!(content.state(turfed).name, format!("{name} with Grass"));
-            assert_eq!(template(turfed, Vec3::Y), "defaria:turf");
-            assert_eq!(template(turfed, Vec3::X), format!("{id}_turf"));
-            assert_eq!(template(turfed, Vec3::NEG_Y), id);
+            assert_eq!(
+                texture(turfed, Vec3::Y),
+                (
+                    "defaria:turf(turf=defaria:grass)".into(),
+                    "grass.png".into()
+                )
+            );
+            assert_eq!(
+                texture(turfed, Vec3::X),
+                (
+                    format!("defaria:soil_turf(soil={id},turf=defaria:grass)"),
+                    format!("{image} grass_side.png")
+                )
+            );
+            assert_eq!(texture(turfed, Vec3::NEG_Y), soil_texture);
             // Each one is its own item.
             let item = content.item("defaria:soil").unwrap();
             for (values, block) in [
@@ -987,7 +1006,7 @@ mod tests {
     fn image_paths_are_listed_once() {
         let paths = base().image_paths();
         assert!(paths.contains(&"mods/defaria/images/dirt.png".to_string()));
-        // Dirt is under both dirt and dirt_turf but loads once.
+        // Dirt is under both soil and soil_turf but loads once.
         assert_eq!(paths.iter().filter(|p| p.ends_with("/dirt.png")).count(), 1);
     }
 }

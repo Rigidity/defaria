@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn the_slots_show_the_hotbar_and_the_active_slot() {
         let mut app = app();
-        let dirt = base().default_item("defaria:dirt");
+        let dirt = Some(base().default_item("defaria:soil").unwrap());
         app.world_mut().resource_mut::<Hotbar>().0[4] = dirt;
         app.world_mut().resource_mut::<ActiveSlot>().0 = 4;
         app.update();

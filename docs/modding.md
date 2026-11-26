@@ -116,8 +116,7 @@ give a busy one.
 stacking them, bottom layer first.
 
 ```json5
-// textures/dirt_turf.json5 without its input: grass hanging over the
-// edge of a dirt side face.
+// Grass hanging over the edge of a dirt side face.
 {
   layers: [
     { image: "dirt", material: "dirt" },
@@ -146,6 +145,32 @@ A block or item names a texture with inputs together with its materials:
 `{ texture: "log_side", materials: { wood: "birch" } }`. Every input needs
 a material, and only inputs can be given. Each combination in use becomes
 its own tile, made once.
+
+An input can instead be a **tag**, `#name`: an input called `name` that
+takes only materials with that tag. A texture whose inputs are all tags is
+made for every combination of tagged materials as the game loads, so every
+tile it could need exists, and a mod adding a material with the tag gets
+its tiles without writing a texture. And `{name}` in a layer's `image`
+(for a tag input) is the name of that input's material, so each material
+can bring its own image:
+
+```json5
+// textures/soil_turf.json5: the side of any soil under any turf. Sand's
+// is sand.png with grass_side.png over it, colored sand and grass.
+{
+  layers: [
+    { image: "{soil}", material: "#soil" },
+    { image: "grass_side", material: "#turf" },
+  ],
+}
+```
+
+`{name}` gives the material's id without its mod (`sand` for
+`defaria:sand`), and the image is looked up in that material's mod, unless
+the image names a mod of its own (`"defaria:{soil}"`). A missing image is
+reported, and the tiles that use it show the placeholder. A texture's
+inputs are all `$name`s or all `#tag`s, not a mix, and one texture makes at
+most 4096 tiles.
 
 ## Models
 
@@ -427,10 +452,9 @@ A property can be a material instead of a list of words:
   ("Granite"), nothing for `none` (spaces left over are dropped), or a
   plain property's value as it's written.
 
-A material's id in a texture name picks a texture per material, for
-materials whose images differ and not just their colors. Soil is any
-`#soil` material, with or without a `#turf` growing on it, and dirt, sand
-and gravel each have their own image:
+Tag inputs (see [Textures](#textures)) suit material properties: soil is
+any `#soil` material, with or without a `#turf` growing on it, and dirt,
+sand and gravel each have their own image:
 
 ```json5
 // blocks/soil.json5
@@ -441,25 +465,22 @@ and gravel each have their own image:
     turf: { materials: "#turf", optional: true },
   },
   model: "cube",
-  // Texture `defaria:sand` for sand.
-  textures: { all: "{soil}" },
+  textures: { all: { texture: "soil", materials: { soil: "{soil}" } } },
   variants: [
     {
       when: { turf: { not: "none" } },
       name: "{soil} with {turf}",
       textures: {
         up: { texture: "turf", materials: { turf: "{turf}" } },
-        // `defaria:sand_turf`: the turf hanging over sand.
-        side: { texture: "{soil}_turf", materials: { turf: "{turf}" } },
+        side: { texture: "soil_turf", materials: { soil: "{soil}", turf: "{turf}" } },
       },
     },
   ],
 }
 ```
 
-So a mod adding a soil, say `clay`, gives the material the `soil` tag and
-adds textures `clay` and `clay_turf` (with a `$turf` input); a mod adding a
-turf, say `moss`, needs only the material, tagged `turf`.
+A mod adds a soil, say `clay`, with a material tagged `soil` and an image
+`clay.png`; a turf, say `moss`, needs only a material tagged `turf`.
 
 The long form works for plain values too: `{ values: ["y", "x", "z"] }`.
 

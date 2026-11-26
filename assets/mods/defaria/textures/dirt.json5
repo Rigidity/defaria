@@ -1,5 +1,0 @@
-{
-  layers: [
-    { image: "dirt", material: "dirt" },
-  ],
-}

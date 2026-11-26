@@ -1,0 +1,8 @@
+// The side of soil under a turf: the turf hanging over the top edge of the
+// soil's own image.
+{
+  layers: [
+    { image: "{soil}", material: "#soil" },
+    { image: "grass_side", material: "#turf" },
+  ],
+}

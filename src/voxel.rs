@@ -927,9 +927,9 @@ mod tests {
     fn grass_has_a_top_sides_and_a_dirt_bottom() {
         let grass = crate::content::grass();
         assert_eq!(tile_on(grass, IVec3::Y), "turf");
-        assert_eq!(tile_on(grass, IVec3::NEG_Y), "dirt");
+        assert_eq!(tile_on(grass, IVec3::NEG_Y), "soil");
         for side in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
-            assert_eq!(tile_on(grass, side), "dirt_turf");
+            assert_eq!(tile_on(grass, side), "soil_turf");
         }
         assert_eq!(tile_on(block("stone"), IVec3::Y), "stone");
     }

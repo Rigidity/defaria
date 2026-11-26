@@ -6,7 +6,8 @@
 //!
 //! Textures with `$inputs` are templates: each combination of materials a
 //! block state or item uses is baked into its own tile, once, when the
-//! first user asks for it.
+//! first user asks for it. Textures with `#tag` inputs are baked for every
+//! combination of tagged materials as they load.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -140,20 +141,28 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         });
         report(&def.file, result);
     }
-    let mut textures = Textures::default();
+    let mut textures = Textures {
+        images,
+        dirs,
+        ..default()
+    };
     for def in &defs.textures {
-        match template(def, &content, &images, &dirs) {
+        match template(def, &content, &textures) {
             Ok((template, problems)) => {
                 for problem in problems {
                     report(&def.file, Err(problem));
                 }
-                // Textures without inputs are baked now, so every one of
-                // them is checked and has a tile, used or not.
-                let plain = template.inputs.is_empty();
+                // Textures without inputs, and those with `#tag` inputs in
+                // every combination, are baked now, so every one is checked
+                // and has a tile, used or not.
                 textures.templates.insert(def.id.clone(), template);
-                if plain {
-                    let result = textures.bake(&def.id, &BTreeMap::new(), &mut content);
-                    report(&def.file, result.map(|_| ()));
+                match textures.bake_all(&def.id, &mut content) {
+                    Ok(problems) => {
+                        for problem in problems {
+                            report(&def.file, Err(problem));
+                        }
+                    }
+                    Err(error) => report(&def.file, Err(error)),
                 }
             }
             Err(error) => report(&def.file, Err(error)),
@@ -423,14 +432,31 @@ impl Mix {
 /// A texture file, checked, with its inputs still to fill.
 struct Template {
     layers: Vec<LayerTemplate>,
-    /// The `$inputs` its layers use.
-    inputs: BTreeSet<String>,
+    /// The inputs its layers use, and for a `#tag` input the tag its
+    /// materials need.
+    inputs: BTreeMap<String, Option<String>>,
+}
+
+impl Template {
+    /// Whether every input is a `#tag`, so the texture is baked for every
+    /// combination of tagged materials at load.
+    fn permutes(&self) -> bool {
+        !self.inputs.is_empty() && self.inputs.values().all(Option::is_some)
+    }
 }
 
 struct LayerTemplate {
-    /// The image's asset path, relative to `assets/`.
-    image: String,
+    image: LayerImage,
     color: LayerColor,
+}
+
+enum LayerImage {
+    /// The image's asset path, relative to `assets/`.
+    Path(String),
+    /// An image name with `{input}`s in it, filled with the name of each
+    /// input's material (its id without the mod). Without a mod of its
+    /// own, it's in the mod of the first input's material.
+    Pattern(String),
 }
 
 enum LayerColor {
@@ -441,37 +467,52 @@ enum LayerColor {
 
 /// A texture file as a template, and problems that don't stop it loading:
 /// an image file that isn't there is reported, and the texture shows the
-/// placeholder tile (see `block_texture::build`) until it is.
+/// placeholder tile (see `block_texture::build`) until it is. Images named
+/// by their inputs' materials are checked when the texture is baked.
 fn template(
     def: &Def<TextureDef>,
     content: &Content,
-    images: &BTreeSet<String>,
-    dirs: &HashMap<String, String>,
+    textures: &Textures,
 ) -> Result<(Template, Vec<String>), String> {
     if def.def.layers.is_empty() {
         return Err("a texture needs at least one layer".into());
     }
     let mut problems = Vec::new();
     let mut layers = Vec::new();
+    let mut inputs = BTreeMap::new();
     for (i, layer) in def.def.layers.iter().enumerate() {
-        let layer = layer_template(layer, &def.namespace, content, dirs)
+        let layer = layer_template(layer, &def.namespace, content, &textures.dirs, &mut inputs)
             .map_err(|error| format!("layer {}: {error}", i + 1))?;
-        if !images.contains(&layer.image) {
+        if let LayerImage::Path(path) = &layer.image
+            && !textures.images.contains(path)
+        {
             problems.push(format!(
-                "layer {}: there's no {}; the texture shows a placeholder",
+                "layer {}: there's no {path}; the texture shows a placeholder",
                 i + 1,
-                layer.image
             ));
         }
         layers.push(layer);
     }
-    let inputs = layers
-        .iter()
-        .filter_map(|layer| match &layer.color {
-            LayerColor::Input { name, .. } => Some(name.clone()),
-            _ => None,
-        })
-        .collect();
+    let tagged = inputs.values().filter(|tag| tag.is_some()).count();
+    if tagged > 0 && tagged < inputs.len() {
+        return Err("a texture's inputs are all `$name` or all `#tag`, not both".into());
+    }
+    for (i, layer) in layers.iter().enumerate() {
+        if let LayerImage::Pattern(pattern) = &layer.image {
+            fill_with(pattern, |name| {
+                inputs
+                    .get(name)
+                    .and_then(Option::as_ref)
+                    .map(|_| String::new())
+            })
+            .map_err(|_| {
+                format!(
+                    "layer {}: image `{pattern}` can only name `#tag` inputs in `{{}}`",
+                    i + 1
+                )
+            })?;
+        }
+    }
     Ok((Template { layers, inputs }, problems))
 }
 
@@ -480,31 +521,39 @@ fn layer_template(
     namespace: &str,
     content: &Content,
     dirs: &HashMap<String, String>,
+    inputs: &mut BTreeMap<String, Option<String>>,
 ) -> Result<LayerTemplate, String> {
-    let image_id = qualify(&layer.image, namespace)?;
-    let (image_mod, name) = image_id.split_once(':').unwrap();
-    let dir = dirs
-        .get(image_mod)
-        .ok_or_else(|| format!("image `{image_id}`: no mod `{image_mod}` is loaded"))?;
-    let image = format!("{dir}/images/{name}.png");
+    let image = if layer.image.contains('{') {
+        LayerImage::Pattern(layer.image.clone())
+    } else {
+        LayerImage::Path(image_path(&qualify(&layer.image, namespace)?, dirs)?)
+    };
     let role = layer.role.clone();
+    let mut input = |name: &str, tag: Option<String>| {
+        super::check_name(name).map_err(|error| format!("input {error}"))?;
+        if inputs.get(name).is_some_and(|t| *t != tag) {
+            return Err(format!("`${name}` and `#{name}` can't both be inputs"));
+        }
+        inputs.insert(name.to_owned(), tag);
+        Ok(LayerColor::Input {
+            name: name.into(),
+            role: role.clone(),
+        })
+    };
     let color = match (&layer.material, &layer.palette) {
-        (Some(material), None) => match material.strip_prefix('$') {
-            Some(input) => {
-                super::check_name(input).map_err(|error| format!("input {error}"))?;
-                LayerColor::Input {
-                    name: input.into(),
-                    role,
-                }
-            }
-            None => {
+        (Some(material), None) => {
+            if let Some(name) = material.strip_prefix('$') {
+                input(name, None)?
+            } else if let Some(tag) = material.strip_prefix('#') {
+                input(tag, Some(tag.to_owned()))?
+            } else {
                 let id = qualify(material, namespace)?;
                 if !content.materials.contains_key(&id) {
                     return Err(format!("no material `{id}`"));
                 }
                 LayerColor::Material { id, role }
             }
-        },
+        }
         (None, Some(colors)) if role.is_none() => LayerColor::Palette(palette(colors)?),
         (None, Some(_)) => return Err("`role` is for layers with a `material`".into()),
         _ => return Err("give a layer either a `material` or a `palette`".into()),
@@ -512,14 +561,76 @@ fn layer_template(
     Ok(LayerTemplate { image, color })
 }
 
+/// The asset path of image `id` (`mod:name`).
+fn image_path(id: &str, dirs: &HashMap<String, String>) -> Result<String, String> {
+    let (image_mod, name) = id
+        .split_once(':')
+        .ok_or_else(|| format!("image `{id}` has no mod"))?;
+    let dir = dirs
+        .get(image_mod)
+        .ok_or_else(|| format!("image `{id}`: no mod `{image_mod}` is loaded"))?;
+    Ok(format!("{dir}/images/{name}.png"))
+}
+
+/// The most tiles one texture's `#tag` inputs may make.
+const MAX_PERMUTATIONS: usize = 4096;
+
 /// The texture templates, and the tiles baked from them so far (in
 /// [`Content::textures`]).
 #[derive(Default)]
 struct Textures {
     templates: HashMap<String, Template>,
+    /// Every image, by asset path.
+    images: BTreeSet<String>,
+    /// Each mod's folder, by namespace.
+    dirs: HashMap<String, String>,
 }
 
 impl Textures {
+    /// Bakes texture `id` for every combination its inputs can take: none
+    /// for a texture without inputs, every combination of tagged materials
+    /// for one whose inputs are `#tag`s. Problems that don't stop a tile
+    /// being made (a missing image) come back with the result.
+    fn bake_all(&self, id: &str, content: &mut Content) -> Result<Vec<String>, String> {
+        let template = &self.templates[id];
+        if !template.inputs.is_empty() && !template.permutes() {
+            return Ok(Vec::new());
+        }
+        let choices: Vec<(&String, Vec<String>)> = template
+            .inputs
+            .iter()
+            .map(|(name, tag)| {
+                let tag = tag.as_deref().unwrap_or_default();
+                let materials = content
+                    .materials
+                    .iter()
+                    .filter(|(_, material)| material.has_tag(tag))
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                (name, materials)
+            })
+            .collect();
+        let count: usize = choices.iter().map(|(_, m)| m.len()).product();
+        if count > MAX_PERMUTATIONS {
+            return Err(format!(
+                "its `#tag` inputs make {count} tiles; the most is {MAX_PERMUTATIONS}"
+            ));
+        }
+        let mut problems = Vec::new();
+        for n in 0..count {
+            // Each combination, the last input changing fastest.
+            let mut rest = n;
+            let mut materials = BTreeMap::new();
+            for (name, options) in choices.iter().rev() {
+                materials.insert((*name).clone(), options[rest % options.len()].clone());
+                rest /= options.len();
+            }
+            let (_, found) = self.bake_checked(id, &materials, content)?;
+            problems.extend(found);
+        }
+        Ok(problems)
+    }
+
     /// The layer of texture `id` with these materials for its inputs,
     /// baking it if nothing has used that combination yet.
     fn bake(
@@ -528,44 +639,87 @@ impl Textures {
         materials: &BTreeMap<String, String>,
         content: &mut Content,
     ) -> Result<u32, String> {
+        let (layer, problems) = self.bake_checked(id, materials, content)?;
+        // Images named by materials are only in textures baked at load,
+        // whose problems were reported then.
+        match problems.first() {
+            Some(problem) => Err(problem.clone()),
+            None => Ok(layer),
+        }
+    }
+
+    /// [`Textures::bake`], with the images found missing.
+    fn bake_checked(
+        &self,
+        id: &str,
+        materials: &BTreeMap<String, String>,
+        content: &mut Content,
+    ) -> Result<(u32, Vec<String>), String> {
         let key = texture_key(id, materials);
         if let Some(layer) = content.texture(&key) {
-            return Ok(layer);
+            return Ok((layer, Vec::new()));
         }
         let template = self
             .templates
             .get(id)
             .ok_or_else(|| format!("no texture `{id}`"))?;
-        if let Some(input) = template.inputs.iter().find(|i| !materials.contains_key(*i)) {
-            return Err(format!("texture `{id}` needs a material for `${input}`"));
-        }
-        if let Some(input) = materials.keys().find(|i| !template.inputs.contains(*i)) {
-            return Err(format!("texture `{id}` has no input `${input}`"));
-        }
-        let layers = template
-            .layers
+        if let Some((input, tag)) = template
+            .inputs
             .iter()
-            .map(|layer| {
-                let (material, role) = match &layer.color {
-                    LayerColor::Palette(palette) => {
-                        return Ok(TextureLayer {
-                            image: layer.image.clone(),
-                            palette: *palette,
-                        });
-                    }
-                    LayerColor::Material { id, role } => (id, role),
-                    LayerColor::Input { name, role } => (&materials[name], role),
-                };
-                let material = content
-                    .materials
-                    .get(material)
-                    .ok_or_else(|| format!("no material `{material}`"))?;
-                Ok(TextureLayer {
-                    image: layer.image.clone(),
-                    palette: material.palette_for(role.as_deref()),
-                })
-            })
-            .collect::<Result<_, String>>()?;
+            .find(|(i, _)| !materials.contains_key(*i))
+        {
+            let sigil = if tag.is_some() { '#' } else { '$' };
+            return Err(format!(
+                "texture `{id}` needs a material for `{sigil}{input}`"
+            ));
+        }
+        for (input, material) in materials {
+            let tag = template
+                .inputs
+                .get(input)
+                .ok_or_else(|| format!("texture `{id}` has no input `{input}`"))?;
+            let found = content
+                .materials
+                .get(material)
+                .ok_or_else(|| format!("no material `{material}`"))?;
+            if let Some(tag) = tag
+                && !found.has_tag(tag)
+            {
+                return Err(format!(
+                    "texture `{id}` input `{input}` takes `#{tag}` materials, and `{material}` isn't one"
+                ));
+            }
+        }
+        let mut problems = Vec::new();
+        let mut layers = Vec::new();
+        for layer in &template.layers {
+            let image = self.image(&layer.image, materials)?;
+            // Fixed images were checked with the template.
+            if matches!(layer.image, LayerImage::Pattern(_)) && !self.images.contains(&image) {
+                problems.push(format!(
+                    "`{key}`: there's no {image}; the texture shows a placeholder"
+                ));
+            }
+            let (material, role) = match &layer.color {
+                LayerColor::Palette(palette) => {
+                    layers.push(TextureLayer {
+                        image,
+                        palette: *palette,
+                    });
+                    continue;
+                }
+                LayerColor::Material { id, role } => (id, role),
+                LayerColor::Input { name, role } => (&materials[name], role),
+            };
+            let material = content
+                .materials
+                .get(material)
+                .ok_or_else(|| format!("no material `{material}`"))?;
+            layers.push(TextureLayer {
+                image,
+                palette: material.palette_for(role.as_deref()),
+            });
+        }
         let layer = content.textures.len() as u32;
         content.textures.push(Texture {
             id: key.clone(),
@@ -574,7 +728,31 @@ impl Textures {
             cutout: false,
         });
         content.texture_index.insert(key, layer);
-        Ok(layer)
+        Ok((layer, problems))
+    }
+
+    /// The asset path of a layer's image with these materials.
+    fn image(
+        &self,
+        image: &LayerImage,
+        materials: &BTreeMap<String, String>,
+    ) -> Result<String, String> {
+        let pattern = match image {
+            LayerImage::Path(path) => return Ok(path.clone()),
+            LayerImage::Pattern(pattern) => pattern,
+        };
+        let mut first_mod = None;
+        let name = fill_with(pattern, |input| {
+            let (material_mod, name) = materials.get(input)?.split_once(':')?;
+            first_mod.get_or_insert(material_mod);
+            Some(name.to_owned())
+        })?;
+        let id = match (name.contains(':'), first_mod) {
+            (true, _) => name,
+            (false, Some(material_mod)) => format!("{material_mod}:{name}"),
+            (false, None) => return Err(format!("image `{pattern}` names no input")),
+        };
+        image_path(&id, &self.dirs)
     }
 
     /// Bakes a reference from a block or item, with `{property}` filled
@@ -2085,6 +2263,213 @@ mod tests {
         assert!(content.block("addon:rock").is_some());
     }
 
+    /// A base mod with soils `dirt` and `sand` (each with its own image)
+    /// and turf `moss`, textures `soil` and `soil_turf` with `#tag` inputs
+    /// and images named by them, and a block of any soil with optional
+    /// turf; plus `extra` files.
+    fn soil_mod(extra: &[(&str, &str)]) -> ModFiles {
+        let mut files = vec![
+            ("images/dirt.png", ""),
+            ("images/sand.png", ""),
+            ("images/overhang.png", ""),
+            (
+                "materials/dirt.json5",
+                r##"{ tags: ["soil"], palette: ["#100000", "#200000"], hardness: 1, weight: 1 }"##,
+            ),
+            (
+                "materials/sand.json5",
+                r##"{ tags: ["soil"], palette: ["#001000", "#002000"], hardness: 1, weight: 1 }"##,
+            ),
+            (
+                "materials/moss.json5",
+                r##"{ tags: ["turf"], palette: ["#000010", "#000020"], hardness: 1, weight: 1 }"##,
+            ),
+            (
+                "textures/soil.json5",
+                r##"{ layers: [{ image: "{soil}", material: "#soil" }] }"##,
+            ),
+            (
+                "textures/soil_turf.json5",
+                r##"{ layers: [
+                    { image: "{soil}", material: "#soil" },
+                    { image: "overhang", material: "#turf" },
+                ] }"##,
+            ),
+            ("models/quad.json5", QUAD),
+            (
+                "blocks/ground.json5",
+                r##"{
+                    properties: {
+                        soil: { materials: "#soil" },
+                        turf: { materials: "#turf", optional: true },
+                    },
+                    model: "quad",
+                    textures: { all: { texture: "soil", materials: { soil: "{soil}" } } },
+                    variants: [{
+                        when: { turf: { not: "none" } },
+                        textures: { all: {
+                            texture: "soil_turf",
+                            materials: { soil: "{soil}", turf: "{turf}" },
+                        } },
+                    }],
+                }"##,
+            ),
+        ];
+        files.extend_from_slice(extra);
+        ModFiles::new("mods/base", r##"{ id: "base", name: "Base" }"##, &files)
+    }
+
+    /// The images of the texture baked as `key`, by file name.
+    fn images_of(content: &Content, key: &str) -> Vec<String> {
+        let layer = content
+            .texture(key)
+            .unwrap_or_else(|| panic!("no tile {key}"));
+        content.textures[layer as usize]
+            .layers
+            .iter()
+            .map(|layer| layer.image.rsplit('/').next().unwrap().to_owned())
+            .collect()
+    }
+
+    /// A texture whose inputs are `#tag`s is baked at load for every
+    /// combination of materials with those tags, whether or not anything
+    /// uses it, and `{input}` in an image picks the image named after each
+    /// material.
+    #[test]
+    fn tagged_inputs_bake_every_combination() {
+        let content = Content::from_mods(vec![soil_mod(&[(
+            "textures/unused.json5",
+            r##"{ layers: [{ image: "{soil}", material: "#soil" }] }"##,
+        )])]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        for key in [
+            "base:soil(soil=base:dirt)",
+            "base:soil(soil=base:sand)",
+            "base:unused(soil=base:dirt)",
+            "base:unused(soil=base:sand)",
+        ] {
+            assert!(content.texture(key).is_some(), "no tile {key}");
+        }
+        assert_eq!(
+            images_of(&content, "base:soil(soil=base:sand)"),
+            ["sand.png"]
+        );
+        assert_eq!(
+            images_of(&content, "base:soil_turf(soil=base:sand,turf=base:moss)"),
+            ["sand.png", "overhang.png"]
+        );
+        // Each layer takes its own material's palette.
+        let turfed = content
+            .texture("base:soil_turf(soil=base:dirt,turf=base:moss)")
+            .unwrap();
+        let layers = &content.textures[turfed as usize].layers;
+        assert_eq!(layers[0].palette, content.materials["base:dirt"].palette);
+        assert_eq!(layers[1].palette, content.materials["base:moss"].palette);
+        // Blocks use the tiles baked at load rather than making more.
+        let ground = content.block("base:ground").unwrap();
+        assert_eq!(ground.state_count, 4);
+        let sand = content.state(ground.state(&[("soil", "base:sand")]).unwrap());
+        assert_eq!(
+            sand.faces[0].layer,
+            content.texture("base:soil(soil=base:sand)").unwrap()
+        );
+        assert_eq!(content.textures.len(), 2 + 2 + 2);
+    }
+
+    /// Another mod adds a soil with only a material tagged `soil` and its
+    /// image: the base mod's textures and block take it in. If its image is
+    /// missing, that's reported and its tiles show the placeholder, and the
+    /// block still loads.
+    #[test]
+    fn a_mod_adds_a_soil_with_a_material_and_an_image() {
+        let clay = |files: &[(&str, &str)]| {
+            ModFiles::new(
+                "mods/clay",
+                r##"{ id: "clay", name: "Clay", dependencies: ["base"] }"##,
+                files,
+            )
+        };
+        let material = (
+            "materials/clay.json5",
+            r##"{ tags: ["soil"], palette: ["#101010", "#202020"], hardness: 1, weight: 1 }"##,
+        );
+        let content = Content::from_mods(vec![
+            soil_mod(&[]),
+            clay(&[("images/clay.png", ""), material]),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        assert_eq!(
+            images_of(&content, "base:soil(soil=clay:clay)"),
+            ["clay.png"]
+        );
+        let ground = content.block("base:ground").unwrap();
+        assert!(
+            ground
+                .state(&[("soil", "clay:clay"), ("turf", "base:moss")])
+                .is_some()
+        );
+
+        let content = Content::from_mods(vec![soil_mod(&[]), clay(&[material])]);
+        let all = errors(&content);
+        assert!(
+            all.contains("there's no mods/clay/images/clay.png"),
+            "{all}"
+        );
+        assert!(content.block("base:ground").is_some(), "{all}");
+        assert!(
+            content
+                .image_paths()
+                .contains(&"mods/clay/images/clay.png".to_owned())
+        );
+    }
+
+    /// Mistakes with `#tag` inputs are reported.
+    #[test]
+    fn tagged_input_mistakes_are_reported() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "textures/x.json5",
+                r##"{ layers: [
+                    { image: "overhang", material: "#soil" },
+                    { image: "overhang", material: "$other" },
+                ] }"##,
+                "all `$name` or all `#tag`",
+            ),
+            (
+                "textures/x.json5",
+                r##"{ layers: [{ image: "{other}", material: "$other" }] }"##,
+                "can only name `#tag` inputs",
+            ),
+            (
+                "textures/x.json5",
+                r##"{ layers: [
+                    { image: "overhang", material: "#soil" },
+                    { image: "overhang", material: "$soil" },
+                ] }"##,
+                "can't both be inputs",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: {
+                    texture: "soil", materials: { soil: "moss" },
+                } } }"##,
+                "takes `#soil` materials, and `base:moss` isn't one",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "soil" } }"##,
+                "needs a material for `#soil`",
+            ),
+        ];
+        for &(path, text, expected) in cases {
+            let content = Content::from_mods(vec![soil_mod(&[(path, text)])]);
+            let all = errors(&content);
+            assert_eq!(content.errors.len(), 1, "{text}\n{all}");
+            assert!(all.contains(&format!("mods/base/{path}")), "{all}");
+            assert!(all.contains(expected), "expected `{expected}` in: {all}");
+        }
+    }
+
     /// Each mistake is reported against its file, and only the broken
     /// definition (and what uses it) is left out.
     #[test]
@@ -2559,7 +2944,7 @@ mod tests {
             (
                 "blocks/x.json5",
                 r##"{ model: "quad", textures: { all: { texture: "a", materials: { wood: "oak" } } } }"##,
-                "texture `test:a` has no input `$wood`",
+                "texture `test:a` has no input `wood`",
             ),
             (
                 "blocks/x.json5",

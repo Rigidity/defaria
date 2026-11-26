@@ -1,7 +1,0 @@
-// The side of gravel under a turf: `$turf` hanging over the top edge.
-{
-  layers: [
-    { image: "gravel", material: "gravel" },
-    { image: "grass_side", material: "$turf" },
-  ],
-}
