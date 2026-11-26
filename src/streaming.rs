@@ -10,7 +10,10 @@
 //! light can see (see `light::sky`), so a cave reaching higher than that
 //! is lit as if open. Chunks are loaded nearest first, and chunks that end up
 //! further out than that plus [`StreamingSettings::unload_margin`] are
-//! saved and unloaded. The margin keeps a player wandering back and forth
+//! saved and unloaded, the furthest first and spread over frames (see
+//! [`StreamingSettings::unload_frames`]): taking away a chunk's light
+//! costs more than giving it, and a chunk border crossed puts a whole row
+//! out of reach at once. The margin keeps a player wandering back and forth
 //! over a chunk border from loading and unloading the same chunks over and
 //! over.
 //!
@@ -150,6 +153,13 @@ pub struct StreamingSettings {
     pub max_loading: usize,
     /// Most loaded chunks spawned (and lit) in one frame.
     pub spawns_per_frame: usize,
+    /// Chunks unloaded (and saved) a frame, the furthest first, when that
+    /// keeps up: at least this many, or [`Self::unload_frames`]'s share.
+    pub unloads_per_frame: usize,
+    /// Chunks out of reach are unloaded over about this many frames, or
+    /// [`Self::unloads_per_frame`] a frame if that's more, so however fast
+    /// the loader moves, the chunks waiting to unload don't pile up.
+    pub unload_frames: usize,
     /// Seconds between saves of the edited chunks.
     pub autosave_seconds: f32,
 }
@@ -163,12 +173,20 @@ impl Default for StreamingSettings {
             unload_margin: 2,
             max_loading: 64,
             spawns_per_frame: 24,
+            unloads_per_frame: 16,
+            unload_frames: 30,
             autosave_seconds: 30.0,
         }
     }
 }
 
 impl StreamingSettings {
+    /// How many of `waiting` chunks out of reach unload this frame.
+    pub fn unloads_this_frame(&self, waiting: usize) -> usize {
+        self.unloads_per_frame
+            .max(waiting.div_ceil(self.unload_frames.max(1)))
+    }
+
     /// Whether a chunk `offset` from a loader's chunk is within reach,
     /// `extra` chunks further out than what's loaded.
     fn reaches(&self, offset: IVec3, extra: i32) -> bool {
@@ -247,7 +265,8 @@ pub struct WorldSource {
     pub sky: Sky,
 }
 
-/// Whether everything the loaders want is loaded and meshed.
+/// Whether everything the loaders want is loaded and meshed, and what
+/// they don't want (past the margin) unloaded.
 #[derive(Resource, Reflect, Debug, Clone, Default)]
 #[reflect(Resource)]
 pub struct StreamingStatus {
@@ -266,6 +285,8 @@ pub struct Chunks {
     queue: Vec<IVec3>,
     /// The loaders' chunks when the queue was last worked out.
     centers: Vec<IVec3>,
+    /// Chunks out of reach left to unload on later frames.
+    waiting_to_unload: usize,
     flush: Option<Task<()>>,
     since_save: f32,
 }
@@ -446,6 +467,18 @@ fn plan_saves(
         .copied()
         .filter(|&c| !wanted(&chunks.centers, c, &settings, settings.unload_margin))
         .collect();
+    // Furthest first, a frame's worth: crossing a chunk border leaves a
+    // whole row out of reach at once, and taking its light away all on one
+    // frame (see `light`) is most of what crossing used to cost.
+    unloading.sort_by_key(|&c| {
+        (
+            std::cmp::Reverse(distance_squared(&chunks.centers, c)),
+            c.to_array(),
+        )
+    });
+    let unloads = settings.unloads_this_frame(unloading.len());
+    chunks.waiting_to_unload = unloading.len().saturating_sub(unloads);
+    unloading.truncate(unloads);
     unloading.sort_by_key(|c| c.to_array());
     chunks.since_save += time.delta_secs();
     let autosave = chunks.since_save >= settings.autosave_seconds && chunks.flush.is_none();
@@ -708,6 +741,7 @@ fn update_status(
 ) {
     status.loaded_chunks = chunks.loaded.len();
     status.settled = chunks.queue.is_empty()
+        && chunks.waiting_to_unload == 0
         && chunks.loading.is_empty()
         && chunks.ready.is_empty()
         && !chunks.centers.is_empty()
@@ -865,6 +899,64 @@ mod tests {
             !now.contains(&IVec3::new(-1, -3, 0)),
             "behind, past the margin"
         );
+    }
+
+    /// Chunks out of reach unload a few a frame, the furthest first, so a
+    /// border crossed doesn't unload a whole row (and take its light away)
+    /// on one frame.
+    #[test]
+    fn chunks_out_of_reach_unload_a_few_a_frame_furthest_first() {
+        let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
+        {
+            let mut settings = app.world_mut().resource_mut::<StreamingSettings>();
+            settings.unloads_per_frame = 2;
+            settings.unload_frames = 1000;
+        }
+        let center = IVec3::new(6, 2, 0);
+        let mut loaders = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<ChunkLoader>>();
+        loaders.single_mut(app.world_mut()).unwrap().translation = (center * 16).as_vec3() + 8.0;
+        let margin = settings().unload_margin;
+        let out_of_reach = |app: &App| -> HashSet<IVec3> {
+            loaded(app)
+                .difference(&cylinder(center, margin))
+                .copied()
+                .collect()
+        };
+        let distance = |c: &IVec3| distance_squared(&[center], *c);
+        let mut waiting = out_of_reach(&app);
+        assert!(waiting.len() > 4, "{waiting:?}");
+        let mut frames = 0;
+        while !waiting.is_empty() {
+            app.update();
+            frames += 1;
+            let now = out_of_reach(&app);
+            let gone: Vec<&IVec3> = waiting.difference(&now).collect();
+            assert!(gone.len() <= 2, "{gone:?}");
+            let nearest_gone = gone.iter().map(|c| distance(c)).min();
+            let furthest_left = now.iter().map(distance).max();
+            if let (Some(gone), Some(left)) = (nearest_gone, furthest_left) {
+                assert!(gone >= left, "unloaded {gone} before {left}");
+            }
+            waiting = now;
+            assert!(frames < 1000, "never unloaded");
+        }
+        assert!(frames >= 3, "spread over frames: {frames}");
+    }
+
+    /// The share of the chunks waiting to unload that go each frame.
+    #[test]
+    fn unloads_keep_up_with_what_waits() {
+        let settings = StreamingSettings {
+            unloads_per_frame: 16,
+            unload_frames: 30,
+            ..default()
+        };
+        assert_eq!(settings.unloads_this_frame(0), 16);
+        assert_eq!(settings.unloads_this_frame(100), 16);
+        assert_eq!(settings.unloads_this_frame(1000), 34);
+        assert_eq!(settings.unloads_this_frame(30_000), 1000);
     }
 
     /// Moving while loaded chunks are still waiting to be spawned doesn't

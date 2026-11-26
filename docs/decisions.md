@@ -3,6 +3,63 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Chunk crossings: unloads are spread, the rest of the cost is left (2026-11-26)
+
+**Context.** Flying over open sea, the frame that crosses into a new
+chunk took about 20 ms against a 16.7 ms budget (#77). Nobody had
+measured where it went. The headless runner now has `systems`, which
+times every system (render world's too, each without the systems it
+runs) by wall clock and by its thread's CPU time, and `--size`, for frames bigger than 1280×720.
+`scenarios/ocean-flight.txt` flies north at x 3000 for ten seconds.
+
+The measurements were taken on an M3 Max while seven other agents built
+and tested the game on the same machine (load average 35 to 80 on 14
+cores). Wall-clock frame times swung from 10 ms to 170 ms between runs of
+the same build, so they say little; CPU time per system held steady
+between runs and is what the numbers below use.
+
+Before, the flight's busiest frame used 59 ms of CPU in its systems, 35
+of them in `light::propagate_light`, its worst frame against a mean of
+1.9. A crossing puts a whole row of chunks out of reach (about
+a thousand, at radius 16), and they all unloaded on one frame: each
+chunk's light leaving its neighbours was taken away by one flood fill.
+Loading is spread at 24 chunks a frame, but unloading wasn't.
+
+**Decision.** Unload at most `unloads_per_frame` (16) chunks a frame, or
+a `unload_frames` (30) share of those waiting if that's more, the
+furthest first, so a crossing's row goes over about 45 frames and
+however fast the player moves (sprinting flight, falling) the chunks
+waiting to unload stay bounded (about 800 more loaded at a sprint).
+`propagate_light`'s worst frame fell to 11 ms of CPU, its mean about
+the same (2.2), and the busiest frame to 38 ms of CPU across every
+thread.
+
+**What's wrong with it.** It isn't verified against the 16.7 ms budget:
+that needs an idle machine. The busiest frames left are spread over
+several systems, none dominant:
+
+- `fluid::wake_loaded_chunks` (up to 11 ms, the busiest frame's biggest
+  after the change): waking the sea's surface in newly loaded chunks.
+- `light::propagate_light` (5 to 11 ms) on frames that spawn chunks,
+  settling light across 24 new chunks' borders.
+- Bevy's `check_entities_needing_specialization` and `calculate_bounds`
+  (about 1.3 ms each every frame, up to 6 ms): both scan every mesh
+  entity for `AssetChanged<Mesh3d>`, so they grow with the number of
+  chunk entities and parts, quiet frames included.
+- The render world's command buffer submission and instance buffers (2
+  to 4 ms on its own thread, alongside the main schedules), uploading new
+  meshes.
+
+At 2560×1440 the flight measured within the noise of 1280×720.
+`systems` doesn't see commands (despawning, inserting meshes), which
+Bevy applies between systems, or work a system hands to other threads.
+
+**What should replace it.** Measure the flight on an idle machine
+(`cargo headless scenarios/ocean-flight.txt`, and `--size` at the
+display's size). If crossings still miss the budget: wake fluid in new
+chunks over several frames, spawn fewer chunks a frame or settle their
+light borders over frames, and draw cut-out faces in the opaque mesh so
+each surface chunk has one entity fewer (the issue's other ideas).
 ## Buckets: the hotbar names the kind, and a click picks which one (2026-11-26)
 
 **Context.** Fluid containers (#84) keep their fluid in their item data,
