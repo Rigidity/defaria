@@ -368,8 +368,14 @@ and lava's from inside it. It's set on the block, not in variants.
 [fluid container](#items) in hand aims at it). A fluid isn't a voxel's
 block but sits beside it, in a layer of its own: a voxel of water is air
 with water in it. A block placed where it is keeps as much of it as the
-block leaves room for (its `fluid_room`, below), and deletes the rest;
-breaking the block leaves the fluid. Since you can
+block leaves room for (its `fluid_room`, below), and pushes the rest
+aside: sideways first, into the nearest voxels on the same level with
+room for it, reached through the same fluid (so a block dropped into a
+full pond raises the pond around it a little, rather than piling water
+on top); only when none within a short reach has room, into the voxel
+above, then the one below. It flows on from there. Only what none of
+those has room for is deleted. Breaking the block leaves the fluid.
+Since you can
 be inside one, even an opaque fluid like lava doesn't hide the faces of
 solid opaque blocks next to it, so the floor and walls of a lava pool show
 from inside; it still hides its own faces, and those of anything else
@@ -438,7 +444,7 @@ blocks (1 is a full block):
 
 `fluid_room` says how much of a block's voxel fluid can share with it,
 in blocks, from 0 to 1. Left out, it's 0: the block fills its voxel, and
-placing it into fluid deletes the fluid there. A block that leaves room
+placing it into fluid pushes all of it aside. A block that leaves room
 keeps that much of any fluid when it's placed into it, and fluid flows
 into the room it leaves, as into air; breaking the block leaves the fluid
 behind. Any fluid works, not just water.

@@ -305,6 +305,117 @@ fn plan_spread(
     }
 }
 
+/// The most voxels [`push_aside`] looks through sideways for room, so a
+/// block placed into a body of fluid costs the same however big it is.
+pub const PUSH_REACH: usize = 64;
+
+/// Pushes `amount` of `kind` that a block took the place of at `pos` into
+/// cells with room for it, for flow to spread over the steps after.
+/// Sideways first: the cells on `pos`'s level, nearest first, reached
+/// from it through cells of the same fluid, so a block dropped into a
+/// pond raises the pond around it rather than piling water on top. Cells
+/// the same distance away share what's pushed (those with the least room
+/// first, so the rest share what they can't take), and the search stops
+/// after [`PUSH_REACH`] cells. Only what none of those has room for goes
+/// into the cell above, as a stone dropped in a full glass pushes the
+/// water over the rim, then into the cell below. It's outside any step,
+/// the one place flow loses fluid: returns what had nowhere to go, which
+/// is lost, and the cells it went into.
+pub fn push_aside(
+    cells: &mut impl Cells,
+    pos: IVec3,
+    kind: BlockState,
+    amount: u16,
+) -> (u16, Vec<IVec3>) {
+    let mut push = Push {
+        kind,
+        left: amount,
+        into: Vec::new(),
+    };
+    for ring in sideways(cells, pos, kind) {
+        for (i, &(_, at)) in ring.iter().enumerate() {
+            let share = push.left.div_ceil((ring.len() - i) as u16);
+            push.give(cells, at, share);
+        }
+        if push.left == 0 {
+            break;
+        }
+    }
+    push.give(cells, pos + IVec3::Y, push.left);
+    push.give(cells, pos - IVec3::Y, push.left);
+    (push.left, push.into)
+}
+
+/// The cells with room for `kind` on `pos`'s level, by how many steps
+/// sideways they are from it, each step through a cell of `kind` (a cell
+/// with room but none of it ends the way), at most [`PUSH_REACH`] cells
+/// looked at; each ring with its room, least first.
+fn sideways(cells: &impl CellView, pos: IVec3, kind: BlockState) -> Vec<Vec<(u16, IVec3)>> {
+    let mut seen = HashSet::from([pos]);
+    let mut frontier = vec![pos];
+    let mut looked = 0;
+    let mut rings = Vec::new();
+    while !frontier.is_empty() && looked < PUSH_REACH {
+        let mut ring = Vec::new();
+        let mut next = Vec::new();
+        'ring: for &at in &frontier {
+            for side in SIDES {
+                if looked == PUSH_REACH {
+                    break 'ring;
+                }
+                let cell_pos = at + side;
+                if !seen.insert(cell_pos) {
+                    continue;
+                }
+                looked += 1;
+                let cell = cells.cell(cell_pos);
+                if let Some(room) = room(kind, cell) {
+                    ring.push((room, cell_pos));
+                }
+                if matches!(cell, Some(Cell::Fluid(k, ..)) if k == kind) {
+                    next.push(cell_pos);
+                }
+            }
+        }
+        ring.sort_unstable_by_key(|&(room, at)| (room, at.x, at.z));
+        rings.push(ring);
+        frontier = next;
+    }
+    rings
+}
+
+/// Fluid being pushed aside: see [`push_aside`].
+struct Push {
+    kind: BlockState,
+    /// What's still to go.
+    left: u16,
+    /// The cells it's gone into.
+    into: Vec<IVec3>,
+}
+
+impl Push {
+    /// Puts up to `most` of what's left in the cell at `at`, as much as it
+    /// has room for.
+    fn give(&mut self, cells: &mut impl Cells, at: IVec3, most: u16) {
+        let cell = cells.cell(at);
+        let Some(room) = room(self.kind, cell) else {
+            return;
+        };
+        let given = most.min(room).min(self.left);
+        if given == 0 {
+            return;
+        }
+        let cell = match cell {
+            Some(Cell::Fluid(_, there, room)) => Cell::Fluid(self.kind, there + given, room),
+            Some(Cell::Open(room)) => Cell::Fluid(self.kind, given, room),
+            _ => unreachable!("only cells with room"),
+        };
+        cells.set(at, cell);
+        self.left -= given;
+        self.into.push(at);
+    }
+}
+
 /// Whether the fluid at `pos` would move if it stepped now: it has room
 /// below it, or it would spread. False where there's no fluid. This is
 /// flow's own rule, so waking only the fluid this says might move loses
@@ -1070,6 +1181,130 @@ pub(crate) mod tests {
         let (low, high) = (levels.iter().min().unwrap(), levels.iter().max().unwrap());
         assert!(high - low < FULL_FLUID / 16, "{levels:?}");
         assert!(grid.amount(slab) > 300, "{levels:?}");
+    }
+
+    /// Fluid pushed aside goes sideways before up, further than the cells
+    /// beside it: through the same fluid on its level, to the nearest cells
+    /// with room, and only up with what none within reach can take. Not
+    /// through another fluid, nor past a cell with room and none of it.
+    #[test]
+    fn pushing_aside_looks_sideways_through_the_fluid_first() {
+        let full = Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID);
+        let push = |cells: &[(IVec3, Cell)], amount: u16| {
+            let mut grid = Grid::default();
+            grid.cells.extend(cells.iter().copied());
+            let (left, _) = push_aside(&mut grid, IVec3::ZERO, WATER, amount);
+            (grid, left)
+        };
+        // Through two full cells to one with room for 800, the rest up.
+        let row = [
+            (IVec3::X, full),
+            (IVec3::new(2, 0, 0), full),
+            (IVec3::new(3, 0, 0), Cell::Fluid(WATER, 200, FULL_FLUID)),
+            (IVec3::Y, Cell::OPEN),
+        ];
+        let (grid, left) = push(&row, 1000);
+        assert_eq!(left, 0);
+        assert_eq!(grid.amount(IVec3::new(3, 0, 0)), 1000);
+        assert_eq!(grid.amount(IVec3::Y), 200, "only what didn't fit goes up");
+        // The nearest room first: beside it, before further along.
+        let mut near = row.to_vec();
+        near.push((IVec3::NEG_X, Cell::OPEN));
+        let (grid, _) = push(&near, 500);
+        assert_eq!(grid.amount(IVec3::NEG_X), 500);
+        assert_eq!(grid.amount(IVec3::new(3, 0, 0)), 200);
+        // Not through lava, nor through the dry cell beyond which there's
+        // room: up instead.
+        for between in [Cell::Fluid(LAVA, FULL_FLUID, FULL_FLUID), Cell::Open(1)] {
+            let mut blocked = row.to_vec();
+            blocked[0] = (IVec3::X, between);
+            let (grid, _) = push(&blocked, 1000);
+            assert_eq!(grid.amount(IVec3::new(3, 0, 0)), 200, "{between:?}");
+        }
+    }
+
+    /// The search sideways looks at no more than [`PUSH_REACH`] cells, so
+    /// room at the far end of a long channel of full water isn't found,
+    /// and the fluid goes up; nearer, it is.
+    #[test]
+    fn pushing_aside_sideways_is_bounded() {
+        let channel = |room_at: i32| {
+            let mut grid = Grid::default();
+            for x in 1..room_at {
+                grid.cells.insert(
+                    IVec3::new(x, 0, 0),
+                    Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID),
+                );
+            }
+            grid.cells.insert(IVec3::new(room_at, 0, 0), Cell::OPEN);
+            grid.cells.insert(IVec3::Y, Cell::OPEN);
+            push_aside(&mut grid, IVec3::ZERO, WATER, 1000);
+            (
+                grid.amount(IVec3::new(room_at, 0, 0)),
+                grid.amount(IVec3::Y),
+            )
+        };
+        assert_eq!(channel(10), (1000, 0));
+        // Each step along looks at three cells: past the reach.
+        const { assert!(3 * 40 > PUSH_REACH) };
+        assert_eq!(channel(40), (0, 1000));
+    }
+
+    /// Fluid pushed aside is shared between the sides first (those with
+    /// less room first, so the rest share what they can't take), then what
+    /// they can't take goes into the cell above, then into the one below,
+    /// as much as each has room for; what none has room for is what's
+    /// left.
+    #[test]
+    fn pushing_aside_goes_to_the_sides_then_up_then_down() {
+        let pos = IVec3::ZERO;
+        let full = Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID);
+        let push = |cells: &[(IVec3, Cell)], amount: u16| {
+            let mut grid = Grid::default();
+            grid.cells.extend(cells.iter().copied());
+            let (left, mut into) = push_aside(&mut grid, pos, WATER, amount);
+            into.sort_by_key(|p| (p.x, p.y, p.z));
+            (grid, left, into)
+        };
+        // Beside it, in a trench that isn't full, rather than on top.
+        let half = Cell::Fluid(WATER, 500, FULL_FLUID);
+        let (grid, left, into) = push(&[(IVec3::Y, Cell::OPEN), (IVec3::X, half)], 400);
+        assert_eq!((left, into), (0, vec![IVec3::X]));
+        assert_eq!(grid.amount(IVec3::X), 900);
+        // Shared between the sides: the one with room for only 100 takes
+        // that, the others the rest evenly; none for another fluid's.
+        let cells = [
+            (IVec3::Y, Cell::OPEN),
+            (IVec3::X, Cell::OPEN),
+            (IVec3::NEG_X, Cell::Fluid(WATER, 900, FULL_FLUID)),
+            (IVec3::Z, Cell::Open(500)),
+            (IVec3::NEG_Z, Cell::Fluid(LAVA, 10, FULL_FLUID)),
+            (IVec3::NEG_Y, Cell::OPEN),
+        ];
+        let (grid, left, _) = push(&cells, 1000);
+        assert_eq!(left, 0);
+        assert_eq!(grid.amount(IVec3::NEG_X), 1000, "its 100");
+        assert_eq!((grid.amount(IVec3::X), grid.amount(IVec3::Z)), (450, 450));
+        assert_eq!(grid.amount(IVec3::NEG_Z), 10, "no other fluid's");
+        assert_eq!(
+            grid.amount(IVec3::Y) + grid.amount(IVec3::NEG_Y),
+            0,
+            "not needed"
+        );
+        // The sides full, as in a brim-full pond: up over the rim.
+        let (grid, left, into) = push(&[(IVec3::X, full), (IVec3::Y, Cell::OPEN)], 1000);
+        assert_eq!((left, into), (0, vec![IVec3::Y]));
+        assert_eq!(grid.amount(IVec3::Y), 1000);
+        // Up before down, with both open: back up a one-wide shaft.
+        let open = [(IVec3::Y, Cell::OPEN), (IVec3::NEG_Y, Cell::OPEN)];
+        let (_, left, into) = push(&open, 1000);
+        assert_eq!((left, into), (0, vec![IVec3::Y]));
+        // Below last, then nothing: what's left is lost.
+        let (grid, left, into) = push(&[(IVec3::Y, full), (IVec3::NEG_Y, Cell::Open(300))], 1000);
+        assert_eq!((left, into), (700, vec![IVec3::NEG_Y]));
+        assert_eq!(grid.amount(IVec3::NEG_Y), 300);
+        let (_, left, into) = push(&[(IVec3::Y, full)], 1000);
+        assert_eq!((left, into.len()), (1000, 0));
     }
 
     /// A pond full to the brim around a slab whose half is full is

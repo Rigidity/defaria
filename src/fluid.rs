@@ -6,13 +6,16 @@
 //! block that leaves room for it (`fluid_room`, a slab's half), none for a
 //! full block. Flow only moves those amounts between voxels, never
 //! touching blocks: fluid is never made, and only destroyed when a block
-//! that leaves less room is placed into it. How it moves, and which voxels step when, is in [`flow`];
-//! this plugin runs that on the loaded chunks, in [`FixedUpdate`].
+//! is placed into it and nothing around has room for what no longer fits
+//! (see [`fluid_displaced`]). How it moves, and which voxels step when, is
+//! in [`flow`]; this plugin runs that on the loaded chunks, in
+//! [`FixedUpdate`].
 //!
 //! Fluid is woken (made active, so it steps) where it might move:
 //!
 //! - around every voxel set to another block, by anything (placing, or
 //!   flow itself);
+//! - around each voxel fluid a block took the place of was pushed into;
 //! - in a chunk as it loads, where its fluid isn't settled: a voxel that
 //!   isn't full, or that has room beside or below it. The same goes for
 //!   the fluid along the faces of the chunks next to it, which couldn't
@@ -25,9 +28,17 @@
 //! With the eyes inside a fluid, the fog is the fluid's color and short,
 //! as the fluid's `view` says (see `docs/modding.md`).
 //!
-//! Placing a block into fluid deletes what no longer fits. Each time, flow
-//! calls [`fluid_displaced`] with it before it steps, which is where
-//! pushing it aside instead would go (#83).
+//! Placing a block into fluid pushes what no longer fits aside: half a
+//! block for a slab, all of it for stone. Flow takes it on its next tick,
+//! before it steps, putting it in voxels with room for it and spreading
+//! it from there over the steps after (see [`fluid_displaced`]):
+//! sideways first, the nearest on its level reached through the same
+//! fluid, then above, then below. The sideways search looks at no more
+//! than [`flow::PUSH_REACH`] voxels, so a block placed into a body of
+//! fluid costs the same however big it is, and placing many blocks at
+//! once costs no more than one each. What none of them has room for (a
+//! block placed at the bottom of a full, sealed shaft) is deleted, and
+//! counted.
 
 pub mod flow;
 
@@ -91,9 +102,13 @@ pub struct FluidStats {
     pub millis: f64,
     /// The most wall-clock milliseconds one fixed tick took.
     pub worst_millis: f64,
-    /// Fluid deleted by placing blocks into it since the start, in
+    /// Fluid that blocks placed into it, or another fluid poured over it,
+    /// pushed aside since the start, in thousandths of a block.
+    pub pushed_aside: u64,
+    /// Fluid that blocks placed into it, or another fluid poured over it,
+    /// deleted since the start, where nothing around had room for it, in
     /// thousandths of a block.
-    pub displaced: u64,
+    pub deleted: u64,
 }
 
 /// The flow simulation over the loaded world.
@@ -230,8 +245,9 @@ pub(crate) fn run_flow(
     mut cells: WorldCells,
 ) {
     for (pos, fluid, amount) in std::mem::take(&mut sim.displaced) {
-        fluid_displaced(&mut cells, pos, fluid, amount);
-        stats.displaced += amount as u64;
+        let deleted = fluid_displaced(&mut cells, &mut sim.sim, pos, fluid, amount);
+        stats.pushed_aside += (amount - deleted) as u64;
+        stats.deleted += deleted as u64;
     }
     let start = std::time::Instant::now();
     let report = sim.sim.tick(
@@ -297,11 +313,24 @@ fn note_displaced_fluid(
     }
 }
 
-/// A block was placed at `pos`, where there was `amount` of the fluid
-/// `fluid`. For now that fluid is deleted: it's already gone, so this does
-/// nothing. Pushing it into the cells around instead (#83) goes here, with
-/// `cells` to put it in.
-fn fluid_displaced(_cells: &mut impl Cells, _pos: IVec3, _fluid: BlockState, _amount: u16) {}
+/// A block was placed at `pos`, taking the place of `amount` of the fluid
+/// `fluid`, which is gone from there already. Pushes it into the voxels
+/// around with room for it (see [`flow::push_aside`]), and wakes the fluid
+/// around where it went, to spread it on. Returns what none of them had
+/// room for, which is deleted.
+fn fluid_displaced(
+    cells: &mut WorldCells,
+    sim: &mut Simulation,
+    pos: IVec3,
+    fluid: BlockState,
+    amount: u16,
+) -> u16 {
+    let (deleted, into) = flow::push_aside(cells, pos, fluid, amount);
+    for at in into {
+        sim.wake_around(cells, at);
+    }
+    deleted
+}
 
 /// With the eyes inside a fluid, the fog is the fluid's: its color, from
 /// right at the eyes out to its `view.distance`, in place of the fog at the
@@ -548,6 +577,148 @@ mod tests {
         assert_eq!(chunk.at(IVec3::new(4, 1, 1)), block("tuft"));
     }
 
+    /// A sealed pond of water, `size` wide and `depth` deep, full, in a
+    /// chunk of stone, with `air` blocks of air above it inside its rim.
+    fn pond(size: i32, depth: i32, air: i32) -> Chunk {
+        let mut chunk = Chunk::filled(block("stone"));
+        for x in 1..=size {
+            for z in 1..=size {
+                for y in 1..=depth {
+                    chunk.set_to_fluid(IVec3::new(x, y, z), block("water"));
+                }
+                for y in depth + 1..=depth + air {
+                    chunk.set_at(IVec3::new(x, y, z), BlockState::AIR);
+                }
+            }
+        }
+        chunk
+    }
+
+    /// Places `state` at each of `at` in one frame, as an edit.
+    fn place(app: &mut App, at: Vec<IVec3>, state: BlockState) {
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| {
+                for &pos in &at {
+                    voxels.set(pos, state);
+                }
+            })
+            .unwrap();
+    }
+
+    fn total(app: &App, size: i32, height: i32) -> u32 {
+        let mut total = 0;
+        for x in 1..=size {
+            for z in 1..=size {
+                for y in 1..=height {
+                    total += amount(app, IVec3::new(x, y, z)) as u32;
+                }
+            }
+        }
+        total
+    }
+
+    /// A block placed into a pond's surface pushes the water it takes the
+    /// place of up onto the surface, and it spreads over the pond, raising
+    /// it: none is lost. A slab placed there pushes only the half it takes.
+    #[test]
+    fn a_block_in_a_ponds_surface_raises_it() {
+        let mut app = app();
+        app.add_systems(Update, note_displaced_fluid.before(wake_around_edits));
+        insert_chunk(&mut app, IVec3::ZERO, pond(6, 2, 3));
+        run(&mut app, 0.5);
+        let before = total(&app, 6, 5);
+        assert_eq!(before, 72_000);
+        place(&mut app, vec![IVec3::new(3, 2, 3)], block("stone"));
+        place(&mut app, vec![IVec3::new(5, 2, 5)], block("stone_slab"));
+        run(&mut app, 8.0);
+        let stats = app.world().resource::<FluidStats>().clone();
+        assert_eq!((stats.pushed_aside, stats.deleted), (1500, 0));
+        assert_eq!(total(&app, 6, 5), before, "none lost");
+        // Spread over the pond: a thin layer above the old surface, over
+        // many more voxels than the two it came up into.
+        let spread = (1..=6)
+            .flat_map(|x| (1..=6).map(move |z| IVec3::new(x, 3, z)))
+            .filter(|&pos| amount(&app, pos) > 0)
+            .count();
+        assert!(spread > 10, "{spread}");
+        assert_eq!(stats.active, 0, "settled");
+    }
+
+    /// A block dropped into a pond whose top layer isn't full pushes its
+    /// water sideways through the pond, raising that layer, rather than up
+    /// onto it: nothing stands above the old surface, and none is lost.
+    #[test]
+    fn a_block_in_a_pond_that_isnt_full_raises_it_sideways() {
+        let mut app = app();
+        app.add_systems(Update, note_displaced_fluid.before(wake_around_edits));
+        let mut chunk = pond(6, 2, 3);
+        let water = VoxelFluid::of(block("water"), 400);
+        for x in 1..=6 {
+            for z in 1..=6 {
+                chunk.set_fluid_at(IVec3::new(x, 2, z), water, FULL_FLUID);
+            }
+        }
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 0.5);
+        let before = total(&app, 6, 5);
+        place(&mut app, vec![IVec3::new(3, 2, 3)], block("stone"));
+        run(&mut app, 4.0);
+        let stats = app.world().resource::<FluidStats>().clone();
+        assert_eq!((stats.pushed_aside, stats.deleted), (400, 0));
+        assert_eq!(total(&app, 6, 5), before, "none lost");
+        let above: u32 = (1..=6)
+            .flat_map(|x| (1..=6).map(move |z| IVec3::new(x, 3, z)))
+            .map(|pos| amount(&app, pos) as u32)
+            .sum();
+        assert_eq!(above, 0, "nothing piled on top");
+    }
+
+    /// A block placed where nothing around has room for the fluid it takes
+    /// the place of (deep in a full, sealed pond) deletes it and counts it.
+    /// Placing many at once, they wake only the fluid around each, never
+    /// the whole pond, however big it is.
+    #[test]
+    fn blocks_deep_in_a_full_pond_delete_and_wake_little() {
+        let mut app = app();
+        app.add_systems(Update, note_displaced_fluid.before(wake_around_edits));
+        insert_chunk(&mut app, IVec3::ZERO, pond(14, 14, 0));
+        run(&mut app, 0.5);
+        assert_eq!(app.world().resource::<FluidStats>().active, 0);
+        let cube: Vec<IVec3> = (6..9)
+            .flat_map(|x| (6..9).flat_map(move |y| (6..9).map(move |z| IVec3::new(x, y, z))))
+            .collect();
+        let placed = cube.len() as u64;
+        place(&mut app, cube, block("stone"));
+        app.update();
+        let woken = app.world().resource::<FluidSim>().sim.active();
+        assert!(woken < 300, "{woken} woken by {placed} blocks");
+        run(&mut app, 2.0);
+        let stats = app.world().resource::<FluidStats>().clone();
+        assert_eq!((stats.pushed_aside, stats.deleted), (0, placed * 1000));
+        assert!(stats.stepped < 1000, "{} stepped", stats.stepped);
+        assert_eq!(total(&app, 14, 14), (14 * 14 * 14 - placed as u32) * 1000);
+    }
+
+    /// Blocks placed across a wide, full pond's surface push their water
+    /// up, and wake only the fluid around each block and where its water
+    /// went, not the pond.
+    #[test]
+    fn pushing_aside_wakes_little() {
+        let mut app = app();
+        app.add_systems(Update, note_displaced_fluid.before(wake_around_edits));
+        insert_chunk(&mut app, IVec3::ZERO, pond(14, 13, 2));
+        run(&mut app, 0.5);
+        let row: Vec<IVec3> = (1..=14).map(|x| IVec3::new(x, 13, 7)).collect();
+        place(&mut app, row, block("stone"));
+        // The edit's frame, then the fixed tick that pushes the water.
+        app.update();
+        app.update();
+        let stats = app.world().resource::<FluidStats>().clone();
+        assert_eq!((stats.pushed_aside, stats.deleted), (14_000, 0));
+        let woken = app.world().resource::<FluidSim>().sim.active();
+        assert!(woken < 600, "{woken} woken in a pond of {}", 14 * 14 * 13);
+    }
+
     /// Water falling and spreading across chunk borders keeps all of itself.
     #[test]
     fn falling_and_spreading_across_chunks_loses_nothing() {
@@ -628,7 +799,9 @@ mod tests {
     }
 
     /// Fluid that a block or another fluid takes the place of is passed to
-    /// `fluid_displaced` and counted; fluid emptied to air or topped up isn't.
+    /// `fluid_displaced`, and deleted and counted where nothing it can
+    /// reach has room for it (here, a trench of water sealed in stone);
+    /// fluid emptied to air or topped up isn't.
     #[test]
     fn fluid_replaced_by_anything_else_is_displaced() {
         let mut app = app();
@@ -643,20 +816,33 @@ mod tests {
             FULL_FLUID,
         );
         insert_chunk(&mut app, IVec3::ZERO, chunk);
+        // How much was there before each edit, and how much it displaced.
         let set = |app: &mut App, x: i32, state: BlockState| {
             let pos = IVec3::new(x, 1, 1);
+            let displaced = |app: &App| {
+                let stats = app.world().resource::<FluidStats>();
+                stats.pushed_aside + stats.deleted
+            };
+            let (before, was) = (amount(app, pos), displaced(app));
             app.world_mut()
                 .run_system_once(move |mut voxels: Voxels| {
                     voxels.set(pos, state);
                 })
                 .unwrap();
             run(app, 0.1);
-            app.world().resource::<FluidStats>().displaced
+            (before as u64, displaced(app) - was)
         };
-        assert_eq!(set(&mut app, 0, block("stone")), 1000);
-        assert_eq!(set(&mut app, 1, block("lava")), 2000);
-        assert_eq!(set(&mut app, 2, BlockState::AIR), 2000);
-        assert_eq!(set(&mut app, 3, block("water")), 2000, "topped up");
+        let (before, displaced) = set(&mut app, 0, block("stone"));
+        assert_eq!((before, displaced), (1000, 1000));
+        // Along the trench to its part-full end, through the water: what
+        // that had room for went there, and the rest had nowhere to go.
+        let deleted = app.world().resource::<FluidStats>().deleted;
+        assert_eq!(deleted, 300, "the end had room for 700");
+        let (before, displaced) = set(&mut app, 1, block("lava"));
+        assert!(before > 0);
+        assert_eq!(displaced, before, "the lava took the water's place");
+        assert_eq!(set(&mut app, 2, BlockState::AIR).1, 0, "emptied");
+        assert_eq!(set(&mut app, 3, block("water")).1, 0, "topped up");
     }
 
     /// Swimming and the fog find the surface where it's drawn: sloping
