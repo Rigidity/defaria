@@ -33,11 +33,14 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockState, Content},
+    content::{BlockState, Content, FULL_FLUID},
     fly_camera::FlyCamera,
     light::ChunkLight,
     perlin::splitmix64,
-    voxel::{CHUNK_SIZE, Chunk, ChunkMeshes, Neighborhood, TranslucentFaces, touching_offsets},
+    voxel::{
+        CHUNK_SIZE, Chunk, ChunkMeshes, Neighborhood, TranslucentFaces, fluid_step,
+        touching_offsets,
+    },
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
@@ -60,6 +63,7 @@ impl Plugin for TerrainPlugin {
         app.init_resource::<TerrainSettings>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<FluidChanged>()
             .add_systems(
                 Update,
                 (
@@ -156,6 +160,18 @@ impl ChunkCoord {
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoxelChanged {
     pub pos: IVec3,
+    /// The block it was.
+    pub before: BlockState,
+    /// The amount of fluid its chunk kept for it (see [`Chunk::partial_at`]):
+    /// with `before` a fluid, `None` means it was full.
+    pub partial_before: Option<u16>,
+}
+
+/// The amount of fluid in a voxel changed, without its block changing,
+/// through [`Voxels::set_fluid`].
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FluidChanged {
+    pub pos: IVec3,
 }
 
 /// Every loaded chunk's entity, by its coordinate.
@@ -208,6 +224,7 @@ pub struct Voxels<'w, 's> {
     map: Res<'w, ChunkMap>,
     chunks: Query<'w, 's, &'static mut Chunk>,
     changes: MessageWriter<'w, VoxelChanged>,
+    fluid_changes: MessageWriter<'w, FluidChanged>,
 }
 
 impl Voxels<'_, '_> {
@@ -233,10 +250,59 @@ impl Voxels<'_, '_> {
         else {
             return false;
         };
-        if chunk.at(local) == state {
+        let before = chunk.at(local);
+        if before == state {
             return true;
         }
+        let partial_before = chunk.partial_at(local);
         chunk.set_at(local, state);
+        self.touched(pos);
+        self.changes.write(VoxelChanged {
+            pos,
+            before,
+            partial_before,
+        });
+        true
+    }
+
+    /// The block at a world position and the amount of fluid its chunk
+    /// keeps for it (see [`Chunk::partial_at`]); `None` outside the loaded
+    /// chunks.
+    pub fn get_with_fluid(&self, pos: IVec3) -> Option<(BlockState, Option<u16>)> {
+        let (coord, local) = ChunkCoord::split(pos);
+        let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
+        Some((chunk.at(local), chunk.partial_at(local)))
+    }
+
+    /// Sets the amount of fluid in the fluid voxel at a world position,
+    /// from 1 to [`FULL_FLUID`], and returns whether it's loaded. The chunks
+    /// that show it are remeshed only if its drawn height changes (see
+    /// [`fluid_step`]). Sends [`FluidChanged`] if the amount changed.
+    pub fn set_fluid(&mut self, pos: IVec3, amount: u16) -> bool {
+        let (coord, local) = ChunkCoord::split(pos);
+        let Some(mut chunk) = self
+            .map
+            .get(coord)
+            .and_then(|entity| self.chunks.get_mut(entity).ok())
+        else {
+            return false;
+        };
+        let before = chunk.partial_at(local).unwrap_or(FULL_FLUID);
+        if before == amount {
+            return true;
+        }
+        chunk.bypass_change_detection().set_fluid_at(local, amount);
+        if fluid_step(before) != fluid_step(amount) {
+            self.touched(pos);
+        }
+        self.fluid_changes.write(FluidChanged { pos });
+        true
+    }
+
+    /// Marks the chunks that show the voxel at `pos` changed, so they're
+    /// remeshed: a voxel on a chunk's edge also shows, hides or shades
+    /// faces of the chunks across that edge.
+    fn touched(&mut self, pos: IVec3) {
         for touching in ChunkCoord::touching(pos) {
             if let Some(mut chunk) = self
                 .map
@@ -246,8 +312,6 @@ impl Voxels<'_, '_> {
                 chunk.set_changed();
             }
         }
-        self.changes.write(VoxelChanged { pos });
-        true
     }
 }
 

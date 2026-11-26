@@ -76,11 +76,11 @@ Chunks that aren't in the table have never been saved, and are generated when
 they're loaded. A region file that's damaged is renamed to `<name>.broken`
 (and logged), and the region starts over.
 
-### Chunk blob, format 1
+### Chunk blob, format 2
 
 | Bytes | Field |
 |---|---|
-| 1 | Format: `1` |
+| 1 | Format: `2` |
 | rest | The payload below, zlib-compressed |
 
 The payload uses unsigned LEB128 varints (seven bits a byte, lowest first, the
@@ -91,7 +91,14 @@ varint  palette length P (at least 1)
 P ×     varint name length, then the name in UTF-8
 packed  4096 voxels, B bits each, B = ceil(log2 P)
         (0 bits when P is 1: the chunk is one block)
+varint  F, the number of voxels not full of fluid
+F ×     varint voxel index, then varint amount (1 to 999)
 ```
+
+A fluid voxel (a block with `fluid` set, such as water) holds an amount of
+its fluid, in thousandths of a block. Most fluid is full, so only the
+voxels that aren't are listed, in increasing index order; a fluid voxel
+that isn't listed is full.
 
 Voxels are in the order `index = (y · 16 + z) · 16 + x`. Each voxel's value is
 its index into the palette, packed least significant bit first into

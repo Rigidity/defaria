@@ -9,6 +9,7 @@ pub mod content;
 mod cracks;
 mod devtools;
 mod dynamic_light;
+mod fluid;
 mod fly_camera;
 mod fog;
 mod fov;
@@ -62,6 +63,7 @@ impl Plugin for GamePlugin {
             fov::FovPlugin,
             mining::MiningPlugin,
             cracks::CracksPlugin,
+            fluid::FluidPlugin,
         ));
     }
 }

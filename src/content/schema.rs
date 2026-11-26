@@ -262,9 +262,10 @@ pub struct BlockDef {
     #[serde(default)]
     pub render: Option<Render>,
     /// A fluid: nothing bumps into it whatever its model's collision, the
-    /// crosshair passes through it, and placing a block replaces it.
+    /// crosshair passes through it, and placing a block replaces it. It
+    /// flows, and the player swims in it, as this says.
     #[serde(default)]
-    pub fluid: bool,
+    pub fluid: Option<FluidDef>,
     /// Its faces show from behind as well as in front.
     #[serde(default)]
     pub double_sided: bool,
@@ -281,6 +282,37 @@ pub struct BlockDef {
     /// Whether the block gets an item that places it. On by default.
     #[serde(default = "default_true")]
     pub item: bool,
+}
+
+/// How a fluid flows and what it's like to be in. Amounts are in blocks: 1
+/// is a full block.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FluidDef {
+    /// Flow steps a second.
+    pub rate: f32,
+    /// The most that falls from a cell into the one below in a step.
+    pub fall: f32,
+    /// The thinnest layer that still spreads onto dry ground. Thinner, it
+    /// stays put, unless it can run over an edge.
+    pub film: f32,
+    /// The smallest difference between two cells that flows from one to
+    /// the other. Below it the surface counts as level.
+    pub ripple: f32,
+    /// How fast the player moves in it, from 0 to 1 of walking speed.
+    pub move_speed: f32,
+    /// What the view looks like with the eyes in it.
+    pub view: FluidViewDef,
+}
+
+/// The view from inside a fluid.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FluidViewDef {
+    /// The fog's color, as `#rrggbb`.
+    pub color: String,
+    /// How far you can see, in blocks.
+    pub distance: f32,
 }
 
 fn default_true() -> bool {

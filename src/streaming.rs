@@ -49,8 +49,8 @@ use crate::{
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
     save::{self, WorldFolder, WorldStore, region},
     terrain::{
-        AwaitingNeighbours, ChunkCoord, ChunkMap, MeshTask, Meshed, RemeshChunks, Terrain,
-        TerrainBlocks, TerrainSettings, VoxelChanged, spawn_chunk,
+        AwaitingNeighbours, ChunkCoord, ChunkMap, FluidChanged, MeshTask, Meshed, RemeshChunks,
+        Terrain, TerrainBlocks, TerrainSettings, VoxelChanged, spawn_chunk,
     },
     voxel::Chunk,
 };
@@ -305,10 +305,16 @@ fn open_world(
     });
 }
 
-/// Marks the chunks of edited voxels for saving.
-fn mark_edited_chunks(mut changes: MessageReader<VoxelChanged>, mut chunks: ResMut<Chunks>) {
-    for change in changes.read() {
-        let (coord, _) = ChunkCoord::split(change.pos);
+/// Marks the chunks of edited voxels for saving, including those whose
+/// fluid has moved.
+fn mark_edited_chunks(
+    mut changes: MessageReader<VoxelChanged>,
+    mut fluid_changes: MessageReader<FluidChanged>,
+    mut chunks: ResMut<Chunks>,
+) {
+    let changed = changes.read().map(|change| change.pos);
+    for pos in changed.chain(fluid_changes.read().map(|change| change.pos)) {
+        let (coord, _) = ChunkCoord::split(pos);
         if let Some(chunk) = chunks.loaded.get_mut(&coord.0) {
             chunk.edited = true;
         }

@@ -39,11 +39,12 @@
 use bevy::{
     asset::RenderAssetUsages,
     mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexFormat},
+    platform::collections::HashMap,
     prelude::*,
 };
 
 use crate::{
-    content::{BakedFace, BlockState, Content, MAX_LIGHT, Render},
+    content::{BakedFace, BlockState, Content, FULL_FLUID, MAX_LIGHT, Render},
     light::{ChunkLight, Light},
 };
 
@@ -87,33 +88,75 @@ impl Plugin for VoxelPlugin {
 
 /// A cube of voxels. Voxel `(x, y, z)` occupies the unit cube from
 /// `(x, y, z)` to `(x + 1, y + 1, z + 1)` in the chunk's local space.
+///
+/// A fluid voxel (a block with `fluid` set) also holds an amount of its
+/// fluid, from 1 to [`FULL_FLUID`]. Most fluid is full, so only the amounts
+/// of the voxels that aren't are kept, in `partial`; a fluid voxel that
+/// isn't there is full. Setting a voxel to another block forgets its
+/// amount.
 #[derive(Component, Reflect, Debug, Clone, PartialEq, Eq)]
 #[reflect(Component)]
 #[require(ChunkLight)]
 pub struct Chunk {
     voxels: Vec<BlockState>,
+    /// The amount in each fluid voxel that isn't full, by voxel index.
+    partial: HashMap<u16, u16>,
 }
 
 impl Default for Chunk {
     fn default() -> Self {
-        Self {
-            voxels: vec![BlockState::AIR; CHUNK_VOLUME],
-        }
+        Self::filled(BlockState::AIR)
     }
 }
 
 impl Chunk {
-    /// A chunk with these voxels, in [`Chunk::index_of`] order. `None`
-    /// unless there are exactly [`CHUNK_VOLUME`].
+    /// A chunk with these voxels, in [`Chunk::index_of`] order, any fluid
+    /// in them full. `None` unless there are exactly [`CHUNK_VOLUME`].
     pub fn from_voxels(voxels: Vec<BlockState>) -> Option<Self> {
-        (voxels.len() == CHUNK_VOLUME).then_some(Self { voxels })
+        (voxels.len() == CHUNK_VOLUME).then(|| Self {
+            voxels,
+            partial: HashMap::new(),
+        })
     }
 
     /// A chunk of one block throughout.
     pub fn filled(state: BlockState) -> Self {
         Self {
             voxels: vec![state; CHUNK_VOLUME],
+            partial: HashMap::new(),
         }
+    }
+
+    /// The amount of fluid kept for the voxel at a chunk-local position:
+    /// `None` when none is kept, which for a fluid voxel means it's full.
+    /// See [`Chunk::fluid_at`] for the amount itself.
+    pub fn partial_at(&self, pos: IVec3) -> Option<u16> {
+        self.partial.get(&(Self::index_of(pos) as u16)).copied()
+    }
+
+    /// The amount of fluid in the voxel at a chunk-local position: 0 if it
+    /// isn't a fluid.
+    pub fn fluid_at(&self, pos: IVec3, content: &Content) -> u16 {
+        fluid_amount(content, self.at(pos), self.partial_at(pos))
+    }
+
+    /// Sets the amount of fluid in the voxel at a chunk-local position,
+    /// which should be a fluid, from 1 to [`FULL_FLUID`].
+    pub fn set_fluid_at(&mut self, pos: IVec3, amount: u16) {
+        debug_assert!((1..=FULL_FLUID).contains(&amount), "fluid amount {amount}");
+        let index = Self::index_of(pos) as u16;
+        if amount >= FULL_FLUID {
+            self.partial.remove(&index);
+        } else {
+            self.partial.insert(index, amount);
+        }
+    }
+
+    /// Every voxel that isn't full of fluid, by index, with its amount.
+    pub fn partial_fluid(&self) -> impl Iterator<Item = (usize, u16)> + '_ {
+        self.partial
+            .iter()
+            .map(|(&index, &amount)| (index as usize, amount))
     }
 
     /// Every voxel, in [`Chunk::index_of`] order.
@@ -126,8 +169,14 @@ impl Chunk {
         self.voxels[Self::index(x, y, z)]
     }
 
+    /// Sets a voxel's block. A different block than it was forgets its
+    /// amount of fluid: a fluid set this way is full.
     pub fn set(&mut self, x: usize, y: usize, z: usize, state: BlockState) {
-        self.voxels[Self::index(x, y, z)] = state;
+        let index = Self::index(x, y, z);
+        if self.voxels[index] != state {
+            self.voxels[index] = state;
+            self.partial.remove(&(index as u16));
+        }
     }
 
     /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
@@ -137,7 +186,7 @@ impl Chunk {
 
     /// [`Chunk::set`] for a chunk-local position given as an `IVec3`.
     pub fn set_at(&mut self, pos: IVec3, state: BlockState) {
-        self.voxels[Self::index_of(pos)] = state;
+        self.set(pos.x as usize, pos.y as usize, pos.z as usize, state);
     }
 
     /// The voxel at an index from [`Chunk::index_of`].
@@ -189,6 +238,26 @@ impl Chunk {
             (block, OPEN_SKY)
         })
         .mesh(content)
+    }
+}
+
+/// How many heights a fluid's surface is drawn at, from a sixteenth of a
+/// block up to a full block.
+pub const FLUID_STEPS: u16 = 16;
+
+/// Which of the [`FLUID_STEPS`] heights `amount` of fluid is drawn at: the
+/// next one up, so even a little shows. 0 for no fluid.
+pub fn fluid_step(amount: u16) -> u16 {
+    (amount.min(FULL_FLUID) as u32 * FLUID_STEPS as u32).div_ceil(FULL_FLUID as u32) as u16
+}
+
+/// The amount of fluid in a voxel of block `state`, with `partial` the
+/// amount its chunk keeps for it (see [`Chunk`]): 0 if it isn't a fluid.
+pub fn fluid_amount(content: &Content, state: BlockState, partial: Option<u16>) -> u16 {
+    if content.state(state).is_fluid() {
+        partial.unwrap_or(FULL_FLUID)
+    } else {
+        0
     }
 }
 

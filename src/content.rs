@@ -56,7 +56,7 @@ impl Plugin for ContentPlugin {
 
 /// A block in one particular state: an index into [`Content::states`].
 /// State 0 is always air.
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct BlockState(pub u16);
 
 impl BlockState {
@@ -367,9 +367,9 @@ pub struct State {
     /// How its faces are drawn, which also decides whether it stops light
     /// and hides the faces next to it.
     pub render: Render,
-    /// Whether it's a fluid: it has no collision, the crosshair passes
-    /// through it, and placing a block replaces it.
-    pub fluid: bool,
+    /// Set for a fluid: it has no collision, the crosshair passes through
+    /// it, and placing a block replaces it. It flows as this says.
+    pub fluid: Option<Fluid>,
     /// Whether its faces show from behind too: from inside a glass block
     /// or under water.
     pub double_sided: bool,
@@ -380,7 +380,36 @@ pub struct State {
     pub weight: f32,
 }
 
+/// How much fluid a full cell holds, in the units fluid amounts are counted
+/// in. Amounts in the mod files are in blocks, and are turned into these.
+pub const FULL_FLUID: u16 = 1000;
+
+/// A fluid's flow and feel, from its block's `fluid` (see `docs/modding.md`),
+/// with amounts in [`FULL_FLUID`] units.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fluid {
+    /// Flow steps a second.
+    pub rate: f32,
+    /// The most that falls into the cell below in a step, at least 1.
+    pub fall: u16,
+    /// The thinnest layer that spreads onto dry ground.
+    pub film: u16,
+    /// The smallest difference that flows between two cells, at least 1.
+    pub ripple: u16,
+    /// How fast the player moves in it, as a fraction of walking.
+    pub move_speed: f32,
+    /// The fog with the eyes inside it.
+    pub view_color: Color,
+    /// How far you can see from inside it, in blocks.
+    pub view_distance: f32,
+}
+
 impl State {
+    /// Whether it's a fluid.
+    pub fn is_fluid(&self) -> bool {
+        self.fluid.is_some()
+    }
+
     /// Whether light can't pass through it, and it shades the corners of
     /// faces next to it: true when it's drawn opaque and covers every side.
     pub fn is_opaque(&self) -> bool {
@@ -589,10 +618,10 @@ impl Content {
         next.occludes(side.opposite())
             && match next.render {
                 Render::Opaque => {
-                    !next.fluid
+                    !next.is_fluid()
                         || next.block == own.block
                         || own.render != Render::Opaque
-                        || (own.fluid && own.block < next.block)
+                        || (own.is_fluid() && own.block < next.block)
                 }
                 Render::Cutout => false,
                 Render::Translucent => next.block == own.block && own.render == Render::Translucent,

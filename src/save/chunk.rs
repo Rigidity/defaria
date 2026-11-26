@@ -14,12 +14,12 @@
 use bevy::{platform::collections::HashMap, prelude::*};
 
 use crate::{
-    content::{BlockState, Content},
+    content::{BlockState, Content, FULL_FLUID},
     voxel::{CHUNK_VOLUME, Chunk},
 };
 
 /// The chunk format this build writes.
-pub const CHUNK_FORMAT: u8 = 1;
+pub const CHUNK_FORMAT: u8 = 2;
 /// How hard zlib tries: 0 (store) to 10. 6 is its usual default; it's
 /// nearly as small as the slowest levels on voxel data and much faster.
 const COMPRESSION_LEVEL: u8 = 6;
@@ -111,6 +111,16 @@ pub fn encode(chunk: &Chunk, names: &StateNames) -> Vec<u8> {
     }
     pack(&mut payload, &indices, bits_for(palette.len()));
 
+    // Fluid that isn't full, in voxel order so the same chunk always
+    // encodes the same.
+    let mut partial: Vec<(usize, u16)> = chunk.partial_fluid().collect();
+    partial.sort_unstable();
+    write_varint(&mut payload, partial.len() as u64);
+    for (index, amount) in partial {
+        write_varint(&mut payload, index as u64);
+        write_varint(&mut payload, amount as u64);
+    }
+
     let mut blob = vec![CHUNK_FORMAT];
     blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(
         &payload,
@@ -149,9 +159,6 @@ pub fn decode(blob: &[u8], names: &StateNames) -> Result<Chunk, String> {
     }
     let bits = bits_for(palette_len);
     let packed = reader.bytes(packed_len(bits))?;
-    if !reader.is_done() {
-        return Err("chunk has trailing bytes".into());
-    }
     let mut voxels = Vec::with_capacity(CHUNK_VOLUME);
     for index in unpack(packed, bits) {
         voxels.push(
@@ -160,7 +167,21 @@ pub fn decode(blob: &[u8], names: &StateNames) -> Result<Chunk, String> {
                 .ok_or("a voxel is off the palette")?,
         );
     }
-    Ok(Chunk::from_voxels(voxels).expect("unpack yields a chunk's worth"))
+    let mut chunk = Chunk::from_voxels(voxels).expect("unpack yields a chunk's worth");
+
+    let partial = reader.length(CHUNK_VOLUME)?;
+    for _ in 0..partial {
+        let index = reader.length(CHUNK_VOLUME - 1)?;
+        let amount = reader.length(FULL_FLUID as usize - 1)?;
+        if amount == 0 {
+            return Err("a voxel has no fluid in it".into());
+        }
+        chunk.set_fluid_at(Chunk::position_of(index), amount as u16);
+    }
+    if !reader.is_done() {
+        return Err("chunk has trailing bytes".into());
+    }
+    Ok(chunk)
 }
 
 /// Bits per voxel for a palette of `len` entries: 0 for one entry.
@@ -285,9 +306,17 @@ mod tests {
         }
         let mut sparse = Chunk::default();
         sparse.set(3, 4, 5, block("lamp"));
+        // Water, some of it not full.
+        let mut pond = Chunk::default();
+        for x in 0..16 {
+            pond.set(x, 0, 0, block("water"));
+        }
+        pond.set_fluid_at(IVec3::new(2, 0, 0), 1);
+        pond.set_fluid_at(IVec3::new(9, 0, 0), FULL_FLUID - 1);
         for chunk in [
             busy,
             sparse,
+            pond,
             Chunk::default(),
             Chunk::filled(block("stone")),
         ] {
@@ -369,6 +398,32 @@ mod tests {
         let mut blob = vec![CHUNK_FORMAT];
         blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(&payload, 6));
         assert!(decode(&blob, &names).is_err());
+    }
+
+    /// A fluid amount out of range, or a voxel off the end, is an error.
+    #[test]
+    fn bad_fluid_amounts_are_errors() {
+        let names = names();
+        let water = |fluid: &[(u64, u64)]| {
+            let mut payload = Vec::new();
+            write_varint(&mut payload, 1);
+            let name = names.name(block("water")).as_bytes();
+            write_varint(&mut payload, name.len() as u64);
+            payload.extend_from_slice(name);
+            write_varint(&mut payload, fluid.len() as u64);
+            for &(index, amount) in fluid {
+                write_varint(&mut payload, index);
+                write_varint(&mut payload, amount);
+            }
+            let mut blob = vec![CHUNK_FORMAT];
+            blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(&payload, 6));
+            decode(&blob, &names)
+        };
+        let ok = water(&[(5, 300)]).unwrap();
+        assert_eq!(ok.partial_at(Chunk::position_of(5)), Some(300));
+        assert!(water(&[(5, 0)]).is_err(), "no fluid");
+        assert!(water(&[(5, FULL_FLUID as u64)]).is_err(), "full isn't kept");
+        assert!(water(&[(CHUNK_VOLUME as u64, 1)]).is_err(), "off the end");
     }
 
     #[test]

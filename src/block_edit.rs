@@ -189,7 +189,7 @@ fn ray_box(origin: Vec3, dir: Vec3, b: &BlockBox) -> Option<(f32, IVec3)> {
 /// block for one you walk through. Nothing for air or a fluid, which the
 /// crosshair passes through.
 pub fn target_shape(content: &Content, state: BlockState) -> &[BlockBox] {
-    if state.is_air() || content.state(state).fluid {
+    if state.is_air() || content.state(state).is_fluid() {
         return &[];
     }
     let boxes = &content.state(state).collision;
@@ -248,7 +248,7 @@ fn edit_blocks(
     });
     let replaceable = voxels
         .get(pos)
-        .is_some_and(|there| there.is_air() || content.state(there).fluid);
+        .is_some_and(|there| there.is_air() || content.state(there).is_fluid());
     if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps {
         return;
     }
@@ -542,6 +542,7 @@ mod tests {
             .init_resource::<ActiveSlot>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<crate::terrain::FluidChanged>()
             .add_systems(
                 Update,
                 (
