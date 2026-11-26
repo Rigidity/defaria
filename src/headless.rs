@@ -27,9 +27,9 @@
 //! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). Like any edit, it's followed by the engine setting connection properties, so `pipe` joins the pipes next to it. |
 //! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
-//! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to, each with its role (`produce`, `store`, `input`, ...); or `none`. On an energy network, also what its storage holds and could, what producers gave and consumers took in the last second, and its throughput (its weakest wire's). |
+//! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to, each with its role (`produce`, `store`, `input`, ...). On an energy network, also what its storage holds and could, what producers gave and consumers took in the last second, and its throughput (its weakest wire's); on a fluid network, what it holds. Or `none`. |
 //! | `put <x> <y> <z> <name> <amount> <what>` | Put something in the machine at that voxel: `amount` of an item (named as blocks are for `fill`, `stone[ore=defaria:iron]`) into its slot group `name`, or `amount` blocks of a fluid (`lava`) into its tank `name`, as a tube or a pipe would. The run fails if there's no machine there, it has no such slot group or tank, or not all of it fits. |
-//! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
+//! | `fluids` | Print how much of each fluid there is in the loaded world, fluid networks' pipes and machines' tanks, in thousandths of a block (with where it is, for a fluid that's in pipes or tanks too), and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //! | `type <text>` | Type the text (the rest of the line), a key press and release per character, into whatever has the keyboard. |
@@ -1000,10 +1000,12 @@ fn put(
     )))
 }
 
-/// The `fluids` report: each fluid's total in the loaded world, in
-/// thousandths of a block, and the active voxels.
+/// The `fluids` report: each fluid's total in the loaded world, the pipes
+/// and machines' tanks, in thousandths of a block, and the active voxels.
+/// A fluid that's anywhere but the world also shows where it is.
 fn fluid_report(world: &mut World) -> String {
-    let mut totals: std::collections::BTreeMap<String, u64> = default();
+    use std::collections::BTreeMap;
+    let mut in_world: BTreeMap<String, u64> = default();
     let mut chunks = world.query::<&Chunk>();
     let content = world.resource::<Content>();
     for chunk in chunks.iter(world) {
@@ -1012,14 +1014,34 @@ fn fluid_report(world: &mut World) -> String {
             let amount = chunk.fluid_amount_at(pos, content);
             if amount > 0 {
                 let name = &content.blocks[content.state(chunk.at(pos)).block].id;
-                *totals.entry(name.clone()).or_default() += amount as u64;
+                *in_world.entry(name.clone()).or_default() += amount as u64;
             }
         }
     }
+    let in_pipes = crate::fluid_network::held_in_pipes(world);
+    let mut in_machines: BTreeMap<String, u64> = default();
+    let mut tanks = world.query::<&crate::machine::Tanks>();
+    for tanks in tanks.iter(world) {
+        for tank in &tanks.0 {
+            if let Some(fluid) = &tank.fluid {
+                *in_machines.entry(fluid.clone()).or_default() += tank.amount;
+            }
+        }
+    }
+    let names: std::collections::BTreeSet<&String> = in_world
+        .keys()
+        .chain(in_pipes.keys())
+        .chain(in_machines.keys())
+        .collect();
     let stats = world.resource::<FluidStats>();
     let mut line = format!("fluids: {} active", stats.active);
-    for (name, total) in totals {
-        line += &format!(", {name} {total}");
+    for name in names {
+        let get = |map: &BTreeMap<String, u64>| map.get(name).copied().unwrap_or_default();
+        let (here, pipes, machines) = (get(&in_world), get(&in_pipes), get(&in_machines));
+        line += &format!(", {name} {}", here + pipes + machines);
+        if pipes + machines > 0 {
+            line += &format!(" (world {here}, pipes {pipes}, machines {machines})");
+        }
     }
     line
 }
@@ -1040,6 +1062,19 @@ fn network_report(world: &World, pos: IVec3) -> String {
     });
     if let Some(energy) = energy {
         line += &format!("; {energy}");
+    }
+    let fluid = networks.at(pos).and_then(|id| {
+        world
+            .get_resource::<crate::network::NetworkMap<crate::fluid_network::FluidNet>>()?
+            .get(id)
+    });
+    if let Some(net) = fluid.filter(|net| net.total() > 0) {
+        let held: Vec<String> = net
+            .held
+            .iter()
+            .map(|held| format!("{} {}", held.fluid, held.amount))
+            .collect();
+        line += &format!(", holding {}", held.join(", "));
     }
     line
 }
@@ -1949,6 +1984,36 @@ mod tests {
         let report = fluid_report(app.world_mut());
         assert!(report.starts_with("fluids: "), "{report}");
         assert!(report.ends_with(" active, defaria:water 750"), "{report}");
+    }
+
+    /// The `fluids` report counts what's in machines' tanks too, and says
+    /// where it is: a pump has drawn the poured water into a tank. The
+    /// `network` report gives the pump and tank's roles.
+    #[test]
+    fn the_fluids_report_counts_tanks_and_pipes() {
+        let (mut app, exit) = run_game(
+            "camera 5000.5 -1000.5 5000.5 0 0\n\
+             settle\n\
+             fill 4996 -1002 4998 5004 -999 5002 stone\n\
+             fill 4999 -1001 5000 5003 -1001 5000 air\n\
+             pour 5002 -1001 5000 water 1\n\
+             fill 4999 -1001 5000 4999 -1001 5000 pump[facing=east]\n\
+             fill 4998 -1001 5000 4998 -1001 5000 pipe\n\
+             fill 4998 -1000 5000 4998 -1000 5000 tank\n\
+             wait 180\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let report = fluid_report(app.world_mut());
+        assert!(
+            report.ends_with(" active, defaria:water 1000 (world 0, pipes 0, machines 1000)"),
+            "{report}"
+        );
+        let network = network_report(app.world_mut(), IVec3::new(4998, -1001, 5000));
+        assert!(
+            network.contains("4999 -1001 5000 west (output)")
+                && network.contains("4998 -1000 5000 down (store)"),
+            "{network}"
+        );
     }
 
     /// Pouring something that isn't a fluid, or no amount, fails the run.

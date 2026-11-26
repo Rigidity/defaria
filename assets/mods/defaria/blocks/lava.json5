@@ -17,4 +17,6 @@
   light: [15, 10, 4],
   weight: 3100,
   category: "natural",
+  // In kelvin: hotter than copper melts, so copper pipes won't carry it.
+  stats: { temperature: 1400 },
 }

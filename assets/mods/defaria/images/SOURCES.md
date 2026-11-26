@@ -94,6 +94,14 @@ feature drawn into the panel.
   `furnace_front_lit.png`, the two in one image, isn't used.)
 - `tank_side.png`: the casing with a vertical sight glass and three gauge
   marks beside it.
+- `tank_fill_1.png` to `tank_fill_4.png`: the fluid in that sight glass,
+  one to four quarters full from the bottom (3, 5, 7 and 9 of its 9 rows),
+  a lit surface row on top and a lighter left column: overlays for
+  `tank_side`, colored by the fluid the tank holds.
+- `pump_front.png`: the casing with a framed intake grate (a dark opening
+  behind a grid of bars).
+- `outlet_front.png`: the casing with a mounting plate and a spout hanging
+  down from it, its dark mouth at the bottom.
 - `crate_side.png`: the casing's frame around a dark panel with crossed
   diagonal braces, corner brackets and a small port where the braces meet.
   Layout from the Retro Diffusion crate in the table above.

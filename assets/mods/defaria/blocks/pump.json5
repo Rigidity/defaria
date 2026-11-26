@@ -1,0 +1,33 @@
+// Draws fluid from the world in front of it into its network: water or
+// lava, a block a second, from the voxel in front and the body of fluid
+// joined to it (see "Fluid networks" in docs/modding.md). It faces you as
+// you place it, so place it from the pond, looking at the bank. Pipes join
+// it on every other side: the iron sockets.
+{
+  name: "Pump",
+  properties: {
+    // Facing you: the opposite of the way you look.
+    facing: {
+      values: ["north", "south", "east", "west"],
+      place: { from: "look", values: { north: "south", south: "north", east: "west", west: "east" } },
+    },
+  },
+  model: "cube",
+  textures: { all: "fluid_port", north: "pump_front" },
+  variants: [
+    { when: { facing: "south" }, rotate: [0, 180, 0] },
+    { when: { facing: "west" }, rotate: [0, 90, 0] },
+    { when: { facing: "east" }, rotate: [0, 270, 0] },
+  ],
+  hardness: 2,
+  weight: 1500,
+  category: "machines",
+  // Blocks of fluid a second.
+  stats: { pump_rate: 1 },
+  machine: {
+    ports: [
+      { faces: ["back", "left", "right", "up", "down"], network: "fluid", role: "output" },
+    ],
+    tanks: { fluid: { capacity: 1 } },
+  },
+}

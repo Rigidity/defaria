@@ -3,6 +3,82 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Fluid networks are one shared tank of one fluid, and pumps are stats (2026-11-26)
+
+**Context.** The fluid solver (#113) moves fluid between machines on
+pipe networks, and pumps and outlets join them to the world's fluid. The
+issue left open whether a network holds one fluid, what pipes too cool
+for a fluid do, and how a tank shows how full it is.
+
+**Decision.** A network is one shared tank (`FluidNet`), as big as its
+pipes' capacities together, with no pressure or flow along the pipes, as
+Factorio 2.0 does. Each network tick (20 Hz, as energy's), outputs give
+to it, inputs take from it, and stores make up the difference (give when
+inputs go short, take what's left otherwise); what goes in and what comes out are each limited
+by the slowest pipe's throughput. **One fluid per network**: it takes in
+only the fluid it holds. Networks can't be kept from joining (the
+connection properties know nothing of what's inside), so two holding
+different fluids that join hold both, take nothing in and only give out,
+first fluid first, until one is used up. That matches the world today,
+where two fluids that meet just stop (#85 is still open); if #85 makes
+them react, a mixed network could react the same way. **Temperature**: a
+fluid block's `temperature` stat and a pipe's `max_temperature` stat (from
+its metal, #106), in kelvin; a network takes in no fluid hotter than its
+coolest pipe, but keeps what it holds if a cooler pipe joins it later.
+**Pumps and outlets** are machines with a `pump_rate` or `outlet_rate`
+stat, working on their first tank and the voxel their `facing` names. A
+pump reaches through the fluid and air in front of it (64 voxels, 8
+blocks, not upward), so it drains the film a pond leaves on its bed,
+which flow never brings to it. **Tanks** show how full they are through
+a `level` property (and `fluid`), which the engine sets from the first
+tank, so the block draws it with ordinary variants and textures.
+
+**What's wrong with it.** Throughput ignores distance: a long thin pipe
+carries as much as a short one, and fluid crosses a network in a tick.
+Stores drain the pipes every tick, so pipes hold fluid only on the way
+through. Marking pumps and gauges by stat and property names is
+convention, not schema. A pump can drink from a whole sea, one voxel at
+a time, waking flow across it (no reservoir, #96).
+
+**What should replace it.** Throughput falling with distance from the
+source, if networks feel too instant. Pump and outlet as a `machine`
+field, or scripts (#118, #122), once machines have behaviour in data. A
+pump drawing from a settled body's level as a reservoir (#96).
+
+## Pipe contents are written into block entities just before their chunk is saved (2026-11-26)
+
+**Context.** #111 left what conduits held to the solvers: an unloading
+chunk's conduits are handed to the solver as lost (`removed`). Fluid in
+pipes must survive unloading, quitting and breaking pipes.
+
+**Decision.** A network's fluid lives in its `FluidNet`, not per pipe,
+and every conduit now has a block entity (as the wrench will need). Just
+before chunks are saved, streaming says which (`ChunksSaving`: those
+unloading, and whether an autosave or exit saves the loaded ones), and
+systems in `BeforeChunkSave` write into block entities: each unloading
+pipe gets its exact share of its network by volume (`PipeFluid`, saved
+as `pipe`), taken out of the network; on an autosave or exit every pipe
+gets a copy of its share, which the network keeps. A pipe loaded with
+fluid gives it back to its network, once that's known, and is emptied.
+A broken pipe takes its share out before the network splits and pours it
+into its voxel. So a split never has anything to lose, and the solver's
+`split` ignores `removed`. A share written as a copy is harmless: a
+loaded pipe gives back only what it was loaded with.
+
+**What's wrong with it.** Fluid moves between pipes of the same network
+as a chunk unloads and loads (it's shared out by volume, not kept where
+it was), which is invisible now there's no pressure. A crash between
+autosaves loses what went into networks since the last one, as it does
+any edit. Writing every pipe's share on an autosave costs a pass over
+every fluid pipe loaded (only changed ones are rewritten). A pipe broken
+where a block takes its place, or holding a second fluid, loses that
+fluid (counted in `FluidNetworkStats::lost`).
+
+**What should replace it.** Networks that keep running unloaded (#123)
+would keep their fluid as numbers and need this only for saving. Energy
+and items in transit (#112, #120) can use `BeforeChunkSave` the same
+way.
+
 ## Machine screens are laid out from the definition, and take any item (2026-11-26)
 
 **Context.** Using a machine (#119) opens a screen showing its slots,

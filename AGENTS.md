@@ -94,10 +94,11 @@ changes.
    `scroll` (point at and wheel over UI, such as the inventory; they drive
    Bevy's picking as a real mouse does), `type` (type text into whatever
    has the keyboard, such as a text field), `pour` (put an amount of a
-   fluid in a voxel) and `fluids` (each fluid's total in the loaded world
-   and how much of it is active), `network` (the network the conduit at a
-   voxel is part of: kind, size, frozen or running, its ports and their
-   roles, and on an energy network what it stored, produced and consumed),
+   fluid in a voxel) and `fluids` (each fluid's total in the loaded world,
+   pipes and tanks, and how much of it is active), `network` (the network
+   the conduit at a voxel is part of: kind, size, frozen or running, its
+   ports and their roles, on an energy network what it stored, produced
+   and consumed, and what a fluid network holds),
    `put` (put items in a machine's slot group or fluid in its tank, as a
    tube or pipe would), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
@@ -335,6 +336,14 @@ documented in `docs/modding.md`; keep that file, the serde types in
   a tick at a time, and put out its outputs; `RecipeProgress` is the saved
   part. Recipes are data (`recipes/` in a mod), baked in
   `src/content/recipe.rs`, templated ones once per material combination.
+- `src/fluid_network.rs` (and `src/fluid_network/`): the fluid solver. A
+  network is one shared tank (`FluidNet`, in a `NetworkMap`) moving fluid
+  between machines' tanks by role, on network ticks (20 Hz); pumps and
+  outlets (`pump_rate`, `outlet_rate` stats) draw from and pour into the
+  world; tanks with a `level` property show how full they are. A broken
+  pipe spills its share; an unloading or saved chunk's pipes keep theirs
+  in their block entity (`PipeFluid`), written in
+  `streaming::BeforeChunkSave`.
 - `src/save.rs` (and `src/save/`): the world's folder on disk and its region
   and chunk formats, documented in `docs/world-format.md`. Keep the two in
   step, and bump a format's version when it changes.

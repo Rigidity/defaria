@@ -32,6 +32,11 @@
 //! [`StreamingSettings::autosave_seconds`], and everything is saved when the
 //! game exits. Saved chunks are written to disk in the background by
 //! [`WorldStore::flush`].
+//!
+//! Before chunks are saved, [`ChunksSaving`] says which (the ones
+//! unloading, and whether the loaded ones are being saved too), and
+//! systems in [`BeforeChunkSave`] can write into their block entities what
+//! they keep for them elsewhere, such as the fluid a network's pipes hold.
 
 use std::sync::Arc;
 
@@ -64,6 +69,7 @@ impl Plugin for StreamingPlugin {
         app.init_resource::<StreamingSettings>()
             .init_resource::<Chunks>()
             .init_resource::<StreamingStatus>()
+            .init_resource::<ChunksSaving>()
             .add_message::<BlockEntityChanged>()
             .add_observer(load_around_the_camera)
             .add_systems(Startup, open_world)
@@ -72,20 +78,29 @@ impl Plugin for StreamingPlugin {
                 // After edits and meshing, so this frame's edits are marked
                 // before their chunks can unload.
                 (
-                    mark_edited_chunks,
-                    plan_chunks,
-                    unload_chunks,
-                    start_loads,
-                    spawn_loaded_chunks,
-                    autosave,
+                    (plan_chunks, plan_saves).chain().before(BeforeChunkSave),
+                    (
+                        mark_edited_chunks,
+                        unload_chunks,
+                        start_loads,
+                        spawn_loaded_chunks,
+                        autosave,
+                    )
+                        .chain()
+                        .after(BeforeChunkSave),
                 )
-                    .chain()
                     .after(RemeshChunks)
                     .after(BlockEntitySystems),
             )
             .add_systems(PostUpdate, update_status)
             .init_schedule(SaveOnExit)
-            .add_systems(SaveOnExit, save_on_exit);
+            .add_systems(
+                SaveOnExit,
+                (
+                    plan_exit_save.before(BeforeChunkSave),
+                    save_on_exit.after(BeforeChunkSave),
+                ),
+            );
         app.world_mut()
             .resource_mut::<MainScheduleOrder>()
             .insert_after(Last, SaveOnExit);
@@ -96,6 +111,27 @@ impl Plugin for StreamingPlugin {
 /// frame (it's the frame's end: the app stops after it).
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SaveOnExit;
+
+/// Which chunks are saved this frame, worked out before they are, for the
+/// systems in [`BeforeChunkSave`].
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ChunksSaving {
+    /// The chunks that unload (and are saved) this frame, by coordinate.
+    pub unloading: Vec<IVec3>,
+    /// Whether the loaded chunks are saved this frame too: an autosave
+    /// (the edited ones) or the game exiting (all of them).
+    pub loaded: bool,
+}
+
+/// Where features write what they keep for chunks outside them into the
+/// chunks' block entities, just before the chunks in [`ChunksSaving`] are
+/// saved. In [`Update`] for unloading and autosaves, and in [`SaveOnExit`]
+/// when the game exits. A system here that changes a block entity writes
+/// its [`SavedParts`](crate::block_entity::SavedParts) itself (the usual
+/// noting of changes has already run) and sends [`BlockEntityChanged`], so
+/// its chunk counts as edited and is saved.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BeforeChunkSave;
 
 /// How much of the world is loaded, and how fast.
 #[derive(Resource, Reflect, Debug, Clone)]
@@ -385,26 +421,49 @@ fn plan_chunks(
     ready.retain(|(c, _)| wanted(centers, *c, &settings, 0));
 }
 
-/// Saves and despawns the chunks that have gone out of reach.
-fn unload_chunks(
-    mut commands: Commands,
+/// Works out which chunks are saved this frame: those gone out of reach,
+/// which unload, and the edited ones if an autosave is due.
+fn plan_saves(
+    time: Res<Time>,
     settings: Res<StreamingSettings>,
-    source: Res<WorldSource>,
     mut chunks: ResMut<Chunks>,
-    mut map: ResMut<ChunkMap>,
-    data: ChunkSaver,
+    mut saving: ResMut<ChunksSaving>,
 ) {
-    let gone: Vec<IVec3> = chunks
+    let mut unloading: Vec<IVec3> = chunks
         .loaded
         .keys()
         .copied()
         .filter(|&c| !wanted(&chunks.centers, c, &settings, settings.unload_margin))
         .collect();
+    unloading.sort_by_key(|c| c.to_array());
+    chunks.since_save += time.delta_secs();
+    let autosave = chunks.since_save >= settings.autosave_seconds && chunks.flush.is_none();
+    if autosave {
+        chunks.since_save = 0.0;
+    }
+    *saving = ChunksSaving {
+        unloading,
+        loaded: autosave,
+    };
+}
+
+/// Saves and despawns the chunks that have gone out of reach.
+fn unload_chunks(
+    mut commands: Commands,
+    source: Res<WorldSource>,
+    saving: Res<ChunksSaving>,
+    mut chunks: ResMut<Chunks>,
+    mut map: ResMut<ChunkMap>,
+    data: ChunkSaver,
+) {
+    let gone = &saving.unloading;
     if gone.is_empty() {
         return;
     }
-    for &coord in &gone {
-        let mut loaded = chunks.loaded.remove(&coord).unwrap();
+    for &coord in gone {
+        let Some(mut loaded) = chunks.loaded.remove(&coord) else {
+            continue;
+        };
         loaded.save(coord, &source.store, &data, false);
         map.remove(ChunkCoord(coord));
         commands.entity(loaded.entity).despawn();
@@ -534,8 +593,7 @@ fn update_completeness(
 
 /// Every so often, saves the edited chunks and writes the store to disk.
 fn autosave(
-    time: Res<Time>,
-    settings: Res<StreamingSettings>,
+    saving: Res<ChunksSaving>,
     source: Res<WorldSource>,
     mut chunks: ResMut<Chunks>,
     data: ChunkSaver,
@@ -553,11 +611,9 @@ fn autosave(
             .collect();
         source.store.evict(|region| in_use.contains(&region));
     }
-    chunks.since_save += time.delta_secs();
-    if chunks.since_save < settings.autosave_seconds || chunks.flush.is_some() {
+    if !saving.loaded {
         return;
     }
-    chunks.since_save = 0.0;
     for (&coord, loaded) in chunks.loaded.iter_mut() {
         loaded.save(coord, &source.store, &data, true);
     }
@@ -567,19 +623,35 @@ fn autosave(
     }));
 }
 
+/// When the game exits, notes that every loaded chunk is about to be saved.
+fn plan_exit_save(mut exits: MessageReader<AppExit>, mut saving: ResMut<ChunksSaving>) {
+    *saving = ChunksSaving {
+        unloading: Vec::new(),
+        loaded: exits.read().count() > 0,
+    };
+}
+
 /// Saves everything when the game exits, and waits for it to be written.
 fn save_on_exit(
-    mut exits: MessageReader<AppExit>,
+    saving: Res<ChunksSaving>,
+    mut block_entity_changes: MessageReader<BlockEntityChanged>,
     source: Option<Res<WorldSource>>,
     mut chunks: ResMut<Chunks>,
     data: ChunkSaver,
 ) {
-    if exits.read().count() == 0 {
+    if !saving.loaded {
         return;
     }
     let Some(source) = source else {
         return;
     };
+    // What changed just now, in `BeforeChunkSave`.
+    for change in block_entity_changes.read() {
+        let (coord, _) = ChunkCoord::split(change.pos);
+        if let Some(chunk) = chunks.loaded.get_mut(&coord.0) {
+            chunk.edited = true;
+        }
+    }
     if let Some(task) = chunks.flush.take() {
         block_on(task);
     }

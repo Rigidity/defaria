@@ -91,10 +91,21 @@ pub trait NetworkAppExt {
 
 impl NetworkAppExt for App {
     fn add_network_state<T: NetworkState>(&mut self) -> &mut Self {
-        self.init_resource::<NetworkMap<T>>()
-            .add_systems(Update, follow::<T>.after(NetworkSystems))
+        self.init_resource::<NetworkMap<T>>().add_systems(
+            Update,
+            follow::<T>
+                .in_set(NetworkStateSystems)
+                .after(NetworkSystems),
+        )
     }
 }
+
+/// Where every [`NetworkMap`] follows this frame's [`NetworkChanged`]:
+/// right after the networks update. A system that reads or changes a
+/// solver's states in [`Update`] by the networks' ids runs before
+/// [`NetworkSystems`] or after this, when the two agree.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NetworkStateSystems;
 
 /// Divides `total` between `parts` and `removed` by their shares, exactly:
 /// the parts' amounts, in order, and what goes with the removed conduits,

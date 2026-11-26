@@ -29,7 +29,9 @@ mod state;
 use bevy::prelude::*;
 
 pub use graph::{Network, NetworkChanged, NetworkId, Networks, Port, Share};
-pub use state::{NetworkAppExt, NetworkMap, NetworkState, divide, divide_by_share};
+pub use state::{
+    NetworkAppExt, NetworkMap, NetworkState, NetworkStateSystems, divide, divide_by_share,
+};
 
 use crate::{
     connections::{ConnectionSystems, face_voxel},

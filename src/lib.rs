@@ -12,6 +12,7 @@ mod cracks;
 mod devtools;
 mod dynamic_light;
 mod fluid;
+pub mod fluid_network;
 mod fly_camera;
 mod fog;
 mod fov;
@@ -75,9 +76,12 @@ impl Plugin for GamePlugin {
             connections::ConnectionsPlugin,
             network::NetworkPlugin,
             block_entity::BlockEntityPlugin,
+        ))
+        .add_plugins((
             machine::MachinePlugin,
             machine::screen::MachineScreenPlugin,
             network::energy::EnergyPlugin,
+            fluid_network::FluidNetworkPlugin,
             recipe::RecipePlugin,
             script::ScriptPlugin,
         ));
