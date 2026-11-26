@@ -3,7 +3,7 @@
 # in the sky so nothing else is near. `systems` every second shows what
 # remeshing for the moving water costs, frame by frame.
 # Run: cargo headless scenarios/flood.txt
-camera 80 260 -40 0 -40
+camera 80 260 -40 180 -45
 settle
 fill 0 199 0 159 199 159 stone
 fill 0 200 0 159 201 0 stone
