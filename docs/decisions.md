@@ -3,6 +3,67 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Chunk storage: uniform chunks hold one value; voxels are still found by hash (2026-11-26)
+
+**Context.** Measured (#71) with `scenarios/chunk-storage.txt` at the default
+radius (16 by 12 up and down), headless, the `dev` profile (the game
+crate at opt-level 1), on an Apple Silicon Mac that other builds were
+loading heavily (load average 40 to 80), so the times are rough:
+
+- 21,519 chunks loaded. 11,083 (52%) are air throughout and 9,015 (42%)
+  one other block throughout; 20,299 (94%) have one light level
+  throughout.
+- With a flat array of block states and one of light (16 KiB a chunk),
+  chunk storage was 336 MiB, 316 MiB of it in chunks of one value, and
+  the run peaked at 914 MB of memory (unrendered). Chunk meshes keep
+  another 101 MiB in the main world (`RenderAssetUsages::default()`).
+- Loading the first view takes about 940 frames, 6 s on a quiet machine.
+  Idle frames average 3 to 4 ms.
+- Reading voxels by world position (`Voxels::get`: `ChunkMap` hash plus
+  query, per voxel) costs about 15 ns a voxel; reading the same box a
+  chunk at a time costs about 0.9 ns.
+- A 344,064-voxel `fill` takes 9 to 19 ms itself (26 to 55 ns a voxel),
+  and its frame takes 100 to 400 ms. Sampling those frames (macOS
+  `sample`) puts about 46% of the time in light propagation, 23% in fluid
+  waking around the edits, 10% in network updates and about 10% in the
+  `ChunkMap` hash and query lookups spread across all of them.
+
+**Decision.** Blocks and light are kept in a `ChunkArray`
+(`src/world/chunk_array.rs`): one value while a chunk is one value throughout,
+a dense array once a voxel differs, compacted back once a frame for the
+chunks that changed. Chunk storage at the default radius went from 336
+MiB to 21 MiB and peak memory from 914 MB to 416 MB. Frame times around
+the big fills came out the same within the noise (best of six runs at
+radius 8: pit 300 → 216 ms, roof 341 → 364 ms, refill 1,167 → 1,043 ms).
+
+**What's wrong with it.** Voxels are still found one at a time through
+`ChunkMap` (a hash) and a query, in `Voxels::get`, light propagation,
+fluid flow and physics. That's 16 times slower than reading a chunk
+directly, but about a tenth of a big edit's frame, and nothing in normal
+play. Mixed chunks are dense (8 KiB each for blocks and for light), but
+they're 6% of chunks and 21 MiB. And chunk meshes keep a copy of their
+vertices and indices in the main world (101 MiB), more than all of
+chunk storage now.
+
+**What should replace it.**
+
+- Looking a chunk up once per run of voxels: a cache of the last chunk
+  in `Voxels`, or a dense array of the loaded chunks around each loader,
+  starting with light propagation, which does the most lookups.
+- A palette for dense chunks (4 or 8 bits a voxel).
+- Chunk meshes kept in the render world only (`RENDER_WORLD`), if
+  nothing reads them back on the CPU: #161.
+
+**When to revisit.** Any of:
+
+- a profile of real play (fluids, machines, a server's chunks) shows
+  voxel lookups (`ChunkMap` hashing and `Query::get`) above about 25% of
+  a frame, or a common action (a fluid spreading, an explosion) takes
+  more than a frame's budget in lookups: the per-run lookup;
+- mixed (dense) chunks pass about 100 MiB (a much larger radius, or a
+  server keeping several players' areas): the palette;
+- the meshes' main-world copy is already due, and tracked in #161.
+
 ## Beyond the loaded area: chunk loaders first, then networks that remember unloaded conduits (2026-11-26)
 
 **Context.** Machines run only in loaded chunks, and a network that

@@ -8,6 +8,7 @@ use crate::{
     block_entity::BlockEntityData,
     content::{BlockState, Content, FULL_FLUID},
     light::ChunkLight,
+    world::ChunkArray,
 };
 
 /// Voxels along each axis of a chunk.
@@ -23,6 +24,9 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 /// isn't there is full. Setting a voxel to another block forgets its
 /// amount.
 ///
+/// The blocks are kept in a [`ChunkArray`], so a chunk of one block
+/// throughout holds just that block.
+///
 /// A chunk that isn't spawned also holds its voxels' block entities (see
 /// `block_entity`), by voxel index. Once it's spawned they're entities
 /// under it instead, and are written back into a copy of it when it's
@@ -31,7 +35,7 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 #[reflect(Component)]
 #[require(ChunkLight)]
 pub struct Chunk {
-    voxels: Vec<BlockState>,
+    voxels: ChunkArray<BlockState>,
     /// Each fluid voxel that isn't full, by voxel index: its amount in the
     /// low [`AMOUNT_BITS`] bits, and above them the height it's drawn at
     /// (see [`sticky_step`]), which fits in the bits left over.
@@ -57,7 +61,7 @@ impl Chunk {
     /// in them full. `None` unless there are exactly [`CHUNK_VOLUME`].
     pub fn from_voxels(voxels: Vec<BlockState>) -> Option<Self> {
         (voxels.len() == CHUNK_VOLUME).then(|| Self {
-            voxels,
+            voxels: ChunkArray::from_vec(voxels),
             partial: HashMap::new(),
             block_entities: HashMap::new(),
         })
@@ -66,7 +70,7 @@ impl Chunk {
     /// A chunk of one block throughout.
     pub fn filled(state: BlockState) -> Self {
         Self {
-            voxels: vec![state; CHUNK_VOLUME],
+            voxels: ChunkArray::Uniform(state),
             partial: HashMap::new(),
             block_entities: HashMap::new(),
         }
@@ -152,21 +156,26 @@ impl Chunk {
     }
 
     /// Every voxel, in [`Chunk::index_of`] order.
-    pub fn voxels(&self) -> &[BlockState] {
+    pub fn voxels(&self) -> &ChunkArray<BlockState> {
         &self.voxels
+    }
+
+    /// Drops the voxels if they're all one block (see [`ChunkArray`]).
+    pub fn compact(&mut self) -> bool {
+        self.voxels.compact()
     }
 
     #[cfg(test)]
     pub fn get(&self, x: usize, y: usize, z: usize) -> BlockState {
-        self.voxels[Self::index(x, y, z)]
+        self.voxels.get(Self::index(x, y, z))
     }
 
     /// Sets a voxel's block. A different block than it was forgets its
     /// amount of fluid: a fluid set this way is full.
     pub fn set(&mut self, x: usize, y: usize, z: usize, state: BlockState) {
         let index = Self::index(x, y, z);
-        if self.voxels[index] != state {
-            self.voxels[index] = state;
+        if self.voxels.get(index) != state {
+            self.voxels.set(index, state);
             self.partial.remove(&(index as u16));
         }
     }
@@ -174,12 +183,12 @@ impl Chunk {
     /// Sets a voxel to another state of the same block, keeping its
     /// amount of fluid.
     pub fn update_at(&mut self, pos: IVec3, state: BlockState) {
-        self.voxels[Self::index_of(pos)] = state;
+        self.voxels.set(Self::index_of(pos), state);
     }
 
     /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
     pub fn at(&self, pos: IVec3) -> BlockState {
-        self.voxels[Self::index_of(pos)]
+        self.voxels.get(Self::index_of(pos))
     }
 
     /// [`Chunk::set`] for a chunk-local position given as an `IVec3`.
@@ -189,7 +198,7 @@ impl Chunk {
 
     /// The voxel at an index from [`Chunk::index_of`].
     pub fn get_index(&self, index: usize) -> BlockState {
-        self.voxels[index]
+        self.voxels.get(index)
     }
 
     /// Where the voxel at a chunk-local position is stored. Chunk light

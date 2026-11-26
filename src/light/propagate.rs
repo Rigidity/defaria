@@ -193,6 +193,10 @@ pub fn light_alone(
         lights: vec![ChunkLight::default(); chunks.len()],
     };
     queue.run(&mut store, table);
+    // Most are open sky or solid rock, lit evenly throughout.
+    for light in &mut store.lights {
+        light.compact();
+    }
     store.lights
 }
 

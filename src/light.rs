@@ -54,9 +54,8 @@ pub use crate::content::MAX_LIGHT;
 use crate::{
     content::Content,
     meshing::{RemeshChunks, remesh_changed_chunks},
-    world::{
-        CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged,
-    },
+    world::ChunkArray,
+    world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
 };
 pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
 use sky::Sky;
@@ -136,13 +135,13 @@ impl Light {
 #[derive(Component, Reflect, Debug, Clone, PartialEq)]
 #[reflect(Component)]
 pub struct ChunkLight {
-    levels: Vec<Light>,
+    levels: ChunkArray<Light>,
 }
 
 impl Default for ChunkLight {
     fn default() -> Self {
         Self {
-            levels: vec![Light::DARK; CHUNK_VOLUME],
+            levels: ChunkArray::Uniform(Light::DARK),
         }
     }
 }
@@ -150,20 +149,30 @@ impl Default for ChunkLight {
 impl ChunkLight {
     /// The light at a chunk-local position.
     pub fn at(&self, pos: IVec3) -> Light {
-        self.levels[Chunk::index_of(pos)]
+        self.levels.get(Chunk::index_of(pos))
     }
 
     #[cfg(test)]
     pub fn set_at(&mut self, pos: IVec3, light: Light) {
-        self.levels[Chunk::index_of(pos)] = light;
+        self.levels.set(Chunk::index_of(pos), light);
+    }
+
+    /// The light at every voxel, in [`Chunk::index_of`] order.
+    pub fn levels(&self) -> &ChunkArray<Light> {
+        &self.levels
+    }
+
+    /// Drops the levels if they're all the same (see [`ChunkArray`]).
+    pub fn compact(&mut self) -> bool {
+        self.levels.compact()
     }
 
     fn get(&self, index: usize) -> Light {
-        self.levels[index]
+        self.levels.get(index)
     }
 
     fn set(&mut self, index: usize, light: Light) {
-        self.levels[index] = light;
+        self.levels.set(index, light);
     }
 }
 
