@@ -172,7 +172,7 @@ pub fn has_screen(machine: &Machine) -> bool {
     !machine.slots.is_empty() || !machine.tanks.is_empty() || machine.recipes.is_some()
 }
 
-fn open_machine_screen(
+pub(crate) fn open_machine_screen(
     mut commands: Commands,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,

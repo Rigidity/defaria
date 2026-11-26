@@ -37,6 +37,7 @@ pub mod ui;
 mod view_bob;
 mod voxel;
 mod voxel_material;
+mod wrench;
 
 pub use devtools::{Cli, DevToolsPlugin, ScreenshotMode};
 
@@ -85,6 +86,7 @@ impl Plugin for GamePlugin {
             recipe::RecipePlugin,
             network::ItemNetworkPlugin,
             script::ScriptPlugin,
+            wrench::WrenchPlugin,
         ));
     }
 }

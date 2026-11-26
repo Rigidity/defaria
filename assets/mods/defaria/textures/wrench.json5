@@ -1,0 +1,6 @@
+{
+  layers: [
+    { image: "items/wrench_handle", material: "$handle" },
+    { image: "items/wrench_head", material: "$head" },
+  ],
+}

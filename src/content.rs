@@ -44,7 +44,7 @@ pub use machine::{
 };
 pub use place::Placement;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};
-pub use schema::{Direction, PlaceFrom, PortRole, Render, Solver};
+pub use schema::{Direction, ItemAction, PlaceFrom, PortRole, Render, Solver};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -367,9 +367,18 @@ pub struct Block {
 }
 
 impl Block {
-    /// Whether each voxel of the block has a block entity.
+    /// Whether each voxel of the block has a block entity: if it asks
+    /// for one, or it's a machine or a conduit (which keeps what it
+    /// carries and its blocked faces there), which get one when baked.
     pub fn has_block_entity(&self) -> bool {
         self.block_entity.is_some()
+    }
+
+    /// Whether it's a conduit: it connects by its `conduit`.
+    pub fn is_conduit(&self) -> bool {
+        self.connections
+            .as_ref()
+            .is_some_and(|connections| matches!(connections.rule, Rule::Conduit))
     }
 
     /// Every property at its first value.
@@ -587,6 +596,8 @@ pub struct Item {
     pub unique: bool,
     /// Index into [`Content::categories`]; `None` for an item in none.
     pub category: Option<usize>,
+    /// What using it does, besides placing its block.
+    pub action: Option<ItemAction>,
 }
 
 impl Item {

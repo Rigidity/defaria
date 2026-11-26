@@ -27,6 +27,7 @@
 //! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). Like any edit, it's followed by the engine setting connection properties, so `pipe` joins the pipes next to it. |
 //! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
+//! | `hotbar <slot> <item>` | Put an item in a hotbar slot (1–9) and make it the one in hand: an item id (`defaria:wrench`, or `wrench` for the base game's), in its default state or with some properties set as for `fill` (`wrench[head=defaria:copper]`). It doesn't put any in the inventory. |
 //! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to, each with its role (`produce`, `store`, `input`, ...). On an energy network, also what its storage holds and could, what producers gave and consumers took in the last second, and its throughput (its weakest wire's); on a fluid network, what it holds. Or `none`. |
 //! | `put <x> <y> <z> <name> <amount> <what>` | Put something in the machine at that voxel: `amount` of an item (named as blocks are for `fill`, `stone[ore=defaria:iron]`) into its slot group `name`, or `amount` blocks of a fluid (`lava`) into its tank `name`, as a tube or a pipe would. The run fails if there's no machine there, it has no such slot group or tank, or not all of it fits. |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, fluid networks' pipes and machines' tanks, in thousandths of a block (with where it is, for a fluid that's in pipes or tanks too), and how many voxels of it are active (see `fluid`). |
@@ -121,9 +122,10 @@ use crate::{
     fluid::FluidStats,
     fly_camera::{FlyCamera, MAX_PITCH},
     fog::ChunkFog,
+    hotbar::{ActiveSlot, Hotbar},
     machine::{Slots, Tanks},
     physics::Body,
-    player::{EYE_HEIGHT, Player},
+    player::{EYE_HEIGHT, LocalPlayer, Player},
     streaming::StreamingStatus,
     terrain::Voxels,
     view_bob::ViewBob,
@@ -241,6 +243,11 @@ pub enum Command {
         amount: f32,
     },
     Fluids,
+    Hotbar {
+        /// From 0.
+        slot: usize,
+        item: String,
+    },
     Network(IVec3),
     /// Put items in a machine's slot group, or fluid in its tank.
     Put {
@@ -405,6 +412,17 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
         "fluids" => {
             expect(0)?;
             commands.push(Command::Fluids);
+        }
+        "hotbar" => {
+            expect(2)?;
+            let slot: usize = parse_number(args[0])?;
+            if !(1..=crate::hotbar::HOTBAR_SLOTS).contains(&slot) {
+                return Err(format!("`hotbar` slots are 1 to 9: {line}"));
+            }
+            commands.push(Command::Hotbar {
+                slot: slot - 1,
+                item: args[1].to_string(),
+            });
         }
         "network" => {
             expect(3)?;
@@ -688,7 +706,8 @@ fn run_script(
             Command::Fill { .. }
             | Command::Pour { .. }
             | Command::Put { .. }
-            | Command::Camera { .. } => runner.world_commands.push(command),
+            | Command::Camera { .. }
+            | Command::Hotbar { .. } => runner.world_commands.push(command),
             Command::Fluids => runner.fluid_report = true,
             Command::Network(pos) => runner.network_reports.push(pos),
             Command::Type(text) => {
@@ -831,6 +850,10 @@ fn apply_world_commands(world: &mut World) {
                 .run_system_cached_with(place_camera, (position, yaw, pitch))
                 .map_err(|error| error.to_string())
                 .and_then(|result| result),
+            Command::Hotbar { slot, item } => world
+                .run_system_cached_with(hold_item, (slot, item))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
             _ => Ok(()),
         };
         if let Err(error) = result {
@@ -840,9 +863,9 @@ fn apply_world_commands(world: &mut World) {
     }
 }
 
-/// The state `name` means: a block id (the base game's without
-/// `defaria:`), with `[property=value,…]` setting some of its properties.
-fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
+/// An id and its `[property=value,…]` pairs, the id qualified with
+/// `defaria:` if it has no mod.
+fn split_name(name: &str) -> Result<(String, Vec<(&str, &str)>), String> {
     let (id, values) = match name.split_once('[') {
         Some((id, rest)) => {
             let values = rest
@@ -857,9 +880,6 @@ fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
     } else {
         format!("defaria:{id}")
     };
-    let block = content
-        .block(&id)
-        .ok_or_else(|| format!("no block `{id}`"))?;
     let pairs = values
         .split(',')
         .filter(|pair| !pair.is_empty())
@@ -868,6 +888,39 @@ fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
                 .ok_or_else(|| format!("`{pair}` isn't `property=value`"))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    Ok((id, pairs))
+}
+
+/// The item state `name` means, named as for [`fill_state`].
+fn item_state(content: &Content, name: &str) -> Result<ItemState, String> {
+    let (id, pairs) = split_name(name)?;
+    let item = content.item(&id).ok_or_else(|| format!("no item `{id}`"))?;
+    item.state(&pairs)
+        .ok_or_else(|| format!("item `{id}` has no state `{name}`"))
+}
+
+/// Puts the item `name` in hotbar slot `slot` and makes it the active one.
+fn hold_item(
+    In((slot, name)): In<(usize, String)>,
+    content: Res<Content>,
+    mut players: Query<(&mut Hotbar, &mut ActiveSlot), With<LocalPlayer>>,
+) -> Result<(), String> {
+    let item = item_state(&content, &name).map_err(|error| format!("hotbar: {error}"))?;
+    let (mut hotbar, mut active) = players
+        .single_mut()
+        .map_err(|_| "hotbar: there's no player".to_string())?;
+    hotbar.assign(slot, Some(item));
+    *active = ActiveSlot(slot);
+    Ok(())
+}
+
+/// The state `name` means: a block id (the base game's without
+/// `defaria:`), with `[property=value,…]` setting some of its properties.
+fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
+    let (id, pairs) = split_name(name)?;
+    let block = content
+        .block(&id)
+        .ok_or_else(|| format!("no block `{id}`"))?;
     block
         .state(&pairs)
         .ok_or_else(|| format!("block `{id}` has no state `{name}`"))
@@ -1557,6 +1610,9 @@ mod tests {
         assert!(Script::parse("wait soon").is_err());
         assert!(Script::parse("grain 3").is_err());
         assert!(Script::parse("network 1 2").is_err());
+        assert!(Script::parse("hotbar 0 wrench").is_err());
+        assert!(Script::parse("hotbar 10 wrench").is_err());
+        assert!(Script::parse("hotbar 1").is_err());
         assert!(Script::parse("fill 1 2 3 4 5 6").is_err());
         assert!(Script::parse("fill 1 2 3 4 5 x stone").is_err());
         assert!(Script::parse("camera 1 2 3 4").is_err());
@@ -1795,7 +1851,7 @@ mod tests {
     }
 
     /// Every scenario in `scenarios/` parses, and every block it fills
-    /// with exists, so a renamed block fails `cargo test` and not just the
+    /// with (and item it holds) exists, so a renamed block fails `cargo test` and not just the
     /// scenario run in CI.
     #[test]
     fn every_scenario_parses_and_fills_with_real_blocks() {
@@ -1810,14 +1866,50 @@ mod tests {
             let text = std::fs::read_to_string(&path).unwrap();
             let script = Script::parse(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"));
             for command in script.commands {
-                if let Command::Fill { block, .. } = command
+                if let Command::Fill { block, .. } = &command
                     && block != crate::content::AIR
                 {
-                    fill_state(content, &block).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+                    fill_state(content, block).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+                }
+                if let Command::Hotbar { item, .. } = &command {
+                    item_state(content, item).unwrap_or_else(|e| panic!("{path:?}: {e}"));
                 }
             }
         }
         assert!(scenarios > 0, "no scenarios found");
+    }
+
+    /// `hotbar` puts an item in a slot and makes it the one in hand,
+    /// with the properties it's given.
+    #[test]
+    fn hotbar_puts_an_item_in_hand() {
+        assert_eq!(
+            Script::parse("hotbar 3 wrench[head=defaria:copper]")
+                .unwrap()
+                .commands,
+            [Command::Hotbar {
+                slot: 2,
+                item: "wrench[head=defaria:copper]".into()
+            }]
+        );
+        let (mut app, exit) = run_game("wait 2\nhotbar 3 wrench[head=defaria:copper]\nwait 1\n");
+        assert!(!exit.is_error());
+        let content = app.world().resource::<Content>();
+        let copper = content
+            .item("defaria:wrench")
+            .unwrap()
+            .state(&[("head", "defaria:copper")])
+            .unwrap();
+        let (hotbar, active) = app
+            .world_mut()
+            .query_filtered::<(&Hotbar, &ActiveSlot), With<LocalPlayer>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(*active, ActiveSlot(2));
+        assert_eq!(hotbar.item(*active), Some(copper));
+
+        let (_, exit) = run_game("wait 2\nhotbar 1 nonsense\nwait 1\n");
+        assert!(exit.is_error());
     }
 
     #[test]

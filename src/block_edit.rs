@@ -94,6 +94,10 @@ pub struct BlockEditSystems;
 /// `ButtonInput::<MouseButton>::clear_just_pressed(MouseButton::Right)`,
 /// so nothing is placed against the block too. Use
 /// [`crosshair_target`] for the block.
+///
+/// They run in order of precedence, each taking the click from those
+/// after it: the wrench (an item's action, in hand) first, then a
+/// machine's screen.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockUseSystems;
 
@@ -182,7 +186,7 @@ pub fn raycast<'a>(ray: Ray3d, reach: f32, shape: impl Fn(IVec3) -> &'a [BlockBo
 /// Where a ray from `origin` along `dir` first meets a box, as the
 /// distance along it and the normal of the face it goes in through (zero
 /// if it starts inside). Both in the box's block's coordinates.
-fn ray_box(origin: Vec3, dir: Vec3, b: &BlockBox) -> Option<(f32, IVec3)> {
+pub(crate) fn ray_box(origin: Vec3, dir: Vec3, b: &BlockBox) -> Option<(f32, IVec3)> {
     let (mut enter, mut exit) = (f32::NEG_INFINITY, f32::INFINITY);
     let mut normal = IVec3::ZERO;
     for axis in 0..3 {

@@ -100,7 +100,8 @@ changes.
    ports and their roles, on an energy network what it stored, produced
    and consumed, and what a fluid network holds),
    `put` (put items in a machine's slot group or fluid in its tank, as a
-   tube or pipe would), `camera` (put the
+   tube or pipe would), `hotbar` (put an item, such as `wrench`, in a
+   hotbar slot and in hand), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -278,6 +279,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   joined sides) in step with their neighbours, after edits and on chunk
   load, through `Voxels::update`. Whether a neighbour takes a connection
   is decided in one place, `Content::accepts` (`src/content/connect.rs`).
+  A conduit's faces blocked with a wrench (`BlockedFaces`, in its block
+  entity) never join; `src/wrench.rs` is the wrench.
 - `src/network.rs` (and `src/network/`): networks of conduits (wires,
   pipes, tubes; blocks with a `conduit`): `Networks` keeps which conduits
   form which network, following the connection properties, merging and
