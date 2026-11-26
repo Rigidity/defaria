@@ -178,8 +178,8 @@ redraw them: `python3 scripts/draw-stone.py assets/mods/defaria/images`.
   of a jittered Voronoi diagram that wraps at the edges, with dark gaps
   (level 1) between them, wider where three meet. Each stone is lit from
   the top left (levels up to 6 at its upper-left rim, down to 2 at its
-  lower right, with a darker lip where it turns into the gap) and a
-  level lighter or darker than its neighbours.
+  lower right, with a darker lip where it turns into the gap), and each,
+  at random, a level lighter or darker than the rest or neither.
 - `smooth_stone.png`: a flat polished face (level 4, a few level-5
   flecks) inside a one-pixel bevel: level 6 along the top and left, 2
   along the bottom and right, 4 in the two corners where they meet.

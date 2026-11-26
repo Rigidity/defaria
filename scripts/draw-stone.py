@@ -7,12 +7,12 @@ src/block_texture/layer.rs checks) into OUT_DIR:
 - cobblestone.png: rounded stones of different sizes packed together,
   with dark gaps between them. The stones are the cells of a jittered
   Voronoi diagram that wraps at the edges, each lit from the top left
-  (a light rim at its upper left, a shaded one at its lower right) and a
-  little lighter or darker than its neighbours. The gaps widen where
-  three stones meet, rounding off their corners.
-- smooth_stone.png: a calm polished face, flat but for a few faint flecks, with a one-pixel
-  bevel: lit along the top and left edges, shaded along the bottom and
-  right.
+  (a light rim at its upper left, a shaded one at its lower right), and
+  each, at random, a level lighter or darker than the rest or neither.
+  The gaps widen where three stones meet, rounding off their corners.
+- smooth_stone.png: a calm polished face, flat but for a few faint
+  flecks, with a one-pixel bevel: lit along the top and left edges,
+  shaded along the bottom and right.
 
 Both tile with themselves: the cobbles wrap across every edge, and the
 smooth stone's bevel frames each block. Deterministic: the same seed
@@ -76,8 +76,8 @@ def scatter(rng, count, tries=40):
 
 def cobblestone(rng):
     centres = scatter(rng, 9)
-    # Each stone's size (a bigger one pushes its border out) and how much
-    # lighter or darker it is than the rest.
+    # Each stone's size (a bigger one pushes its border out) and whether
+    # it's a level lighter or darker than the rest, at random.
     sizes = [rng.uniform(-0.8, 0.8) for _ in centres]
     tone = [rng.choice((-1, 0, 0, 1)) for _ in centres]
 
