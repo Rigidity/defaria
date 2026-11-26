@@ -660,9 +660,10 @@ holds 100 kJ. Energy is held only in machines' buffers: wires hold none
 (capacity 0), so merging and splitting moves no energy and a chunk
 unloading takes none with it.
 
-The network tick is fixed at **20 Hz** (`TICKS_PER_SECOND`), counted
-out of `FixedUpdate`'s time, and fluid and item networks should run at
-the same rate. A rate per second is split into whole joules per tick that
+The network tick is fixed at **20 Hz** (`TICKS_PER_SECOND`, in
+`src/network/tick.rs`), counted out of `FixedUpdate`'s time by the
+network clock (`NetworkClock`), which every solver runs on, fluid and
+item networks included. A rate per second is split into whole joules per tick that
 add up to exactly that rate over each second (`per_tick`). Energy enters
 the world only at machines with `generate` (the creative generator) and
 leaves only at machines with `use` (the powered lamp), which are active

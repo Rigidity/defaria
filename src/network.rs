@@ -26,6 +26,7 @@ pub mod energy;
 mod graph;
 mod item;
 mod state;
+pub mod tick;
 
 use bevy::prelude::*;
 
@@ -37,6 +38,7 @@ pub use item::{
 pub use state::{
     NetworkAppExt, NetworkMap, NetworkState, NetworkStateSystems, divide, divide_by_share,
 };
+pub use tick::{NetworkClock, NetworkTick, TICK, TICKS_PER_SECOND, on_network_tick, per_tick};
 
 use crate::{
     connections::{ConnectionSystems, face_voxel},
@@ -44,11 +46,28 @@ use crate::{
     world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
 };
 
+/// The networks, their clock and every solver: energy, fluid and items.
 pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Networks>()
+        app.add_plugins((
+            NetworkCorePlugin,
+            energy::EnergyPlugin,
+            crate::fluid_network::FluidNetworkPlugin,
+            ItemNetworkPlugin,
+        ));
+    }
+}
+
+/// The networks and their clock, without the solvers, for tests that add
+/// only the solvers they need.
+pub struct NetworkCorePlugin;
+
+impl Plugin for NetworkCorePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(tick::NetworkTickPlugin)
+            .init_resource::<Networks>()
             .init_resource::<LoadedChunks>()
             .add_observer(note_loaded_chunk)
             .add_message::<NetworkChanged>()

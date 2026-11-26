@@ -9,11 +9,11 @@ use crate::{
     content::{BlockState, Content, Direction, FULL_FLUID, PortRole, base},
     fluid::FluidPlugin,
     light::LightPlugin,
-    machine::{MachinePlugin, Tank, Tanks},
+    machine::{MachineCorePlugin, Tank, Tanks},
     meshing::MeshingPlugin,
     network::{
-        NetworkChanged, NetworkId, NetworkMap, NetworkPlugin, NetworkState, Networks, Share,
-        energy::{EnergyClock, EnergyPlugin, TICKS_PER_SECOND},
+        NetworkChanged, NetworkClock, NetworkCorePlugin, NetworkId, NetworkMap, NetworkState,
+        Networks, Share, TICKS_PER_SECOND, energy::EnergyPlugin,
     },
     save::{WorldFolder, tests::temp_folder},
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
@@ -165,7 +165,7 @@ fn a_network_refuses_a_second_fluid_and_heat() {
 #[test]
 fn rates_add_up_over_ticks() {
     let total = |blocks_per_second: f64| -> u64 {
-        let mut clock = EnergyClock::default();
+        let mut clock = NetworkClock::default();
         (0..TICKS_PER_SECOND)
             .map(|_| {
                 clock.ticks += 1;
@@ -230,8 +230,8 @@ fn app_with(content: Content, folder: Option<&Path>) -> App {
             StreamingPlugin,
             BlockEntityPlugin,
             ConnectionsPlugin,
-            NetworkPlugin,
-            MachinePlugin,
+            NetworkCorePlugin,
+            MachineCorePlugin,
             EnergyPlugin,
             FluidPlugin,
             FluidNetworkPlugin,

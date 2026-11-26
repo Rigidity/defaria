@@ -13,7 +13,7 @@ use crate::{
     inventory::ItemStack,
     light::LightPlugin,
     meshing::MeshingPlugin,
-    network::{NetworkPlugin, Networks},
+    network::{NetworkCorePlugin, Networks},
     save::{WorldFolder, tests::temp_folder},
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
     voxel_material::BlockMaterial,
@@ -79,8 +79,8 @@ fn app(folder: Option<&Path>) -> App {
             StreamingPlugin,
             BlockEntityPlugin,
             ConnectionsPlugin,
-            NetworkPlugin,
-            MachinePlugin,
+            NetworkCorePlugin,
+            MachineCorePlugin,
         ))
         .init_asset::<Mesh>()
         .insert_resource(BlockMaterial::unloaded(Handle::default()))

@@ -11,8 +11,8 @@ use crate::{
     block_entity::{BlockEntities, BlockEntityPlugin},
     connections::ConnectionsPlugin,
     content::{base, block},
-    machine::MachinePlugin,
-    network::NetworkPlugin,
+    machine::MachineCorePlugin,
+    network::{NetworkClock, NetworkCorePlugin},
     world::{FluidChanged, PropertiesUpdated, VoxelChanged, Voxels},
 };
 
@@ -46,20 +46,6 @@ fn storage(offer: u64, demand: u64) -> Member {
         demand,
         need: 0,
     }
-}
-
-#[test]
-fn rates_add_up_over_each_second() {
-    for rate in [0, 1, 7, 19, 20, 170, 1000, 12_345] {
-        let second: u64 = (0..TICKS_PER_SECOND as u64)
-            .map(|t| per_tick(rate, t))
-            .sum();
-        assert_eq!(second, rate);
-        // And again the next second.
-        let next: u64 = (20..40).map(|t| per_tick(rate, t)).sum();
-        assert_eq!(next, rate);
-    }
-    assert_eq!(per_tick(20, 3), 1);
 }
 
 #[test]
@@ -222,9 +208,9 @@ fn app() -> App {
         .add_message::<PropertiesUpdated>()
         .add_plugins((
             ConnectionsPlugin,
-            NetworkPlugin,
+            NetworkCorePlugin,
             BlockEntityPlugin,
-            MachinePlugin,
+            MachineCorePlugin,
             EnergyPlugin,
         ));
     spawn(&mut app, IVec3::ZERO, Chunk::default());
@@ -283,8 +269,8 @@ fn v(x: i32, y: i32, z: i32) -> IVec3 {
 
 /// Runs frames until `n` more network ticks have run.
 fn ticks(app: &mut App, n: u64) {
-    let until = app.world().resource::<EnergyClock>().ticks + n;
-    while app.world().resource::<EnergyClock>().ticks < until {
+    let until = app.world().resource::<NetworkClock>().ticks + n;
+    while app.world().resource::<NetworkClock>().ticks < until {
         app.update();
     }
     // Let the active states reach the voxels.

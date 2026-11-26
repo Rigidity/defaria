@@ -84,7 +84,7 @@ fn app_with(content: Content) -> App {
         .add_message::<VoxelChanged>()
         .add_message::<FluidChanged>()
         .add_message::<PropertiesUpdated>()
-        .add_plugins((ConnectionsPlugin, NetworkPlugin))
+        .add_plugins((ConnectionsPlugin, NetworkCorePlugin))
         .add_network_state::<Stored>();
     app
 }

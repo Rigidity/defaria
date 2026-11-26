@@ -8,7 +8,8 @@
 //! the tanks of machines on it, up to its pipes' throughput; [`world`] has
 //! pumps draw from the world and outlets pour into it; [`gauge`] shows how
 //! full tanks are. All of that runs in [`FixedUpdate`], on network ticks
-//! (20 Hz, [`EnergyClock`]), after the energy solver.
+//! (20 Hz, [`NetworkClock`](crate::network::NetworkClock)), after the
+//! energy solver.
 //!
 //! Nothing is made or lost (only fluid poured into a voxel that a block
 //! then takes, as in the world): a broken pipe spills its share where it
@@ -33,7 +34,7 @@ use crate::{
     connections::ConnectionSystems,
     network::{
         NetworkAppExt, NetworkStateSystems, NetworkSystems,
-        energy::{EnergyClock, EnergySystems},
+        tick::{NetworkTick, on_network_tick},
     },
     streaming::{BeforeChunkSave, SaveOnExit},
 };
@@ -78,11 +79,11 @@ impl Plugin for FluidNetworkPlugin {
                     solver::run_networks,
                 )
                     .chain()
-                    .after(EnergySystems)
                     // So fluid that arrives in a machine's tank is there
-                    // for its recipe on the same tick.
-                    .before(crate::recipe::run_recipes)
-                    .run_if(|clock: Res<EnergyClock>| clock.due)
+                    // for its recipe on the same tick: recipes run in
+                    // `NetworkTick::Machines`, after this.
+                    .in_set(NetworkTick::Solve)
+                    .run_if(on_network_tick)
                     .in_set(FluidSystems),
             )
             .add_systems(
@@ -92,8 +93,9 @@ impl Plugin for FluidNetworkPlugin {
     }
 }
 
-/// Where the fluid solver runs, in `FixedUpdate`: after the energy solver
-/// and before recipe machines, on network ticks.
+/// Where the fluid solver runs, in `FixedUpdate`: in
+/// [`NetworkTick::Solve`], after the energy solver and before recipe
+/// machines, on network ticks.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FluidSystems;
 

@@ -11,9 +11,9 @@ use crate::{
         load::{ModFiles, read_mods},
     },
     light::LightPlugin,
-    machine::MachinePlugin,
+    machine::MachineCorePlugin,
     meshing::MeshingPlugin,
-    network::NetworkPlugin,
+    network::NetworkCorePlugin,
     streaming::{ChunkLoader, StreamingPlugin, StreamingSettings, StreamingStatus},
     voxel_material::BlockMaterial,
     world::{Voxels, WorldPlugin},
@@ -403,8 +403,8 @@ fn app() -> App {
             StreamingPlugin,
             BlockEntityPlugin,
             ConnectionsPlugin,
-            NetworkPlugin,
-            MachinePlugin,
+            NetworkCorePlugin,
+            MachineCorePlugin,
             crate::network::energy::EnergyPlugin,
             ItemNetworkPlugin,
             crate::recipe::RecipePlugin,
@@ -458,11 +458,7 @@ fn fill(app: &mut App, pos: IVec3, stack: ItemStack) {
 
 /// Runs frames until `n` more network ticks have run.
 fn run_ticks(app: &mut App, n: u64) {
-    let clock = |app: &App| {
-        app.world()
-            .resource::<crate::network::energy::EnergyClock>()
-            .ticks
-    };
+    let clock = |app: &App| app.world().resource::<crate::network::NetworkClock>().ticks;
     let until = clock(app) + n;
     while clock(app) < until {
         app.update();

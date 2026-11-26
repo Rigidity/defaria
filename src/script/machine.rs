@@ -1,7 +1,7 @@
 //! Machines' own hooks, on top of the hooks every scripted block has
 //! (`hooks`):
 //!
-//! - `on_tick(m, dt)`: every network tick ([`EnergyClock`], 20 a second,
+//! - `on_tick(m, dt)`: every network tick ([`NetworkClock`], 20 a second,
 //!   `dt` the tick's length in seconds), while none of the networks on
 //!   the machine's ports is frozen. It's the one hook in which
 //!   `m.energy:generate(n)` makes anything: up to the machine's
@@ -39,10 +39,7 @@ use crate::{
     content::Content,
     fluid_network::FluidSystems,
     machine::{MachineActive, Ports},
-    network::{
-        ItemSystems, Networks,
-        energy::{EnergyClock, EnergySystems, TICK},
-    },
+    network::{ItemSystems, NetworkClock, NetworkTick, Networks, TICK, on_network_tick},
     recipe::{RecipeFinished, RecipeSystems},
 };
 
@@ -54,13 +51,10 @@ impl Plugin for MachineScriptPlugin {
             .init_resource::<PendingRecipeHooks>()
             .add_systems(
                 FixedUpdate,
-                (
-                    run_recipe_hooks.run_if(|clock: Res<EnergyClock>| clock.due),
-                    run_machine_ticks,
-                )
+                (run_recipe_hooks.run_if(on_network_tick), run_machine_ticks)
                     .chain()
                     .in_set(MachineScriptSystems)
-                    .after(EnergySystems)
+                    .in_set(NetworkTick::Machines)
                     .after(FluidSystems)
                     .after(ItemSystems)
                     .after(RecipeSystems)
@@ -127,7 +121,7 @@ impl MachineTickPhase {
 /// slot's next turn starts with them (`next`), so the same machines don't
 /// always miss out.
 fn run_machine_ticks(
-    clock: Res<EnergyClock>,
+    clock: Res<NetworkClock>,
     fixed: Res<Time<Fixed>>,
     settings: Res<HookSettings>,
     mut phase: ResMut<MachineTickPhase>,

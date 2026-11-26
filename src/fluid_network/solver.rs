@@ -23,7 +23,7 @@ use super::FluidNet;
 use crate::{
     content::{BlockState, Content, FULL_FLUID, PortRole, Solver},
     machine::{MachinePortRef, MachinePorts, Tanks},
-    network::{Network, NetworkId, NetworkMap, Networks, energy::EnergyClock},
+    network::{Network, NetworkClock, NetworkId, NetworkMap, Networks},
     world::{Chunk, ChunkCoord, ChunkMap},
 };
 
@@ -86,8 +86,8 @@ impl FluidLimits {
 
 /// How many whole fluid units a rate of `blocks_per_second` moves on the
 /// current network tick: the ticks of each second add up to the rate
-/// exactly (see [`EnergyClock::share`]).
-pub fn units_this_tick(clock: &EnergyClock, blocks_per_second: f64) -> u64 {
+/// exactly (see [`NetworkClock::share`]).
+pub fn units_this_tick(clock: &NetworkClock, blocks_per_second: f64) -> u64 {
     if blocks_per_second <= 0.0 || !blocks_per_second.is_finite() {
         return 0;
     }
@@ -193,7 +193,7 @@ impl Step<'_> {
 /// Runs every fluid network that isn't frozen and has machine ports, and
 /// whose chunks are all still loaded.
 pub(super) fn run_networks(
-    clock: Res<EnergyClock>,
+    clock: Res<NetworkClock>,
     networks: Res<Networks>,
     ports: Res<MachinePorts>,
     content: Res<Content>,
