@@ -13,7 +13,11 @@ use crate::{
     content::{
         BlockState, Content, Direction, EnergySpec, Machine, PortRole, SlotGroupSpec, TankSpec,
     },
-    inventory::{ItemStack, model::is_unique},
+    fluid_container::saved_data,
+    inventory::{
+        ItemStack,
+        model::{ItemData, is_unique},
+    },
     network::NetworkId,
 };
 
@@ -492,6 +496,8 @@ impl Slots {
 
 impl BlockEntityPart for Slots {
     const KEY: &'static str = "slots";
+    /// 2 added the fluid a container in a slot holds.
+    const VERSION: u32 = 2;
 
     fn new(state: BlockState, content: &Content) -> Option<Self> {
         let machine = content.machine(state)?;
@@ -499,7 +505,8 @@ impl BlockEntityPart for Slots {
     }
 
     /// Each group by name: a list of its slots, each `{}` when empty or
-    /// `{ item, count }`, the item by its saved name.
+    /// `{ item, count }`, the item by its saved name, with `fluid` and
+    /// `amount` for a fluid container holding some.
     fn save(&self, content: &Content) -> Value {
         let slot = |slot: &Option<ItemStack>| {
             let mut table = BTreeMap::new();
@@ -508,6 +515,10 @@ impl BlockEntityPart for Slots {
             {
                 table.insert("item".to_string(), Value::Text(name));
                 table.insert("count".to_string(), Value::Int(stack.count as i64));
+                if let Some(held) = &stack.data.fluid {
+                    table.insert("fluid".to_string(), Value::Text(held.fluid.clone()));
+                    table.insert("amount".to_string(), Value::Int(held.amount as i64));
+                }
             }
             Value::Table(table)
         };
@@ -523,7 +534,7 @@ impl BlockEntityPart for Slots {
     }
 
     fn load(value: &Value, version: u32, state: BlockState, content: &Content) -> Option<Self> {
-        if version != 1 {
+        if version != Self::VERSION {
             return None;
         }
         let mut slots = Self::new(state, content)?;
@@ -541,10 +552,29 @@ impl BlockEntityPart for Slots {
                     continue;
                 };
                 let count = u32::try_from(saved.get("count")?.as_int()?).ok()?;
-                match content.saved_item(item) {
-                    Some(item) if count > 0 => *slot = Some(ItemStack::new(item, count)),
-                    Some(_) => {}
-                    None => warn!("a machine's slot held `{item}`, which isn't there any more"),
+                let Some(state) = content.saved_item(item) else {
+                    warn!("a machine's slot held `{item}`, which isn't there any more");
+                    continue;
+                };
+                let data = match saved.get("fluid") {
+                    None => ItemData::default(),
+                    Some(Value::Text(fluid)) => {
+                        let amount = u64::try_from(saved.get("amount")?.as_int()?).ok()?;
+                        saved_data(content, state, fluid, amount).unwrap_or_else(|error| {
+                            warn!(
+                                "a machine's slot held `{item}` with fluid, but {error}; it's lost"
+                            );
+                            ItemData::default()
+                        })
+                    }
+                    Some(_) => return None,
+                };
+                if count > 0 {
+                    *slot = Some(ItemStack {
+                        item: state,
+                        data,
+                        count,
+                    });
                 }
             }
             if saved.len() > group.slots.len() {

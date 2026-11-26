@@ -42,6 +42,14 @@ pub enum Command {
         slot: usize,
         item: String,
     },
+    /// Put items in the player's inventory.
+    Give {
+        item: String,
+        count: u32,
+        /// For a fluid container, the fluid each holds and how many
+        /// blocks of it.
+        fluid: Option<(String, f32)>,
+    },
     Network(IVec3),
     /// Put items in a machine's slot group, or fluid in its tank.
     Put {
@@ -225,6 +233,22 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
                 item: args[1].to_string(),
             });
         }
+        "give" => {
+            if args.len() != 2 && args.len() != 4 {
+                return Err(format!(
+                    "`give` takes an item and a count, and maybe a fluid and an amount: {line}"
+                ));
+            }
+            let fluid = match args.get(2..4) {
+                Some([fluid, amount]) => Some((fluid.to_string(), parse_number(amount)?)),
+                _ => None,
+            };
+            commands.push(Command::Give {
+                item: args[0].to_string(),
+                count: parse_number(args[1])?,
+                fluid,
+            });
+        }
         "random-ticks" => {
             expect(1)?;
             commands.push(Command::RandomTicks(parse_number(args[0])?));
@@ -331,7 +355,9 @@ mod tests {
              type  Iron ore 2 \n\
              random-ticks 64\n\
              memory\n\
-             lookups 5 0 -1 1 2 3\n",
+             lookups 5 0 -1 1 2 3\n\
+             give bucket 2\n\
+             give bucket 1 water 0.5\n",
         )
         .unwrap();
         assert_eq!(
@@ -381,6 +407,16 @@ mod tests {
                     min: IVec3::new(1, 0, -1),
                     max: IVec3::new(5, 2, 3),
                 },
+                Command::Give {
+                    item: "bucket".into(),
+                    count: 2,
+                    fluid: None,
+                },
+                Command::Give {
+                    item: "bucket".into(),
+                    count: 1,
+                    fluid: Some(("water".into(), 0.5)),
+                },
             ]
         );
     }
@@ -412,5 +448,8 @@ mod tests {
         assert!(Script::parse("random-ticks many").is_err());
         assert!(Script::parse("memory all").is_err());
         assert!(Script::parse("lookups 1 2 3 4 5").is_err());
+        assert!(Script::parse("give bucket").is_err());
+        assert!(Script::parse("give bucket 1 water").is_err());
+        assert!(Script::parse("give bucket lots").is_err());
     }
 }

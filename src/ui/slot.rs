@@ -1,5 +1,7 @@
 //! The item slot widget: a framed square showing an item's icon and, for
-//! more than one, how many in its corner. The pointer can hover it (a
+//! more than one, how many in its corner. A fluid container's slot also
+//! shows how full it is, in a gauge down its left edge in the fluid's
+//! color, and says what it holds in its tooltip. The pointer can hover it (a
 //! lighter frame, and the item's name as a tooltip) and click it. A
 //! selected slot has a gold frame.
 //!
@@ -9,8 +11,9 @@
 
 use bevy::{picking::hover::Hovered, prelude::*};
 
+use super::fluid::{fluid_color, fluid_name, format_fluid};
 use super::{ItemIcon, Tooltip, UiTheme, UiWidgetSystems, icon::show_icons};
-use crate::content::{Content, ItemState};
+use crate::content::{BlockState, Content, ItemState};
 
 pub struct SlotPlugin;
 
@@ -37,6 +40,48 @@ pub struct ItemSlot {
     /// Faded: none of the item is there, such as a hotbar slot whose item
     /// ran out.
     pub dimmed: bool,
+    /// For a fluid container, what it holds.
+    pub fluid: Option<SlotFluid>,
+}
+
+/// What a fluid container in a slot holds, to show.
+#[derive(Reflect, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SlotFluid {
+    /// The fluid's block, or `None` for an empty container.
+    pub fluid: Option<BlockState>,
+    /// In thousandths of a block, as fluid is counted.
+    pub amount: u64,
+    pub capacity: u64,
+}
+
+impl SlotFluid {
+    /// How full, from 0 to 1.
+    pub fn fraction(self) -> f32 {
+        if self.capacity == 0 {
+            0.0
+        } else {
+            (self.amount as f64 / self.capacity as f64).min(1.0) as f32
+        }
+    }
+
+    /// The tooltip's line for it: the fluid and how much.
+    pub fn describe(self, content: &Content) -> String {
+        let name = self.fluid.map_or_else(
+            || "Empty".to_owned(),
+            |fluid| fluid_name(content, &content.block_of(fluid).id),
+        );
+        format!(
+            "{name}: {} of {}",
+            format_fluid(self.amount),
+            format_fluid(self.capacity)
+        )
+    }
+
+    /// The gauge's color: the fluid's, a little lighter, so it stands out
+    /// on the gauge's dark track in a small slot.
+    fn color(self, content: &Content) -> Color {
+        fluid_color(content, self.fluid).lighter(0.15)
+    }
 }
 
 impl ItemSlot {
@@ -57,6 +102,19 @@ struct SlotIcon;
 /// The count in an [`ItemSlot`]'s corner.
 #[derive(Component, Debug, Clone, Copy)]
 struct SlotCount;
+
+/// The empty part of a fluid gauge: dark, so any fluid's color shows on
+/// it, over the sky or the ground.
+const GAUGE_TRACK: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
+
+/// The fluid gauge down an [`ItemSlot`]'s left edge, shown for a fluid
+/// container.
+#[derive(Component, Debug, Clone, Copy)]
+struct SlotGauge;
+
+/// How far up a [`SlotGauge`] is filled.
+#[derive(Component, Debug, Clone, Copy)]
+struct SlotGaugeFill;
 
 /// Text showing how many: nothing for one or none, and short for big numbers
 /// (`12k`, `4.1M`), to fit a slot's corner.
@@ -119,25 +177,74 @@ pub fn item_slot(theme: &UiTheme, slot: ItemSlot) -> impl Bundle {
                     ..default()
                 },
                 Pickable::IGNORE,
+            ),
+            (
+                SlotGauge,
+                Node {
+                    display: Display::None,
+                    position_type: PositionType::Absolute,
+                    left: px(1),
+                    top: px(4),
+                    bottom: px(4),
+                    width: px(4),
+                    ..default()
+                },
+                BackgroundColor(GAUGE_TRACK),
+                Pickable::IGNORE,
+                children![(
+                    SlotGaugeFill,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(0),
+                        bottom: px(0),
+                        width: percent(100),
+                        height: percent(0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    Pickable::IGNORE,
+                )],
             )
         ],
     )
 }
 
-/// Passes each changed slot's item to its icon, count and tooltip.
+/// Passes each changed slot's item to its icon, count, gauge and tooltip.
 fn show_slot_items(
     content: Res<Content>,
     mut slots: Query<(&ItemSlot, &Children, &mut Tooltip), Changed<ItemSlot>>,
     mut icons: Query<&mut ItemIcon, With<SlotIcon>>,
     mut counts: Query<&mut Text, With<SlotCount>>,
+    mut gauges: Query<(&mut Node, &Children), (With<SlotGauge>, Without<SlotGaugeFill>)>,
+    mut fills: Query<(&mut Node, &mut BackgroundColor), With<SlotGaugeFill>>,
 ) {
     for (slot, children, mut tooltip) in &mut slots {
         let name = slot.item.and_then(|item| content.item_name(item));
-        let name = name.unwrap_or_default();
-        if tooltip.0 != name {
-            tooltip.0 = name.to_owned();
+        let mut text = name.unwrap_or_default().to_owned();
+        if let Some(fluid) = slot.fluid.filter(|_| slot.item.is_some()) {
+            text = format!("{text}\n{}", fluid.describe(&content));
+        }
+        if tooltip.0 != text {
+            tooltip.0 = text;
         }
         for &child in children {
+            if let Ok((mut node, gauge)) = gauges.get_mut(child) {
+                let fluid = slot.fluid.filter(|_| slot.item.is_some());
+                let display = if fluid.is_some() {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
+                if node.display != display {
+                    node.display = display;
+                }
+                for &fill in gauge {
+                    if let (Some(fluid), Ok((mut node, mut color))) = (fluid, fills.get_mut(fill)) {
+                        node.height = percent(fluid.fraction() * 100.0);
+                        color.set_if_neq(BackgroundColor(fluid.color(&content)));
+                    }
+                }
+            }
             if let Ok(mut icon) = icons.get_mut(child) {
                 icon.set_if_neq(ItemIcon(slot.item));
             }
@@ -256,5 +363,52 @@ mod tests {
             *app.world().get::<BorderColor>(slot).unwrap(),
             BorderColor::all(theme.slot_hovered)
         );
+    }
+}
+
+#[cfg(test)]
+mod gauge_tests {
+    use super::*;
+    use crate::content::{base, block};
+
+    /// A fluid container's slot shows a gauge filled as far as it's full,
+    /// and says what it holds in its tooltip; other items show none.
+    #[test]
+    fn a_containers_slot_shows_its_fluid() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(base().clone())
+            .init_resource::<UiTheme>()
+            .add_plugins(SlotPlugin);
+        let theme = UiTheme::default();
+        let bucket = base().default_item("defaria:bucket").unwrap();
+        let slot = app
+            .world_mut()
+            .spawn(item_slot(&theme, ItemSlot::item(bucket)))
+            .id();
+        app.update();
+        let gauge = app.world().get::<Children>(slot).unwrap()[2];
+        let fill = app.world().get::<Children>(gauge).unwrap()[0];
+        let shown = |app: &App| app.world().get::<Node>(gauge).unwrap().display;
+        assert_eq!(shown(&app), Display::None);
+        assert_eq!(app.world().get::<Tooltip>(slot).unwrap().0, "Bucket");
+
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().fluid = Some(SlotFluid {
+            fluid: Some(block("water")),
+            amount: 500,
+            capacity: 1000,
+        });
+        app.update();
+        assert_eq!(shown(&app), Display::Flex);
+        assert_eq!(app.world().get::<Node>(fill).unwrap().height, percent(50));
+        assert_eq!(
+            app.world().get::<Tooltip>(slot).unwrap().0,
+            "Bucket\nWater: 500 L of 1,000 L"
+        );
+
+        app.world_mut().get_mut::<ItemSlot>(slot).unwrap().fluid = None;
+        app.update();
+        assert_eq!(shown(&app), Display::None);
+        assert_eq!(app.world().get::<Tooltip>(slot).unwrap().0, "Bucket");
     }
 }

@@ -356,13 +356,17 @@ and lava's from inside it. It's set on the block, not in variants.
 ### Fluids
 
 `fluid` makes a block a fluid: nothing bumps into it, whatever its model's
-`collision`, the crosshair passes through it (so you can't mine it), and
+`collision`, the crosshair passes through it (so you can't mine it; a
+[fluid container](#items) in hand aims at it), and
 placing a block where it is replaces it, deleting the fluid. Since you can
 be inside one, even an opaque fluid like lava doesn't hide the faces of
 solid opaque blocks next to it, so the floor and walls of a lava pool show
 from inside; it still hides its own faces, and those of anything else
 see-through (water, glass, leaves), so only one face is drawn where they
 meet. Make a fluid `double_sided` too, so its surface shows from inside.
+A fluid's item places it only in creative: in survival that would make
+fluid from nothing, so fluid comes into the world only from containers
+and the terrain.
 
 A voxel of a fluid holds an amount of it, from a sliver to a full block,
 and is drawn that high, at one of 16 heights (a full block with the same
@@ -1002,6 +1006,7 @@ an item or material that doesn't exist, is an error.
   stats: { reach: 4.5 },  // other numbers, by name
   action: "wrench",      // optional: what using it (right click) does
   script: "pickaxe",      // optional: its `on_use` runs when it's used
+  fluid_container: { capacity: 1 },  // optional: it holds fluid (a bucket)
 }
 ```
 
@@ -1021,6 +1026,38 @@ weight is what one of the item weighs, in kilograms. Left out, hardness
 and weight are those of the block state the item places, or 0 for an
 item that places none. An item has the stats of the block state it
 places as well as its own, its own winning where both have one.
+
+`fluid_container` makes it hold some of one fluid, up to `capacity`
+blocks of it (a bucket holds 1). Right click with it in hand:
+
+- on fluid (the crosshair stops at fluid while a container is in hand,
+  at the height its surface is drawn), takes from that voxel, if some
+  container can take that fluid: as much as one has room for and the
+  weight limit lets in, a full block's worth or whatever a part-full
+  voxel holds. A container part-filled with that fluid is topped up
+  before an empty one is used.
+- on fluid with Shift held, or with no container that can take it, pours
+  a container of that fluid (never another) into the voxel, as much as
+  fits, and the rest into the voxel in front of the face aimed at.
+- on a block, pours the fullest container into the voxel in front of the
+  face aimed at. On a block that does something when used (a machine
+  with a screen, a scripted block) only with Shift held; without, the
+  click uses the block.
+- on a machine with [tanks](#machines), takes from a tank holding a
+  fluid a container can take, or else (or with Shift) pours into a tank
+  that takes the fluid and has room. With nothing to move, the click
+  goes on to the machine.
+
+What doesn't fit where it's poured stays in the container, so no fluid is
+made or lost.
+
+What a container holds is part of the item: containers count together
+only with ones holding the same fluid and amount (empty ones together),
+the fluid adds its weight (its block's `weight` per full block), and it's
+saved with the inventory. Its slot shows how full it is in a gauge down
+its left edge, in the fluid's color, and says what it holds in its
+tooltip. A container acts on the containers in the inventory, in
+creative too; the hotbar names the kind, and the click picks which one.
 
 `script` names a [Luau script](scripting.md) whose `on_use` hook runs
 when a player uses the item (right click with it in hand) instead of

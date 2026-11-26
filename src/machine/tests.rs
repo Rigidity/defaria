@@ -475,7 +475,10 @@ fn parts_round_trip_through_their_saved_form() {
         .unwrap()
         .insert(content, ItemStack::new(item("defaria:planks"), 3));
     let saved = slots.save(content);
-    assert_eq!(Slots::load(&saved, 1, state, content), Some(slots));
+    assert_eq!(
+        Slots::load(&saved, Slots::VERSION, state, content),
+        Some(slots)
+    );
     let mut tanks = Tanks::new(state, content).unwrap();
     tanks.0[0].fill("defaria:water", 12);
     let saved = tanks.save(content);
@@ -494,7 +497,7 @@ fn parts_round_trip_through_their_saved_form() {
         )]
         .into(),
     );
-    let loaded = Slots::load(&saved, 1, state, content).unwrap();
+    let loaded = Slots::load(&saved, Slots::VERSION, state, content).unwrap();
     assert_eq!(loaded.total(), 0);
     // Ports and the active flag aren't saved, but worked out again.
     const { assert!(!<Ports as BlockEntityPart>::SAVED) };

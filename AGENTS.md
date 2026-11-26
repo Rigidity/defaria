@@ -123,7 +123,8 @@ changes.
    and consumed, and what a fluid network holds),
    `put` (put items in a machine's slot group or fluid in its tank, as a
    tube or pipe would), `hotbar` (put an item, such as `wrench`, in a
-   hotbar slot and in hand), `camera` (put the
+   hotbar slot and in hand), `give` (put items in the player's
+   inventory, a fluid container filled if a fluid is named), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons, and
@@ -424,6 +425,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
   pipe spills its share; an unloading or saved chunk's pipes keep theirs
   in their block entity (`PipeFluid`), written in
   `streaming::BeforeChunkSave`.
+- `src/fluid_container.rs`: fluid containers (items with a
+  `fluid_container`, the bucket): what one holds is its `ItemData::fluid`
+  (a `FluidAmount`); right click takes from or pours into the world or a
+  machine's tanks, through `fluid_network::world`'s `take` and `pour`.
 - `src/save.rs` (and `src/save/`): the world's folder on disk and its region
   and chunk formats, documented in `docs/world-format.md`. Keep the two in
   step, and bump a format's version when it changes.

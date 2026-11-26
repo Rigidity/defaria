@@ -16,7 +16,7 @@ pub fn transfer(content: &Content, from: Side, to: Side, kind: &ItemStack, count
     let available = from.as_ref().map_or(u32::MAX, |from| from.count_kind(kind));
     let room = to
         .as_ref()
-        .map_or(u32::MAX, |to| to.room_for(content, kind.item));
+        .map_or(u32::MAX, |to| to.room_for(content, kind));
     let mut moved = count.min(available).min(room);
     if moved == 0 {
         return 0;

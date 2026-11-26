@@ -47,7 +47,7 @@ seed the game would otherwise use.
 
 ```json5
 {
-  format: 1,          // this file's format
+  format: 2,          // this file's format
   game_mode: "survival", // or "creative" (the default)
   active_slot: 2,     // the hotbar slot in hand, 0 to 8
   // Each hotbar slot's item, or null for an empty slot.
@@ -56,12 +56,20 @@ seed the game would otherwise use.
     { item: "defaria:dirt", count: 1250 },
     { item: "defaria:pickaxe[handle=defaria:oak,head=defaria:iron]", count: 1 },
     { item: "defaria:pickaxe[handle=defaria:oak,head=defaria:iron]", count: 1 },
+    { item: "defaria:bucket", count: 2 },
+    // Two more, each holding 600 thousandths of a block of water.
+    { item: "defaria:bucket", count: 2, fluid: { fluid: "defaria:water", amount: 600 } },
   ],
 }
 ```
 
 An inventory has no slots: it's how many of each item it holds, limited only
-by weight. A unique item (see `docs/modding.md`) is listed once per copy. The
+by weight. A unique item (see `docs/modding.md`) is listed once per copy. A
+fluid container holding fluid has `fluid`: the fluid's block id and how much,
+in thousandths of a block, as chunks count fluid; containers holding
+different amounts are listed apart. Fluid an item can't hold any more (it
+isn't a container now, the fluid is gone, or it's more than it holds) is
+dropped with a warning, the container kept. The
 hotbar names kinds of items rather than holding them, so a slot can name
 something the inventory has none of.
 
@@ -168,7 +176,7 @@ The parts the base game saves:
 | `data` | 1 | blocks with `block_entity: { data }`, and scripts | a table of plain values |
 | `energy` | 1 | machines with `energy` | the integer energy stored |
 | `tanks` | 1 | machines with `tanks` | a table by tank name of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block; an empty tank is left out |
-| `slots` | 1 | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`) |
+| `slots` | 2 | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`), with `fluid` (a block id) and `amount` for a fluid container holding some |
 | `recipe` | 1 | machines with `recipes` | `{ recipe, ticks }` while one is running: the recipe's id (`defaria:smelt_ore[ore=defaria:iron]` for one of a templated recipe's materials) and how many of its network ticks have run; `{}` when none is. Its inputs were taken when it started, so they're in no slot |
 | `pipe` | 1 | conduits on a network the `fluid` solver runs (pipes) | a list of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block: the pipe's share of its network's fluid when its chunk was saved; an empty list when it held none |
 | `blocked_faces` | 1 | conduits with a face blocked with a wrench | an int, a bit for each side, `1 << side` with up 0, down 1, north 2, south 3, east 4, west 5; only while some face is blocked: a conduit with every face open has none |

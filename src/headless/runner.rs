@@ -301,6 +301,7 @@ fn run_script(
             | Command::Put { .. }
             | Command::Camera { .. }
             | Command::Hotbar { .. }
+            | Command::Give { .. }
             | Command::RandomTicks(_)
             | Command::Lookups { .. } => runner.world_commands.push(command),
             Command::Fluids => runner.fluid_report = true,

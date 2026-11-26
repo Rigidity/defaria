@@ -25,6 +25,7 @@
 //! `voxel_material`), so they hot reload; the JSON5 files don't yet.
 
 mod bake;
+pub(crate) use bake::title_case;
 mod connect;
 pub mod load;
 mod machine;
@@ -608,6 +609,9 @@ pub struct Item {
     pub action: Option<ItemAction>,
     /// The id of the script whose `on_use` runs when it's used.
     pub script: Option<String>,
+    /// How much fluid one of it holds, in [`FULL_FLUID`] units, if it's a
+    /// fluid container (a bucket; see `fluid_container`).
+    pub fluid_capacity: Option<u64>,
 }
 
 impl Item {

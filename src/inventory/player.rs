@@ -9,15 +9,19 @@
 
 use bevy::prelude::*;
 
-use super::{Inventory, ItemStack, model::is_unique};
+use super::{
+    Inventory, ItemStack,
+    model::{ItemData, is_unique},
+};
 use crate::{
     content::Content,
+    fluid_container::saved_data,
     game_mode::GameMode,
     hotbar::{ActiveSlot, HOTBAR_SLOTS, Hotbar},
     player::LocalPlayer,
     save::{
         WorldFolder,
-        player::{self as file, ItemNames, PLAYER_FORMAT, PlayerFile, SavedStack},
+        player::{self as file, ItemNames, PLAYER_FORMAT, PlayerFile, SavedFluid, SavedStack},
     },
     streaming::{SaveOnExit, StreamingSettings},
 };
@@ -132,7 +136,18 @@ pub fn load(saved: &PlayerFile, content: &Content) -> (Inventory, Hotbar, Active
                 } else {
                     stack.count
                 };
-                inventory.add(content, ItemStack::new(item, count));
+                let data = match &stack.fluid {
+                    Some(saved) => saved_data(content, item, &saved.fluid, saved.amount)
+                        .unwrap_or_else(|error| {
+                            warn!(
+                                "the saved inventory's `{}` held fluid, but {error}; it's lost",
+                                stack.item
+                            );
+                            ItemData::default()
+                        }),
+                    None => ItemData::default(),
+                };
+                inventory.add(content, ItemStack { item, data, count });
             }
             None => warn!(
                 "the saved inventory has `{}`, which no mod defines",
@@ -161,6 +176,10 @@ pub fn save(
         Some(SavedStack {
             item: names.name(stack.item)?.to_owned(),
             count: stack.count,
+            fluid: stack.data.fluid.as_ref().map(|held| SavedFluid {
+                fluid: held.fluid.clone(),
+                amount: held.amount,
+            }),
         })
     });
     let hotbar = hotbar
@@ -279,10 +298,12 @@ mod tests {
                 SavedStack {
                     item: "gone:thing".into(),
                     count: 3,
+                    fluid: None,
                 },
                 SavedStack {
                     item: "defaria:lamp".into(),
                     count: 99_999,
+                    fluid: None,
                 },
             ],
         };
@@ -306,6 +327,7 @@ mod tests {
                     .unwrap()
                     .to_owned(),
                 count: 5,
+                fluid: None,
             }],
             ..save(
                 &Inventory::new(),

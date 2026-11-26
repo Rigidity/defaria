@@ -1,5 +1,5 @@
 //! World commands, which set up a scene without steering there (`fill`,
-//! `pour`, `put`, `hotbar`, `camera`, `random-ticks`, `lookups`), and the
+//! `pour`, `put`, `hotbar`, `give`, `camera`, `random-ticks`, `lookups`), and the
 //! `fluids` and `network` reports.
 
 use std::time::Instant;
@@ -11,7 +11,9 @@ use crate::{
     block_entity::BlockEntities,
     content::{BlockState, Content, FULL_FLUID, ItemState, StateName},
     fluid::FluidStats,
+    fluid_container,
     hotbar::{ActiveSlot, Hotbar},
+    inventory::{Inventory, ItemStack},
     machine::{Slots, Tanks},
     physics::Body,
     player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player, put_eyes},
@@ -72,6 +74,10 @@ pub(super) fn apply_world_commands(world: &mut World) {
                 .run_system_cached_with(hold_item, (slot, item))
                 .map_err(|error| error.to_string())
                 .and_then(|result| result),
+            Command::Give { item, count, fluid } => world
+                .run_system_cached_with(give_items, (item, count, fluid))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
             Command::RandomTicks(per_chunk) => {
                 world.resource_mut::<RandomTicks>().per_chunk = per_chunk;
                 Ok(())
@@ -116,6 +122,33 @@ fn hold_item(
         .map_err(|_| "hotbar: there's no player".to_string())?;
     hotbar.assign(slot, Some(item));
     *active = ActiveSlot(slot);
+    Ok(())
+}
+
+/// Puts `count` of the item `name` in the player's inventory, each holding
+/// `fluid` if it's given.
+fn give_items(
+    In((name, count, fluid)): In<(String, u32, Option<(String, f32)>)>,
+    content: Res<Content>,
+    mut players: Query<&mut Inventory, With<LocalPlayer>>,
+) -> Result<(), String> {
+    let item = item_state(&content, &name).map_err(|error| format!("give: {error}"))?;
+    let data = match fluid {
+        Some((fluid, amount)) => {
+            let state = fill_state(&content, &fluid).map_err(|error| format!("give: {error}"))?;
+            let id = &content.block_of(state).id;
+            let units = (amount * FULL_FLUID as f32).round().max(0.0) as u64;
+            fluid_container::saved_data(&content, item, id, units)
+                .map_err(|error| format!("give: `{name}` can't hold that: {error}"))?
+        }
+        None => default(),
+    };
+    let mut inventory = players
+        .single_mut()
+        .map_err(|_| "give: there's no player".to_string())?;
+    if let Some(left) = inventory.add(&content, ItemStack { item, data, count }) {
+        warn!("give: {} of `{name}` didn't fit", left.count);
+    }
     Ok(())
 }
 

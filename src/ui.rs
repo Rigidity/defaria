@@ -31,6 +31,7 @@
 
 pub mod bar;
 pub mod button;
+pub mod fluid;
 pub mod font;
 #[cfg(feature = "dev")]
 pub mod gallery;
@@ -47,11 +48,12 @@ use bevy::prelude::*;
 
 pub use bar::{Bar, bar};
 pub use button::{UiButton, button};
+pub use fluid::{NO_FLUID, fluid_color, fluid_name, format_fluid};
 pub use icon::ItemIcon;
 pub use pointer::{DRAG_DISTANCE, PointerTravel, UiPointer};
 pub use screen::{UiScreen, playing};
 pub use scroll::scroll_panel;
-pub use slot::{ItemSlot, item_slot};
+pub use slot::{ItemSlot, SlotFluid, item_slot};
 pub use text_field::{TextField, text_field, typing};
 pub use theme::UiTheme;
 pub use tooltip::Tooltip;

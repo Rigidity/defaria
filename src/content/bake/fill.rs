@@ -59,7 +59,9 @@ pub(super) fn fill_name(
     Ok(name.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-pub(super) fn title_case(id: &str) -> String {
+/// The last part of an id (after `:` or `/`), in title case with spaces
+/// for underscores: `defaria:hot_oil` is "Hot oil".
+pub(crate) fn title_case(id: &str) -> String {
     let name = id.rsplit(['/', ':']).next().unwrap_or(id).replace('_', " ");
     let mut chars = name.chars();
     chars

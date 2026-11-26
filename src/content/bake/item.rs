@@ -13,8 +13,8 @@ use super::{
     texture::Textures,
 };
 use crate::content::{
-    Block, BlockState, Content, Item, ItemStateInfo, Property, State, qualify,
-    schema::{BlockDef, ItemAction, ItemDef},
+    Block, BlockState, Content, FULL_FLUID, Item, ItemStateInfo, Property, State, qualify,
+    schema::{BlockDef, FluidContainerDef, ItemAction, ItemDef},
 };
 
 /// Gives each block an item, unless it opts out, then adds the item files.
@@ -139,8 +139,17 @@ fn block_item(
         .transpose()
         .map_err(|error| format!("`script`: {error}"))?;
     let action = file.and_then(|file| file.def.action);
+    let fluid_capacity = fluid_capacity(file.and_then(|file| file.def.fluid_container))?;
     push_item(
-        id, properties, unique, action, category, script, states, content,
+        id,
+        properties,
+        unique,
+        action,
+        category,
+        script,
+        fluid_capacity,
+        states,
+        content,
     );
     Ok(())
 }
@@ -227,6 +236,7 @@ fn standalone_item(
         item_def.action,
         category,
         script,
+        fluid_capacity(item_def.fluid_container)?,
         states,
         content,
     );
@@ -260,6 +270,21 @@ fn placed_state(block: &Block, values: &[(String, String)]) -> Result<BlockState
     })
 }
 
+/// A `fluid_container`'s capacity in [`FULL_FLUID`] units: at least one.
+fn fluid_capacity(def: Option<FluidContainerDef>) -> Result<Option<u64>, String> {
+    let Some(def) = def else {
+        return Ok(None);
+    };
+    let units = (def.capacity * FULL_FLUID as f32).round();
+    if !units.is_finite() || units < 1.0 {
+        return Err(format!(
+            "`fluid_container.capacity` must hold some fluid, not {}",
+            def.capacity
+        ));
+    }
+    Ok(Some(units as u64))
+}
+
 fn push_item(
     id: &str,
     properties: Vec<Property>,
@@ -267,6 +292,7 @@ fn push_item(
     action: Option<ItemAction>,
     category: Option<usize>,
     script: Option<String>,
+    fluid_capacity: Option<u64>,
     states: Vec<ItemStateInfo>,
     content: &mut Content,
 ) {
@@ -280,6 +306,7 @@ fn push_item(
         category,
         action,
         script,
+        fluid_capacity,
     });
     content.item_states.extend(states);
 }

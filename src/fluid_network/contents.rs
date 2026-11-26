@@ -10,7 +10,7 @@ use crate::network::{NetworkState, Share, divide, divide_by_share};
 /// units (thousandths of a block, as the world counts fluid). The fluid is
 /// its block's id, as a machine's [`Tank`](crate::machine::Tank) names it.
 /// What anything holding "some of one fluid" (a pipe, a bucket) keeps.
-#[derive(Reflect, Debug, Clone, PartialEq, Eq)]
+#[derive(Reflect, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FluidAmount {
     pub fluid: String,
     pub amount: u64,

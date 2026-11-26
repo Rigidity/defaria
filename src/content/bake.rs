@@ -52,6 +52,7 @@ use model::model;
 use parse::parse_file;
 use texture::{Textures, template};
 
+pub(crate) use fill::title_case;
 pub(super) use mix::Mix;
 pub(super) use model::rotation;
 pub(super) use when::{When, pattern_matches};

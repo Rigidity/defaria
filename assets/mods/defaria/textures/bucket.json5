@@ -1,0 +1,5 @@
+// The bucket item's icon, in iron; drawn by scripts/draw-layers.py (see
+// images/SOURCES.md).
+{
+  layers: [{ image: "items/bucket", material: "iron" }],
+}
