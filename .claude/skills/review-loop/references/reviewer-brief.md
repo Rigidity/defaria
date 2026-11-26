@@ -24,15 +24,14 @@ Rules:
 - Don't edit files in the repo. Write scratch files, scenario scripts and screenshots to <scratch dir>/ (absolute paths; scenario screenshot paths are relative to the working directory otherwise).
 - Never open the game window: no `cargo run`, `cargo play`, `cargo shot` or `--screenshot`. To see the game, run `cargo headless <script>`; the script format is documented at the top of src/headless.rs.
 - Don't run `cargo clean`, and don't add `--release` or `--no-default-features`; each builds a second copy of Bevy. Other reviewers are building in parallel and share the target directory: if cargo prints `Blocking waiting for file lock`, wait for it.
-- To check whether a test would catch a regression by breaking the code (a mutant), or to run the base for comparison, never edit the repo. Use a scratch worktree that shares this checkout's target directory, or it rebuilds Bevy from scratch (about 10 minutes):
+- To check whether a test would catch a regression by breaking the code (a mutant), or to run the base for comparison, never edit the repo. Use a scratch worktree with its own target directory, seeded with a compiled Bevy so it doesn't spend 10 minutes building one:
   ```sh
-  target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+  checkout=$(git rev-parse --show-toplevel)
   git worktree add <scratch dir>/mutant HEAD      # or <base> to compare against the base
-  cd <scratch dir>/mutant && CARGO_TARGET_DIR="$target" cargo test
+  cd <scratch dir>/mutant && "$checkout/scripts/seed-worktree-target.sh" && cargo test
   git worktree remove --force <scratch dir>/mutant
   ```
-  Run every cargo command in it with that `CARGO_TARGET_DIR`. Remove the worktree when you're done.
-  Both checkouts build the game's library and binary to the same paths in the shared target directory (`<target>/debug/deps/libdefaria-*` and `<target>/debug/defaria`), so a build in the scratch worktree replaces the branch's, and cargo may then run the stale one for the branch. Touching only `src/main.rs` isn't enough: it relinks the binary against whichever library was built last. When you're done there, `touch src/lib.rs src/main.rs` in the main checkout before running anything in it again. If a result in the main checkout looks like old code (an `unknown command` from the runner, a fix that seems missing), touch both and rerun before reporting it. To time base and branch side by side, copy each binary out after building it and run the copies directly.
+  Its first build compiles the game crate, in about 30 seconds. Never point it at this checkout's target directory (with `CARGO_TARGET_DIR` or otherwise): cargo names the game's artifacts the same in both checkouts and decides they're fresh by mtimes alone, so each checkout would run the other's build of the game. Remove the worktree when you're done. To time base and branch side by side, build each in its own checkout and run their binaries.
 - Bevy APIs changed a lot between versions. Before claiming an API exists, doesn't exist or behaves a certain way, check the 0.20 source in ~/.cargo/registry/src/*/bevy_*-0.20.*/.
 - Judge the change against the goal above. Points under "Settled" were decided by the user; don't re-raise them. Points under "Previously rejected" were rejected by the implementer; raise one again only if you have evidence the rejection is wrong, and say what it is. Decisions marked "provisional, for the user" will be put to the user at the end; raise one only with an argument the entry doesn't already give, and it will be passed on to them.
 - Prefer a few findings you're confident in over many guesses. If you aren't sure, say so in the finding.

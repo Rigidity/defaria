@@ -35,6 +35,21 @@ and `cargo test`. CI runs the same checks, plus clippy with
   locally; it builds another copy of Bevy.
 - If cargo prints `Blocking waiting for file lock`, another build is using this
   checkout. Wait for it; don't kill it.
+- Every checkout builds into its own `target/`. Never share one between
+  worktrees (`CARGO_TARGET_DIR`, or `target-dir` in a `.cargo/config.toml`):
+  cargo names the game's artifacts the same in every checkout and decides
+  they're fresh by mtimes alone, so tests and headless runs in one worktree
+  would run another worktree's code. A new worktree gets Bevy already
+  compiled from `scripts/seed-worktree-target.sh` (T3 Code runs it when it
+  creates one), and its first build compiles only the game crate, in about
+  30 seconds.
+- After adding, removing or updating a dependency (anything that changes
+  `Cargo.lock`, or Bevy's features), run
+  `scripts/seed-worktree-target.sh --save` yourself once `cargo test` and
+  `cargo clippy --all-targets -- -D warnings` have built it, without being
+  asked. That adds the new dependencies to the seed, so other worktrees
+  don't each compile them (about 10 minutes for a new Bevy). Saving only
+  adds, so it's safe on a branch that hasn't merged yet.
 
 ## Don't open the game window
 
