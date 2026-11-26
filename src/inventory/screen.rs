@@ -469,17 +469,17 @@ mod tests {
         assert_eq!(hotbar(&mut app).0[0], None);
         assert_eq!(inventory(&mut app).count(dirt), STARTING_COUNT);
 
-        // Digit 1 over the glass in the inventory: slot 1 gets glass (and
-        // slot 9 loses it), and the active slot stays.
+        // Digit 3 over the glass in the inventory: slot 3 gets glass (and
+        // slot 9 loses it), and the active slot (1) stays.
         let mine = mine_at(&mut app, glass);
         run_more(
             &mut app,
             &format!(
-                "cursor {} {}\nwait 1\nhold Digit1 1\nwait 2",
+                "cursor {} {}\nwait 1\nhold Digit3 1\nwait 2",
                 mine.x, mine.y
             ),
         );
-        assert_eq!(hotbar(&mut app).0[0], Some(glass));
+        assert_eq!(hotbar(&mut app).0[2], Some(glass));
         assert_eq!(hotbar(&mut app).0[8], None);
         assert_eq!(active(&mut app), ActiveSlot(0));
     }
@@ -496,8 +496,17 @@ mod tests {
         run_more(
             &mut app,
             &format!(
-                "cursor {} {}\nwait 1\npress MouseRight\nwait 1\ncursor {} {}\nwait 1\ncursor {} {}\nwait 1\nrelease MouseRight\nwait 2",
-                at.x, at.y, away.x, away.y, at.x, at.y
+                // A first small step, as a real mouse makes, then away and
+                // back.
+                "cursor {} {}\nwait 1\npress MouseRight\nwait 1\ncursor {} {}\nwait 1\ncursor {} {}\nwait 1\ncursor {} {}\nwait 1\nrelease MouseRight\nwait 2",
+                at.x,
+                at.y,
+                at.x + 2.0,
+                at.y + 1.0,
+                away.x,
+                away.y,
+                at.x,
+                at.y
             ),
         );
         assert_eq!(inventory(&mut app).count(sand), start);
@@ -512,6 +521,31 @@ mod tests {
             ),
         );
         assert_eq!(inventory(&mut app).count(sand), start + 1);
+    }
+
+    /// Dragging hotbar slots: a right drag does nothing (not even away and
+    /// back), and a left drag that swaps two slots leaves the active slot
+    /// as it was.
+    #[test]
+    fn dragging_hotbar_slots_keeps_what_is_in_hand() {
+        let mut app = open_inventory();
+        let before = hotbar(&mut app);
+        let (slot_3, slot_7) = (hotbar_slot_at(&mut app, 2), hotbar_slot_at(&mut app, 6));
+        run_more(&mut app, &drag("MouseRight", slot_3, slot_7));
+        let away = slot_3 - Vec2::new(0.0, 200.0);
+        run_more(
+            &mut app,
+            &format!(
+                "cursor {} {}\nwait 1\npress MouseRight\nwait 1\ncursor {} {}\nwait 1\ncursor {} {}\nwait 1\nrelease MouseRight\nwait 2",
+                slot_3.x, slot_3.y, away.x, away.y, slot_3.x, slot_3.y
+            ),
+        );
+        assert_eq!(hotbar(&mut app), before);
+        let (slot_1, slot_8) = (hotbar_slot_at(&mut app, 0), hotbar_slot_at(&mut app, 7));
+        run_more(&mut app, &drag("MouseLeft", slot_8, slot_1));
+        assert_eq!(hotbar(&mut app).0[0], before.0[7]);
+        assert_eq!(hotbar(&mut app).0[7], before.0[0]);
+        assert_eq!(active(&mut app), ActiveSlot(0));
     }
 
     /// With the screen open, clicking a hotbar slot makes it active, and

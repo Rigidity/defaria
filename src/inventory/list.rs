@@ -60,8 +60,9 @@ pub enum ListSource {
 #[reflect(Component)]
 pub struct ItemList {
     pub source: ListSource,
-    /// Where its items go when clicked or dragged away (the screen's other
-    /// list), if anywhere.
+    /// Where its items go when clicked (the screen's other list), if
+    /// anywhere. Dragged, they go to whichever other list they're dropped
+    /// on.
     pub sends_to: Option<ListSource>,
 }
 
@@ -166,7 +167,7 @@ fn refresh_lists(
                     source,
                     stack: stack.clone(),
                 });
-                slot.set_if_neq(entry_slot(source, stack, slot.selected));
+                slot.set_if_neq(entry_slot(source, stack));
             }
         }
         for &extra in shown.iter().skip(wanted.len()) {
@@ -175,7 +176,7 @@ fn refresh_lists(
         if wanted.len() > shown.len() {
             commands.entity(list).with_children(|list| {
                 for stack in wanted.into_iter().skip(shown.len()) {
-                    let slot = entry_slot(source, &stack, false);
+                    let slot = entry_slot(source, &stack);
                     list.spawn((ListEntry { source, stack }, item_slot(&theme, slot)));
                 }
             });
@@ -184,10 +185,9 @@ fn refresh_lists(
 }
 
 /// What an entry's slot shows.
-fn entry_slot(source: ListSource, stack: &ItemStack, selected: bool) -> ItemSlot {
+fn entry_slot(source: ListSource, stack: &ItemStack) -> ItemSlot {
     ItemSlot {
         count: shown_count(source, stack),
-        selected,
         ..ItemSlot::item(stack.item)
     }
 }

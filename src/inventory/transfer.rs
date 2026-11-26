@@ -17,20 +17,21 @@ pub fn transfer(content: &Content, from: Side, to: Side, kind: &ItemStack, count
     let room = to
         .as_ref()
         .map_or(u32::MAX, |to| to.room_for(content, kind.item));
-    let moved = count.min(available).min(room);
+    let mut moved = count.min(available).min(room);
     if moved == 0 {
         return 0;
     }
-    if let Some(from) = from {
-        from.remove_kind(kind, moved);
-    }
+    // In first, and out of `from` only what went in: `add` can still
+    // refuse some (a count at its largest).
     if let Some(to) = to {
         let stack = ItemStack {
             count: moved,
             ..kind.clone()
         };
-        // Within the room checked above, so it all fits.
-        to.add(content, stack);
+        moved -= to.add(content, stack).map_or(0, |left| left.count);
+    }
+    if let Some(from) = from {
+        from.remove_kind(kind, moved);
     }
     moved
 }
@@ -107,6 +108,34 @@ mod tests {
             0
         );
         assert_eq!(b.count(stone().item), 9);
+    }
+
+    /// What the destination can't count any higher stays where it was.
+    #[test]
+    fn nothing_is_lost_at_the_largest_count() {
+        let content = base();
+        let mut a = Inventory::new();
+        let mut b = Inventory::new();
+        a.add(
+            content,
+            ItemStack {
+                count: u32::MAX - 5,
+                ..stone()
+            },
+        );
+        b.add(
+            content,
+            ItemStack {
+                count: 10,
+                ..stone()
+            },
+        );
+        assert_eq!(
+            transfer(content, Some(&mut b), Some(&mut a), &stone(), 10),
+            5
+        );
+        assert_eq!(a.count(stone().item), u32::MAX);
+        assert_eq!(b.count(stone().item), 5);
     }
 
     #[test]
