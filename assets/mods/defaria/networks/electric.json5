@@ -1,0 +1,2 @@
+// Power, carried by wires. Run by the engine's energy solver.
+{ name: "Electric", solver: "energy" }

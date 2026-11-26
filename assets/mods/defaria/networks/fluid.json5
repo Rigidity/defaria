@@ -1,0 +1,3 @@
+// Water, lava or any other fluid, carried by pipes: one shared tank per
+// network, run by the engine's fluid solver.
+{ name: "Fluid", solver: "fluid" }

@@ -1,11 +1,11 @@
-// A metal wire: a small knot with a thin arm out to each side it's joined
-// on, drawn like the pipe at half its width. It connects by its own rule,
-// `wire`, so wires join wires and not pipes.
+// A metal wire, on the electric network: a small knot with a thin arm out
+// to each side it's joined on, drawn like the pipe at half its width.
+// Wires join wires (any conduit on the electric network), not pipes.
 {
   name: "{metal} Wire",
   properties: {
     metal: { materials: "#metal", default: "copper" },
-    connect: { connections: "wire" },
+    connect: { connections: true },
   },
   textures: {
     all: { texture: "wire_core", materials: { metal: "{metal}" } },
@@ -25,4 +25,11 @@
   hardness: { base: 0.2, materials: { metal: 1 } },
   weight: { base: 0.02, materials: { metal: 1 } },
   category: "building",
+  // A wire holds no energy; it passes 1000 units a second for each unit
+  // of its metal's conductivity (copper 1000, iron 170).
+  conduit: {
+    network: "electric",
+    capacity: 0,
+    throughput: { base: 1000, stat: "conductivity", materials: { metal: 1 } },
+  },
 }

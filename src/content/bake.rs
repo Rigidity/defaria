@@ -1,5 +1,6 @@
 //! Parses the definition files and resolves the references between them,
-//! in dependency order: materials, textures, models, blocks, items.
+//! in dependency order: categories, network kinds, materials, textures,
+//! models, blocks, items.
 //!
 //! Each definition that fails is reported once, naming its file, and left
 //! out; definitions referring to it then fail with "no such …".
@@ -15,10 +16,11 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use serde::de::DeserializeOwned;
 
 use super::{
-    AIR, BakedFace, Block, BlockBox, BlockState, Category, Connections, Content, Direction,
-    FULL_FLUID, Fluid, Item, ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE,
-    Placement, Property, State, StatePart, Texture, TextureLayer, Vertex, connect::side_properties,
-    index_of, load::LoadedMod, qualify, schema::*, state_count,
+    AIR, BakedFace, Block, BlockBox, BlockState, Category, Conduit, Connections, Content,
+    Direction, FULL_FLUID, Fluid, Item, ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model,
+    ModelFace, NONE, NetworkKind, Placement, Property, Rule, State, StatePart, Texture,
+    TextureLayer, Vertex, connect::side_properties, index_of, load::LoadedMod, qualify, schema::*,
+    state_count,
 };
 use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
 
@@ -26,6 +28,7 @@ use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
 #[derive(Debug, Clone, Copy)]
 enum Kind {
     Categories,
+    Networks,
     Materials,
     Textures,
     Models,
@@ -34,8 +37,9 @@ enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 6] = [
+    const ALL: [Kind; 7] = [
         Kind::Categories,
+        Kind::Networks,
         Kind::Materials,
         Kind::Textures,
         Kind::Models,
@@ -46,6 +50,7 @@ impl Kind {
     fn folder(self) -> &'static str {
         match self {
             Kind::Categories => "categories",
+            Kind::Networks => "networks",
             Kind::Materials => "materials",
             Kind::Textures => "textures",
             Kind::Models => "models",
@@ -70,6 +75,7 @@ struct Def<T> {
 #[derive(Default)]
 struct Defs {
     categories: Vec<Def<CategoryDef>>,
+    networks: Vec<Def<NetworkDef>>,
     materials: Vec<Def<MaterialDef>>,
     textures: Vec<Def<TextureDef>>,
     models: Vec<Def<ModelDef>>,
@@ -128,8 +134,10 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         items: Vec::new(),
         item_states: Vec::new(),
         categories: Vec::new(),
+        networks: Vec::new(),
         errors: Vec::new(),
         category_index: HashMap::new(),
+        network_index: HashMap::new(),
         texture_index: HashMap::new(),
         block_index: HashMap::new(),
         item_index: HashMap::new(),
@@ -142,6 +150,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         }
     };
     add_categories(&defs.categories, &mut content);
+    add_networks(&defs.networks, &mut content);
     for def in &defs.materials {
         let result = material(def).map(|material| {
             content.materials.insert(def.id.clone(), material);
@@ -215,6 +224,20 @@ fn add_categories(defs: &[Def<CategoryDef>], content: &mut Content) {
     content.categories = categories;
 }
 
+/// Adds the network kinds, in load order.
+fn add_networks(defs: &[Def<NetworkDef>], content: &mut Content) {
+    for def in defs {
+        content
+            .network_index
+            .insert(def.id.clone(), content.networks.len());
+        content.networks.push(NetworkKind {
+            id: def.id.clone(),
+            name: def.def.name.clone(),
+            solver: def.def.solver,
+        });
+    }
+}
+
 /// The category `reference` (from a file in `namespace`) names.
 fn category(
     reference: Option<&String>,
@@ -270,6 +293,7 @@ fn parse_file(
     let file = format!("{dir}/{path}");
     match kind {
         Kind::Categories => defs.categories.push(def(id, namespace, file, text)?),
+        Kind::Networks => defs.networks.push(def(id, namespace, file, text)?),
         Kind::Materials => defs.materials.push(def(id, namespace, file, text)?),
         Kind::Textures => defs.textures.push(def(id, namespace, file, text)?),
         Kind::Models => defs.models.push(def(id, namespace, file, text)?),
@@ -1138,20 +1162,102 @@ fn connection_properties(spec: &PropertySpec, for_block: bool) -> Result<Vec<Pro
     Ok(side_properties().collect())
 }
 
-/// The rule a block's `connections` property names, with its mod.
+/// What a block's `connections` property connects by: a rule, with its
+/// mod, or its conduit. A conduit must connect by its conduit, and only a
+/// conduit can.
 fn connection_rule(
     defs: &BTreeMap<String, PropertyDef>,
     namespace: &str,
-) -> Result<Option<String>, String> {
+    conduit: bool,
+) -> Result<Option<Rule>, String> {
     let found = defs.iter().find_map(|(name, def)| match def {
         PropertyDef::Full(spec) => spec.connections.as_ref().map(|rule| (name, rule)),
         PropertyDef::Values(_) => None,
     });
-    found
-        .map(|(name, rule)| {
-            qualify(rule, namespace).map_err(|error| format!("property `{name}`: {error}"))
+    match (found, conduit) {
+        (None, false) => Ok(None),
+        (None, true) => Err(
+            "a conduit needs a property with `connections: true`, to join \
+             the conduits next to it"
+                .into(),
+        ),
+        (Some((_, ConnectionsDef::Conduit)), true) => Ok(Some(Rule::Conduit)),
+        (Some((name, ConnectionsDef::Conduit)), false) => Err(format!(
+            "property `{name}`: `connections: true` connects by the block's `conduit`, and it \
+             has none"
+        )),
+        (Some((name, ConnectionsDef::Rule(_))), true) => Err(format!(
+            "property `{name}`: a conduit connects by its network kind and group: write \
+             `connections: true`"
+        )),
+        (Some((name, ConnectionsDef::Rule(rule))), false) => qualify(rule, namespace)
+            .map(|rule| Some(Rule::Named(rule)))
+            .map_err(|error| format!("property `{name}`: {error}")),
+    }
+}
+
+/// A block's `conduit`, checked against its properties, to work out per
+/// state.
+struct ConduitMix {
+    network: usize,
+    group: Option<String>,
+    capacity: Mix,
+    throughput: Mix,
+}
+
+impl ConduitMix {
+    fn new(
+        def: &ConduitDef,
+        namespace: &str,
+        properties: &[Property],
+        content: &Content,
+    ) -> Result<Self, String> {
+        let id = qualify(&def.network, namespace).map_err(|error| format!("conduit: {error}"))?;
+        let network = content
+            .network(&id)
+            .ok_or_else(|| format!("conduit: no network kind `{id}`"))?;
+        let mix = |field: &str, def: &Attribute| {
+            Mix::new(
+                &format!("conduit.{field}"),
+                field,
+                def,
+                properties,
+                None,
+                content,
+            )
+        };
+        Ok(ConduitMix {
+            network,
+            group: def.group.clone(),
+            capacity: mix("capacity", &def.capacity)?,
+            throughput: mix("throughput", &def.throughput)?,
         })
-        .transpose()
+    }
+
+    /// The conduit of the state with these values.
+    fn value(
+        &self,
+        properties: &[Property],
+        index: &[usize],
+        values: &[(String, String)],
+        content: &Content,
+    ) -> Result<Conduit, String> {
+        let group = self
+            .group
+            .as_deref()
+            .map(|group| fill(group, values))
+            .transpose()
+            .map_err(|error| format!("conduit group: {error}"))?;
+        if group.as_deref() == Some("") {
+            return Err("conduit group is empty".into());
+        }
+        Ok(Conduit {
+            network: self.network,
+            group,
+            capacity: self.capacity.value(properties, index, content),
+            throughput: self.throughput.value(properties, index, content),
+        })
+    }
 }
 
 fn property(
@@ -1401,8 +1507,13 @@ fn add_block(
 ) -> Result<(), String> {
     let block = &def.def;
     let properties = properties(&block.properties, &def.namespace, content, true)?;
-    let connections = connection_rule(&block.properties, &def.namespace)?
+    let connections = connection_rule(&block.properties, &def.namespace, block.conduit.is_some())?
         .and_then(|rule| Connections::new(rule, &properties));
+    let conduit = block
+        .conduit
+        .as_ref()
+        .map(|conduit| ConduitMix::new(conduit, &def.namespace, &properties, content))
+        .transpose()?;
     let count = check_count(&properties)?;
     if content.states.len() + count > u16::MAX as usize + 1 {
         return Err("out of block states: there are too many blocks".into());
@@ -1514,6 +1625,13 @@ fn add_block(
                     content,
                     textures,
                 )
+            })
+            .and_then(|mut state| {
+                state.conduit = conduit
+                    .as_ref()
+                    .map(|conduit| conduit.value(&properties, value_index, values, content))
+                    .transpose()?;
+                Ok(state)
             })
             .map_err(|error| in_state(values, error))?;
         states.push(state);

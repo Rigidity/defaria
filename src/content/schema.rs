@@ -139,13 +139,23 @@ pub struct PropertySpec {
     /// Only for plain block properties.
     #[serde(default)]
     pub place: Option<PlaceDef>,
-    /// The rule the block connects to its neighbours by. The property
-    /// becomes six: `north`, `south`, `east`, `west`, `up` and `down`, each
-    /// `"false"` or `"true"`, set by the engine to whether the neighbour on
-    /// that side accepts the rule. Nothing else goes with it. Only for
-    /// blocks, once per block.
+    /// What the block connects to its neighbours by: a rule's name, or
+    /// `true` for a conduit, which connects by its network kind and group.
+    /// The property becomes six: `north`, `south`, `east`, `west`, `up` and
+    /// `down`, each `"false"` or `"true"`, set by the engine to whether the
+    /// neighbour on that side accepts it. Nothing else goes with it. Only
+    /// for blocks, once per block.
     #[serde(default)]
-    pub connections: Option<String>,
+    pub connections: Option<ConnectionsDef>,
+}
+
+/// What a `connections` property connects by.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectionsDef {
+    /// A rule, by name: blocks with the same rule join.
+    Rule(String),
+    /// `true`: the block's `conduit` says, by its network kind and group.
+    Conduit,
 }
 
 /// How a property is set when the block is placed: `"face"` or `"look"`,
@@ -305,6 +315,47 @@ pub struct BlockDef {
     /// The category its item is listed under in the inventory.
     #[serde(default)]
     pub category: Option<String>,
+    /// It's part of a network: a wire, pipe or tube.
+    #[serde(default)]
+    pub conduit: Option<ConduitDef>,
+}
+
+/// A block's `conduit`: the network kind it carries, and how much.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ConduitDef {
+    /// The network kind, such as `"electric"` (`networks/electric.json5`).
+    pub network: String,
+    /// Conduits with a group join only conduits of the same group, and
+    /// those without one only others without: coloured cables side by
+    /// side. `{property}` is filled per state.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// What one of it holds, in the solver's units.
+    pub capacity: Attribute,
+    /// What it passes on a second, in the solver's units.
+    pub throughput: Attribute,
+}
+
+/// `networks/<name>.json5`: a kind of network conduits form.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkDef {
+    pub name: String,
+    /// The engine's solver that runs it.
+    pub solver: Solver,
+}
+
+/// The engine's network solvers.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Solver {
+    /// Energy: producers, consumers and storage (#112).
+    Energy,
+    /// One shared tank of one fluid (#113).
+    Fluid,
+    /// Items moved between machines (#120).
+    Item,
 }
 
 /// How a fluid flows and what it's like to be in. Amounts are in blocks: 1
@@ -536,6 +587,10 @@ trait Forms: Sized {
             &Self::EXPECTING,
         ))
     }
+
+    fn from_bool<E: de::Error>(value: bool) -> Result<Self, E> {
+        Err(E::invalid_type(Unexpected::Bool(value), &Self::EXPECTING))
+    }
 }
 
 struct FormsVisitor<T>(PhantomData<T>);
@@ -563,6 +618,10 @@ impl<'de, T: Forms> Visitor<'de> for FormsVisitor<T> {
         T::from_u64(value)
     }
 
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<T, E> {
+        T::from_bool(value)
+    }
+
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<T, A::Error> {
         T::from_seq(seq)
     }
@@ -588,7 +647,8 @@ deserialize_forms!(
     Condition,
     OneOrMany,
     Attribute,
-    PlaceDef
+    PlaceDef,
+    ConnectionsDef
 );
 
 fn seq<'de, T: Deserialize<'de>, A: SeqAccess<'de>>(seq: A) -> Result<T, A::Error> {
@@ -685,5 +745,21 @@ impl Forms for PlaceDef {
             from: spec.from,
             values: spec.values,
         })
+    }
+}
+
+impl Forms for ConnectionsDef {
+    const EXPECTING: &'static str = "a rule's name, or `true` for a conduit";
+
+    fn from_str<E: de::Error>(value: &str) -> Result<Self, E> {
+        Ok(ConnectionsDef::Rule(value.into()))
+    }
+
+    fn from_bool<E: de::Error>(value: bool) -> Result<Self, E> {
+        if value {
+            Ok(ConnectionsDef::Conduit)
+        } else {
+            Err(E::invalid_value(Unexpected::Bool(value), &Self::EXPECTING))
+        }
     }
 }

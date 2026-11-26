@@ -27,6 +27,7 @@
 //! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). Like any edit, it's followed by the engine setting connection properties, so `pipe` joins the pipes next to it. |
 //! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
+//! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to; or `none`. |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
@@ -237,6 +238,7 @@ pub enum Command {
         amount: f32,
     },
     Fluids,
+    Network(IVec3),
     Camera {
         position: Vec3,
         /// Degrees left of north.
@@ -378,6 +380,14 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             expect(0)?;
             commands.push(Command::Fluids);
         }
+        "network" => {
+            expect(3)?;
+            commands.push(Command::Network(IVec3::new(
+                parse_number(args[0])?,
+                parse_number(args[1])?,
+                parse_number(args[2])?,
+            )));
+        }
         "camera" => {
             expect(5)?;
             commands.push(Command::Camera {
@@ -441,6 +451,8 @@ struct ScriptRunner {
     timing: bool,
     /// Whether a `fluids` report is due at the end of this frame.
     fluid_report: bool,
+    /// `network` reports due at the end of this frame.
+    network_reports: Vec<IVec3>,
     /// Wall-clock frame times since the last `timing`.
     frame_times: Vec<Duration>,
     /// Captures requested but not yet delivered by the renderer.
@@ -466,6 +478,7 @@ impl ScriptRunner {
             && self.world_commands.is_empty()
             && !self.timing
             && !self.fluid_report
+            && self.network_reports.is_empty()
     }
 }
 
@@ -650,6 +663,7 @@ fn run_script(
                 runner.world_commands.push(command)
             }
             Command::Fluids => runner.fluid_report = true,
+            Command::Network(pos) => runner.network_reports.push(pos),
             Command::Type(text) => {
                 for character in text.chars() {
                     let key_code = key_for(character);
@@ -887,6 +901,15 @@ fn fluid_report(world: &mut World) -> String {
     line
 }
 
+/// The `network` report for the conduit at `pos`.
+fn network_report(world: &World, pos: IVec3) -> String {
+    crate::network::describe(
+        world.resource::<crate::network::Networks>(),
+        world.resource::<Content>(),
+        pos,
+    )
+}
+
 fn place_camera(
     In((position, yaw, pitch)): In<(Vec3, f32, f32)>,
     mut cameras: Query<(
@@ -965,6 +988,9 @@ fn observe(world: &mut World) {
     }
     if std::mem::take(&mut world.resource_mut::<ScriptRunner>().fluid_report) {
         println!("[frame {frame}] {}", fluid_report(world));
+    }
+    for pos in std::mem::take(&mut world.resource_mut::<ScriptRunner>().network_reports) {
+        println!("[frame {frame}] {}", network_report(world, pos));
     }
     for name in inspections {
         match inspect(world, &name) {
@@ -1302,6 +1328,7 @@ mod tests {
              settle\n\
              pour 4 -5 6 water 0.25\n\
              fluids\n\
+             network 1 -2 3\n\
              type  Iron ore 2 \n",
         )
         .unwrap();
@@ -1338,6 +1365,7 @@ mod tests {
                     amount: 0.25,
                 },
                 Command::Fluids,
+                Command::Network(IVec3::new(1, -2, 3)),
                 Command::Type("Iron ore 2".into()),
             ]
         );
@@ -1352,6 +1380,7 @@ mod tests {
         assert!(Script::parse("wait").is_err());
         assert!(Script::parse("wait soon").is_err());
         assert!(Script::parse("grain 3").is_err());
+        assert!(Script::parse("network 1 2").is_err());
         assert!(Script::parse("fill 1 2 3 4 5 6").is_err());
         assert!(Script::parse("fill 1 2 3 4 5 x stone").is_err());
         assert!(Script::parse("camera 1 2 3 4").is_err());
@@ -1648,6 +1677,37 @@ mod tests {
             .collect();
         assert_eq!(row.iter().map(|&a| a as u32).sum::<u32>(), 1000, "{row:?}");
         assert!(row.iter().filter(|&&a| a > 0).count() >= 7, "{row:?}");
+    }
+
+    /// The `network` report: pipes `fill` puts down form one network, a
+    /// wire beside them another, and a voxel with no conduit has none.
+    #[test]
+    fn the_network_report_describes_the_conduits_network() {
+        let (mut app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 54 20 50 pipe\n\
+             fill 52 21 50 52 22 50 pipe\n\
+             fill 50 20 51 53 20 51 wire\n\
+             wait 1\n\
+             network 52 22 50\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let world = app.world_mut();
+        let pipes = network_report(world, IVec3::new(50, 20, 50));
+        assert!(pipes.starts_with("network at 50 20 50: #"), "{pipes}");
+        assert!(
+            pipes.contains(" defaria:fluid (Fluid), 7 conduits, 1 chunk, capacity 3.5, running"),
+            "{pipes}"
+        );
+        let wires = network_report(world, IVec3::new(53, 20, 51));
+        assert!(
+            wires.contains(" defaria:electric (Energy), 4 conduits"),
+            "{wires}"
+        );
+        assert_eq!(
+            network_report(world, IVec3::new(50, 21, 50)),
+            "network at 50 21 50: none"
+        );
     }
 
     /// The `fluids` report counts each fluid in the loaded world: deep

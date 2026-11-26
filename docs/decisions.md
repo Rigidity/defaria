@@ -3,6 +3,78 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Networks follow connection properties, live only in loaded chunks, and split by search (2026-11-26)
+
+**Context.** Conduits (wires, pipes, tubes) form networks (#111) that
+the solvers (#112 energy, #113 fluid, #120 items) run. The networks
+must stay right as blocks change and chunks load and unload, and what a
+network holds (fluid, energy, items) mustn't be made or lost as it
+merges and splits.
+
+**Decision.** A conduit is a block with a `conduit` (network kind,
+optional group, capacity and throughput as attributes). Its connection
+rule is derived from it (`connections: true`): two conduits join when
+they're on the same kind and group, decided in `Content::accepts`, with
+`Content::has_port` as the empty hook machine ports (#114) fill in. The
+`network` module doesn't decide joins itself: a conduit's six edges are
+read from its connection properties (joined to a conduit joined back is
+a link; joined into an unloaded chunk is open; joined to anything else is
+a port), so anything that changes the sides, like a wrench (#121),
+changes the networks. `Networks` (a resource) is updated in `Update`
+after the connection properties, for the voxels around every edit and
+property update and for chunks that load or unload. A new link merges
+the two networks, smaller into larger. A lost link or conduit starts a
+search from each conduit that lost a link, all in step; a search that
+runs dry without meeting another is a separate part and moves to a new
+network, and the last search left keeps the id unexplored. A network
+with an open face is frozen. Networks are rebuilt from chunks as they
+load; nothing is saved. Solvers keep per-network state in a
+`NetworkMap<T>`, which applies the `NetworkChanged` messages (merged;
+split into parts with each part's share, plus the share of the conduits
+lost) right after the networks update; `divide_by_share` divides whole
+units exactly, by capacity (or by count where nothing has capacity).
+
+**What's wrong with it.** Breaking the middle of a long line searches
+both halves: about 2 ms for a 20,000-pipe line (measured in a test
+build), which is fine for anything a player builds by hand but grows
+with the network. A whole chunk unloading moves each conduit in it
+separately. When a chunk unloads, what its conduits held is handed to
+the solvers as the lost share (`removed`), and nothing keeps it for when
+the chunk loads again, so a solver that holds amounts in conduits must
+save them itself (in block entities, #109) or accept the loss; frozen
+networks keep their own share. Every network a new conduit makes is
+merged at once, so loading a chunk full of conduits makes and merges a
+network per conduit (about 1 µs each). Ports are any joined face that
+isn't a link, with nothing about what the machine does there. A
+conduit's item icon is drawn from its default state, joined nowhere, so
+it's only the core: a wire's is a dot, a pipe's and a tube's a grey
+cube. Deferred: an icon state per item (a straight run, say), or icons
+drawn from the item's own model.
+
+Each solver works out its networks' weakest conduit itself, when the
+networks change: energy (`find_limits`, #112), items (`measure_rates`,
+#120) and fluid (`FluidLimits`, #113), each with its own copy of the
+lookup from a position to its chunk's voxel, as do other systems that
+read voxels by position. Deferred: one helper in `network` giving a
+network's least of a conduit attribute (throughput, `max_temperature`),
+kept per network until the networks change, for all three, and one
+shared voxel lookup. Any change to the networks also has each of those,
+and the index of machine ports (`index_ports`, #114), work out every
+network again, however few changed: a lookup per conduit or port in the
+loaded world per change. Deferred too: a set of the networks each
+change touched (from its `NetworkChanged` messages and the voxels it
+changed), so each refresh redoes only those.
+
+**What should replace it.** If searches get slow, keep a spanning
+forest (a dynamic connectivity structure) so most breaks are found
+without a search, or spread a search over frames with the network frozen
+meanwhile. Unloading should hand the unloaded share to block entities
+and loading take it back, or networks should run unloaded as numbers
+(#123). Ports get roles and rates from machine definitions (#114).
+
+**When to revisit.** When the solvers land (#112, #113, #120), if a
+break or a chunk load shows in frame times, and with #123.
+
 ## Connections are block states, matched by rule name (2026-11-26)
 
 **Context.** Pipes and wires join whatever is next to them that they can

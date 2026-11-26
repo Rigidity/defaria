@@ -20,6 +20,7 @@ mod hotbar;
 pub mod inventory;
 mod light;
 mod mining;
+pub mod network;
 mod perlin;
 mod physics;
 mod player;
@@ -68,6 +69,7 @@ impl Plugin for GamePlugin {
             fluid::FluidPlugin,
             game_mode::GameModePlugin,
             connections::ConnectionsPlugin,
+            network::NetworkPlugin,
         ));
     }
 }
