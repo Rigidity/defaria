@@ -11,14 +11,15 @@
 //!
 //! Only the [`MAX_DYNAMIC_LIGHTS`] nearest the camera are drawn.
 //!
-//! The player carries one: [`PlayerLight`], on the fly camera. L switches it
-//! on and off.
+//! The player carries one: [`PlayerLight`], a child of the local player at
+//! eye height. L switches it on and off.
 
 use bevy::prelude::*;
 
 use crate::{
-    fly_camera::FlyCamera,
+    fly_camera::EyeView,
     light::SkyLight,
+    player::{EYE_HEIGHT, LocalPlayer},
     voxel_material::{
         BlockMaterial, GpuDynamicLight, LightingUniform, MAX_DYNAMIC_LIGHTS, VoxelMaterial,
     },
@@ -59,13 +60,17 @@ pub struct DynamicLight {
 #[reflect(Component)]
 pub struct PlayerLight;
 
-fn give_the_player_a_light(add: On<Add<FlyCamera>>, mut commands: Commands) {
-    commands.entity(add.entity).insert((
+/// The local player carries a light, held at eye height.
+fn give_the_player_a_light(add: On<Add<LocalPlayer>>, mut commands: Commands) {
+    commands.spawn((
+        Name::new("Player Light"),
         PlayerLight,
         DynamicLight {
             levels: PLAYER_LIGHT,
             on: true,
         },
+        Transform::from_xyz(0.0, EYE_HEIGHT as f32, 0.0),
+        ChildOf(add.entity),
     ));
 }
 
@@ -85,7 +90,7 @@ fn toggle_player_light(
 fn update_lighting(
     sky: Res<SkyLight>,
     lights: Query<(&DynamicLight, &GlobalTransform)>,
-    camera: Query<&GlobalTransform, With<FlyCamera>>,
+    camera: Query<&GlobalTransform, With<EyeView>>,
     block: Res<BlockMaterial>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
 ) {
@@ -237,14 +242,20 @@ mod tests {
     fn the_player_carries_a_light_that_l_toggles() {
         let mut app = app();
         let at = Vec3::new(3.0, 40.0, -7.0);
+        app.world_mut().spawn(crate::player::tests::local_player_at(
+            Transform::from_translation(at),
+        ));
+        app.update();
         let player = app
             .world_mut()
-            .spawn((FlyCamera::default(), Transform::from_translation(at)))
-            .id();
-        app.update();
+            .query_filtered::<Entity, With<PlayerLight>>()
+            .single(app.world())
+            .unwrap();
         let drawn = |app: &App| lighting(app).dynamic_count;
         assert_eq!(drawn(&app), 1);
-        assert_eq!(lighting(&app).dynamic[0].position, at.extend(0.0));
+        // Held at the eyes.
+        let position = lighting(&app).dynamic[0].position;
+        assert!(position.distance(at.extend(0.0)) < 1e-4, "{position}");
         assert_eq!(lighting(&app).dynamic[0].levels, PLAYER_LIGHT.extend(0.0));
         let on = |app: &App| app.world().get::<DynamicLight>(player).unwrap().on;
         assert!(on(&app), "the player's light starts on");

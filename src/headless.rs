@@ -123,12 +123,11 @@ use crate::{
     block_entity::BlockEntities,
     content::{BlockState, Content, FULL_FLUID, ItemState, StateName},
     fluid::FluidStats,
-    fly_camera::{FlyCamera, MAX_PITCH},
     fog::ChunkFog,
     hotbar::{ActiveSlot, Hotbar},
     machine::{Slots, Tanks},
     physics::Body,
-    player::{EYE_HEIGHT, LocalPlayer, Player},
+    player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player, put_eyes},
     script::random_tick::RandomTicks,
     streaming::StreamingStatus,
     view_bob::ViewBob,
@@ -1176,28 +1175,37 @@ fn network_report(world: &World, pos: IVec3) -> String {
     line
 }
 
+/// Puts the local player's eyes at `position`, looking along `yaw` and
+/// `pitch`, flying, so the view stays put.
 fn place_camera(
     In((position, yaw, pitch)): In<(Vec3, f32, f32)>,
-    mut cameras: Query<(
-        &mut FlyCamera,
-        &mut Transform,
-        Option<(&mut Player, &mut Body, &mut ViewBob)>,
-    )>,
+    mut players: Query<
+        (
+            &mut Look,
+            &mut Transform,
+            &mut Player,
+            &mut Body,
+            Option<&mut ViewBob>,
+        ),
+        With<LocalPlayer>,
+    >,
 ) -> Result<(), String> {
-    let (mut camera, mut transform, player) = cameras
+    let (mut look, mut transform, mut player, mut body, bob) = players
         .single_mut()
         .map_err(|error| format!("camera: {error}"))?;
-    camera.yaw = yaw.to_radians();
-    camera.pitch = pitch.to_radians().clamp(-MAX_PITCH, MAX_PITCH);
-    *transform = Transform::from_translation(position).with_rotation(camera.rotation());
-    // The player's eyes go there, flying, so the view stays put.
-    if let Some((mut player, mut body, mut bob)) = player {
-        player.flying = true;
-        player.eye_height = EYE_HEIGHT;
-        player.previous_eye_height = EYE_HEIGHT;
+    // The body turns to face the look as the frame is drawn.
+    *look = Look {
+        yaw: yaw.to_radians(),
+        pitch: pitch.to_radians().clamp(-MAX_PITCH, MAX_PITCH),
+    };
+    player.flying = true;
+    player.eye_height = EYE_HEIGHT;
+    player.previous_eye_height = EYE_HEIGHT;
+    player.drawn_eye_height = EYE_HEIGHT;
+    if let Some(mut bob) = bob {
         bob.settle();
-        body.teleport(position.as_dvec3() - bevy::math::DVec3::Y * EYE_HEIGHT);
     }
+    put_eyes(position.as_dvec3(), EYE_HEIGHT, &mut body, &mut transform);
     Ok(())
 }
 
@@ -1582,6 +1590,7 @@ mod tests {
     use crate::{
         fly_camera::FlyCamera,
         light::{ChunkLight, Light},
+        player::eyes,
         world::{ChunkCoord, ChunkMap},
     };
 
@@ -1738,7 +1747,10 @@ mod tests {
         }
         assert_eq!(light_at(&mut app, IVec3::new(52, 22, 52)).sky(), 0);
         let (camera, transform) = camera(&mut app);
-        assert_eq!(transform.translation, Vec3::new(55.5, 26.5, 52.0));
+        assert!(
+            transform.translation.distance(Vec3::new(55.5, 26.5, 52.0)) < 1e-4,
+            "{transform:?}"
+        );
         assert!((camera.yaw - std::f32::consts::PI).abs() < 1e-5);
         assert!((camera.pitch + 10f32.to_radians()).abs() < 1e-5);
         // Yaw 180 faces south (+Z), at the lamp.
@@ -2364,10 +2376,10 @@ mod tests {
         let moved = end_transform.translation - Vec3::new(64.5, 62.0, 92.5);
         assert!((-5.5..-4.6).contains(&moved.z), "{moved}");
         assert!(moved.x.abs() < 1e-3 && moved.y.abs() < 1e-3, "{moved}");
-        // Moving the mouse 100px right turns the camera right.
+        // Moving the mouse 100px right turns the player right.
         let turned = end_camera.yaw;
         assert!(
-            (turned + 100.0 * end_camera.sensitivity).abs() < 1e-5,
+            (turned + 100.0 * FlyCamera::default().sensitivity).abs() < 1e-5,
             "{turned}"
         );
     }
@@ -2406,7 +2418,26 @@ mod tests {
         let view = world.entity(cameras[0]);
         assert!(view.contains::<EyeView>());
         let parent = view.get::<ChildOf>().expect("a child").parent();
-        assert!(world.entity(parent).contains::<FlyCamera>());
+        let camera = world.entity(parent);
+        assert!(camera.contains::<FlyCamera>());
+        // The camera is a child of the local player, drawn at its eyes.
+        let player = camera.get::<ChildOf>().expect("a child").parent();
+        let player = world.entity(player);
+        assert!(player.contains::<LocalPlayer>());
+        let eyes = eyes(
+            player.get::<Transform>().unwrap(),
+            player.get::<Player>().unwrap(),
+            player.get::<Look>().unwrap(),
+        );
+        let drawn = camera.get::<GlobalTransform>().unwrap().compute_transform();
+        assert!(
+            drawn.translation.distance(eyes.translation) < 1e-4,
+            "{drawn:?} {eyes:?}"
+        );
+        assert!(
+            drawn.rotation.angle_between(eyes.rotation) < 1e-4,
+            "{drawn:?} {eyes:?}"
+        );
         let Some(Projection::Perspective(projection)) = view.get::<Projection>() else {
             panic!("not a perspective projection");
         };
@@ -2419,7 +2450,40 @@ mod tests {
         assert_eq!(view.get::<DebandDither>(), Some(&DebandDither::Disabled));
     }
 
-    /// `camera` puts the eyes exactly where it says, level, even straight
+    /// End to end, the eye view the game draws through sways as the player
+    /// walks and widens as it sprints.
+    #[test]
+    fn walking_sways_and_sprinting_widens_the_eye_view() {
+        use crate::fly_camera::{EyeView, FOV};
+
+        let mut app = play(
+            "fill 56 50 84 72 50 100 stone\n\
+             camera 64.5 52.7 92.5 0 0\n\
+             hold ShiftLeft 40  # down onto the stone\n\
+             wait 10\n\
+             press KeyW\n\
+             press KeyF\n\
+             wait 40\n",
+        );
+        let world = app.world_mut();
+        let player = world
+            .query_filtered::<&Player, With<LocalPlayer>>()
+            .single(world)
+            .unwrap();
+        assert!(!player.flying && player.sprinting, "{player:?}");
+        let (sway, projection) = world
+            .query_filtered::<(&Transform, &Projection), With<EyeView>>()
+            .single(world)
+            .unwrap();
+        assert_ne!(*sway, Transform::IDENTITY);
+        let Projection::Perspective(projection) = projection else {
+            panic!("not a perspective projection");
+        };
+        let fov = projection.fov.to_degrees();
+        assert!(fov > FOV * 1.1, "{fov}");
+    }
+
+    /// `camera` puts the eyes where it says (to within f32 rounding), level, even straight
     /// after sneaking along the ground (lower eyes, a swaying view).
     #[test]
     fn camera_resets_sneaking_eyes_and_the_sway() {
@@ -2606,12 +2670,13 @@ mod tests {
         );
     }
 
-    fn camera(app: &mut App) -> (FlyCamera, Transform) {
-        let (camera, transform) = app
+    /// The local player's look, and its eyes.
+    fn camera(app: &mut App) -> (Look, Transform) {
+        let (transform, player, look) = app
             .world_mut()
-            .query::<(&FlyCamera, &Transform)>()
+            .query_filtered::<(&Transform, &Player, &Look), With<LocalPlayer>>()
             .single(app.world())
             .unwrap();
-        (camera.clone(), *transform)
+        (*look, eyes(transform, player, look))
     }
 }

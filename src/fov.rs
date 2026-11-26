@@ -89,25 +89,29 @@ fn ease_widening(time: Res<Time>, mut players: Query<(&Player, &mut Widening)>) 
     }
 }
 
-/// Sets each player's eye view's field of view, between the last two
+/// Sets each eye view's field of view from the player it's the eyes of
+/// (its nearest ancestor with a [`Widening`]), between the last two
 /// physics steps.
 fn widen_the_view(
     time: Res<Time<Fixed>>,
-    players: Query<(&Widening, &Children)>,
-    mut views: Query<&mut Projection, With<EyeView>>,
+    players: Query<&Widening>,
+    parents: Query<&ChildOf>,
+    mut views: Query<(Entity, &mut Projection), With<EyeView>>,
 ) {
     let fraction = time.overstep_fraction_f64();
-    for (widening, children) in &players {
-        for &child in children {
-            if let Ok(mut projection) = views.get_mut(child)
-                && let Projection::Perspective(perspective) = &mut *projection
-            {
-                let fov = widening.fov(fraction);
-                // Only on a change, so the camera isn't marked changed
-                // every frame.
-                if perspective.fov != fov {
-                    perspective.fov = fov;
-                }
+    for (view, mut projection) in &mut views {
+        let Some(widening) = parents
+            .iter_ancestors(view)
+            .find_map(|ancestor| players.get(ancestor).ok())
+        else {
+            continue;
+        };
+        if let Projection::Perspective(perspective) = &mut *projection {
+            let fov = widening.fov(fraction);
+            // Only on a change, so the camera isn't marked changed
+            // every frame.
+            if perspective.fov != fov {
+                perspective.fov = fov;
             }
         }
     }
@@ -116,7 +120,10 @@ fn widen_the_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::tests::{FRAME, app, floor, hold, run, spawn};
+    use crate::{
+        fly_camera::give_the_player_a_camera,
+        player::tests::{FRAME, app, floor, hold, run, spawn},
+    };
     use bevy::math::DVec3;
 
     fn fov(app: &App, view: Entity) -> f32 {
@@ -128,19 +135,15 @@ mod tests {
 
     fn setup() -> (App, Entity, Entity) {
         let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
-        app.add_plugins(FovPlugin);
+        app.add_plugins(FovPlugin)
+            .add_observer(give_the_player_a_camera);
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        // The eye view the game gives the local player, under its camera.
         let view = app
             .world_mut()
-            .spawn((
-                EyeView,
-                Projection::Perspective(PerspectiveProjection {
-                    fov: FOV.to_radians(),
-                    ..default()
-                }),
-                ChildOf(player),
-            ))
-            .id();
+            .query_filtered::<Entity, With<EyeView>>()
+            .single(app.world())
+            .unwrap();
         (app, player, view)
     }
 

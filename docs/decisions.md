@@ -3,6 +3,34 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## The player looks with yaw and pitch on itself; the camera only follows (2026-11-26)
+
+**Decision.** The player is its own entity (#67). Its `Transform` is at
+its feet and turned by the yaw; both yaw and pitch live in its `Look`,
+and gameplay aims from its `Eyes` (feet plus the drawn eye height,
+looking along the `Look`). The camera (`FlyCamera`) is a child at eye
+height that copies the pitch, with the swaying, widening `EyeView` under
+it. The mouse turns the `Look` of the player the camera belongs to, so
+first-person look is still the camera module's input. The usual
+split, with pitch kept only on the camera, would make aiming depend on
+the camera, so a spectator or third-person camera couldn't exist without
+the player losing where it looks. Mobs need a head pitch anyway.
+
+Movement reads `Controls` rather than the keys, and only the local
+player's come from the keys, so another body walks with the same
+physics from its own.
+
+The chunk loader and the held light are children of the player at
+`EYE_HEIGHT`, not on the player at its feet: loading from the feet put
+the loaded levels one chunk lower whenever the feet and eyes were in
+different chunks, which changed what scenarios showed. They don't follow
+the eyes down while sneaking (0.35 blocks), which doesn't matter yet.
+
+**Revisit** when there's a second camera mode (third person, spectator)
+or other players: a camera that isn't the player's eyes should take its
+pitch from wherever it's pointed, not the `Look`, and the mouse input
+then belongs to a controller rather than the camera module.
+
 ## Chunk storage: uniform chunks hold one value; voxels are still found by hash (2026-11-26)
 
 **Context.** Measured (#71) with `scenarios/chunk-storage.txt` at the default

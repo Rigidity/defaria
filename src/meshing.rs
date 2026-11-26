@@ -27,9 +27,9 @@ use bevy::{
 
 use crate::{
     content::Content,
-    fly_camera::FlyCamera,
     light::ChunkLight,
     perlin::splitmix64,
+    player::{Eyes, LocalPlayer},
     voxel_material::{BlockMaterial, VoxelMaterial},
     world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap},
 };
@@ -208,7 +208,7 @@ pub struct ChunkParts {
     pub translucent: Entity,
 }
 
-/// Where the camera was, in its chunk-local [`TranslucentFaces`] sort's
+/// Where the eyes were, in its chunk-local [`TranslucentFaces`] sort's
 /// steps, when a translucent mesh's faces were last put in order. `None`
 /// until they first are.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
@@ -286,7 +286,7 @@ fn show_mesh(
     }
 }
 
-/// How far, in blocks, the camera can move before a translucent mesh this
+/// How far, in blocks, the eyes can move before a translucent mesh this
 /// far away is sorted again: every block nearby, where the order changes
 /// most, and every chunk farther out.
 fn sort_step(distance: f32) -> i32 {
@@ -297,7 +297,7 @@ fn sort_step(distance: f32) -> i32 {
     }
 }
 
-/// Where the camera is, chunk-local (`eye`), rounded to the steps a
+/// Where the eyes are, chunk-local (`eye`), rounded to the steps a
 /// translucent mesh is sorted at (see [`sort_step`]). Far chunks' steps are
 /// staggered by chunk, so crossing a chunk border doesn't sort every one of
 /// them on the same frame.
@@ -311,19 +311,24 @@ fn sort_position(eye: Vec3, coord: ChunkCoord) -> IVec3 {
     ((eye.floor().as_ivec3() + offset).div_euclid(IVec3::splat(step)) * step) - offset
 }
 
-/// Puts each translucent mesh's faces in order, farthest from the camera
-/// first, when it's new or the camera has moved far enough (see
-/// [`sort_position`]). Only the indices change. A mesh whose faces all lie
-/// in one plane (open water) never needs it.
+/// Puts each translucent mesh's faces in order, farthest from the local
+/// player's eyes first, when it's new or the eyes have moved far enough
+/// (see [`sort_position`]). Only the indices change. A mesh whose faces all
+/// lie in one plane (open water) never needs it.
+///
+/// From the eyes, which are where they are this frame by `Update`, rather
+/// than the drawn view, whose transform is a frame old here and sways with
+/// each step: swaying across a sort boundary would sort again every step.
 fn sort_translucent_faces(
-    camera: Query<&Transform, With<FlyCamera>>,
+    eyes: Query<Eyes, With<LocalPlayer>>,
     mut parts: Query<(&TranslucentFaces, &Mesh3d, &ChildOf, &mut SortedFrom)>,
     coords: Query<&ChunkCoord>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Ok(camera) = camera.single() else {
+    let Ok(eyes) = eyes.single() else {
         return;
     };
+    let eyes = eyes.transform().translation;
     for (faces, mesh, parent, mut sorted) in &mut parts {
         if !faces.needs_sorting() {
             continue;
@@ -331,7 +336,7 @@ fn sort_translucent_faces(
         let Ok(coord) = coords.get(parent.parent()) else {
             continue;
         };
-        let eye = camera.translation - coord.origin().as_vec3();
+        let eye = eyes - coord.origin().as_vec3();
         let at = sort_position(eye, *coord);
         if sorted.0 == Some(at) {
             continue;

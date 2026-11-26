@@ -10,8 +10,8 @@
 //! player's position.
 //!
 //! The sway moves the [`EyeView`], the camera that draws the view, and not
-//! the [`FlyCamera`] it's a child of, so it never changes what the player
-//! aims at or where the world loads.
+//! the player or its eyes, so it never changes what the player aims at or
+//! where the world loads.
 
 use std::f64::consts::PI;
 
@@ -117,18 +117,21 @@ fn count_steps(time: Res<Time>, mut players: Query<(&Body, &mut ViewBob)>) {
     }
 }
 
-/// Sways each player's eye view, between the last two physics steps.
+/// Sways each eye view by the player it's the eyes of (its nearest
+/// ancestor with a [`ViewBob`]), between the last two physics steps.
 fn sway_the_view(
     time: Res<Time<Fixed>>,
-    players: Query<(&ViewBob, &Children)>,
-    mut views: Query<&mut Transform, With<EyeView>>,
+    players: Query<&ViewBob>,
+    parents: Query<&ChildOf>,
+    mut views: Query<(Entity, &mut Transform), With<EyeView>>,
 ) {
     let fraction = time.overstep_fraction_f64();
-    for (bob, children) in &players {
-        for &child in children {
-            if let Ok(mut view) = views.get_mut(child) {
-                *view = bob.sway(fraction);
-            }
+    for (view, mut transform) in &mut views {
+        if let Some(bob) = parents
+            .iter_ancestors(view)
+            .find_map(|ancestor| players.get(ancestor).ok())
+        {
+            *transform = bob.sway(fraction);
         }
     }
 }
@@ -137,9 +140,18 @@ fn sway_the_view(
 mod tests {
     use super::*;
     use crate::{
+        fly_camera::give_the_player_a_camera,
         physics::STEP,
         player::tests::{FRAME, app, floor, hold, run, spawn},
     };
+
+    /// The [`EyeView`] the game gives the local player, under its camera.
+    fn eye_view(app: &mut App) -> Entity {
+        app.world_mut()
+            .query_filtered::<Entity, With<EyeView>>()
+            .single(app.world())
+            .unwrap()
+    }
 
     /// Standing still, nothing sways.
     #[test]
@@ -211,9 +223,10 @@ mod tests {
         assert_eq!(bob.sway(0.5), sway(0.3, 0.075));
 
         let mut app = app(IVec3::new(8, 8, 8), STEP / 2, floor(4));
-        app.add_plugins(ViewBobPlugin);
+        app.add_plugins(ViewBobPlugin)
+            .add_observer(give_the_player_a_camera);
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
-        let view = app.world_mut().spawn((EyeView, ChildOf(player))).id();
+        let view = eye_view(&mut app);
         hold(&mut app, &[KeyCode::KeyW]);
         run(&mut app, 0.5);
         let mut halfway = 0;
@@ -235,9 +248,10 @@ mod tests {
     #[test]
     fn walking_sways_and_stopping_settles() {
         let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
-        app.add_plugins(ViewBobPlugin);
+        app.add_plugins(ViewBobPlugin)
+            .add_observer(give_the_player_a_camera);
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
-        let view = app.world_mut().spawn((EyeView, ChildOf(player))).id();
+        let view = eye_view(&mut app);
         run(&mut app, 0.2);
         let sway = |app: &App| *app.world().get::<Transform>(view).unwrap();
         assert_eq!(sway(&app), Transform::IDENTITY);
@@ -250,11 +264,12 @@ mod tests {
         assert!((1.5..2.6).contains(&bob.walked), "{bob:?}");
         assert_ne!(sway(&app), Transform::IDENTITY);
         // The eyes, which the player aims from, don't sway.
-        let eyes = *app.world().get::<Transform>(player).unwrap();
+        let eyes = crate::player::tests::eye(&app, player);
         let body = app.world().get::<Body>(player).unwrap();
         let expected = (body.previous + DVec3::Y * crate::player::EYE_HEIGHT).as_vec3();
-        assert!(eyes.translation.distance(expected) < 1e-5, "{eyes:?}");
-        assert_eq!(eyes.rotation, Quat::IDENTITY);
+        assert!(eyes.distance(expected) < 1e-5, "{eyes:?}");
+        let look = *app.world().get::<crate::player::Look>(player).unwrap();
+        assert_eq!(look, crate::player::Look::default());
 
         hold(&mut app, &[]);
         run(&mut app, 1.0);

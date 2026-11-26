@@ -20,11 +20,11 @@ use super::{BlockUsed, ItemUsed, ScriptIndex, api::PlayerView};
 use crate::{
     block_edit::{BlockEditSystems, BlockUseSystems, crosshair_target},
     content::{Content, Direction},
-    fly_camera::{FlyCamera, FlyCameraSystems},
+    fly_camera::FlyCameraSystems,
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     machine::screen::open_machine_screen,
-    player::{LocalPlayer, Player},
+    player::{Eyes, LocalPlayer, Player},
     ui::playing,
     world::Voxels,
     wrench::use_wrench,
@@ -80,7 +80,7 @@ pub(crate) fn use_scripted_block(
     // Left out in apps without input, such as the scripts' tests.
     mouse: Option<ResMut<ButtonInput<MouseButton>>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    camera: Single<&Transform, With<FlyCamera>>,
+    eyes: Single<Eyes, With<LocalPlayer>>,
     player: Option<
         Single<
             (
@@ -98,6 +98,7 @@ pub(crate) fn use_scripted_block(
     voxels: Voxels,
     mut uses: MessageWriter<BlockUsed>,
 ) {
+    let camera = eyes.transform();
     let (Some(mut mouse), Some(player), Some(scripts)) = (mouse, player, scripts) else {
         return;
     };
@@ -131,7 +132,7 @@ pub(crate) fn use_scripted_item(
     // Left out in apps without input, such as the scripts' tests.
     mouse: Option<ResMut<ButtonInput<MouseButton>>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    camera: Single<&Transform, With<FlyCamera>>,
+    eyes: Single<Eyes, With<LocalPlayer>>,
     player: Option<
         Single<
             (
@@ -149,6 +150,7 @@ pub(crate) fn use_scripted_item(
     voxels: Voxels,
     mut uses: MessageWriter<ItemUsed>,
 ) {
+    let camera = eyes.transform();
     let (Some(mut mouse), Some(player), Some(scripts)) = (mouse, player, scripts) else {
         return;
     };

@@ -1,6 +1,7 @@
 use bevy::{ecs::system::RunSystemOnce, platform::collections::HashMap};
 
 use super::{testing::finish_meshing, *};
+use crate::player::tests::local_player_at;
 use crate::{
     content::{BlockState, base, block},
     world::{Voxels, WorldPlugin, spawn_chunk},
@@ -210,7 +211,7 @@ fn chunks_are_spawned_at_their_origin() {
 /// A chunk with see-through blocks draws them on two child entities,
 /// cut-out and translucent, each with its own material; most chunks
 /// have none. The translucent faces are sorted farthest first from the
-/// camera, and again when it moves far enough.
+/// eyes, and again when they move far enough.
 #[test]
 fn see_through_faces_draw_on_their_own_parts_sorted() {
     let mut app = App::new();
@@ -239,12 +240,11 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     // put the panes in the other order.
     let coord = ChunkCoord(IVec3::new(2, 0, -2));
     let origin = coord.origin();
-    let camera = app
+    let player = app
         .world_mut()
-        .spawn((
-            FlyCamera::default(),
-            Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, 30.0)),
-        ))
+        .spawn(local_player_at(Transform::from_translation(
+            origin.as_vec3() + Vec3::new(6.5, 2.5, 30.0),
+        )))
         .id();
     // A pond walled in with stone: its faces are all in one plane.
     let mut pond = Chunk::default();
@@ -320,11 +320,11 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
         positions[indices[0] as usize][2]
     };
     assert!(first_face_z(&app) < 4.0);
-    app.world_mut()
-        .get_mut::<Transform>(camera)
-        .unwrap()
-        .translation
-        .z = origin.z as f32 - 20.0;
+    crate::player::tests::put_eyes(
+        app.world_mut(),
+        player,
+        Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, -20.0)),
+    );
     app.update();
     assert!(first_face_z(&app) > 10.0);
 
@@ -338,7 +338,7 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
         app.update();
     };
     // An edit rebuilds the mesh in the order it's built in, south pane
-    // (z = 2) first; it's sorted again without the camera moving.
+    // (z = 2) first; it's sorted again without the eyes moving.
     set(&mut app, origin + IVec3::new(6, 2, 7), block("glass"));
     assert!(first_face_z(&app) > 10.0, "not sorted after an edit");
 
@@ -349,11 +349,11 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
         .world()
         .resource::<Messages<AssetEvent<Mesh>>>()
         .get_cursor_current();
-    app.world_mut()
-        .get_mut::<Transform>(camera)
-        .unwrap()
-        .translation
-        .z = origin.z as f32 - 19.7;
+    crate::player::tests::put_eyes(
+        app.world_mut(),
+        player,
+        Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, -19.7)),
+    );
     app.update();
     app.update();
     assert_eq!(
@@ -367,7 +367,7 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     );
 
     // Without glass, the translucent part draws nothing.
-    // The pond's surface never needed sorting, however the camera moved.
+    // The pond's surface never needed sorting, however the eyes moved.
     let pond = app.world().get::<ChunkParts>(water).unwrap().translucent;
     assert!(app.world().get::<Mesh3d>(pond).is_some());
     assert_eq!(app.world().get::<SortedFrom>(pond), Some(&SortedFrom(None)));
@@ -379,8 +379,8 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     assert!(app.world().get::<Mesh3d>(parts.cutout).is_some());
 }
 
-/// Nearby, a translucent mesh is sorted again each block the camera
-/// moves. Far away, each chunk every 16 blocks, but not all at the same
+/// Nearby, a translucent mesh is sorted again each block the eyes
+/// move. Far away, each chunk every 16 blocks, but not all at the same
 /// place, so crossing a line doesn't sort every far chunk on one frame.
 #[test]
 fn far_chunks_sort_at_staggered_places() {

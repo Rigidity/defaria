@@ -48,7 +48,6 @@ use crate::{
     block_edit::{BlockUseSystems, crosshair_target},
     block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content, Machine},
-    fly_camera::FlyCamera,
     game_mode::item_for_block,
     hotbar::hotbar_height,
     inventory::{
@@ -57,7 +56,7 @@ use crate::{
         list::{ItemList, ListEntry, ListSource, Owner, item_list},
         screen::{INVENTORY_ROWS, WeightLabel},
     },
-    player::LocalPlayer,
+    player::{Eyes, LocalPlayer},
     recipe::{RecipeProgress, RecipeStatus},
     ui::{
         Bar, ItemSlot, PointerTravel, Tooltip, UiScreen, UiTheme, bar, item_slot,
@@ -177,12 +176,13 @@ pub(crate) fn open_machine_screen(
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    camera: Single<&Transform, With<FlyCamera>>,
+    eyes: Single<Eyes, With<LocalPlayer>>,
     content: Res<Content>,
     voxels: Voxels,
     index: Res<BlockEntities>,
     theme: Res<UiTheme>,
 ) {
+    let camera = eyes.transform();
     // The click that locks the cursor uses nothing, as it places nothing.
     if cursor.grab_mode == CursorGrabMode::None || !mouse.just_pressed(MouseButton::Right) {
         return;

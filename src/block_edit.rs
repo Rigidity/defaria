@@ -28,13 +28,13 @@ use bevy::{
 
 use crate::{
     content::{BlockBox, BlockState, Content, Direction},
-    fly_camera::{FlyCamera, FlyCameraSystems},
+    fly_camera::FlyCameraSystems,
     game_mode::{GameMode, use_up},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     inventory::Inventory,
     meshing::RemeshChunks,
     physics::{Aabb, Body},
-    player::LocalPlayer,
+    player::{Eyes, LocalPlayer},
     ui::{UiScreen, playing},
     world::Voxels,
 };
@@ -249,7 +249,7 @@ pub fn crosshair_target(transform: &Transform, content: &Content, voxels: &Voxel
 fn edit_blocks(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    camera: Single<&Transform, With<FlyCamera>>,
+    eyes: Single<Eyes, With<LocalPlayer>>,
     player: Option<
         Single<
             (
@@ -265,6 +265,7 @@ fn edit_blocks(
     bodies: Query<&Body>,
     mut voxels: Voxels,
 ) {
+    let camera = eyes.transform();
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
@@ -313,10 +314,11 @@ fn edit_blocks(
 fn outline_target(
     mut gizmos: Gizmos,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    camera: Single<&Transform, With<FlyCamera>>,
+    eyes: Single<Eyes, With<LocalPlayer>>,
     content: Res<Content>,
     voxels: Voxels,
 ) {
+    let camera = eyes.transform();
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
@@ -648,14 +650,17 @@ mod tests {
             chunks[i] = entity;
         }
         // Looking along +X at block (14, 1, 5) from three blocks away.
-        app.world_mut().spawn((
-            FlyCamera::default(),
-            Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
-            LocalPlayer,
-            Inventory::new(),
-            hotbar,
-            ActiveSlot::default(),
-        ));
+        app.world_mut()
+            .spawn((
+                crate::player::tests::local_player_at(
+                    Transform::from_xyz(11.5, 1.5, 5.5).looking_to(Vec3::X, Vec3::Y),
+                ),
+                Inventory::new(),
+                hotbar,
+                ActiveSlot::default(),
+            ))
+            // Just eyes: a body would be in the way of blocks placed close by.
+            .remove::<Body>();
         (app, chunks[0], chunks[1])
     }
 
@@ -674,11 +679,10 @@ mod tests {
     }
 
     fn look_at(app: &mut App, from: Vec3, dir: Vec3) {
-        let mut camera = app
-            .world_mut()
-            .query_filtered::<&mut Transform, With<FlyCamera>>();
-        *camera.single_mut(app.world_mut()).unwrap() =
-            Transform::from_translation(from).looking_to(dir, Vec3::Y);
+        crate::player::tests::put_local_eyes(
+            app,
+            Transform::from_translation(from).looking_to(dir, Vec3::Y),
+        );
     }
 
     fn click(app: &mut App, button: MouseButton) {
@@ -802,10 +806,10 @@ mod tests {
             let from = (target + normal * 3).as_vec3() + Vec3::splat(0.5);
             let dir = (target.as_vec3() + Vec3::new(0.6, 0.55, 0.45) - from).normalize();
             let up = if normal.y == 0 { Vec3::Y } else { Vec3::Z };
-            *app.world_mut()
-                .query_filtered::<&mut Transform, With<FlyCamera>>()
-                .single_mut(app.world_mut())
-                .unwrap() = Transform::from_translation(from).looking_to(dir, up);
+            crate::player::tests::put_local_eyes(
+                &mut app,
+                Transform::from_translation(from).looking_to(dir, up),
+            );
             click(&mut app, MouseButton::Right);
             let pos = (target + normal).as_uvec3();
             let placed = voxel(&app, left, pos.x as usize, pos.y as usize, pos.z as usize);

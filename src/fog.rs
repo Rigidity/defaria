@@ -28,7 +28,7 @@ use std::f32::consts::SQRT_2;
 use bevy::{pbr::FogFalloff, prelude::*};
 
 use crate::{
-    fly_camera::{EyeView, FlyCamera},
+    fly_camera::EyeView,
     meshing::Meshed,
     streaming::StreamingSettings,
     world::{CHUNK_SIZE, ChunkCoord, ChunkMap},
@@ -222,7 +222,7 @@ pub fn drawn_reach(
 /// are only ever drawn more, never less, while they're loaded), so the scan
 /// is skipped until then.
 fn follow_the_drawn_world(
-    camera: Query<&GlobalTransform, With<FlyCamera>>,
+    camera: Query<&GlobalTransform, With<EyeView>>,
     settings: Res<StreamingSettings>,
     map: Res<ChunkMap>,
     meshed: Query<(), With<Meshed>>,
@@ -456,11 +456,12 @@ mod tests {
                 16,
             )))
             .add_plugins(FogPlugin);
-        let camera = app
+        // The eyes the view is a child of.
+        let eyes = app
             .world_mut()
-            .spawn((FlyCamera::default(), Transform::from_xyz(8.0, 8.0, 8.0)))
+            .spawn(Transform::from_xyz(8.0, 8.0, 8.0))
             .id();
-        let view = app.world_mut().spawn((EyeView, ChildOf(camera))).id();
+        let view = app.world_mut().spawn((EyeView, ChildOf(eyes))).id();
         (app, view)
     }
 
@@ -564,11 +565,13 @@ mod tests {
     /// there is drawn, and the fog closes in.
     #[test]
     fn the_fog_looks_again_when_the_camera_changes_chunk() {
-        let (mut app, _) = opened(&settings());
-        let mut camera = app
-            .world_mut()
-            .query_filtered::<&mut Transform, With<FlyCamera>>();
-        camera.single_mut(app.world_mut()).unwrap().translation.x += 48.0;
+        let (mut app, view) = opened(&settings());
+        let eyes = app.world().get::<ChildOf>(view).unwrap().parent();
+        app.world_mut()
+            .get_mut::<Transform>(eyes)
+            .unwrap()
+            .translation
+            .x += 48.0;
         app.update();
         let fog = *app.world().resource::<ChunkFog>();
         assert!(fog.target < 1.0, "{fog:?}");

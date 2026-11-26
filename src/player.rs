@@ -16,11 +16,21 @@
 //!   the surface, and swimming up against a wall climbs out over it. A
 //!   fall into deep water slows to a sink.
 //!
-//! The camera is the player's eyes. The player is a [`Body`] 0.6 blocks
-//! wide and 1.8 tall that climbs steps up to 0.6 (a slab) and collides
-//! with blocks as `physics` describes, flying included. It moves in
-//! [`FixedUpdate`]; the camera is placed between the last two steps every
-//! frame, so it moves smoothly at any frame rate.
+//! The player is an entity of its own, [`LocalPlayer`] for the one this
+//! game is played as: a [`Body`] 0.6 blocks wide and 1.8 tall that climbs
+//! steps up to 0.6 (a slab) and collides with blocks as `physics`
+//! describes, flying included. Its [`Transform`] is at its feet, turned to
+//! face its [`Look`]'s yaw; its eyes ([`Eyes`]) are [`Player::eye_height`]
+//! above, looking along the [`Look`]. Gameplay (the crosshair, mining,
+//! using blocks) works from the eyes, never the camera: the camera
+//! (`fly_camera`) is only a child of the local player that shows what its
+//! eyes see.
+//!
+//! What a player does comes from its [`Controls`]: the keys fill the local
+//! player's, so any other body with a [`Player`] (a mob, another player)
+//! moves the same way from its own. It moves in [`FixedUpdate`]; the
+//! [`Transform`] is placed between the last two steps every frame, so it
+//! moves smoothly at any frame rate.
 //!
 //! Moving is a top speed and how quickly it's reached ([`Rule`]).
 //! Velocities change exactly as they would continuously between steps, so
@@ -30,16 +40,28 @@
 //! tuned to Minecraft's: its values are written per 50 ms [`TICK`] and
 //! converted here, so the constants below say where they came from.
 
+use std::f32::consts::FRAC_PI_2;
+
 use bevy::{
+    ecs::query::QueryData,
     math::{DQuat, DVec3},
     prelude::*,
+    transform::TransformSystems,
 };
 
 use crate::{
     fluid::FluidView,
-    fly_camera::FlyCamera,
     physics::{Body, Shapes, WorldShapes, guard_edges},
 };
+
+/// Where the local player's eyes start: just above the hills, so there's
+/// ground right below. The scenarios' coordinates are picked around it.
+pub const START_POSITION: Vec3 = Vec3::new(64.0, 56.0, 92.0);
+/// The point the local player looks at when it starts.
+pub const START_TARGET: Vec3 = Vec3::new(64.0, 28.0, 56.0);
+/// Keep pitch just inside ±90° so the eyes never look exactly straight up
+/// or down, where yaw becomes ambiguous.
+pub const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
 
 /// Width, height and depth.
 pub const SIZE: DVec3 = DVec3::new(0.6, 1.8, 0.6);
@@ -159,19 +181,158 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<LocalPlayer>()
-            .add_observer(give_the_camera_a_body)
+            .register_type::<Look>()
+            .register_type::<Controls>()
             .add_systems(Update, toggle_flying.run_if(crate::ui::playing))
             .add_systems(
                 FixedUpdate,
-                (move_player, ease_eye_height)
+                (read_the_keys, move_player, ease_eye_height)
                     .chain()
                     .in_set(PlayerMovement),
             )
             .add_systems(
                 RunFixedMainLoop,
-                place_the_camera.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
+                place_the_player.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
+            )
+            // Whatever turned the look this frame (the mouse, a script's
+            // `camera`), the body faces it when it's drawn. Nothing else
+            // turns the body.
+            .add_systems(
+                PostUpdate,
+                face_the_look.before(TransformSystems::Propagate),
             );
     }
+}
+
+/// Spawns the local player at [`START_POSITION`], looking at
+/// [`START_TARGET`]. Separate from [`PlayerPlugin`], so tests of players
+/// spawn their own.
+pub struct LocalPlayerPlugin;
+
+impl Plugin for LocalPlayerPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, spawn_the_local_player);
+    }
+}
+
+fn spawn_the_local_player(mut commands: Commands) {
+    let eyes = Transform::from_translation(START_POSITION).looking_at(START_TARGET, Vec3::Y);
+    let feet = feet_below(START_POSITION.as_dvec3(), EYE_HEIGHT);
+    commands.spawn((
+        Name::new("Player"),
+        local_player(feet, Look::from_rotation(eyes.rotation)),
+    ));
+}
+
+/// The local player, standing with its feet at `feet` and looking along
+/// `look`.
+pub fn local_player(feet: DVec3, look: Look) -> impl Bundle {
+    (
+        LocalPlayer,
+        Player::default(),
+        look,
+        Body::new(feet, SIZE, STEP_HEIGHT),
+        Transform::from_translation(feet.as_vec3()).with_rotation(look.yaw_rotation()),
+    )
+}
+
+/// Where the feet are for eyes at `eyes`, `eye_height` above them.
+pub fn feet_below(eyes: DVec3, eye_height: f64) -> DVec3 {
+    eyes - DVec3::Y * eye_height
+}
+
+/// Puts a body's eyes at `eyes` at once, `eye_height` above its feet: the
+/// body jumps there (it isn't drawn sliding), and so does its
+/// [`Transform`]. Which way it looks is its [`Look`]'s, which turns the
+/// body when it's drawn.
+pub fn put_eyes(eyes: DVec3, eye_height: f64, body: &mut Body, transform: &mut Transform) {
+    let feet = feet_below(eyes, eye_height);
+    body.teleport(feet);
+    transform.translation = feet.as_vec3();
+}
+
+/// Which way a body looks: its yaw turns the whole body (and its
+/// [`Transform`]), its pitch only the head.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+#[reflect(Component)]
+pub struct Look {
+    /// Rotation around the world Y axis, in radians.
+    pub yaw: f32,
+    /// Rotation up (+) or down (-), in radians, within ±[`MAX_PITCH`].
+    pub pitch: f32,
+}
+
+impl Look {
+    /// The look that faces the way `rotation` does, its roll left out.
+    pub fn from_rotation(rotation: Quat) -> Self {
+        let (yaw, pitch, _) = rotation.to_euler(EulerRot::YXZ);
+        Self {
+            yaw,
+            pitch: pitch.clamp(-MAX_PITCH, MAX_PITCH),
+        }
+    }
+
+    /// The eyes' rotation, from yaw and pitch. No roll, ever.
+    pub fn rotation(&self) -> Quat {
+        Quat::from_euler(EulerRot::YXZ, self.yaw, self.pitch, 0.0)
+    }
+
+    /// The body's rotation: the yaw alone.
+    pub fn yaw_rotation(&self) -> Quat {
+        Quat::from_rotation_y(self.yaw)
+    }
+
+    /// The head's rotation on the body: the pitch alone.
+    pub fn pitch_rotation(&self) -> Quat {
+        Quat::from_rotation_x(self.pitch)
+    }
+
+    /// Turns by `yaw` and `pitch` radians, keeping the pitch within
+    /// ±[`MAX_PITCH`].
+    pub fn turn(&mut self, yaw: f32, pitch: f32) {
+        self.yaw += yaw;
+        self.pitch = (self.pitch + pitch).clamp(-MAX_PITCH, MAX_PITCH);
+    }
+}
+
+/// What a player is trying to do, for its next physics step: for the local
+/// player, the keys held.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+#[reflect(Component)]
+pub struct Controls {
+    /// Forward (+1) or back (−1), relative to where it faces.
+    pub forward: f64,
+    /// Right (+1) or left (−1).
+    pub right: f64,
+    /// Jumping, or rising when flying, or swimming up.
+    pub jump: bool,
+    /// Sneaking, or sinking when flying.
+    pub sneak: bool,
+    pub sprint: bool,
+    /// Start or stop flying, on the next physics step, which clears it.
+    pub toggle_fly: bool,
+}
+
+/// Where a player's eyes are and which way they look: what it aims from.
+#[derive(QueryData)]
+pub struct Eyes {
+    transform: &'static Transform,
+    player: &'static Player,
+    look: &'static Look,
+}
+
+impl EyesItem<'_, '_> {
+    /// The eyes, in the world: at the eye height drawn this frame above the
+    /// feet, looking along the [`Look`].
+    pub fn transform(&self) -> Transform {
+        eyes(self.transform, self.player, self.look)
+    }
+}
+
+/// The eyes of a player whose feet are at `transform`.
+pub fn eyes(transform: &Transform, player: &Player, look: &Look) -> Transform {
+    Transform::from_translation(transform.translation + Vec3::Y * player.drawn_eye_height as f32)
+        .with_rotation(look.rotation())
 }
 
 /// The player's physics step, in [`FixedUpdate`]. Whatever follows how the
@@ -181,16 +342,16 @@ pub struct PlayerMovement;
 
 /// The player this game is played as, as opposed to other players and
 /// mobs. Features that act for whoever is playing (the hotbar, the
-/// inventory screen, placing blocks) find the player with this. It's on the
-/// [`FlyCamera`] for now (see #67).
+/// inventory screen, placing blocks) find the player with this. The
+/// camera (`fly_camera`) is its child.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
 #[reflect(Component)]
 pub struct LocalPlayer;
 
-/// The player's movement state. Its [`Body`] is on the same entity, the
-/// [`FlyCamera`].
+/// The player's movement state. Its [`Body`] is on the same entity.
 #[derive(Component, Reflect, Debug, Clone)]
 #[reflect(Component)]
+#[require(Look, Controls, Transform, Visibility)]
 pub struct Player {
     pub flying: bool,
     pub sneaking: bool,
@@ -201,6 +362,8 @@ pub struct Player {
     /// [`Player::eye_height`] before the last physics step, for drawing it
     /// smoothly between steps.
     pub previous_eye_height: f64,
+    /// The eye height drawn this frame, between the last two steps'.
+    pub drawn_eye_height: f64,
 }
 
 impl Default for Player {
@@ -211,37 +374,18 @@ impl Default for Player {
             sprinting: false,
             eye_height: EYE_HEIGHT,
             previous_eye_height: EYE_HEIGHT,
+            drawn_eye_height: EYE_HEIGHT,
         }
     }
 }
 
-impl Player {
-    /// The player's body with its eyes at `eye`.
-    pub fn body(eye: Vec3) -> Body {
-        Body::new(eye.as_dvec3() - DVec3::Y * EYE_HEIGHT, SIZE, STEP_HEIGHT)
-    }
-}
-
-/// Makes the camera the player, with its eyes where the camera is.
-fn give_the_camera_a_body(
-    add: On<Add<FlyCamera>>,
-    transforms: Query<&Transform>,
-    mut commands: Commands,
-) {
-    let eye = transforms
-        .get(add.entity)
-        .map_or(Vec3::ZERO, |transform| transform.translation);
-    commands
-        .entity(add.entity)
-        .insert_if_new((Player::default(), LocalPlayer, Player::body(eye)));
-}
-
-/// Double-tapping Space starts or stops flying.
+/// Double-tapping Space asks for the local player to start or stop flying
+/// ([`Controls::toggle_fly`]).
 fn toggle_flying(
     time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut last_tap: Local<Option<f32>>,
-    mut players: Query<(&mut Player, &mut Body)>,
+    mut players: Query<&mut Controls, With<LocalPlayer>>,
 ) {
     if !keys.just_pressed(KeyCode::Space) {
         return;
@@ -249,9 +393,8 @@ fn toggle_flying(
     let now = time.elapsed_secs();
     if last_tap.is_some_and(|last| now - last <= DOUBLE_TAP) {
         *last_tap = None;
-        for (mut player, mut body) in &mut players {
-            player.flying = !player.flying;
-            body.velocity.y = 0.0;
+        for mut controls in &mut players {
+            controls.toggle_fly = true;
         }
     } else {
         *last_tap = Some(now);
@@ -268,17 +411,12 @@ fn drift(velocity: f64, accel: f64, decay: f64, dt: f64) -> (f64, f64) {
     (new, distance)
 }
 
-/// One physics step of the player: input to velocity, then through the
-/// world.
-fn move_player(
-    time: Res<Time>,
+/// The keys held, as the local player's [`Controls`].
+fn read_the_keys(
     keys: Res<ButtonInput<KeyCode>>,
     screens: Query<(), With<crate::ui::UiScreen>>,
-    shapes: WorldShapes,
-    fluids: FluidView,
-    mut players: Query<(&FlyCamera, &mut Player, &mut Body)>,
+    mut players: Query<&mut Controls, With<LocalPlayer>>,
 ) {
-    let dt = time.delta_secs_f64();
     // With a screen open, keys are for it: the player stops pressing them
     // but still falls and slides.
     let playing = crate::ui::playing(screens);
@@ -286,16 +424,46 @@ fn move_player(
     let axis = |positive: KeyCode, negative: KeyCode| {
         held(positive) as i8 as f64 - held(negative) as i8 as f64
     };
-    let forward_input = axis(KeyCode::KeyW, KeyCode::KeyS);
-    let right_input = axis(KeyCode::KeyD, KeyCode::KeyA);
-    let jump = held(KeyCode::Space);
-    let shift = held(KeyCode::ShiftLeft) || held(KeyCode::ShiftRight);
-    let sprint = held(KeyCode::KeyF);
+    for mut player in &mut players {
+        // A double tap's request stands until the step that takes it.
+        let controls = Controls {
+            forward: axis(KeyCode::KeyW, KeyCode::KeyS),
+            right: axis(KeyCode::KeyD, KeyCode::KeyA),
+            jump: held(KeyCode::Space),
+            sneak: held(KeyCode::ShiftLeft) || held(KeyCode::ShiftRight),
+            sprint: held(KeyCode::KeyF),
+            toggle_fly: player.toggle_fly,
+        };
+        player.set_if_neq(controls);
+    }
+}
 
-    for (camera, mut player, mut body) in &mut players {
+/// One physics step of each player: its controls to velocity, then
+/// through the world.
+fn move_player(
+    time: Res<Time>,
+    shapes: WorldShapes,
+    fluids: FluidView,
+    mut players: Query<(&Look, &mut Controls, &mut Player, &mut Body)>,
+) {
+    let dt = time.delta_secs_f64();
+    for (look, mut controls, mut player, mut body) in &mut players {
         if dt == 0.0 {
             continue;
         }
+        if controls.toggle_fly {
+            controls.toggle_fly = false;
+            player.flying = !player.flying;
+            body.velocity.y = 0.0;
+        }
+        let Controls {
+            forward: forward_input,
+            right: right_input,
+            jump,
+            sneak: shift,
+            sprint,
+            toggle_fly: _,
+        } = *controls;
         // In the unloaded world, wait for it to load.
         if shapes.shape(body.position.floor().as_ivec3()).is_none() {
             body.velocity = DVec3::ZERO;
@@ -305,7 +473,7 @@ fn move_player(
         player.sprinting = sprint && forward_input > 0.0 && !player.sneaking;
 
         // Horizontal movement follows yaw only.
-        let yaw = DQuat::from_rotation_y(camera.yaw as f64);
+        let yaw = DQuat::from_rotation_y(look.yaw as f64);
         let forward = yaw * DVec3::NEG_Z;
         let right = yaw * DVec3::X;
         let wish = (forward * forward_input + right * right_input).normalize_or_zero();
@@ -400,15 +568,25 @@ fn ease_eye_height(time: Res<Time>, mut players: Query<&mut Player>) {
     }
 }
 
-/// Puts the camera at the player's eyes, between the last two physics
-/// steps, so it moves smoothly whatever the frame rate.
-fn place_the_camera(time: Res<Time<Fixed>>, mut players: Query<(&Body, &Player, &mut Transform)>) {
+/// Puts each player's [`Transform`] at its feet, and its eyes at their
+/// height, between the last two physics steps, so they move smoothly
+/// whatever the frame rate.
+fn place_the_player(
+    time: Res<Time<Fixed>>,
+    mut players: Query<(&Body, &mut Player, &mut Transform)>,
+) {
     let fraction = time.overstep_fraction_f64();
-    for (body, player, mut transform) in &mut players {
-        let height = player.previous_eye_height
+    for (body, mut player, mut transform) in &mut players {
+        player.drawn_eye_height = player.previous_eye_height
             + (player.eye_height - player.previous_eye_height) * fraction;
-        let eye = body.interpolated(fraction) + DVec3::Y * height;
-        transform.translation = eye.as_vec3();
+        transform.translation = body.interpolated(fraction).as_vec3();
+    }
+}
+
+/// Turns each body to face its look's yaw.
+fn face_the_look(mut bodies: Query<(&Look, &mut Transform), Changed<Look>>) {
+    for (look, mut transform) in &mut bodies {
+        transform.rotation = look.yaw_rotation();
     }
 }
 
@@ -467,19 +645,74 @@ pub(crate) mod tests {
 
     pub(crate) const FRAME: Duration = STEP;
 
-    /// Spawns the player with its feet at `feet`, facing north (−Z).
+    /// Spawns the local player with its feet at `feet`, facing north (−Z).
     pub(crate) fn spawn(app: &mut App, feet: DVec3) -> Entity {
-        let eye = (feet + DVec3::Y * EYE_HEIGHT).as_vec3();
         let entity = app
             .world_mut()
-            .spawn((
-                FlyCamera::default(),
-                Transform::from_translation(eye),
-                Body::new(feet, SIZE, STEP_HEIGHT),
-            ))
+            .spawn(local_player(feet, Look::default()))
             .id();
         app.update();
         entity
+    }
+
+    /// The local player with its eyes at `eyes`, looking the way they face.
+    pub(crate) fn local_player_at(eyes: Transform) -> impl Bundle {
+        local_player(
+            feet_below(eyes.translation.as_dvec3(), EYE_HEIGHT),
+            Look::from_rotation(eyes.rotation),
+        )
+    }
+
+    /// Puts a player's eyes at `eyes` at once, keeping its eye height, and
+    /// turns it to look the way they face.
+    pub(crate) fn put_eyes(world: &mut World, player: Entity, eyes: Transform) {
+        let mut entity = world.entity_mut(player);
+        entity.insert(Look::from_rotation(eyes.rotation));
+        let height = entity.get::<Player>().unwrap().drawn_eye_height;
+        let eyes = eyes.translation.as_dvec3();
+        let mut transform = *entity.get::<Transform>().unwrap();
+        match entity.get_mut::<Body>() {
+            Some(mut body) => super::put_eyes(eyes, height, &mut body, &mut transform),
+            // Some tests' players are only eyes, with no body in the way.
+            None => transform.translation = feet_below(eyes, height).as_vec3(),
+        }
+        entity.insert(transform);
+    }
+
+    /// The local player.
+    pub(crate) fn local(app: &mut App) -> Entity {
+        app.world_mut()
+            .query_filtered::<Entity, With<LocalPlayer>>()
+            .single(app.world())
+            .unwrap()
+    }
+
+    /// Where the local player's eyes are, and which way they look.
+    pub(crate) fn local_eyes(app: &mut App) -> Transform {
+        let player = local(app);
+        let world = app.world();
+        eyes(
+            world.get::<Transform>(player).unwrap(),
+            world.get::<Player>(player).unwrap(),
+            world.get::<Look>(player).unwrap(),
+        )
+    }
+
+    /// Puts the local player's eyes at `eyes`, looking the way they face.
+    pub(crate) fn put_local_eyes(app: &mut App, eyes: Transform) {
+        let player = local(app);
+        put_eyes(app.world_mut(), player, eyes);
+    }
+
+    /// Where a player's eyes are drawn this frame.
+    pub(crate) fn eye(app: &App, player: Entity) -> Vec3 {
+        let world = app.world();
+        eyes(
+            world.get::<Transform>(player).unwrap(),
+            world.get::<Player>(player).unwrap(),
+            world.get::<Look>(player).unwrap(),
+        )
+        .translation
     }
 
     fn body(app: &App, player: Entity) -> Body {
@@ -523,8 +756,10 @@ pub(crate) mod tests {
         assert!(body.on_ground);
         assert!((body.position.y - 4.0).abs() < 1e-9, "{}", body.position);
         assert_eq!(body.velocity, DVec3::ZERO);
-        // The camera is at the eyes.
-        let eye = app.world().get::<Transform>(player).unwrap().translation;
+        // The body's transform is at its feet, and the eyes above them.
+        let feet = app.world().get::<Transform>(player).unwrap().translation;
+        assert!((feet.y - 4.0).abs() < 1e-4, "{feet}");
+        let eye = eye(&app, player);
         assert!((eye.y - (4.0 + EYE_HEIGHT as f32)).abs() < 1e-4, "{eye}");
     }
 
@@ -600,7 +835,7 @@ pub(crate) mod tests {
         let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
         let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
         run(&mut app, 0.1);
-        let eye = |app: &App| app.world().get::<Transform>(player).unwrap().translation.y;
+        let eye = |app: &App| eye(app, player).y;
         assert!((eye(&app) - (4.0 + EYE_HEIGHT as f32)).abs() < 1e-4);
         hold(&mut app, &[KeyCode::ShiftLeft]);
         run(&mut app, TICK);
@@ -859,10 +1094,10 @@ pub(crate) mod tests {
         assert!(!self::player(&app, player).flying);
     }
 
-    /// Between physics steps, the camera is drawn part of the way from the
+    /// Between physics steps, the eyes are drawn part of the way from the
     /// last position to the new one.
     #[test]
-    fn the_camera_is_drawn_between_steps() {
+    fn the_eyes_are_drawn_between_steps() {
         let mut app = app(IVec3::new(8, 8, 8), STEP / 2, floor(4));
         let player = spawn(&mut app, DVec3::new(8.5, 10.0, 8.5));
         app.world_mut().get_mut::<Player>(player).unwrap().flying = true;
@@ -872,7 +1107,7 @@ pub(crate) mod tests {
         for _ in 0..4 {
             run(&mut app, STEP.as_secs_f64() / 2.0);
             let body = body(&app, player);
-            let eye = app.world().get::<Transform>(player).unwrap().translation;
+            let eye = eye(&app, player);
             let (from, to) = (body.previous.z, body.position.z);
             assert!(to < from, "moving north");
             fractions.push((eye.z as f64 - from) / (to - from));
@@ -903,8 +1138,8 @@ pub(crate) mod tests {
             let player = player(&app, entity);
             let (from, to) = (player.previous_eye_height, player.eye_height);
             assert!(to < from, "lowering");
-            let eye = app.world().get::<Transform>(entity).unwrap();
-            fractions.push((eye.translation.y as f64 - 4.0 - from) / (to - from));
+            let eye = eye(&app, entity);
+            fractions.push((eye.y as f64 - 4.0 - from) / (to - from));
         }
         // Every other frame has no step, so it's drawn half way.
         assert!(
@@ -1040,7 +1275,7 @@ pub(crate) mod tests {
         });
         let player = spawn(&mut app, DVec3::new(8.5, 8.0, 8.5));
         // Facing +Z.
-        app.world_mut().get_mut::<FlyCamera>(player).unwrap().yaw = std::f32::consts::PI;
+        app.world_mut().get_mut::<Look>(player).unwrap().yaw = std::f32::consts::PI;
         hold(&mut app, &[KeyCode::Space, KeyCode::KeyW]);
         run(&mut app, 6.0);
         let feet = body(&app, player).position;
@@ -1057,5 +1292,143 @@ pub(crate) mod tests {
         let body = body(&app, player);
         assert!(body.position.y < 12.0, "in the water: {}", body.position.y);
         assert!(body.velocity.y > -3.0, "slowed: {}", body.velocity.y);
+    }
+
+    /// Another body, with no camera and not the local player, walks with
+    /// the same physics from its own controls, and the keys move only the
+    /// local player.
+    #[test]
+    fn a_second_body_walks_without_a_camera() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+        let local = spawn(&mut app, DVec3::new(8.5, 4.0, 15.0));
+        let other = app
+            .world_mut()
+            .spawn((
+                Player::default(),
+                Body::new(DVec3::new(4.5, 4.0, 15.0), SIZE, STEP_HEIGHT),
+                Controls {
+                    forward: 1.0,
+                    ..default()
+                },
+            ))
+            .id();
+        assert!(app.world().get::<LocalPlayer>(other).is_none());
+        run(&mut app, 1.1);
+        let start = body(&app, other).position;
+        run(&mut app, 0.5);
+        let moved = body(&app, other).position - start;
+        assert!((moved.z / 0.5 + WALK.speed).abs() < 0.01, "{moved}");
+        assert_eq!(body(&app, local).position.z, 15.0, "no keys held");
+        // Its transform follows its body, as the local player's does.
+        let feet = app.world().get::<Transform>(other).unwrap().translation;
+        assert!(feet.distance(body(&app, other).previous.as_vec3()) < 1e-4);
+
+        // Keys held move the local player, and leave the other's controls
+        // alone: turned to face east, it walks east.
+        app.world_mut().get_mut::<Look>(other).unwrap().yaw = -std::f32::consts::FRAC_PI_2;
+        hold(&mut app, &[KeyCode::KeyD]);
+        run(&mut app, 1.0);
+        assert!(body(&app, local).position.x > 8.5 + 2.0);
+        let other_now = body(&app, other).velocity;
+        assert!((other_now.x - WALK.speed).abs() < 0.01, "{other_now}");
+        assert_eq!(
+            *app.world().get::<Controls>(other).unwrap(),
+            Controls {
+                forward: 1.0,
+                ..default()
+            }
+        );
+    }
+
+    /// A body that isn't the local player starts and stops flying when its
+    /// controls ask, once for each request.
+    #[test]
+    fn controls_toggle_flying() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+        let other = app
+            .world_mut()
+            .spawn((
+                Player::default(),
+                Body::new(DVec3::new(4.5, 4.0, 8.5), SIZE, STEP_HEIGHT),
+                Controls {
+                    toggle_fly: true,
+                    jump: true,
+                    ..default()
+                },
+            ))
+            .id();
+        run(&mut app, 0.5);
+        assert!(self::player(&app, other).flying);
+        assert!(!app.world().get::<Controls>(other).unwrap().toggle_fly);
+        // Flying with jump held rises; it didn't jump and land.
+        assert!(
+            body(&app, other).position.y > 5.0,
+            "{}",
+            body(&app, other).position
+        );
+        app.world_mut()
+            .get_mut::<Controls>(other)
+            .unwrap()
+            .toggle_fly = true;
+        run(&mut app, STEP.as_secs_f64());
+        assert!(!self::player(&app, other).flying);
+    }
+
+    /// The local player's eyes look along its [`Look`], and only the yaw
+    /// turns its body.
+    #[test]
+    fn the_body_turns_with_the_yaw_and_the_eyes_with_the_pitch() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        let look = Look {
+            yaw: 0.7,
+            pitch: -0.4,
+        };
+        *app.world_mut().get_mut::<Look>(player).unwrap() = look;
+        app.update();
+        let transform = *app.world().get::<Transform>(player).unwrap();
+        assert!(transform.rotation.angle_between(Quat::from_rotation_y(0.7)) < 1e-5);
+        let world = app.world();
+        let eyes = eyes(
+            &transform,
+            world.get::<Player>(player).unwrap(),
+            world.get::<Look>(player).unwrap(),
+        );
+        let forward = Quat::from_euler(EulerRot::YXZ, 0.7, -0.4, 0.0) * Vec3::NEG_Z;
+        assert!(eyes.forward().distance(forward) < 1e-5, "{eyes:?}");
+        assert!(
+            (eyes.translation - transform.translation).distance(Vec3::Y * EYE_HEIGHT as f32) < 1e-5
+        );
+    }
+
+    /// Turning never pitches past [`MAX_PITCH`], and a look from a rotation
+    /// faces the same way.
+    #[test]
+    fn looks_clamp_their_pitch_and_round_trip() {
+        let mut look = Look::default();
+        look.turn(0.2, 10.0);
+        assert_eq!(look.pitch, MAX_PITCH);
+        look.turn(0.0, -20.0);
+        assert_eq!(look.pitch, -MAX_PITCH);
+        let rotation = Transform::IDENTITY
+            .looking_to(Vec3::new(1.0, -0.5, 0.3), Vec3::Y)
+            .rotation;
+        let back = Look::from_rotation(rotation).rotation();
+        assert!((back * Vec3::NEG_Z).distance(rotation * Vec3::NEG_Z) < 1e-5);
+    }
+
+    /// Putting the eyes somewhere moves the body under them at once.
+    #[test]
+    fn putting_the_eyes_moves_the_body() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
+        let to = Transform::from_xyz(10.0, 9.0, 7.0).looking_to(Vec3::X, Vec3::Y);
+        put_eyes(app.world_mut(), player, to);
+        let body = body(&app, player);
+        let feet = DVec3::new(10.0, 9.0 - EYE_HEIGHT, 7.0);
+        assert!(body.position.distance(feet) < 1e-5, "{}", body.position);
+        assert!(eye(&app, player).distance(to.translation) < 1e-5);
+        let look = *app.world().get::<Look>(player).unwrap();
+        assert!((look.rotation() * Vec3::NEG_Z).distance(Vec3::X) < 1e-5);
     }
 }

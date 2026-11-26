@@ -2,7 +2,7 @@
 //! and saving it.
 //!
 //! The world has no edges in any direction, so what's loaded is a cylinder
-//! of chunks around each [`ChunkLoader`] (the fly camera has one): every
+//! of chunks around each [`ChunkLoader`] (the local player has one, at its eyes): every
 //! chunk within [`StreamingSettings::radius`] chunks sideways and from
 //! [`StreamingSettings::below`] chunks below to
 //! [`StreamingSettings::above`] above. Both matter: what's below is the
@@ -51,9 +51,9 @@ use bevy::{
 use crate::{
     block_entity::{BlockEntityChanged, BlockEntitySystems, ChunkSaver},
     content::Content,
-    fly_camera::FlyCamera,
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
     meshing::{AwaitingNeighbours, MeshTask, Meshed, RemeshChunks},
+    player::{EYE_HEIGHT, LocalPlayer},
     save::{self, WorldFolder, WorldStore, region},
     world::{
         Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, spawn_chunk,
@@ -71,7 +71,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingStatus>()
             .init_resource::<ChunksSaving>()
             .add_message::<BlockEntityChanged>()
-            .add_observer(load_around_the_camera)
+            .add_observer(load_around_the_player)
             .add_systems(Startup, open_world)
             .add_systems(
                 Update,
@@ -204,8 +204,16 @@ impl StreamingSettings {
 #[require(Transform)]
 pub struct ChunkLoader;
 
-fn load_around_the_camera(add: On<Add<FlyCamera>>, mut commands: Commands) {
-    commands.entity(add.entity).insert(ChunkLoader);
+/// The local player loads the world around its eyes (not its feet, so the
+/// levels above and below are counted from what it sees), with a loader
+/// that's its child at eye height.
+fn load_around_the_player(add: On<Add<LocalPlayer>>, mut commands: Commands) {
+    commands.spawn((
+        Name::new("Chunk Loader"),
+        ChunkLoader,
+        Transform::from_xyz(0.0, EYE_HEIGHT as f32, 0.0),
+        ChildOf(add.entity),
+    ));
 }
 
 /// Where chunks come from: the save, and the terrain for chunks that have
@@ -1118,5 +1126,35 @@ mod tests {
         // Back up: shaded again.
         move_loader(&mut app, Vec3::new(8.0, 20.5 * 16.0, 8.0));
         assert!(sky(&app) < MAX_LIGHT);
+    }
+
+    /// The local player's loader is at its eyes, not its feet, so the
+    /// levels loaded above and below count from what it sees.
+    #[test]
+    fn the_player_loads_around_its_eyes() {
+        use crate::player::{Eyes, tests::local_player_at};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin))
+            .add_observer(load_around_the_player);
+        let at = Vec3::new(3.5, 40.0, -7.5);
+        app.world_mut()
+            .spawn(local_player_at(Transform::from_translation(at)));
+        app.update();
+        let world = app.world_mut();
+        let eyes = world
+            .query_filtered::<Eyes, With<LocalPlayer>>()
+            .single(world)
+            .unwrap()
+            .transform();
+        assert!(eyes.translation.distance(at) < 1e-4, "{eyes:?}");
+        let loader = *world
+            .query_filtered::<&GlobalTransform, With<ChunkLoader>>()
+            .single(world)
+            .unwrap();
+        assert!(
+            loader.translation().distance(eyes.translation) < 1e-4,
+            "{loader:?} {eyes:?}"
+        );
     }
 }
