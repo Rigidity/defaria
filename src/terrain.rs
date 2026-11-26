@@ -156,7 +156,8 @@ impl ChunkCoord {
     }
 }
 
-/// A voxel was set to a different block, through [`Voxels`].
+/// A voxel was set to a different block through [`Voxels`], or set to the
+/// fluid it held, filling it.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoxelChanged {
     pub pos: IVec3,
@@ -241,8 +242,8 @@ impl Voxels<'_, '_> {
     /// Sets the voxel at a world position, and returns whether it's there to
     /// set: there's nothing outside the world or the loaded chunks. A voxel on a chunk's edge also
     /// shows, hides or shades faces of the chunks across that edge, so they
-    /// are marked changed too and remeshed with it. A change to a different
-    /// block sends [`VoxelChanged`].
+    /// are marked changed too and remeshed with it. Setting a voxel to the
+    /// fluid it holds fills it. A change sends [`VoxelChanged`].
     pub fn set(&mut self, pos: IVec3, state: BlockState) -> bool {
         let (coord, local) = ChunkCoord::split(pos);
         let Some(mut chunk) = self
@@ -253,11 +254,16 @@ impl Voxels<'_, '_> {
             return false;
         };
         let before = chunk.at(local);
-        if before == state {
-            return true;
-        }
         let partial_before = chunk.partial_at(local);
-        chunk.set_at(local, state);
+        if before == state {
+            // Setting fluid fills it, if it wasn't full.
+            if partial_before.is_none() {
+                return true;
+            }
+            chunk.set_fluid_at(local, FULL_FLUID);
+        } else {
+            chunk.set_at(local, state);
+        }
         self.touched(pos);
         self.changes.write(VoxelChanged {
             pos,
@@ -1656,5 +1662,39 @@ mod tests {
         assert_eq!(set_fluid(&mut app, 500), [IVec3::ZERO, IVec3::X]);
         assert_eq!(set_fluid(&mut app, 490), Vec::<IVec3>::new());
         assert_eq!(set_fluid(&mut app, 400), [IVec3::ZERO, IVec3::X]);
+    }
+
+    /// Setting a voxel to the fluid it holds fills it, and says so; setting
+    /// a full one changes nothing.
+    #[test]
+    fn setting_fluid_over_itself_fills_it() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ChunkMap>()
+            .add_message::<VoxelChanged>()
+            .add_message::<FluidChanged>();
+        let pos = IVec3::new(3, 4, 5);
+        let mut chunk = Chunk::default();
+        chunk.set_at(pos, block("water"));
+        chunk.set_fluid_at(pos, 250);
+        let entity = app.world_mut().spawn((ChunkCoord(IVec3::ZERO), chunk)).id();
+        app.world_mut()
+            .resource_mut::<ChunkMap>()
+            .insert(ChunkCoord(IVec3::ZERO), entity);
+        let set = |app: &mut App| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| voxels.set(pos, block("water")))
+                .unwrap();
+            let mut changes = app.world_mut().resource_mut::<Messages<VoxelChanged>>();
+            changes.drain().collect::<Vec<_>>()
+        };
+        let changes = set(&mut app);
+        assert_eq!(
+            app.world().get::<Chunk>(entity).unwrap().partial_at(pos),
+            None
+        );
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].partial_before, Some(250));
+        assert!(set(&mut app).is_empty(), "already full");
     }
 }

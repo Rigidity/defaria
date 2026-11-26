@@ -192,7 +192,10 @@ impl Cells for WorldCells<'_, '_> {
                 self.voxels.set(pos, BlockState::AIR);
             }
             Cell::Fluid(kind, amount) => {
-                self.voxels.set(pos, kind);
+                // Only a new block: setting fluid over itself would fill it.
+                if self.voxels.get(pos) != Some(kind) {
+                    self.voxels.set(pos, kind);
+                }
                 self.voxels.set_fluid(pos, amount);
             }
             Cell::Closed => unreachable!("flow only opens and fills cells"),

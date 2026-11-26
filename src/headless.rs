@@ -1574,7 +1574,7 @@ mod tests {
     fn the_game_draws_through_one_eye_view() {
         use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 
-        use crate::fly_camera::{EyeView, FOV};
+        use crate::fly_camera::{EyeView, FOV, NEAR};
 
         let mut app = play("wait 1\n");
         let world = app.world_mut();
@@ -1592,6 +1592,9 @@ mod tests {
         };
         assert!((projection.fov - FOV.to_radians()).abs() < 1e-6);
         assert_eq!(FOV, 70.0);
+        // Near enough to see a water surface the eyes are just off.
+        assert_eq!(projection.near, NEAR);
+        assert!(NEAR <= 0.01);
         assert_eq!(view.get::<Tonemapping>(), Some(&Tonemapping::None));
         assert_eq!(view.get::<DebandDither>(), Some(&DebandDither::Disabled));
     }

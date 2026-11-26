@@ -75,6 +75,11 @@ impl FlyCamera {
     }
 }
 
+/// How near the camera draws, in blocks. Close, so that with your eyes
+/// just above or below a water surface you still see it, rather than
+/// through it. Depth is reversed, so this costs no precision further out.
+pub const NEAR: f32 = 0.01;
+
 /// The camera that draws the view: a child of the [`FlyCamera`], at the
 /// eyes but for view bobbing.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
@@ -103,6 +108,7 @@ fn spawn_camera(mut commands: Commands) {
             EyeView,
             Projection::Perspective(PerspectiveProjection {
                 fov: FOV.to_radians(),
+                near: NEAR,
                 ..default()
             }),
             // Show the shader's colors as they are: Bevy's default
