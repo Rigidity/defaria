@@ -325,6 +325,7 @@ mod tests {
             .insert_resource(base().clone())
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<crate::terrain::PropertiesUpdated>()
             .add_message::<crate::terrain::FluidChanged>()
             .add_systems(Startup, spawn_cracks)
             .add_systems(Update, show_cracks);

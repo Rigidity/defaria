@@ -211,6 +211,12 @@ impl Chunk {
         }
     }
 
+    /// Sets a voxel to another state of the same block, keeping its
+    /// amount of fluid.
+    pub fn update_at(&mut self, pos: IVec3, state: BlockState) {
+        self.voxels[Self::index_of(pos)] = state;
+    }
+
     /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
     pub fn at(&self, pos: IVec3) -> BlockState {
         self.voxels[Self::index_of(pos)]

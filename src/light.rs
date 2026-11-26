@@ -53,7 +53,9 @@ use bevy::{platform::collections::HashSet, prelude::*};
 pub use crate::content::MAX_LIGHT;
 use crate::{
     content::Content,
-    terrain::{ChunkCoord, ChunkMap, RemeshChunks, VoxelChanged, remesh_changed_chunks},
+    terrain::{
+        ChunkCoord, ChunkMap, PropertiesUpdated, RemeshChunks, VoxelChanged, remesh_changed_chunks,
+    },
     voxel::{CHUNK_SIZE, CHUNK_VOLUME, Chunk},
 };
 pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
@@ -208,19 +210,26 @@ fn queue_unloaded_chunk(
     }
 }
 
-/// Queues the light around every voxel that changed.
+/// Queues the light around every voxel that changed, and every one whose
+/// properties were updated in a way light sees.
 fn queue_changed_voxels(
     mut changes: MessageReader<VoxelChanged>,
+    mut updates: MessageReader<PropertiesUpdated>,
     map: Res<ChunkMap>,
     sky: Res<Sky>,
+    table: Res<LightTable>,
     mut queue: ResMut<LightQueue>,
 ) {
-    for change in changes.read() {
-        let (coord, local) = ChunkCoord::split(change.pos);
+    let updated = updates
+        .read()
+        .filter(|update| !table.same_light(update.before, update.after))
+        .map(|update| update.pos);
+    for pos in changes.read().map(|change| change.pos).chain(updated) {
+        let (coord, local) = ChunkCoord::split(pos);
         let outside_sky = local.y == CHUNK_SIZE as i32 - 1
             && map.get(ChunkCoord(coord.0 + IVec3::Y)).is_none()
             && sky.shines_into(coord.0, local.x, local.z);
-        queue.voxel_changed(change.pos, outside_sky);
+        queue.voxel_changed(pos, outside_sky);
     }
 }
 
@@ -351,6 +360,105 @@ mod tests {
         );
         assert_ne!(mesh(&app, lit), Some(before), "lit chunk wasn't remeshed");
         assert_eq!(mesh(&app, far), far_before, "far chunk was remeshed");
+    }
+
+    /// The base game and a lamp lit in one state only.
+    fn with_switched_lamp() -> Content {
+        let (mut mods, errors) =
+            crate::content::load::read_mods(std::path::Path::new("assets/mods"), "mods");
+        assert!(errors.is_empty(), "{errors:?}");
+        mods.push(crate::content::load::ModFiles::new(
+            "mods/test",
+            r#"{ id: "test", name: "Test" }"#,
+            &[(
+                "blocks/switched.json5",
+                r#"{ properties: { lit: ["false", "true"], tint: ["a", "b"] },
+                     model: "defaria:cube", textures: { all: "defaria:red_lamp" },
+                     variants: [{ when: { lit: "true" }, light: [15, 15, 15] }] }"#,
+            )],
+        ));
+        let content = Content::from_mods(mods);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        content
+    }
+
+    /// A lamp turned on and off by updating its properties, as the engine
+    /// or a script does, lights and darkens the voxels around it.
+    #[test]
+    fn property_updates_relight() {
+        let content = with_switched_lamp();
+        let state = |lit| {
+            content
+                .block_state("test:switched", &[("lit", lit)])
+                .unwrap()
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(content.clone())
+            .add_plugins((AssetPlugin::default(), TerrainPlugin, LightPlugin))
+            .init_asset::<Mesh>()
+            .insert_resource(BlockMaterial::unloaded(Handle::default()));
+        spawn_patch(app.world_mut());
+        finish_meshing(&mut app);
+
+        // High in the air, inside a chunk, where the terrain doesn't reach.
+        let lamp = IVec3::new(1, 3, 2) * CHUNK_SIZE as i32 + IVec3::splat(8);
+        set(&mut app, lamp, state("false"));
+        let beside = |app: &mut App| {
+            let (coord, local) = ChunkCoord::split(lamp + IVec3::X);
+            let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+            app.world()
+                .get::<ChunkLight>(entity)
+                .unwrap()
+                .at(local)
+                .block()
+        };
+        let update = |app: &mut App, to| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| assert!(voxels.update(lamp, to)))
+                .unwrap();
+            app.update();
+        };
+        assert_eq!(beside(&mut app), [0; 3]);
+        update(&mut app, state("true"));
+        assert_eq!(beside(&mut app), [14; 3]);
+        update(&mut app, state("false"));
+        assert_eq!(beside(&mut app), [0; 3]);
+    }
+
+    /// Only updates that change how a voxel lets light through or what it
+    /// gives off queue any light work.
+    #[test]
+    fn updates_light_doesnt_see_queue_nothing() {
+        let content = with_switched_lamp();
+        let state = |lit, tint| {
+            content
+                .block_state("test:switched", &[("lit", lit), ("tint", tint)])
+                .unwrap()
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(LightTable::new(&content))
+            .init_resource::<ChunkMap>()
+            .init_resource::<Sky>()
+            .init_resource::<LightQueue>()
+            .add_message::<VoxelChanged>()
+            .add_message::<PropertiesUpdated>()
+            .add_systems(Update, queue_changed_voxels);
+        let mut send = |before, after| {
+            app.world_mut().write_message(PropertiesUpdated {
+                pos: IVec3::ZERO,
+                before,
+                after,
+            });
+            app.update();
+            let queued = !app.world().resource::<LightQueue>().is_empty();
+            app.world_mut().insert_resource(LightQueue::default());
+            queued
+        };
+        assert!(!send(state("false", "a"), state("false", "b")));
+        assert!(!send(state("true", "a"), state("true", "b")));
+        assert!(send(state("false", "a"), state("true", "a")));
     }
 
     #[test]

@@ -396,6 +396,7 @@ mod tests {
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .add_message::<VoxelChanged>()
+            .add_message::<crate::terrain::PropertiesUpdated>()
             .add_message::<FluidChanged>()
             .add_systems(Update, (wake_around_edits, wake_loaded_chunks).chain())
             .add_systems(FixedUpdate, run_flow);

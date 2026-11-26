@@ -5,6 +5,7 @@
 
 mod block_edit;
 mod block_texture;
+mod connections;
 pub mod content;
 mod cracks;
 mod devtools;
@@ -66,6 +67,7 @@ impl Plugin for GamePlugin {
             cracks::CracksPlugin,
             fluid::FluidPlugin,
             game_mode::GameModePlugin,
+            connections::ConnectionsPlugin,
         ));
     }
 }

@@ -97,6 +97,13 @@ impl LightTable {
             .is_some_and(|&bits| bits & 1 << direction != 0)
     }
 
+    /// Whether light treats the two states the same: they close the same
+    /// sides and give off the same light.
+    pub fn same_light(&self, a: BlockState, b: BlockState) -> bool {
+        self.closed.get(a.0 as usize) == self.closed.get(b.0 as usize)
+            && self.emits.get(a.0 as usize) == self.emits.get(b.0 as usize)
+    }
+
     /// Whether light can't come into `state` through all of its sides.
     fn closed_all(&self, state: BlockState) -> bool {
         self.closed.get(state.0 as usize) == Some(&ALL_DIRECTIONS)

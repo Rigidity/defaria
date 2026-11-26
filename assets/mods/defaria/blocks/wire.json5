@@ -1,0 +1,28 @@
+// A metal wire: a small knot with a thin arm out to each side it's joined
+// on, drawn like the pipe at half its width. It connects by its own rule,
+// `wire`, so wires join wires and not pipes.
+{
+  name: "{metal} Wire",
+  properties: {
+    metal: { materials: "#metal", default: "copper" },
+    connect: { connections: "wire" },
+  },
+  textures: {
+    all: { texture: "wire_core", materials: { metal: "{metal}" } },
+    side: { texture: "wire", materials: { metal: "{metal}" } },
+    end: { texture: "wire", materials: { metal: "{metal}" } },
+  },
+  parts: [
+    { model: "wire_core" },
+    { when: { north: "true" }, model: "wire_arm" },
+    { when: { south: "true" }, model: "wire_arm", rotate: [0, 180, 0] },
+    { when: { west: "true" }, model: "wire_arm", rotate: [0, 90, 0] },
+    { when: { east: "true" }, model: "wire_arm", rotate: [0, 270, 0] },
+    { when: { up: "true" }, model: "wire_arm", rotate: [90, 0, 0] },
+    { when: { down: "true" }, model: "wire_arm", rotate: [270, 0, 0] },
+  ],
+  render: "cutout",
+  hardness: { base: 0.2, materials: { metal: 1 } },
+  weight: { base: 0.02, materials: { metal: 1 } },
+  category: "building",
+}

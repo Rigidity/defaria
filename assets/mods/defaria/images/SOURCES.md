@@ -49,6 +49,10 @@ horizontally, transparent above and below; a partial box samples the tile
 at its own position, so the band is where an arm box of that height
 samples it.
 
+- `wire.png`: a 4-pixel cable (rows 6–9), shaded round, with a diagonal
+  strand twist every 4 pixels. The wire's arm ends show its middle too.
+- `wire_core.png`: the knot where wire arms meet, face-on: a small shaded
+  ball (6 pixels across, 5–10) with a dark wrap across it.
 - `pipe_side.png`: an 8-pixel pipe (rows 4–11), shaded round, one level
   darker in the first and last column so joints show between blocks.
 - `pipe_end.png`: a pipe end-on, 8 pixels across: a lit flange ring around

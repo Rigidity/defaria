@@ -269,6 +269,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
   `src/mining.rs`: breaking blocks by holding left click, for a time set
   by their hardness (`Mining`, on the camera, has the target and progress).
   `src/cracks.rs`: the crack overlay on the block being mined.
+- `src/connections.rs`: keeps blocks' connection properties (a pipe's
+  joined sides) in step with their neighbours, after edits and on chunk
+  load, through `Voxels::update`. Whether a neighbour takes a connection
+  is decided in one place, `Content::accepts` (`src/content/connect.rs`).
 - `src/game_mode.rs`: creative and survival (`GameMode` on the player,
   C switches): whether breaking gives items and placing uses them up.
 - `src/inventory/`: inventories. `model.rs` has `Inventory` (how many of
