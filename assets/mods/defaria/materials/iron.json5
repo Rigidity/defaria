@@ -8,4 +8,6 @@
   },
   hardness: 3,
   weight: 7870,
+  // Conducts poorly, but takes the heat of lava.
+  stats: { conductivity: 0.17, throughput: 1, max_temperature: 1811 },
 }

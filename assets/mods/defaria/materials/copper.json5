@@ -8,4 +8,6 @@
   },
   hardness: 2,
   weight: 8960,
+  // Conducts best of the metals; melts below lava.
+  stats: { conductivity: 1, throughput: 1.25, max_temperature: 1358 },
 }

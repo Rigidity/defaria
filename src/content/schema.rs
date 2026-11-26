@@ -56,6 +56,10 @@ pub struct MaterialDef {
     /// What a whole block of it weighs, in kilograms (its density in
     /// kg/m³).
     pub weight: f32,
+    /// Other named numbers, such as `conductivity`, which attributes read
+    /// as they read `hardness` and `weight`.
+    #[serde(default)]
+    pub stats: BTreeMap<String, f32>,
 }
 
 /// `textures/<name>.json5`.
@@ -276,6 +280,9 @@ pub struct BlockDef {
     /// What each state weighs, in kilograms. Left out, 0.
     #[serde(default)]
     pub weight: Option<Attribute>,
+    /// Named numbers for each state, for systems and scripts to read.
+    #[serde(default)]
+    pub stats: BTreeMap<String, Attribute>,
     /// Applied in order on top of the block's own look, each where its
     /// `when` matches the state.
     #[serde(default)]
@@ -409,6 +416,10 @@ pub struct ItemDef {
     /// block it places weighs, or 0.
     #[serde(default)]
     pub weight: Option<Attribute>,
+    /// Named numbers for each state. Left out, a stat is the block it
+    /// places' (for a block's item, the state it places').
+    #[serde(default)]
+    pub stats: BTreeMap<String, Attribute>,
     /// The category it's listed under in the inventory. Left out, a
     /// block's item is in the block's.
     #[serde(default)]
@@ -426,8 +437,9 @@ pub struct CategoryDef {
     pub order: i32,
 }
 
-/// A block's or item's hardness or weight: a number, or a base times a
-/// weighted average of what its material properties' materials say.
+/// A number a block or item works out per state, such as its hardness or
+/// weight: a number, or a base times a weighted average of one stat of its
+/// material properties' materials.
 #[derive(Debug, Clone)]
 pub enum Attribute {
     Fixed(f32),
@@ -440,6 +452,14 @@ pub struct MixedAttribute {
     /// Multiplies the average. Default 1.
     #[serde(default = "default_one")]
     pub base: f32,
+    /// The materials' stat it averages: `hardness`, `weight` or one of
+    /// their `stats`. Left out, the stat named like the field.
+    #[serde(default)]
+    pub stat: Option<String>,
+    /// The value for a material without the stat. Left out, a material
+    /// without it is an error.
+    #[serde(default)]
+    pub default: Option<f32>,
     /// Material property to how much it counts, such as
     /// `{ rock: 3, ore: 1 }`. A property at `none` doesn't count.
     pub materials: BTreeMap<String, f32>,
@@ -601,7 +621,7 @@ impl Forms for OneOrMany {
 }
 
 impl Forms for Attribute {
-    const EXPECTING: &'static str = "a number, or `{ base, materials }`";
+    const EXPECTING: &'static str = "a number, or `{ base, stat, materials, default }`";
 
     fn from_f64<E: de::Error>(value: f64) -> Result<Self, E> {
         Ok(Attribute::Fixed(value as f32))

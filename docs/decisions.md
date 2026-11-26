@@ -3,6 +3,42 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Material stats share one namespace, and their units are loose (2026-11-26)
+
+**Context.** Materials have named stats (#106), which blocks and items
+average into their own numbers with attributes: a wire's capacity from its
+metal's `conductivity`, a pipe's throughput and the hottest fluid it
+carries from its material's `throughput` and `max_temperature`.
+
+**Decision.** Stat names aren't qualified with a mod id, unlike every
+other reference: a mod's copper writes `conductivity` and works in the base
+game's wires, with nothing to import. A mod's own stats are expected to
+start with its id by convention. The base game's are relative numbers:
+`conductivity` is 1 for copper, `throughput` 1 for iron, and only
+`max_temperature` has a real unit (kelvin, roughly where each material
+melts or chars; kelvin so no stat is ever below 0). A material without a
+stat an attribute reads is an error unless the attribute gives a
+`default`; a stat no material has at all is an error too, as it's most
+likely misspelt. Blocks and items have `stats` of their own (per-state
+numbers for systems and scripts to read), and an item takes the stats of
+the block state it places under its own.
+
+**What's wrong with it.** Two mods can pick the same stat name for
+different things and nothing notices. Relative units mean what a
+`conductivity` of 0.17 does is up to whatever reads it (#110, #112), so
+the numbers may need rescaling once wires carry power. The "no material
+has it" check depends on which mods are loaded, so a block reading a stat
+only an optional mod's materials define fails without that mod. Variants
+can't change stats.
+
+**What should replace it.** Stats declared once (a `stats/<name>.json5`
+with a unit, a default and a description), qualified like other ids, so
+clashes are errors, a missing stat can fall back to the declared default,
+and tools can show units. Real units for power once #110 decides them.
+
+**When to revisit.** When a second mod defines stats, when #110 decides
+power units, or when fluids get temperatures (#113).
+
 ## Inventories count items, limited by a provisional weight (2026-11-25)
 
 **Context.** The inventory (#28) is limited by weight rather than slots

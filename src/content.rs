@@ -248,9 +248,30 @@ pub struct Material {
     /// What a whole block of it weighs, in kilograms: its density in
     /// kg/m³, a block being a metre on each side.
     pub weight: f32,
+    /// Its other named numbers, such as `conductivity`. Not `hardness` or
+    /// `weight`, which [`Material::stat`] reads from their fields.
+    pub stats: BTreeMap<String, f32>,
+}
+
+/// The stats every material has, read from fields rather than `stats`.
+pub const BUILT_IN_STATS: [&str; 2] = ["hardness", "weight"];
+
+/// The stat called `name` of a material, block state or item state: one
+/// of the [`BUILT_IN_STATS`] from its field, or one of its `stats`.
+fn stat_of(name: &str, hardness: f32, weight: f32, stats: &BTreeMap<String, f32>) -> Option<f32> {
+    match name {
+        "hardness" => Some(hardness),
+        "weight" => Some(weight),
+        _ => stats.get(name).copied(),
+    }
 }
 
 impl Material {
+    /// The stat called `name`: `hardness`, `weight` or one of its `stats`.
+    pub fn stat(&self, name: &str) -> Option<f32> {
+        stat_of(name, self.hardness, self.weight, &self.stats)
+    }
+
     /// The palette for `role`, or the main one.
     pub fn palette_for(&self, role: Option<&str>) -> Palette {
         role.and_then(|role| self.palettes.get(role))
@@ -378,6 +399,8 @@ pub struct State {
     pub hardness: f32,
     /// What it weighs, in kilograms. A whole block of stone is about 2600.
     pub weight: f32,
+    /// The block's `stats`, worked out for this state.
+    pub stats: BTreeMap<String, f32>,
 }
 
 /// How much fluid a full cell holds, in the units fluid amounts are counted
@@ -406,6 +429,12 @@ pub struct Fluid {
 }
 
 impl State {
+    /// The stat called `name`: `hardness`, `weight` or one of the
+    /// block's `stats`.
+    pub fn stat(&self, name: &str) -> Option<f32> {
+        stat_of(name, self.hardness, self.weight, &self.stats)
+    }
+
     /// Whether it's a fluid.
     pub fn is_fluid(&self) -> bool {
         self.fluid.is_some()
@@ -517,6 +546,17 @@ pub struct ItemStateInfo {
     /// What one of it weighs, in kilograms. A block's item weighs what the
     /// state it places does.
     pub weight: f32,
+    /// The item's `stats`, worked out for this state, over those of the
+    /// block state it places.
+    pub stats: BTreeMap<String, f32>,
+}
+
+impl ItemStateInfo {
+    /// The stat called `name`: `hardness`, `weight`, or one the item or
+    /// the block it places has.
+    pub fn stat(&self, name: &str) -> Option<f32> {
+        stat_of(name, self.hardness, self.weight, &self.stats)
+    }
 }
 
 /// A heading items are listed under in the inventory.

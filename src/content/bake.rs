@@ -326,6 +326,10 @@ fn material(def: &Def<MaterialDef>) -> Result<Material, String> {
         .collect::<Result<_, String>>()?;
     check_amount("hardness", material.hardness)?;
     check_amount("weight", material.weight)?;
+    for (name, &value) in &material.stats {
+        check_stat_name(name)?;
+        check_amount(name, value)?;
+    }
     Ok(Material {
         id: def.id.clone(),
         name: material.name.clone().unwrap_or_else(|| title_case(&def.id)),
@@ -334,10 +338,11 @@ fn material(def: &Def<MaterialDef>) -> Result<Material, String> {
         palettes,
         hardness: material.hardness,
         weight: material.weight,
+        stats: material.stats.clone(),
     })
 }
 
-/// Checks a hardness, weight or share: a number, not below 0.
+/// Checks a hardness, weight, stat or share: a number, not below 0.
 fn check_amount(what: &str, value: f32) -> Result<(), String> {
     if value.is_finite() && value >= 0.0 {
         Ok(())
@@ -348,12 +353,22 @@ fn check_amount(what: &str, value: f32) -> Result<(), String> {
     }
 }
 
-/// A block's or item's hardness and weight, checked against its
-/// properties, to work out per state. Either is `None` where the file
-/// leaves it out.
+/// The numbers each state of a block or item has: its hardness, weight and
+/// `stats`.
+#[derive(Debug, Clone, Default)]
+struct Numbers {
+    hardness: f32,
+    weight: f32,
+    stats: BTreeMap<String, f32>,
+}
+
+/// A block's or item's hardness, weight and `stats`, checked against its
+/// properties, to work out per state. Hardness and weight are `None` where
+/// the file leaves them out.
 struct Attributes {
     hardness: Option<Mix>,
     weight: Option<Mix>,
+    stats: Vec<(String, Mix)>,
 }
 
 impl Attributes {
@@ -361,124 +376,202 @@ impl Attributes {
     fn new(
         hardness: Option<&Attribute>,
         weight: Option<&Attribute>,
+        stats: &BTreeMap<String, Attribute>,
         properties: &[Property],
         block: Option<&[Property]>,
+        content: &Content,
     ) -> Result<Self, String> {
+        let mix = |field: &str, stat: &str, def: &Attribute| {
+            Mix::new(field, stat, def, properties, block, content)
+        };
         Ok(Attributes {
-            hardness: Mix::new("hardness", |m| m.hardness, hardness, properties, block)?,
-            weight: Mix::new("weight", |m| m.weight, weight, properties, block)?,
+            hardness: hardness
+                .map(|def| mix("hardness", "hardness", def))
+                .transpose()?,
+            weight: weight.map(|def| mix("weight", "weight", def)).transpose()?,
+            stats: stats
+                .iter()
+                .map(|(name, def)| {
+                    check_stat_name(name)?;
+                    Ok((name.clone(), mix(&format!("stats.{name}"), name, def)?))
+                })
+                .collect::<Result<_, String>>()?,
         })
     }
 
-    /// The hardness and weight of the state with these value indices;
-    /// `fallback`'s where the file leaves one out.
+    /// The numbers of the state with these value indices: `fallback`'s
+    /// hardness and weight where the file leaves one out, and its stats
+    /// under the file's own.
     fn values(
         &self,
-        fallback: (f32, f32),
+        fallback: &Numbers,
         properties: &[Property],
         index: &[usize],
         content: &Content,
-    ) -> (f32, f32) {
+    ) -> Numbers {
         let value = |mix: &Option<Mix>, fallback| {
             mix.as_ref()
                 .map_or(fallback, |mix| mix.value(properties, index, content))
         };
-        (
-            value(&self.hardness, fallback.0),
-            value(&self.weight, fallback.1),
-        )
+        let mut stats = fallback.stats.clone();
+        for (name, mix) in &self.stats {
+            stats.insert(name.clone(), mix.value(properties, index, content));
+        }
+        Numbers {
+            hardness: value(&self.hardness, fallback.hardness),
+            weight: value(&self.weight, fallback.weight),
+            stats,
+        }
     }
 }
 
-/// A hardness or weight: a base times a weighted average of material
-/// properties' values.
+/// Checks a stat's name: lowercase letters, digits and `_`, and not one a
+/// material has as a field of its own.
+fn check_stat_name(name: &str) -> Result<(), String> {
+    super::check_namespace(name).map_err(|error| format!("stat {error}"))?;
+    if super::BUILT_IN_STATS.contains(&name) {
+        return Err(format!(
+            "`{name}` is a field of its own, not one of the `stats`"
+        ));
+    }
+    Ok(())
+}
+
+/// An attribute, checked against a block's or item's properties: a number,
+/// or a base times a weighted average of one stat of material properties'
+/// materials. Any number a block or item works out per state from its
+/// materials uses this, so each field reads stats the same way.
 struct Mix {
-    /// The material's value.
-    of: fn(&Material) -> f32,
     base: f32,
+    /// The materials' stat it averages.
+    stat: String,
+    /// The value for a material without the stat.
+    default: Option<f32>,
     /// Property index and how much it counts.
     shares: Vec<(usize, f32)>,
 }
 
 impl Mix {
-    /// `None` if `def` is. `name` is `hardness` or `weight`, for errors.
-    /// `block` is the block's properties when `properties` are its item's.
+    /// `field` names the attribute, for errors, and `stat` is the stat it
+    /// averages unless `def` names one. `block` is the block's properties
+    /// when `properties` are its item's.
     ///
     /// Every state must have a material in at least one counted property:
     /// `base` alone is a multiplier (a volume, a fraction of a block), not
-    /// a hardness or weight.
+    /// a value of its own. Every material a counted property can be must
+    /// have the stat, unless the attribute gives a `default`.
     fn new(
-        name: &str,
-        of: fn(&Material) -> f32,
-        def: Option<&Attribute>,
+        field: &str,
+        stat: &str,
+        def: &Attribute,
         properties: &[Property],
         block: Option<&[Property]>,
-    ) -> Result<Option<Self>, String> {
-        let (base, materials) = match def {
-            None => return Ok(None),
-            Some(Attribute::Fixed(value)) => (*value, None),
-            Some(Attribute::Mixed(mixed)) => (mixed.base, Some(&mixed.materials)),
+        content: &Content,
+    ) -> Result<Self, String> {
+        let mixed = match def {
+            Attribute::Fixed(value) => {
+                check_amount(field, *value)?;
+                return Ok(Mix {
+                    base: *value,
+                    stat: stat.into(),
+                    default: None,
+                    shares: Vec::new(),
+                });
+            }
+            Attribute::Mixed(mixed) => mixed,
         };
-        check_amount(name, base)?;
-        let mut shares = Vec::new();
-        if let Some(materials) = materials {
-            if materials.is_empty() {
-                return Err(format!(
-                    "`{name}` has no `materials`; for a fixed value, write a number"
-                ));
-            }
-            for (property, &share) in materials {
-                let p = properties
-                    .iter()
-                    .position(|prop| &prop.name == property)
-                    .ok_or_else(|| {
-                        let item_false =
-                            block.is_some_and(|block| block.iter().any(|p| &p.name == property));
-                        if item_false {
-                            format!(
-                                "`{name}` counts `{property}`, which isn't one of the item's \
-                                 properties: the block marks it `item: false`"
-                            )
-                        } else {
-                            format!("`{name}` counts `{property}`, which isn't a property")
-                        }
-                    })?;
-                if !properties[p].materials {
-                    return Err(format!(
-                        "`{name}` counts `{property}`, which isn't a material property"
-                    ));
-                }
-                if !(share.is_finite() && share > 0.0) {
-                    return Err(format!(
-                        "`{name}` counts `{property}` {share}; a share must be more than 0"
-                    ));
-                }
-                shares.push((p, share));
-            }
-            // States are every combination, so one has them all at `none`
-            // exactly when each can be.
-            if shares
-                .iter()
-                .all(|&(p, _)| properties[p].values.iter().any(|v| v == NONE))
-            {
-                let counted: Vec<String> = shares
-                    .iter()
-                    .map(|&(p, _)| format!("{}=none", properties[p].name))
-                    .collect();
-                return Err(format!(
-                    "`{name}`: in states with {}, none of its counted properties has a \
-                     material; count a property that isn't optional, or write a number",
-                    counted.join(",")
-                ));
-            }
+        check_amount(field, mixed.base)?;
+        let stat = mixed.stat.as_deref().unwrap_or(stat);
+        let known = super::BUILT_IN_STATS.contains(&stat)
+            || content
+                .materials
+                .values()
+                .any(|m| m.stats.contains_key(stat));
+        if !known {
+            return Err(format!(
+                "`{field}` averages stat `{stat}`, which no material has"
+            ));
         }
-        Ok(Some(Mix { of, base, shares }))
+        if let Some(default) = mixed.default {
+            check_amount(&format!("{field}` `default"), default)?;
+        }
+        if mixed.materials.is_empty() {
+            return Err(format!(
+                "`{field}` has no `materials`; for a fixed value, write a number"
+            ));
+        }
+        let mut shares = Vec::new();
+        for (property, &share) in &mixed.materials {
+            let p = properties
+                .iter()
+                .position(|prop| &prop.name == property)
+                .ok_or_else(|| {
+                    let item_false =
+                        block.is_some_and(|block| block.iter().any(|p| &p.name == property));
+                    if item_false {
+                        format!(
+                            "`{field}` counts `{property}`, which isn't one of the item's \
+                             properties: the block marks it `item: false`"
+                        )
+                    } else {
+                        format!("`{field}` counts `{property}`, which isn't a property")
+                    }
+                })?;
+            if !properties[p].materials {
+                return Err(format!(
+                    "`{field}` counts `{property}`, which isn't a material property"
+                ));
+            }
+            if !(share.is_finite() && share > 0.0) {
+                return Err(format!(
+                    "`{field}` counts `{property}` {share}; a share must be more than 0"
+                ));
+            }
+            if mixed.default.is_none() {
+                let lacking = properties[p]
+                    .values
+                    .iter()
+                    .filter(|v| *v != NONE)
+                    .find(|v| content.materials[*v].stat(stat).is_none());
+                if let Some(material) = lacking {
+                    return Err(format!(
+                        "`{field}` averages stat `{stat}` of `{property}`, but material \
+                         `{material}` has no `{stat}`; give it one, or give `{field}` a \
+                         `default`"
+                    ));
+                }
+            }
+            shares.push((p, share));
+        }
+        // States are every combination, so one has them all at `none`
+        // exactly when each can be.
+        if shares
+            .iter()
+            .all(|&(p, _)| properties[p].values.iter().any(|v| v == NONE))
+        {
+            let counted: Vec<String> = shares
+                .iter()
+                .map(|&(p, _)| format!("{}=none", properties[p].name))
+                .collect();
+            return Err(format!(
+                "`{field}`: in states with {}, none of its counted properties has a \
+                 material; count a property that isn't optional, or write a number",
+                counted.join(",")
+            ));
+        }
+        Ok(Mix {
+            base: mixed.base,
+            stat: stat.into(),
+            default: mixed.default,
+            shares,
+        })
     }
 
     /// The value for the state with these value indices: a fixed value's
     /// base, or the base times the shares' weighted average of their
-    /// materials' values, skipping properties at `none` (`new` checked
-    /// that not every one is).
+    /// materials' stat, skipping properties at `none` (`new` checked that
+    /// not every one is, and that each material has the stat or there's a
+    /// default).
     fn value(&self, properties: &[Property], index: &[usize], content: &Content) -> f32 {
         if self.shares.is_empty() {
             // A fixed value.
@@ -490,7 +583,8 @@ impl Mix {
             if value == NONE {
                 continue;
             }
-            sum += share * (self.of)(&content.materials[value]);
+            let stat = content.materials[value].stat(&self.stat).or(self.default);
+            sum += share * stat.unwrap_or_default();
             total += share;
         }
         debug_assert!(total > 0.0, "every counted property is `none`");
@@ -1275,8 +1369,10 @@ fn add_block(
     let attributes = Attributes::new(
         block.hardness.as_ref(),
         block.weight.as_ref(),
+        &block.stats,
         &properties,
         None,
+        content,
     )?;
 
     // A fluid is drawn as a box of its height, by the engine.
@@ -1330,13 +1426,14 @@ fn add_block(
         let state = name
             .and_then(|name| {
                 // Left out, they're 0.
-                let attributes = attributes.values((0.0, 0.0), &properties, value_index, content);
+                let numbers =
+                    attributes.values(&Numbers::default(), &properties, value_index, content);
                 bake_state(
                     look,
                     model,
                     values,
                     name,
-                    attributes,
+                    numbers,
                     &def.namespace,
                     index,
                     block,
@@ -1433,8 +1530,8 @@ impl Look<'_> {
     }
 }
 
-/// Bakes one state of `def`, block number `block`, called `name`, with this
-/// hardness and weight: the model's faces rotated and textured. Textures
+/// Bakes one state of `def`, block number `block`, called `name`, with these
+/// numbers: the model's faces rotated and textured. Textures
 /// for slots the model doesn't have are left out. A fluid has nothing to
 /// bump into, whatever its model's collision.
 fn bake_state(
@@ -1442,7 +1539,7 @@ fn bake_state(
     model: &Model,
     values: &[(String, String)],
     name: String,
-    (hardness, weight): (f32, f32),
+    numbers: Numbers,
     namespace: &str,
     block: usize,
     def: &BlockDef,
@@ -1524,8 +1621,9 @@ fn bake_state(
         render: look.render.unwrap_or_default(),
         fluid,
         double_sided: def.double_sided,
-        hardness,
-        weight,
+        hardness: numbers.hardness,
+        weight: numbers.weight,
+        stats: numbers.stats,
     })
 }
 
@@ -1743,11 +1841,14 @@ fn block_item(
         .cloned()
         .collect();
     let count = check_count(&properties)?;
+    let no_stats = BTreeMap::new();
     let attributes = Attributes::new(
         file.and_then(|f| f.def.hardness.as_ref()),
         file.and_then(|f| f.def.weight.as_ref()),
+        file.map_or(&no_stats, |f| &f.def.stats),
         &properties,
         Some(&block.properties),
+        content,
     )?;
     let item = content.items.len();
     let mut states = Vec::with_capacity(count);
@@ -1755,20 +1856,16 @@ fn block_item(
         let info = (|| {
             let state = placed_state(&block, &values)?;
             let placed = content.state(state);
-            let (hardness, weight) = attributes.values(
-                (placed.hardness, placed.weight),
-                &properties,
-                &index,
-                content,
-            );
+            let numbers = attributes.values(&placed_numbers(placed), &properties, &index, content);
             let mut info = ItemStateInfo {
                 item,
                 values: values.clone(),
                 name: placed.name.clone(),
                 texture: None,
                 block: Some(state),
-                hardness,
-                weight,
+                hardness: numbers.hardness,
+                weight: numbers.weight,
+                stats: numbers.stats,
             };
             if let Some(file) = file {
                 if let Some(name) = &file.def.name {
@@ -1814,8 +1911,10 @@ fn standalone_item(
     let attributes = Attributes::new(
         item_def.hardness.as_ref(),
         item_def.weight.as_ref(),
+        &item_def.stats,
         &properties,
         None,
+        content,
     )?;
     let item = content.items.len();
     let mut states = Vec::with_capacity(count);
@@ -1835,20 +1934,21 @@ fn standalone_item(
                 Some(block) => Some(placed_state(block, &values)?),
                 None => None,
             };
-            // Left out, it's as hard and heavy as the block it places.
-            let fallback = block.map_or((0.0, 0.0), |state| {
-                let placed = content.state(state);
-                (placed.hardness, placed.weight)
+            // Left out, it's as hard and heavy as the block it places, with
+            // its stats.
+            let fallback = block.map_or_else(Numbers::default, |state| {
+                placed_numbers(content.state(state))
             });
-            let (hardness, weight) = attributes.values(fallback, &properties, &index, content);
+            let numbers = attributes.values(&fallback, &properties, &index, content);
             Ok::<_, String>(ItemStateInfo {
                 item,
                 values: values.clone(),
                 name,
                 texture,
                 block,
-                hardness,
-                weight,
+                hardness: numbers.hardness,
+                weight: numbers.weight,
+                stats: numbers.stats,
             })
         })()
         .map_err(|error| in_state(&values, error))?;
@@ -1857,6 +1957,15 @@ fn standalone_item(
     let unique = item_def.unique.unwrap_or(false);
     push_item(&def.id, properties, unique, category, states, content);
     Ok(())
+}
+
+/// The numbers of a block state, which an item placing it falls back to.
+fn placed_numbers(state: &State) -> Numbers {
+    Numbers {
+        hardness: state.hardness,
+        weight: state.weight,
+        stats: state.stats.clone(),
+    }
 }
 
 /// The state of `block` an item with these values places: its default,
@@ -3783,7 +3892,7 @@ mod tests {
             (
                 "blocks/x.json5",
                 r##"{ model: "quad", textures: { all: "a" }, weight: "heavy" }"##,
-                "a number, or `{ base, materials }`",
+                "a number, or `{ base, stat, materials, default }`",
             ),
             (
                 "materials/x.json5",
@@ -3843,5 +3952,242 @@ mod tests {
             ),
             "{all}"
         );
+    }
+
+    /// Materials with stats, on top of [`materials`]: copper and gold
+    /// conduct, iron (from `materials`) doesn't say.
+    fn stat_materials(files: &[(&'static str, &'static str)]) -> Content {
+        let mut all = vec![
+            (
+                "materials/copper.json5",
+                r##"{ tags: ["metal"], palette: ["#300000", "#400000"], hardness: 2, weight: 9000,
+                     stats: { conductivity: 1, max_temperature: 1358 } }"##,
+            ),
+            (
+                "materials/gold.json5",
+                r##"{ tags: ["metal"], palette: ["#303000", "#404000"], hardness: 1, weight: 19000,
+                     stats: { conductivity: 0.6, max_temperature: 1337 } }"##,
+            ),
+        ];
+        all.extend_from_slice(files);
+        materials(&all)
+    }
+
+    /// An attribute reads the stat it names, or the stat named like its
+    /// field, averaged over its materials by share. Block states and their
+    /// items get their `stats` worked out at load.
+    #[test]
+    fn attributes_read_material_stats() {
+        let content = stat_materials(&[(
+            "blocks/wire.json5",
+            r##"{
+                    properties: { core: { materials: ["copper", "gold"] }, coat: { materials: ["gold", "copper"] } },
+                    model: "quad", textures: { all: "a" },
+                    // Hardness from another stat, to show any field can.
+                    hardness: { base: 2, stat: "conductivity", materials: { core: 1 } },
+                    stats: {
+                        capacity: { base: 500, stat: "conductivity", materials: { core: 3, coat: 1 } },
+                        max_temperature: { materials: { core: 1, coat: 1 } },
+                        size: 0.25,
+                    },
+                }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let wire = content.block("test:wire").unwrap();
+        let state = |core: &str, coat: &str| {
+            content.state(wire.state(&[("core", core), ("coat", coat)]).unwrap())
+        };
+        let copper = state("test:copper", "test:copper");
+        assert_eq!(copper.hardness, 2.0);
+        assert_eq!(copper.stat("capacity"), Some(500.0));
+        assert_eq!(copper.stat("max_temperature"), Some(1358.0));
+        assert_eq!(copper.stat("size"), Some(0.25));
+        assert_eq!(copper.stat("conductivity"), None);
+        // Three parts copper to one of gold.
+        let mixed = state("test:copper", "test:gold");
+        let capacity = mixed.stat("capacity").unwrap();
+        assert!(
+            (capacity - 500.0 * (3.0 + 0.6) / 4.0).abs() < 1e-3,
+            "{capacity}"
+        );
+        assert_eq!(mixed.stat("max_temperature"), Some((1358.0 + 1337.0) / 2.0));
+        assert!((state("test:gold", "test:copper").hardness - 1.2).abs() < 1e-6);
+
+        // The block's item has the stats of the state it places.
+        let item = content.item("test:wire").unwrap();
+        let info = content
+            .item_state(
+                item.state(&[("core", "test:copper"), ("coat", "test:gold")])
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(info.stat("capacity"), Some(capacity));
+    }
+
+    /// An item's own `stats` add to and replace those of the block it
+    /// places.
+    #[test]
+    fn item_stats_replace_the_blocks() {
+        let content = stat_materials(&[
+            (
+                "blocks/wire.json5",
+                r##"{ properties: { metal: { materials: ["copper", "gold"] } },
+                     model: "quad", textures: { all: "a" },
+                     stats: { capacity: 10, length: 1 } }"##,
+            ),
+            (
+                "items/wire.json5",
+                r##"{ stats: { capacity: { base: 5, stat: "conductivity", materials: { metal: 1 } } } }"##,
+            ),
+            (
+                "items/spool.json5",
+                r##"{ block: "wire", stats: { length: 50 } }"##,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let item = content.item("test:wire").unwrap();
+        let gold = content
+            .item_state(item.state(&[("metal", "test:gold")]).unwrap())
+            .unwrap();
+        assert_eq!(gold.stat("capacity"), Some(3.0));
+        assert_eq!(gold.stat("length"), Some(1.0));
+        let spool = content.default_item_info("test:spool").unwrap();
+        assert_eq!(
+            (spool.stat("capacity"), spool.stat("length")),
+            (Some(10.0), Some(50.0))
+        );
+    }
+
+    /// `hardness` and `weight` read as stats of blocks and items too, as
+    /// they do of materials.
+    #[test]
+    fn hardness_and_weight_are_stats() {
+        let content = crate::content::base();
+        let stone = content.state(content.default_state("defaria:stone").unwrap());
+        assert_eq!(stone.stat("hardness"), Some(stone.hardness));
+        assert_eq!(stone.stat("weight"), Some(stone.weight));
+        let item = content.default_item_info("defaria:stone").unwrap();
+        assert_eq!(item.stat("hardness"), Some(item.hardness));
+        assert_eq!(item.stat("weight"), Some(item.weight));
+    }
+
+    /// A material without the stat counts as the attribute's `default`;
+    /// without one, it's an error naming the material and the stat.
+    #[test]
+    fn a_missing_stat_takes_the_default() {
+        let content = stat_materials(&[(
+            "blocks/wire.json5",
+            r##"{ properties: { metal: { materials: "#metal" } }, model: "quad", textures: { all: "a" },
+                 stats: { conductivity: { materials: { metal: 1 }, default: 0.1 } } }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let wire = content.block("test:wire").unwrap();
+        let conductivity = |metal: &str| {
+            content
+                .state(wire.state(&[("metal", metal)]).unwrap())
+                .stat("conductivity")
+        };
+        assert_eq!(conductivity("test:iron"), Some(0.1));
+        assert_eq!(conductivity("test:gold"), Some(0.6));
+
+        let content = stat_materials(&[(
+            "blocks/wire.json5",
+            r##"{ properties: { metal: { materials: "#metal" } }, model: "quad", textures: { all: "a" },
+                 stats: { conductivity: { materials: { metal: 1 } } } }"##,
+        )]);
+        let all = errors(&content);
+        assert_eq!(content.errors.len(), 1, "{all}");
+        assert!(all.contains("mods/test/blocks/wire.json5"), "{all}");
+        assert!(
+            all.contains(
+                "`stats.conductivity` averages stat `conductivity` of `metal`, but material \
+                 `test:iron` has no `conductivity`"
+            ),
+            "{all}"
+        );
+        assert!(content.block("test:wire").is_none());
+    }
+
+    #[test]
+    fn stat_mistakes_are_reported() {
+        let cases: &[(&str, &str, &str)] = &[
+            // No material has it: a misspelling, most likely.
+            (
+                "blocks/x.json5",
+                r##"{ properties: { metal: { materials: "copper" } }, model: "quad", textures: { all: "a" },
+                     stats: { capacity: { stat: "conductivty", materials: { metal: 1 } } } }"##,
+                "`stats.capacity` averages stat `conductivty`, which no material has",
+            ),
+            // Named like the field, by default.
+            (
+                "items/x.json5",
+                r##"{ properties: { metal: { materials: "copper" } },
+                     stats: { capacity: { materials: { metal: 1 } } } }"##,
+                "`stats.capacity` averages stat `capacity`, which no material has",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, stats: { Capacity: 1 } }"##,
+                "stat `Capacity` must be lowercase letters, digits and `_` only",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, stats: { weight: 1 } }"##,
+                "`weight` is a field of its own, not one of the `stats`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ properties: { metal: { materials: "copper" } }, model: "quad", textures: { all: "a" },
+                     stats: { conductivity: { materials: { metal: 1 }, default: -1 } } }"##,
+                "`stats.conductivity` `default` must be a number of at least 0",
+            ),
+            (
+                "materials/x.json5",
+                r##"{ palette: ["#000", "#fff"], hardness: 1, weight: 1, stats: { hardness: 2 } }"##,
+                "`hardness` is a field of its own, not one of the `stats`",
+            ),
+            (
+                "materials/x.json5",
+                r##"{ palette: ["#000", "#fff"], hardness: 1, weight: 1, stats: { "max-temp": 2 } }"##,
+                "stat `max-temp` must be lowercase letters, digits and `_` only",
+            ),
+            (
+                "materials/x.json5",
+                r##"{ palette: ["#000", "#fff"], hardness: 1, weight: 1, stats: { conductivity: -2 } }"##,
+                "`conductivity` must be a number of at least 0",
+            ),
+        ];
+        for &(path, text, expected) in cases {
+            let content = stat_materials(&[(path, text)]);
+            let all = errors(&content);
+            assert_eq!(content.errors.len(), 1, "{path}: {text}\n{all}");
+            assert!(all.contains(&format!("mods/test/{path}")), "{all}");
+            assert!(all.contains(expected), "expected `{expected}` in: {all}");
+        }
+    }
+
+    /// The base game's metals and woods have the stats wires and pipes
+    /// read, and they compare as they should.
+    #[test]
+    fn base_materials_have_conduit_stats() {
+        let content = crate::content::base();
+        let stat = |material: &str, name: &str| {
+            content.materials[&format!("defaria:{material}")]
+                .stat(name)
+                .unwrap_or_else(|| panic!("{material} has no {name}"))
+        };
+        for metal in ["copper", "gold", "iron"] {
+            assert!(stat(metal, "conductivity") > 0.0, "{metal}");
+        }
+        for material in ["copper", "gold", "iron", "oak", "birch", "spruce"] {
+            assert!(stat(material, "throughput") > 0.0, "{material}");
+            assert!(stat(material, "max_temperature") > 0.0, "{material}");
+        }
+        assert!(stat("copper", "conductivity") > stat("gold", "conductivity"));
+        assert!(stat("gold", "conductivity") > stat("iron", "conductivity"));
+        // Iron pipes carry what melts copper; wood burns well below either.
+        assert!(stat("iron", "max_temperature") > stat("copper", "max_temperature"));
+        assert!(stat("oak", "max_temperature") < stat("copper", "max_temperature"));
+        assert!(stat("oak", "throughput") < stat("iron", "throughput"));
     }
 }
