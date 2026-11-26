@@ -321,7 +321,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   faces sorted back to front. `meshing/build.rs` builds the meshes from a
   `Neighborhood` (culling, face shading, the vertex attributes).
 - `src/worldgen.rs` (and `src/worldgen/`): terrain generation (`Terrain`,
-  `TerrainSettings`), with the land's shape and the splines it's made of.
+  `TerrainSettings`), with the land's shape and the splines it's made of,
+  and `worldgen/trees.rs` where trees grow and their shapes.
   Only `streaming`, which runs it, uses it outside tests.
 - `src/ui.rs` (and `src/ui/`): the UI toolkit that the HUD and screens are
   built from: the theme, screens (`UiScreen`, and the `playing` run

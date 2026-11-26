@@ -1,0 +1,21 @@
+# Trees in the terrain: the spruce forest east of the start, oaks and
+# birches to the north-east, the meadow the player starts in, and the
+# forests from far away. Trunks should stand on grass with leaves of the
+# same wood, canopies shouldn't be cut off at chunk borders, and no tree
+# should stand on sand, rock or in water.
+# Run: cargo headless scenarios/forest.txt
+camera 64 56 92 -60 -20            # from the start, looking east toward the spruces
+settle
+screenshot target/scenarios/forest/0-start.png
+wait 1
+camera 170 40 93 -90 -12           # at the edge of the spruce forest
+settle
+screenshot target/scenarios/forest/1-spruces.png
+wait 1
+camera 160 37 -55 -90 -8           # in a clearing, looking east at birches and oaks
+settle
+screenshot target/scenarios/forest/2-birches-and-oaks.png
+wait 1
+camera 100 90 180 -40 -22           # high above the start, looking north-east over the forests
+settle
+screenshot target/scenarios/forest/3-from-far.png
