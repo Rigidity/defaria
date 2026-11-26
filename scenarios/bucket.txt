@@ -1,0 +1,80 @@
+# Buckets: take water from a pond and pour it into a pit. A 3×3 pond one
+# deep sits beside a 3×3 pit two deep, on a platform in the sky (above
+# where the sea could load, so the pond is the only water in the world).
+# The player has three empty buckets. Looking down at the pond, each right
+# click takes water from the voxel aimed at: the first a full block, the
+# next what flow has run back into the hole, the third tops that bucket up
+# (a part-filled bucket fills before an empty one). Over the pit, Shift and
+# right click pours (a plain click would take back what's just been
+# poured, with an empty bucket to hand), one bucket a click. `fluids`
+# shows 9000 of water all the way through: in the world, or in the
+# buckets in the inventory (`inspect Inventory`). The hotbar's bucket shows how full the buckets are, and
+# the inventory screen shows each kind with its own gauge, and what it
+# holds in its tooltip.
+# Run: cargo headless scenarios/bucket.txt
+camera 28 254 41 0 -40                                    # south of it, looking down
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 18 245 22 40 245 36 stone                            # the platform
+fill 18 246 22 40 252 36 air                              # and clear air above it
+# The pond: walls one high around 3×3 of water.
+fill 21 246 27 25 246 31 stone
+fill 22 246 28 24 246 30 water
+# The pit: walls two high around 3×3 of air.
+fill 31 246 27 35 247 31 stone
+fill 32 246 28 34 247 30 air
+give bucket 3
+hotbar 1 bucket
+wait 2
+fluids                                                    # 9000 in the pond
+camera 28.5 251 37 0 -45
+wait 2
+screenshot target/scenarios/bucket/0-pond-and-pit.png
+wait 1
+hold MouseLeft 1                                          # lock the cursor
+camera 23.5 249 29.5 0 -89.4                              # straight down over the pond
+wait 2
+hold MouseRight 1                                         # take a block
+wait 20
+hold MouseRight 1                                         # and another
+wait 20
+hold MouseRight 1                                         # and a third
+wait 60                                                   # the pond levels out
+fluids                                                    # 7000 in the world: 2000 in two buckets
+inspect Inventory
+camera 28.5 251 37 0 -45
+wait 2
+screenshot target/scenarios/bucket/1-pond-taken.png
+wait 1
+camera 33.5 250 29.5 0 -89.4                              # straight down over the pit
+wait 2
+press ShiftLeft                                           # Shift pours
+hold MouseRight 1                                         # pour one
+wait 20
+hold MouseRight 1                                         # and the next
+wait 20
+hold MouseRight 1                                         # and nothing: the third is empty
+release ShiftLeft
+wait 60                                                   # it spreads over the pit's floor
+fluids                                                    # all 9000 in the world again
+inspect Inventory
+camera 31 252 36 -15 -55                                  # over the pit, the pond behind
+wait 2
+screenshot target/scenarios/bucket/2-pit-poured.png
+wait 1
+# Buckets of water, of lava and empty, in the inventory screen, found
+# with the search box: an entry each, with its gauge, the water bucket's
+# tooltip showing what it holds.
+give bucket 2 water 1
+give bucket 1 lava 0.4
+hold KeyE 1
+wait 3
+cursor 640 73                                             # the search box
+wait 1
+hold MouseLeft 1
+wait 1
+type bucket
+wait 3
+cursor 455 466                                            # over a bucket of water
+wait 30
+screenshot target/scenarios/bucket/3-inventory.png

@@ -48,6 +48,7 @@ use crate::{
     block_edit::{BlockUseSystems, crosshair_target},
     block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content, Machine},
+    fluid_container::slot_fluid,
     game_mode::item_for_block,
     hotbar::hotbar_height,
     inventory::{
@@ -59,8 +60,8 @@ use crate::{
     player::{Eyes, LocalPlayer},
     recipe::{RecipeProgress, RecipeStatus},
     ui::{
-        Bar, ItemSlot, PointerTravel, Tooltip, UiScreen, UiTheme, bar, item_slot,
-        scroll::Scrollable, scroll_panel, typing,
+        Bar, ItemSlot, NO_FLUID, PointerTravel, Tooltip, UiScreen, UiTheme, bar, fluid_color,
+        fluid_name, format_fluid, item_slot, scroll::Scrollable, scroll_panel, typing,
     },
     world::Voxels,
 };
@@ -79,9 +80,6 @@ const LEVEL_WIDTH: f32 = 24.0;
 /// The recipe progress bar, in logical pixels.
 const PROGRESS_WIDTH: f32 = 112.0;
 const PROGRESS_HEIGHT: f32 = 14.0;
-/// A tank's bar when its fluid has no color.
-const NO_FLUID: Color = Color::srgb(0.5, 0.5, 0.55);
-
 pub struct MachineScreenPlugin;
 
 impl Plugin for MachineScreenPlugin {
@@ -561,20 +559,6 @@ pub fn format_energy(joules: u64) -> String {
     }
 }
 
-/// An amount of fluid for people, in litres: a full block is a cubic
-/// metre, a thousand of them, as the amounts are counted.
-pub fn format_fluid(amount: u64) -> String {
-    let digits = amount.to_string();
-    let mut out = String::new();
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    format!("{out} L")
-}
-
 /// What the status line says for `progress`.
 pub fn status_text(progress: &RecipeProgress) -> String {
     match progress.status {
@@ -595,6 +579,7 @@ fn fraction(amount: u64, capacity: u64) -> f32 {
 }
 
 fn show_slots(
+    content: Res<Content>,
     screen: Option<Single<&MachineScreen>>,
     machines: Query<&Slots>,
     mut slots: Query<(&MachineSlot, &mut ItemSlot)>,
@@ -611,30 +596,10 @@ fn show_slots(
         slot.set_if_neq(ItemSlot {
             item: stack.map(|stack| stack.item),
             count: stack.map_or(0, |stack| stack.count),
+            fluid: stack.and_then(|stack| slot_fluid(&content, stack)),
             ..default()
         });
     }
-}
-
-/// The bar's color for a tank holding `fluid`: the color of the fog inside
-/// it.
-fn fluid_color(content: &Content, fluid: Option<&str>) -> Color {
-    fluid
-        .and_then(|id| content.default_state(id))
-        .and_then(|state| content.state(state).fluid.as_ref())
-        .map_or(NO_FLUID, |fluid| fluid.view_color)
-}
-
-/// The name of the fluid block `id`, or the id.
-fn fluid_name(content: &Content, id: &str) -> String {
-    content
-        .default_state(id)
-        .and_then(|state| item_for_block(content, state))
-        .and_then(|item| content.item_name(item))
-        .map_or_else(
-            || id.rsplit(':').next().map_or_else(String::new, title_case),
-            str::to_owned,
-        )
 }
 
 fn show_tanks(
@@ -653,7 +618,12 @@ fn show_tanks(
         };
         bar.set_if_neq(Bar {
             fraction: fraction(tank.amount, tank.capacity),
-            color: fluid_color(&content, tank.fluid.as_deref()),
+            color: fluid_color(
+                &content,
+                tank.fluid
+                    .as_deref()
+                    .and_then(|id| content.default_state(id)),
+            ),
             vertical: true,
         });
         let fluid = tank

@@ -376,10 +376,6 @@ fn numbers_for_people() {
         [0, 999, 1000, 4300, 10_000, 2_500_000].map(format_energy),
         ["0 J", "999 J", "1 kJ", "4.3 kJ", "10 kJ", "2.5 MJ"]
     );
-    assert_eq!(
-        [0, 400, 4000, 1_234_567].map(format_fluid),
-        ["0 L", "400 L", "4,000 L", "1,234,567 L"]
-    );
     assert_eq!(title_case("input"), "Input");
     let progress = |status, ticks| RecipeProgress {
         status,

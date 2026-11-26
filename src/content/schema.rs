@@ -834,6 +834,17 @@ pub struct ItemDef {
     /// for a block's. A block's item doesn't take its block's script.
     #[serde(default)]
     pub script: Option<String>,
+    /// It holds fluid, as a bucket does (see `fluid_container`).
+    #[serde(default)]
+    pub fluid_container: Option<FluidContainerDef>,
+}
+
+/// `fluid_container` on an item: it holds some of one fluid.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FluidContainerDef {
+    /// The most it holds, in blocks of fluid.
+    pub capacity: f32,
 }
 
 /// A built-in thing an item does when it's used (right clicked).

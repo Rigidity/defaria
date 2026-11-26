@@ -15,6 +15,7 @@ use bevy::prelude::*;
 use super::{Inventory, ItemStack, model::ItemData, search::ItemQuery};
 use crate::{
     content::{Content, ItemState},
+    fluid_container::slot_fluid,
     player::LocalPlayer,
     ui::{ItemSlot, UiTheme, item_slot, scroll_panel},
 };
@@ -256,13 +257,13 @@ fn refresh_lists(
                 let entry = match spare_entries.next() {
                     Some(entity) => {
                         if let Ok((mut entry, mut slot)) = entries.get_mut(entity) {
-                            slot.set_if_neq(entry_slot(source, &stack));
+                            slot.set_if_neq(entry_slot(&content, source, &stack));
                             entry.set_if_neq(ListEntry { source, stack });
                         }
                         entity
                     }
                     None => {
-                        let slot = entry_slot(source, &stack);
+                        let slot = entry_slot(&content, source, &stack);
                         commands
                             .spawn((ListEntry { source, stack }, item_slot(&theme, slot)))
                             .id()
@@ -296,9 +297,10 @@ fn list_heading(theme: &UiTheme, name: &str) -> impl Bundle {
 }
 
 /// What an entry's slot shows.
-fn entry_slot(source: ListSource, stack: &ItemStack) -> ItemSlot {
+fn entry_slot(content: &Content, source: ListSource, stack: &ItemStack) -> ItemSlot {
     ItemSlot {
         count: shown_count(source, stack),
+        fluid: slot_fluid(content, stack),
         ..ItemSlot::item(stack.item)
     }
 }

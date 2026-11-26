@@ -107,7 +107,7 @@ pub fn out_of_machine(
     let Some(Some(there)) = group.slots.get(index) else {
         return 0;
     };
-    let room = inventory.room_for(content, there.item);
+    let room = inventory.room_for(content, there);
     let Some(taken) = group.take(index, count.min(room)) else {
         return 0;
     };

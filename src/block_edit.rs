@@ -4,7 +4,8 @@
 //! - While the cursor is locked, holding left click breaks the block under
 //!   the crosshair (see `mining`) and right click places the active block
 //!   against the face you're looking at, into air or a fluid. The crosshair
-//!   passes through fluids. A property the block sets on
+//!   passes through fluids, except with a fluid container in hand, when it
+//!   stops at them ([`fluid_target`]). A property the block sets on
 //!   placement (a log's axis) comes from that face or your view. The click
 //!   that locks the cursor doesn't edit anything. The active block is the
 //!   active hotbar slot's (see `hotbar`); an item that places no block
@@ -27,7 +28,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockBox, BlockState, Content, Direction},
+    content::{BlockBox, BlockState, Content, Direction, FULL_FLUID, ItemState},
     fly_camera::FlyCameraSystems,
     game_mode::{GameMode, use_up},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
@@ -36,7 +37,7 @@ use crate::{
     physics::{Aabb, Body},
     player::{Eyes, LocalPlayer},
     ui::{UiScreen, playing},
-    world::Voxels,
+    world::{FLUID_STEPS, Voxels, fluid_step},
 };
 
 /// How far away, in blocks, you can break or place.
@@ -233,6 +234,52 @@ pub fn target_shape(content: &Content, state: BlockState) -> &[BlockBox] {
     }
 }
 
+/// Fluid as the crosshair picks it while aiming at fluid (with a fluid
+/// container in hand): a box as
+/// high as the fluid is drawn, at one of the [`FLUID_STEPS`] (at least
+/// one, so a thin film is still something to aim at), the `n`th `n + 1`
+/// steps high.
+const FLUID_BOXES: [BlockBox; FLUID_STEPS as usize] = {
+    let mut boxes = [BlockBox::FULL; FLUID_STEPS as usize];
+    let mut n = 0;
+    while n < boxes.len() {
+        boxes[n] = BlockBox {
+            min: Vec3::ZERO,
+            max: Vec3::new(1.0, (n + 1) as f32 / FLUID_STEPS as f32, 1.0),
+        };
+        n += 1;
+    }
+    boxes
+};
+
+/// What the crosshair picks in a voxel of `state` holding `partial` while
+/// aiming at fluid: the fluid there ([`FLUID_BOXES`]), or what it
+/// always picks ([`target_shape`]).
+pub fn fluid_shape(content: &Content, state: BlockState, partial: Option<u16>) -> &[BlockBox] {
+    if !content.state(state).is_fluid() {
+        return target_shape(content, state);
+    }
+    let step = fluid_step(partial.unwrap_or(FULL_FLUID)).clamp(1, FLUID_STEPS);
+    std::slice::from_ref(&FLUID_BOXES[step as usize - 1])
+}
+
+/// The block or fluid under the crosshair of a camera at `transform`,
+/// within [`REACH`], aiming at fluid.
+pub fn fluid_target(transform: &Transform, content: &Content, voxels: &Voxels) -> Option<Hit> {
+    let ray = Ray3d::new(transform.translation, transform.forward());
+    raycast(ray, REACH, |pos| match voxels.get_with_fluid(pos) {
+        Some((state, partial)) => fluid_shape(content, state, partial),
+        None => &[],
+    })
+}
+
+/// Whether `item`, in hand, aims at fluid rather than through it: a fluid
+/// container does (see `fluid_container`).
+pub fn aims_at_fluid(content: &Content, item: Option<ItemState>) -> bool {
+    item.and_then(|item| content.item_of(item))
+        .is_some_and(|item| item.fluid_capacity.is_some())
+}
+
 /// The ray from the camera through the crosshair.
 fn camera_ray(transform: &Transform) -> Ray3d {
     Ray3d::new(transform.translation, transform.forward())
@@ -302,19 +349,26 @@ fn edit_blocks(
     if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps {
         return;
     }
-    // In survival, only what you have, and placing uses it up.
+    // In survival, only what you have, and placing uses it up. A fluid
+    // block is creative only: placing one would make fluid from nothing,
+    // so in survival fluid comes only from containers (a bucket).
     let mode = mode.copied().unwrap_or_default();
+    if !mode.is_creative() && content.state(block).is_fluid() {
+        return;
+    }
     if !use_up(mode, inventory.map(Mut::into_inner), item) {
         return;
     }
     voxels.set(pos, block);
 }
 
-/// Outlines the block under the crosshair while the cursor is locked.
+/// Outlines the block under the crosshair while the cursor is locked: or,
+/// with a fluid container in hand, the fluid or block it aims at.
 fn outline_target(
     mut gizmos: Gizmos,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     eyes: Single<Eyes, With<LocalPlayer>>,
+    player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
     content: Res<Content>,
     voxels: Voxels,
 ) {
@@ -322,11 +376,27 @@ fn outline_target(
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
-    let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
+    let at_fluid = player.is_some_and(|player| {
+        let (hotbar, active) = player.into_inner();
+        aims_at_fluid(&content, hotbar.item(*active))
+    });
+    let hit = if at_fluid {
+        fluid_target(&camera, &content, &voxels)
+    } else {
+        crosshair_target(&camera, &content, &voxels)
+    };
+    let Some(hit) = hit else {
         return;
     };
-    let state = voxels.get(hit.block).unwrap_or(BlockState::AIR);
-    for b in target_shape(&content, state) {
+    let (state, partial) = voxels
+        .get_with_fluid(hit.block)
+        .unwrap_or((BlockState::AIR, None));
+    let shape = if at_fluid {
+        fluid_shape(&content, state, partial)
+    } else {
+        target_shape(&content, state)
+    };
+    for b in shape {
         // A little bigger than the box, so it isn't hidden in its faces.
         let center = hit.block.as_vec3() + (b.min + b.max) / 2.0;
         let size = b.max - b.min + Vec3::splat(0.004);

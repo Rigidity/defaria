@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Draw the procedural layer images: glass, water, lava, a grass tuft, an
-ingot and moss.
+ingot, moss and a bucket.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
 src/block_texture/layer.rs checks) into OUT_DIR:
@@ -17,6 +17,10 @@ src/block_texture/layer.rs checks) into OUT_DIR:
   lit, outlined, transparent around it: the ingot item's icon.
 - moss.png: soft clumps of moss, transparent between them, to lay over
   stone. Wraps at the edges.
+- items/bucket.png: a metal pail seen from the front and a little above:
+  a wire handle arching over an open rim, its inside dark, the body
+  tapering to the bottom with a hoop around it, lit from the left:
+  the bucket item's icon.
 
 Each tiles with itself where it needs to (water and lava wrap at the
 edges). Deterministic: the same seed always draws the same images.
@@ -24,7 +28,7 @@ edges). Deterministic: the same seed always draws the same images.
 Usage:
     python3 scripts/draw-layers.py OUT_DIR [--preview PREVIEW.png]
 
---preview writes the four images side by side over a mid gray, upscaled
+--preview writes the images side by side over a mid gray, upscaled
 8x. Standard library only.
 """
 
@@ -189,6 +193,30 @@ def ingot():
     return rows
 
 
+BUCKET = [
+    "................",
+    "....11111111....",
+    "...12......21...",
+    "..12........21..",
+    "..1..........1..",
+    ".16666666666661.",
+    ".61111111111116.",
+    ".15777766665551.",
+    "..156554444321..",
+    "..156554444321..",
+    "..167665555431..",
+    "...1655444431...",
+    "...1655444431...",
+    "...1655444431...",
+    "...1111111111...",
+    "................",
+]
+
+
+def bucket():
+    return [[CLEAR if c == "." else px(int(c)) for c in line] for line in BUCKET]
+
+
 def moss(rng):
     noise = wrapping_noise(rng, 4)
     fine = wrapping_noise(rng, 16)
@@ -238,6 +266,7 @@ def main():
         "tuft": tuft(rng),
         "items/ingot": ingot(),
         "moss": moss(rng),
+        "items/bucket": bucket(),
     }
     for name, rows in images.items():
         path = os.path.join(args.out_dir, f"{name}.png")

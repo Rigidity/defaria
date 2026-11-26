@@ -3,7 +3,9 @@
 //! - **Survival**: breaking a block puts its item in the breaker's
 //!   inventory (and a block whose item is too heavy to carry won't break),
 //!   placing one uses it up (and needs one to place), and what's carried is
-//!   capped by weight.
+//!   capped by weight. A fluid's block (water, lava) isn't placed at all:
+//!   that would make fluid from nothing, so fluid comes only from
+//!   containers (a bucket, see `fluid_container`) and the terrain.
 //! - **Creative**: breaking gives nothing, placing uses nothing up (the
 //!   hotbar places its items whether you have any or not), there's no
 //!   weight limit, and the inventory screen has the catalog of every item.

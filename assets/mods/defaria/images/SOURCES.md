@@ -25,10 +25,10 @@ update the row when a layer is replaced.
 
 ## Drawn by script
 
-`glass.png`, `water.png`, `lava.png`, `tuft.png`, `items/ingot.png` and
-`moss.png` were drawn procedurally by `scripts/draw-layers.py` (no Retro
-Diffusion), 2026-11-25 (the ingot and moss 2026-11-26). Re-run the script
-to redraw them.
+`glass.png`, `water.png`, `lava.png`, `tuft.png`, `items/ingot.png`,
+`moss.png` and `items/bucket.png` were drawn procedurally by
+`scripts/draw-layers.py` (no Retro Diffusion), 2026-11-25 (the ingot and
+moss 2026-11-26, the bucket 2026-11-26). Re-run the script to redraw them.
 
 - `glass.png`: a solid one-pixel frame, lit from the top left, two short
   highlight streaks, and a nearly clear middle (alpha 40). Partly
@@ -48,6 +48,12 @@ to redraw them.
   darker at their ragged edges with a few lit tufts, covering about 60%
   and transparent between, laid over `stone.png` for mossy stone (and the
   moss item's icon). Wraps at the edges.
+- `items/bucket.png`: a pail seen from the front and a little above,
+  drawn by hand as a pixel grid in the script: a wire handle (level 1,
+  2 where it bends) arching over a lit rim (6) round a dark opening (1),
+  a bright front lip (7 to 5), and a body tapering to its base, lit from
+  the left (6 down to 2) with a lighter hoop around it, outlined in level
+  1, transparent around it. The bucket item's icon, in iron.
 
 ## Networks and machines
 

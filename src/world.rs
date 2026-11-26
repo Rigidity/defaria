@@ -17,7 +17,6 @@ mod chunk_array;
 mod fluid_top;
 mod voxels;
 
-#[cfg(test)]
 pub use chunk::fluid_step;
 pub use chunk::{
     CHUNK_SIZE, CHUNK_VOLUME, Chunk, FLUID_STEPS, axis_of, fluid_amount, touching_offsets,

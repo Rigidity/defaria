@@ -3,6 +3,61 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Buckets: the hotbar names the kind, and a click picks which one (2026-11-26)
+
+**Context.** Fluid containers (#84) keep their fluid in their item data,
+so filled and empty buckets are separate inventory entries. The hotbar
+names a kind of item (an item state), not one copy, so with a bucket in
+hand a click has to pick which bucket acts, and whether it takes or
+pours.
+
+**Decision.** `src/fluid_container.rs`: right click takes if it can
+(the crosshair is on fluid, or a machine's tank holds fluid, and some
+bucket can take it: one part-filled with that fluid first, else an empty
+one), and otherwise pours: onto fluid only a bucket of that fluid, onto a
+block the fullest bucket, and onto a block that does something when used
+(a machine with a screen, a scripted block) not at all, so the click uses
+the block. Mining still aims through fluid with a bucket in hand, though
+the outline is on the fluid (provisional, for the user: feel).
+Shift pours (into the world, or a machine's tanks), never takes, so
+pouring where there's already fluid (a pit you've started filling) needs
+it. Taking and pouring reuse the pumps' `fluid_network::world::take`
+and `pour` on a bucket seen as a one-off `Tank`, so the rules for which
+voxels take what stay in one place. Buckets act on the inventory's own
+buckets in creative too, so fluid is never made or lost; a fluid block's
+item places only in creative (the user decided). The hotbar slot shows
+all its buckets' fluid together in a gauge, the inventory each kind's.
+The fill shows as a gauge down the slot's left edge in the fluid's fog
+color, not in the icon's pixels (provisional, for the user to confirm:
+controls and look).
+
+**What's wrong with it.**
+
+- Pouring onto a block picks the fullest bucket, whatever its fluid: with
+  buckets of water and lava, a click on the ground may pour lava.
+- Shift is also sneak, and fly down while flying, so pouring while flying
+  sinks the player a little each click.
+- With full and empty buckets both to hand, a click on fluid always
+  takes: pouring onto fluid (a pond, a pit already part filled, a
+  machine's tank holding fluid) needs Shift. A hotbar that names
+  one copy, or an item in hand apart from the hotbar, would let the
+  player choose which bucket.
+- The icon is the same for an empty and a full bucket; only the gauge
+  and the tooltip tell them apart.
+- A bucket pours into at most two voxels (the one aimed at, then the one
+  in front of the face): what fits in neither stays in the bucket.
+- Of equally full buckets, the one poured onto a block is the first in
+  the inventory, which the player can't see or choose.
+- The gauge is the fluid's fog color, lightened; water's reads slate
+  rather than blue (provisional, for the user: look).
+- Fluid weight is the fluid block's `weight` per full block; a filled
+  bucket can take the inventory over its limit only by rounding.
+
+**What should replace it.** An item in hand that is one copy (a held
+stack), so a click uses that bucket, and an icon drawn per fluid and
+fill (the fluid's texture inside the bucket's mouth), once item icons
+can vary with item data.
+
 ## The player looks with yaw and pitch on itself; the camera only follows (2026-11-26)
 
 **Decision.** The player is its own entity (#67). Its `Transform` is at

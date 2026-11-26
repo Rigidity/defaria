@@ -1,0 +1,13 @@
+// An iron bucket. It holds one block of one fluid: right click takes it
+// from a pond or a machine's tank and pours it out again (see
+// `fluid_container` in docs/modding.md). Filled buckets count together
+// only with ones holding the same fluid and amount.
+{
+  name: "Bucket",
+  texture: "bucket",
+  fluid_container: { capacity: 1 },
+  hardness: 3,
+  // About a fifth of a litre of iron; the fluid in it adds its own weight.
+  weight: 1.5,
+  category: "tools",
+}

@@ -29,6 +29,7 @@ use bevy::{
 
 use crate::{
     content::{BlockState, Content, ItemState},
+    fluid_container::hotbar_fluid,
     game_mode::GameMode,
     inventory::Inventory,
     player::LocalPlayer,
@@ -266,6 +267,7 @@ fn show_hotbar(
         >,
     >,
     mut slots: Query<(&HotbarSlot, &mut ItemSlot)>,
+    content: Res<Content>,
 ) {
     let Some(player) = player else {
         return;
@@ -288,6 +290,7 @@ fn show_hotbar(
             count,
             selected: index == active.0,
             dimmed: item.is_some() && count == 0 && !creative,
+            fluid: item.and_then(|item| hotbar_fluid(&content, &inventory, item)),
         });
     }
 }
@@ -488,6 +491,7 @@ mod tests {
                 count: STARTING_COUNT_FOR_TESTS + 7,
                 selected: true,
                 dimmed: false,
+                fluid: None,
             }
         )));
         let stone = content.default_item("defaria:stone").unwrap();
@@ -498,6 +502,7 @@ mod tests {
                 count: STARTING_COUNT_FOR_TESTS,
                 selected: false,
                 dimmed: false,
+                fluid: None,
             }
         )));
         // Each kind is in one slot at most: slot 2 lost the dirt.
@@ -510,6 +515,7 @@ mod tests {
                 count: 0,
                 selected: false,
                 dimmed: true,
+                fluid: None,
             }
         )));
     }

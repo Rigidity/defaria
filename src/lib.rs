@@ -12,6 +12,7 @@ mod cracks;
 mod devtools;
 mod dynamic_light;
 mod fluid;
+mod fluid_container;
 pub mod fluid_network;
 mod fly_camera;
 mod fog;
@@ -87,6 +88,7 @@ impl Plugin for GamePlugin {
             script::ScriptPlugin,
             script::machine::MachineScriptPlugin,
             wrench::WrenchPlugin,
+            fluid_container::FluidContainerPlugin,
         ));
     }
 }

@@ -17,8 +17,9 @@ use crate::{
     game_mode::GameMode,
 };
 
-/// The `player.json5` format this build writes.
-pub const PLAYER_FORMAT: u32 = 1;
+/// The `player.json5` format this build writes. 2 added the fluid in a
+/// container (`fluid` on a stack).
+pub const PLAYER_FORMAT: u32 = 2;
 /// The player's file, in the world's folder.
 pub const PLAYER_FILE: &str = "player.json5";
 
@@ -44,6 +45,19 @@ pub struct PlayerFile {
 pub struct SavedStack {
     pub item: String,
     pub count: u32,
+    /// What each of them holds, for a fluid container that isn't empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fluid: Option<SavedFluid>,
+}
+
+/// Some amount of one fluid, in a saved fluid container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedFluid {
+    /// The fluid's block id.
+    pub fluid: String,
+    /// In thousandths of a block.
+    pub amount: u64,
 }
 
 /// Reads the world's `player.json5`: `None` if there isn't one yet (a new
@@ -163,6 +177,7 @@ mod tests {
             inventory: vec![SavedStack {
                 item: "defaria:stone".into(),
                 count: 12,
+                fluid: None,
             }],
         };
         write(&folder, &file).unwrap();
