@@ -14,7 +14,8 @@ use bevy::{
     input_focus::{InputFocus, tab_navigation::TabIndex},
     picking::hover::Hovered,
     prelude::*,
-    text::{EditableText, TextCursorStyle, TextEditChange},
+    text::{EditableText, EditableTextSystems, TextCursorStyle, TextEditChange},
+    ui::UiSystems,
     ui_widgets::{TextInput, ValueChange},
 };
 
@@ -26,7 +27,19 @@ impl Plugin for TextFieldPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<TextField>()
             .add_observer(report_changes)
-            .add_systems(PostUpdate, style_text_fields.in_set(UiWidgetSystems));
+            .register_type::<TextFieldInput>()
+            .add_systems(
+                PostUpdate,
+                (
+                    style_text_fields.in_set(UiWidgetSystems),
+                    // After Bevy applies the edits (which it does after
+                    // layout), so the placeholder goes on the frame the
+                    // first character is typed.
+                    show_placeholders
+                        .after(EditableTextSystems)
+                        .before(UiSystems::PostLayout),
+                ),
+            );
     }
 }
 
@@ -39,7 +52,8 @@ pub struct TextField {
 }
 
 /// The editable text inside a [`TextField`].
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
 pub struct TextFieldInput;
 
 /// The text a [`TextField`] shows while it's empty.
@@ -136,16 +150,14 @@ fn report_changes(
     }
 }
 
-/// The frame lights up while the field has the keyboard, and the
-/// placeholder shows while it's empty.
+/// The frame lights up while the field has the keyboard.
 fn style_text_fields(
     theme: Res<UiTheme>,
     focus: Option<Res<InputFocus>>,
-    mut fields: Query<(&TextField, &Hovered, &Children, &mut BorderColor)>,
-    mut placeholders: Query<&mut Visibility, With<Placeholder>>,
+    mut fields: Query<(&Hovered, &Children, &mut BorderColor), With<TextField>>,
 ) {
     let focused = focus.and_then(|focus| focus.get());
-    for (field, hovered, children, mut border) in &mut fields {
+    for (hovered, children, mut border) in &mut fields {
         let has_focus = focused.is_some_and(|entity| children.contains(&entity));
         let edge = if has_focus {
             theme.field_focused
@@ -155,14 +167,25 @@ fn style_text_fields(
             theme.slot_edge
         };
         border.set_if_neq(BorderColor::all(edge));
-        let shown = if field.value.is_empty() {
-            Visibility::Inherited
+    }
+}
+
+/// The placeholder shows while the field is empty: its colour, rather than
+/// its visibility, since this runs after visibility has been worked out.
+fn show_placeholders(
+    theme: Res<UiTheme>,
+    fields: Query<(&TextField, &Children)>,
+    mut placeholders: Query<&mut TextColor, With<Placeholder>>,
+) {
+    for (field, children) in &fields {
+        let color = if field.value.is_empty() {
+            theme.text_dim
         } else {
-            Visibility::Hidden
+            Color::NONE
         };
         for &child in children {
-            if let Ok(mut visibility) = placeholders.get_mut(child) {
-                visibility.set_if_neq(shown);
+            if let Ok(mut text) = placeholders.get_mut(child) {
+                text.set_if_neq(TextColor(color));
             }
         }
     }
@@ -219,7 +242,13 @@ mod tests {
             &format!("cursor {} {}\nwait 1\nhold MouseLeft 1\nwait 1", at.x, at.y),
         );
         assert!(app.world_mut().run_system_cached(typing).unwrap());
-        run_more(&mut app, "type iron\nwait 2");
+        // The placeholder goes on the very frame the first character does.
+        run_more(&mut app, "type i");
+        let mut placeholders = app
+            .world_mut()
+            .query_filtered::<&TextColor, With<Placeholder>>();
+        assert_eq!(placeholders.single(app.world()).unwrap().0, Color::NONE);
+        run_more(&mut app, "type ron\nwait 2");
         assert_eq!(value(&app), "iron");
         assert_eq!(app.world().resource::<Changes>().0.last().unwrap(), "iron");
 
@@ -250,13 +279,13 @@ mod tests {
         let shown = |app: &mut App| {
             let mut placeholders = app
                 .world_mut()
-                .query_filtered::<&Visibility, With<Placeholder>>();
-            *placeholders.single(app.world()).unwrap()
+                .query_filtered::<&TextColor, With<Placeholder>>();
+            placeholders.single(app.world()).unwrap().0
         };
         app.update();
-        assert_eq!(shown(&mut app), Visibility::Inherited);
+        assert_eq!(shown(&mut app), theme.text_dim);
         app.world_mut().get_mut::<TextField>(field).unwrap().value = "a".into();
         app.update();
-        assert_eq!(shown(&mut app), Visibility::Hidden);
+        assert_eq!(shown(&mut app), Color::NONE);
     }
 }
