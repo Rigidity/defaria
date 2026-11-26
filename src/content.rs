@@ -31,6 +31,7 @@ mod machine;
 mod place;
 mod recipe;
 pub mod schema;
+mod state_name;
 
 use std::{collections::BTreeMap, ops::Range, path::Path};
 
@@ -45,6 +46,7 @@ pub use machine::{
 pub use place::Placement;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};
 pub use schema::{Direction, ItemAction, PlaceFrom, PortRole, Render, Solver};
+pub use state_name::StateName;
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -854,34 +856,19 @@ impl Content {
     /// `None` for a state that doesn't exist.
     pub fn saved_item_name(&self, item: ItemState) -> Option<String> {
         let state = self.item_state(item)?;
-        let id = &self.items[state.item].id;
-        if state.values.is_empty() {
-            return Some(id.clone());
-        }
-        let values: Vec<String> = state
-            .values
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        Some(format!("{id}[{}]", values.join(",")))
+        Some(StateName::new(&self.items[state.item].id, state.values.iter().cloned()).to_string())
     }
 
     /// The item state saved as `name` (see [`Content::saved_item_name`]).
-    /// An item whose properties changed comes back as its default state;
-    /// one that's gone doesn't come back.
+    /// An item whose properties changed, or whose name doesn't parse, comes
+    /// back as its default state; one that's gone doesn't come back.
     pub fn saved_item(&self, name: &str) -> Option<ItemState> {
-        let Some((id, rest)) = name.split_once('[') else {
-            return self.default_item(name);
+        let Ok(parsed) = StateName::parse(name) else {
+            return self.default_item(StateName::id_of(name));
         };
-        let item = self.item(id)?;
-        let values: Option<Vec<(&str, &str)>> = rest.strip_suffix(']').map(|rest| {
-            rest.split(',')
-                .filter_map(|pair| pair.split_once('='))
-                .collect()
-        });
+        let item = self.item(&parsed.id)?;
         Some(
-            values
-                .and_then(|values| item.state(&values))
+            item.state(&parsed.pairs())
                 .unwrap_or_else(|| item.default_state()),
         )
     }
@@ -1085,6 +1072,25 @@ pub fn test_mod(files: &[(&str, &str)]) -> Content {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_item_names_round_trip_and_bad_ones_fall_back() {
+        let content = base();
+        for i in 0..content.item_states.len() {
+            let item = ItemState(i as u32);
+            let name = content.saved_item_name(item).unwrap();
+            assert_eq!(content.saved_item(&name), Some(item), "{name}");
+        }
+        let pickaxe = content.default_item("defaria:pickaxe").unwrap();
+        for bad in [
+            "defaria:pickaxe[head=nope]",
+            "defaria:pickaxe[head=defaria:iron",
+            "defaria:pickaxe[head]",
+        ] {
+            assert_eq!(content.saved_item(bad), Some(pickaxe), "{bad}");
+        }
+        assert_eq!(content.saved_item("gone:thing[a=b]"), None);
+    }
 
     #[test]
     fn along_picks_the_largest_component() {

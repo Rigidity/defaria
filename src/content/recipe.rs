@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    BlockState, Content, FULL_FLUID, ItemState, Machine, MachineRecipes, NONE, Solver,
+    BlockState, Content, FULL_FLUID, ItemState, Machine, MachineRecipes, NONE, Solver, StateName,
     bake::{When, pattern_matches},
     check_namespace, index_of, qualify,
     schema::{Condition, OneOrMany, RecipeDef, RecipeInputDef, RecipeOutputDef},
@@ -599,12 +599,7 @@ fn bake_one(
     values: &[(String, String)],
     content: &Content,
 ) -> Result<Recipe, Miss> {
-    let id = if values.is_empty() {
-        file_id.to_string()
-    } else {
-        let pairs: Vec<String> = values.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        format!("{file_id}[{}]", pairs.join(","))
-    };
+    let id = StateName::new(file_id, values.iter().cloned()).to_string();
     let mut inputs = Vec::new();
     for (i, input) in def.inputs.iter().enumerate() {
         let input =

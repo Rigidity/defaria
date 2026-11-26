@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::write_atomically;
 use crate::{
-    content::{Content, ItemState},
+    content::{Content, ItemState, StateName},
     game_mode::GameMode,
 };
 
@@ -126,8 +126,7 @@ impl ItemNames {
         if let Some(&item) = self.by_name.get(name) {
             return Some(item);
         }
-        let id = name.split_once('[').map_or(name, |(id, _)| id);
-        self.by_item.get(id).copied()
+        self.by_item.get(StateName::id_of(name)).copied()
     }
 }
 
