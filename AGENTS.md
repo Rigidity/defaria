@@ -77,8 +77,9 @@ Every change gets both kinds of check:
 
 The headless runner is part of the codebase, not a fixed tool. When a check
 needs something it can't do yet (benchmarking frame times, UI interaction, new
-input types, new kinds of output), extend `src/headless.rs`, document the new
-command, and add a test for it. Keep `scenarios/` working when the game
+input types, new kinds of output), extend the runner in `src/headless/`,
+document the new command at the top of `src/headless.rs`, and add a test for
+it. Keep `scenarios/` working when the game
 changes.
 
 1. **Logic:** write headless tests. Build an `App` with `MinimalPlugins`, add
@@ -156,7 +157,7 @@ changes.
    (screenshots are skipped there). Build the app with
    `headless::default_plugins(false)`, `GamePlugin` and `HeadlessPlugin`, step it
    until it exits, then assert on the world. See
-   `script_drives_the_fly_camera` in `src/headless.rs`; `headless::test_game`
+   `script_drives_the_fly_camera` in `src/headless/tests.rs`; `headless::test_game`
    builds that app (loading a smaller world) and `headless::settle` steps it
    until the world has loaded. CI has no GPU, so tests must use
    `rendering: false`.
@@ -282,8 +283,18 @@ documented in `docs/modding.md`; keep that file, the serde types in
   with its components, systems and tests. Put new features in new modules so
   parallel work doesn't collide. Touch `lib.rs` only to register the plugin.
 - `src/devtools.rs`: CLI flags, windowed screenshot mode and BRP.
-- `src/headless.rs`: headless mode and the scenario script runner
-  (`src/headless/memory.rs`: its `memory` and `lookups` commands).
+- `src/headless.rs` (and `src/headless/`): headless mode and the scenario
+  script runner; the script format is documented at the top of
+  `headless.rs`. `script.rs` parses scripts into `Command`s; `runner.rs`
+  is `HeadlessPlugin`, which steps through them a frame at a time and
+  exits when they end; `input.rs` the keys, characters and pointer
+  target that simulated input uses; `world_commands.rs` the commands
+  that set up a scene (`fill`, `pour`, `put`, `hotbar`, `camera`, ...)
+  and the `fluids` and `network` reports; `capture.rs` the offscreen
+  image, screenshots, `grain`, `timing` and `inspect`; `pipelines.rs`
+  failing the run on a broken shader; `memory.rs` the `memory` and
+  `lookups` commands; `test_app.rs` the test helpers (`test_game`,
+  `run_more`, `settle`); `tests.rs` end-to-end tests of whole scripts.
 - `src/world.rs` (and `src/world/`): the world's voxels, which
   everything else reads and writes: `Chunk` (`world/chunk.rs`, with the
   fluid amounts it keeps), `ChunkCoord`, the loaded chunks (`ChunkMap`,

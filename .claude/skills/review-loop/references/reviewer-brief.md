@@ -101,7 +101,7 @@ Performance:
 - Would each test fail if the behaviour it covers regressed? A test that passes either way is worth a finding. Use the mutant rule in the template to check the important ones.
 - Float assertions use a tolerance, and the tolerance is tight enough to catch the regression.
 - Visible behaviour: is there a scenario that shows it, and does it belong in `scenarios/` as a reusable check? Do the existing scenarios still run?
-- If the change extends the headless runner, are the new commands tested in `src/headless.rs` (parsing and behaviour) and documented in its module docs and `AGENTS.md`?
+- If the change extends the headless runner, are the new commands tested in `src/headless/` (parsing and behaviour) and documented in its module docs and `AGENTS.md`?
 
 ## Checklist: simplification and architecture
 
