@@ -110,6 +110,15 @@ changes.
    (the default is 16); CI runs every scenario in `scenarios/` that way,
    with `--radius 4`, so they must keep working with a small world. Write screenshots under `target/`. Keep reusable scenarios in
    `scenarios/`; put one-off ones in your scratch directory.
+
+   **Don't run every scenario locally to check they pass.** CI runs them
+   all on every push, unrendered and in parallel shards, in about a
+   minute and a half; rendering all of them locally takes 15 minutes or
+   more. `cargo test` also parses every scenario and checks the blocks
+   its `fill`s name, which catches the usual breakage (a renamed block).
+   Locally, render only the scenarios whose output your change affects,
+   to look at their screenshots or put them in a PR, and leave
+   pass/fail for the rest to CI.
 3. **End-to-end tests:** the same scripts run inside `cargo test` with no GPU
    (screenshots are skipped there). Build the app with
    `headless::default_plugins(false)`, `GamePlugin` and `HeadlessPlugin`, step it

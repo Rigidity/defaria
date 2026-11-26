@@ -140,10 +140,9 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo clippy --all-targets --locked --no-default-features -- -D warnings   # CI runs it; it's a check, not a second full build
 cargo test --locked
-for s in scenarios/*.txt; do cargo headless "$s" || echo "FAILED: $s"; done
 ```
 
-- Open the screenshots from the scenario runs (the new and changed scenarios at least) and confirm they still show what they should.
+- **Scenarios:** don't run all of `scenarios/` locally. CI runs every one on each push, unrendered, in about a minute and a half, and `cargo test` already checks that each one parses and fills with real blocks. Render only the scenarios whose output the change affects (the new and changed ones, and those that show what the change touches), open their screenshots and confirm they still show what they should. After pushing, check the CI run (`gh pr checks <n>`) and fix any scenario it fails.
 - CI installs Bevy's Linux dependencies and runs on Ubuntu with no GPU. Tests that pass locally but need a GPU, a window, an audio device or macOS-only behaviour will fail there; the end-to-end tests must use `rendering: false`.
 - If you changed `Cargo.toml` or `Cargo.lock`, make sure `--locked` passes, since CI uses it.
 - If these checks led to changes beyond formatting, say so in the report, since no reviewer saw them.
@@ -177,7 +176,7 @@ for s in scenarios/*.txt; do cargo headless "$s" || echo "FAILED: $s"; done
 - <confirmed findings left unfixed, if the loop stopped for no progress or ran out of rounds>
 
 ### Checks
-<each final check and whether it passed; the scenarios run and what the screenshots showed; anything CI runs that you couldn't>
+<each final check and whether it passed; the scenarios rendered locally and what the screenshots showed; the CI run's result, including its scenario shards>
 ```
 
 Show the most telling screenshot from the final playtest in the report with Markdown image syntax and its absolute path.
