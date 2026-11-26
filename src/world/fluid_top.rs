@@ -23,7 +23,9 @@ enum AroundCorner {
 /// blocks above the voxel's bottom. Each corner is at the average height
 /// of the voxels of the same fluid around it (the four that share its
 /// vertical edge, this one among them), or a full block if any of them
-/// has the same fluid above it. So a flat pool stays flat, a surface
+/// has the same fluid above it. The one diagonally across counts only if
+/// either voxel between it and this one holds the fluid too, so fluid
+/// that merely touches at a corner doesn't pull on it. So a flat pool stays flat, a surface
 /// slopes down toward where it flows, and two voxels of the same fluid
 /// side by side meet at the same heights, with no step between them.
 /// Each voxel's own height is sticky (see `sticky_step`), so the
@@ -68,9 +70,19 @@ impl FluidTop {
             std::array::from_fn(|z| voxel(IVec2::new(x as i32 - 1, z as i32 - 1)))
         });
         let corner = |x: usize, z: usize| {
+            // The voxel diagonally across the corner, and whether it's
+            // joined to this one through either voxel beside both: one
+            // that only touches at the corner doesn't count, or a pool
+            // would lean toward water it isn't connected to.
+            let diagonal = (2 * x, 2 * z);
+            let joined = around[diagonal.0][1] != AroundCorner::Other
+                || around[1][diagonal.1] != AroundCorner::Other;
             let (mut sum, mut count) = (0.0, 0);
             for column in [x, x + 1] {
                 for row in [z, z + 1] {
+                    if (column, row) == diagonal && !joined {
+                        continue;
+                    }
                     match around[column][row] {
                         AroundCorner::Covered => return 1.0,
                         AroundCorner::Surface(height) => {
@@ -161,6 +173,21 @@ mod tests {
             [top.corner(0, 0), top.corner(0, 1), top.corner(1, 0)],
             [0.5; 3]
         );
+        // Fluid touching only at a corner, with walls on both sides
+        // between, doesn't pull that corner: not a fuller voxel, not a
+        // column.
+        for diagonal in [Surface(1.0), Covered] {
+            let mut patch = [[Other; 3]; 3];
+            patch[1][1] = half;
+            patch[2][2] = diagonal;
+            assert_eq!(top_of(patch), FluidTop::flat(0.5));
+        }
+        // Joined through either side, it counts again.
+        let mut patch = [[Other; 3]; 3];
+        patch[1][1] = half;
+        patch[2][1] = half;
+        patch[2][2] = Surface(1.0);
+        assert_eq!(top_of(patch).corner(1, 1), 2.0 / 3.0);
         // A voxel that's a column itself is full all round.
         let mut patch = [[Other; 3]; 3];
         patch[1][1] = Covered;
