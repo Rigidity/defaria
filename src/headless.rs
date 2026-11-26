@@ -24,8 +24,10 @@
 //! | `scroll <lines>` | Turn the mouse wheel that many notches this frame: positive away from you (up), negative toward you. |
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
 //! | `grain` | Print a texture-noise number for this frame (see below). |
-//! | `inspect <Component>` | Print that component on every entity that has it. |
+//! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). |
+//! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
+//! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
@@ -101,7 +103,8 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockState, Content},
+    content::{BlockState, Content, FULL_FLUID},
+    fluid::FluidStats,
     fly_camera::{FlyCamera, MAX_PITCH},
     fog::ChunkFog,
     physics::Body,
@@ -109,6 +112,7 @@ use crate::{
     streaming::StreamingStatus,
     terrain::Voxels,
     view_bob::ViewBob,
+    voxel::Chunk,
 };
 
 /// Fixed time step for every headless frame.
@@ -208,6 +212,13 @@ pub enum Command {
         max: IVec3,
         block: String,
     },
+    Pour {
+        pos: IVec3,
+        fluid: String,
+        /// In blocks.
+        amount: f32,
+    },
+    Fluids,
     Camera {
         position: Vec3,
         /// Degrees left of north.
@@ -324,6 +335,22 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
                 block: args[6].to_string(),
             });
         }
+        "pour" => {
+            expect(5)?;
+            commands.push(Command::Pour {
+                pos: IVec3::new(
+                    parse_number(args[0])?,
+                    parse_number(args[1])?,
+                    parse_number(args[2])?,
+                ),
+                fluid: args[3].to_string(),
+                amount: parse_number(args[4])?,
+            });
+        }
+        "fluids" => {
+            expect(0)?;
+            commands.push(Command::Fluids);
+        }
         "camera" => {
             expect(5)?;
             commands.push(Command::Camera {
@@ -385,6 +412,8 @@ struct ScriptRunner {
     world_commands: Vec<Command>,
     /// Whether a `timing` report is due at the end of this frame.
     timing: bool,
+    /// Whether a `fluids` report is due at the end of this frame.
+    fluid_report: bool,
     /// Wall-clock frame times since the last `timing`.
     frame_times: Vec<Duration>,
     /// Captures requested but not yet delivered by the renderer.
@@ -406,6 +435,7 @@ impl ScriptRunner {
             && self.inspections.is_empty()
             && self.world_commands.is_empty()
             && !self.timing
+            && !self.fluid_report
     }
 }
 
@@ -542,7 +572,10 @@ fn run_script(
             Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
             Command::Grain => runner.captures.push(Capture::Grain),
             Command::Inspect(name) => runner.inspections.push(name),
-            Command::Fill { .. } | Command::Camera { .. } => runner.world_commands.push(command),
+            Command::Fill { .. } | Command::Pour { .. } | Command::Camera { .. } => {
+                runner.world_commands.push(command)
+            }
+            Command::Fluids => runner.fluid_report = true,
             Command::Timing => runner.timing = true,
             Command::Settle => {
                 runner.settling = Some(0);
@@ -560,6 +593,10 @@ fn apply_world_commands(world: &mut World) {
         let result = match command {
             Command::Fill { min, max, block } => world
                 .run_system_cached_with(fill, (min, max, block))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
+            Command::Pour { pos, fluid, amount } => world
+                .run_system_cached_with(pour, (pos, fluid, amount))
                 .map_err(|error| error.to_string())
                 .and_then(|result| result),
             Command::Camera {
@@ -630,6 +667,50 @@ fn fill(
         }
     }
     Ok(())
+}
+
+fn pour(
+    In((pos, id, amount)): In<(IVec3, String, f32)>,
+    content: Res<Content>,
+    mut voxels: Voxels,
+) -> Result<(), String> {
+    let state = fill_state(&content, &id).map_err(|error| format!("pour: {error}"))?;
+    if !content.state(state).is_fluid() {
+        return Err(format!("pour: `{id}` isn't a fluid"));
+    }
+    let units = (amount * FULL_FLUID as f32).round();
+    if !(1.0..=FULL_FLUID as f32).contains(&units) {
+        return Err(format!(
+            "pour: {amount} blocks is out of range; it must be over 0 and at most 1"
+        ));
+    }
+    voxels.set(pos, state);
+    voxels.set_fluid(pos, units as u16);
+    Ok(())
+}
+
+/// The `fluids` report: each fluid's total in the loaded world, in
+/// thousandths of a block, and the active voxels.
+fn fluid_report(world: &mut World) -> String {
+    let mut totals: std::collections::BTreeMap<String, u64> = default();
+    let mut chunks = world.query::<&Chunk>();
+    let content = world.resource::<Content>();
+    for chunk in chunks.iter(world) {
+        for index in 0..chunk.voxels().len() {
+            let pos = Chunk::position_of(index);
+            let amount = chunk.fluid_amount_at(pos, content);
+            if amount > 0 {
+                let name = &content.blocks[content.state(chunk.at(pos)).block].id;
+                *totals.entry(name.clone()).or_default() += amount as u64;
+            }
+        }
+    }
+    let stats = world.resource::<FluidStats>();
+    let mut line = format!("fluids: {} active", stats.active);
+    for (name, total) in totals {
+        line += &format!(", {name} {total}");
+    }
+    line
 }
 
 fn place_camera(
@@ -707,6 +788,9 @@ fn observe(world: &mut World) {
         if runner.timing {
             report_timing(&mut runner, frame);
         }
+    }
+    if std::mem::take(&mut world.resource_mut::<ScriptRunner>().fluid_report) {
+        println!("[frame {frame}] {}", fluid_report(world));
     }
     for name in inspections {
         match inspect(world, &name) {
@@ -901,9 +985,10 @@ fn inspect(world: &mut World, name: &str) -> Result<Vec<String>, String> {
         .ok_or_else(|| {
             format!("no reflected type named `{name}` (it may be ambiguous; try the full path)")
         })?;
-    let component = registration
-        .data::<ReflectComponent>()
-        .ok_or_else(|| format!("`{name}` isn't a component with #[reflect(Component)]"))?;
+    // Resources are components too, on an entity of their own.
+    let component = registration.data::<ReflectComponent>().ok_or_else(|| {
+        format!("`{name}` isn't a component or resource with #[reflect(Component)] or #[reflect(Resource)]")
+    })?;
 
     let mut entities = world.query::<EntityRef>();
     Ok(entities
@@ -1040,7 +1125,9 @@ mod tests {
              fill 3 9 -2 1 4 5 red_lamp\n\
              camera 1 2.5 3 90 -45\n\
              timing\n\
-             settle\n",
+             settle\n\
+             pour 4 -5 6 water 0.25\n\
+             fluids\n",
         )
         .unwrap();
         assert_eq!(
@@ -1070,6 +1157,12 @@ mod tests {
                 },
                 Command::Timing,
                 Command::Settle,
+                Command::Pour {
+                    pos: IVec3::new(4, -5, 6),
+                    fluid: "water".into(),
+                    amount: 0.25,
+                },
+                Command::Fluids,
             ]
         );
     }
@@ -1089,6 +1182,9 @@ mod tests {
         assert!(Script::parse("settle 5").is_err());
         assert!(Script::parse("cursor 4").is_err());
         assert!(Script::parse("scroll").is_err());
+        assert!(Script::parse("pour 1 2 3 water").is_err());
+        assert!(Script::parse("pour 1 2 3 water lots").is_err());
+        assert!(Script::parse("fluids all").is_err());
     }
 
     /// Runs the whole game with no GPU until the script ends, and returns
@@ -1317,6 +1413,90 @@ mod tests {
         assert!(exit.is_error());
     }
 
+    /// The amount of fluid in the voxel at `pos`.
+    fn fluid_at(app: &App, pos: IVec3) -> u16 {
+        let (coord, local) = ChunkCoord::split(pos);
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        chunk.fluid_amount_at(local, app.world().resource::<Content>())
+    }
+
+    /// `pour` puts fluid in a voxel through the game's own edit path, and
+    /// it flows from there: a block of water poured in a sealed trench
+    /// spreads along it, all of it still there.
+    #[test]
+    fn poured_water_spreads_and_keeps_all_of_itself() {
+        let (app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 60 22 52 stone\n\
+             fill 51 21 51 59 22 51 air\n\
+             pour 55 21 51 water 1\n\
+             wait 120\n\
+             fluids\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let row: Vec<u16> = (51..=59)
+            .map(|x| fluid_at(&app, IVec3::new(x, 21, 51)))
+            .collect();
+        assert_eq!(row.iter().map(|&a| a as u32).sum::<u32>(), 1000, "{row:?}");
+        assert!(row.iter().filter(|&&a| a > 0).count() >= 7, "{row:?}");
+    }
+
+    /// The `fluids` report counts each fluid in the loaded world: deep
+    /// underground, where there's no other water, just what was poured.
+    #[test]
+    fn the_fluids_report_counts_what_was_poured() {
+        let (mut app, exit) = run_game(
+            "camera 5000.5 -1000.5 5000.5 0 0\n\
+             settle\n\
+             fill 4990 -1001 4990 5010 -1000 5010 air\n\
+             pour 5000 -1000 5000 water 0.75\n\
+             wait 1\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let report = fluid_report(app.world_mut());
+        assert!(report.starts_with("fluids: "), "{report}");
+        assert!(report.ends_with(" active, defaria:water 750"), "{report}");
+    }
+
+    /// Pouring something that isn't a fluid, or no amount, fails the run.
+    #[test]
+    fn pouring_a_solid_or_nothing_fails_the_run() {
+        let (_, exit) = run_game("wait 2\npour 1 1 1 stone 1\nwait 1\n");
+        assert!(exit.is_error());
+        let (_, exit) = run_game("wait 2\npour 1 1 1 water 0\nwait 1\n");
+        assert!(exit.is_error());
+    }
+
+    /// Placing a block into water deletes the water in that voxel, and
+    /// wakes the water around it: water held back by a wall flows on once
+    /// the wall is gone.
+    #[test]
+    fn blocks_delete_fluid_and_edits_wake_it() {
+        let (app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 60 22 52 stone\n\
+             fill 51 21 51 59 22 51 air\n\
+             fill 55 21 51 55 21 51 stone\n\
+             fill 51 21 51 52 21 51 water\n\
+             wait 120\n\
+             fill 51 21 51 51 21 51 stone\n\
+             fill 55 21 51 55 21 51 air\n\
+             wait 240\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let row: Vec<u16> = (51..=59)
+            .map(|x| fluid_at(&app, IVec3::new(x, 21, 51)))
+            .collect();
+        assert_eq!(row[0], 0, "the stone took the water's place");
+        // What the stone took is counted, and the rest is all there.
+        let displaced = app.world().resource::<FluidStats>().displaced;
+        assert!(displaced > 0);
+        let total = row.iter().map(|&a| a as u64).sum::<u64>();
+        assert_eq!(total + displaced, 2000, "{row:?}");
+        assert!(row[8] > 0, "flowed past where the wall was: {row:?}");
+    }
+
     /// `cursor` puts the window's cursor where it says, and `scroll` turns
     /// the wheel, which while playing steps through the hotbar.
     #[test]
@@ -1394,7 +1574,7 @@ mod tests {
     fn the_game_draws_through_one_eye_view() {
         use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 
-        use crate::fly_camera::{EyeView, FOV};
+        use crate::fly_camera::{EyeView, FOV, NEAR};
 
         let mut app = play("wait 1\n");
         let world = app.world_mut();
@@ -1412,6 +1592,9 @@ mod tests {
         };
         assert!((projection.fov - FOV.to_radians()).abs() < 1e-6);
         assert_eq!(FOV, 70.0);
+        // Near enough to see a water surface the eyes are just off.
+        assert_eq!(projection.near, NEAR);
+        const { assert!(NEAR <= 0.01) };
         assert_eq!(view.get::<Tonemapping>(), Some(&Tonemapping::None));
         assert_eq!(view.get::<DebandDither>(), Some(&DebandDither::Disabled));
     }

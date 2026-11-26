@@ -1,12 +1,19 @@
-// Still water. It doesn't flow yet. Translucent and double-sided, so its
-// surface shows from underneath, and a fluid: the crosshair passes through
-// it and placing a block replaces it.
+// Water. Translucent and double-sided, so its surface shows from
+// underneath, and a fluid: the crosshair passes through it, placing a
+// block replaces it, and it falls and spreads (see `docs/modding.md`). It
+// runs quickly and spreads thin.
 {
   name: "Water",
-  model: "cube",
   render: "translucent",
   double_sided: true,
-  fluid: true,
+  fluid: {
+    rate: 20,
+    fall: 1,
+    film: 0.0625,
+    ripple: 0.002,
+    move_speed: 0.5,
+    view: { color: "#1d3f73", distance: 14 },
+  },
   textures: { all: "water" },
   weight: 1000,
 }

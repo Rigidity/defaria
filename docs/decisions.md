@@ -3,6 +3,81 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Fluid flows a voxel at a time (2026-11-25)
+
+**Context.** Fluid is volumetric: each voxel holds an amount, and flow
+moves amounts between neighbouring voxels (`src/fluid/flow.rs`). Only
+active voxels step, so settled fluid is free. Each fixed tick visits at
+most `FluidSettings::cells_per_tick` (4096) of them, a fluid's step is
+spread evenly over the ticks until its next one, and the step's changes
+are made all at once when it's done.
+
+**Decision.** Keep flow local: a voxel only ever looks at the voxels
+near it, and gives each lower side at most an eighth of the difference
+between them, so levels drift together rather than swinging back and
+forth. Where an eighth rounds down to nothing, a single unit trickles if it
+can't overshoot, so a wide pool settles within a drawn height of flat
+rather than in a slope. A surface counts as level once neighbours are
+within the fluid's `ripple`.
+
+**What's wrong with it.** Sideways, local flow is diffusion. Measured in
+`scenarios/sea-breach.txt` (a cut 64 long, 31 wide and 12 deep opened onto
+the sea): the sea pours in slowly, its front creeping rather than
+rushing, and after 20 seconds the cut is still mostly dry. The sea around
+the breach drops in a shallow cone, and that disturbance keeps spreading
+out across the loaded sea: 1,000
+active voxels after one second, 3,900 after twenty, under a microsecond
+each. Frame times stay in budget (mean 3.2 to 3.8 ms, worst under 10 ms,
+against 2.5 to 3 ms with the same cut on `main`, where water doesn't
+flow), but a longer drain wakes more and more of the sea until the budget
+caps it, and then flow slows down. A settled sea costs nothing: flying
+over one is as fast as on `main`. Small scenes take a while to come to
+rest too: the last units trickle for up to half a minute after water
+poured down `scenarios/fluid-flow.txt`'s stairs has visibly stopped,
+though they cost little. Chunks whose fluid changed are remeshed
+on the frame it changes, with no cap of their own; the breach didn't need
+one, but a flood across many chunks at once might.
+
+**What should replace it.** Treat a settled, connected body of a fluid as
+one reservoir with a shared level: water leaving it lowers the whole
+surface evenly, without stepping each voxel. That also makes a dam break
+fast, and it's what pumps drawing from a lake or an oil pool will need
+(#96 looks at this and other ways to speed flow up). If floods turn out to
+remesh too much at once, cap the chunks remeshed for fluid alone per
+frame. Films thinner than `film` stay on dry ground for good: see #97
+(creeping toward a drop) and #98 (evaporation).
+
+## A fluid's kind is its block; only its amount is stored apart (2026-11-25)
+
+**Context.** Water and lava are blocks with `fluid` set. A voxel of one
+also holds an amount, finer than any block property could hold.
+
+**Decision.** The voxel's block says which fluid it is, and the chunk
+keeps the amounts of the fluid voxels that aren't full in a sparse map
+(`Chunk::partial_at`; a fluid voxel not in it is full), saved in the chunk
+format. Generated seas are full, so they cost no extra memory or disk.
+
+**What's wrong with it.** A voxel holds one block, so it can't hold a
+fluid and a block that doesn't fill it, such as a slab in a pond
+(waterlogging, #75). And a fluid can only flow into air: flow's
+`cell_of` in `src/fluid.rs` gives every other block no room.
+
+**What should replace it.** Move the fluid's kind into the same per-voxel
+layer as its amount, so a voxel holds a block and a fluid, and let
+`cell_of` give a block that doesn't fill its voxel room for some fluid.
+
+## Fluid surfaces are flat steps (2026-11-25)
+
+**Context.** A fluid voxel is drawn at one of 16 heights by its amount.
+
+**Decision.** Its top is flat at that height, and its sides are cut to
+it.
+
+**What's wrong with it.** Flowing water looks like terraces rather than a
+slope.
+
+**What should replace it.** Average each corner's height with the voxels
+around it, as Minecraft does, so the surface slopes toward the flow.
 ## Images are named after their materials (2026-11-25)
 
 **Context.** Each soil (dirt, sand, gravel) has its own image, not just its

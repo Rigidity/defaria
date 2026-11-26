@@ -49,8 +49,8 @@ use crate::{
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
     save::{self, WorldFolder, WorldStore, region},
     terrain::{
-        AwaitingNeighbours, ChunkCoord, ChunkMap, MeshTask, Meshed, RemeshChunks, Terrain,
-        TerrainBlocks, TerrainSettings, VoxelChanged, spawn_chunk,
+        AwaitingNeighbours, ChunkCoord, ChunkMap, FluidChanged, MeshTask, Meshed, RemeshChunks,
+        Terrain, TerrainBlocks, TerrainSettings, VoxelChanged, spawn_chunk,
     },
     voxel::Chunk,
 };
@@ -305,10 +305,16 @@ fn open_world(
     });
 }
 
-/// Marks the chunks of edited voxels for saving.
-fn mark_edited_chunks(mut changes: MessageReader<VoxelChanged>, mut chunks: ResMut<Chunks>) {
-    for change in changes.read() {
-        let (coord, _) = ChunkCoord::split(change.pos);
+/// Marks the chunks of edited voxels for saving, including those whose
+/// fluid has moved.
+fn mark_edited_chunks(
+    mut changes: MessageReader<VoxelChanged>,
+    mut fluid_changes: MessageReader<FluidChanged>,
+    mut chunks: ResMut<Chunks>,
+) {
+    let changed = changes.read().map(|change| change.pos);
+    for pos in changed.chain(fluid_changes.read().map(|change| change.pos)) {
+        let (coord, _) = ChunkCoord::split(pos);
         if let Some(chunk) = chunks.loaded.get_mut(&coord.0) {
             chunk.edited = true;
         }
@@ -856,6 +862,30 @@ mod tests {
         move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
         move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
         assert_eq!(get(&mut app, pos), Some(block("lamp")));
+    }
+
+    /// A change to only the amount of fluid in a voxel marks its chunk
+    /// edited, so it's saved and comes back after unloading.
+    #[test]
+    fn fluid_amounts_survive_unloading() {
+        let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
+        let pos = IVec3::new(3, 50, -5);
+        let coord = ChunkCoord::split(pos).0.0;
+        set(&mut app, pos, block("water"));
+        // Away and back, so the chunk comes back from the save.
+        move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
+        move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
+        assert!(app.world().resource::<Chunks>().loaded[&coord].saved);
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| assert!(voxels.set_fluid(pos, 321)))
+            .unwrap();
+        app.update();
+        move_loader(&mut app, Vec3::new(8.0, 5000.0, 8.0));
+        move_loader(&mut app, Vec3::new(8.0, 40.0, 8.0));
+        let (coord, local) = ChunkCoord::split(pos);
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        assert_eq!(chunk.partial_at(local), Some(321));
     }
 
     /// Generated chunks are saved when they unload, edited or not, so the

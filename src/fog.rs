@@ -65,10 +65,16 @@ impl Plugin for FogPlugin {
             // where the camera is this frame.
             (follow_the_drawn_world, apply_fog)
                 .chain()
+                .in_set(FogSystems)
                 .after(TransformSystems::Propagate),
         );
     }
 }
+
+/// Where the fog is put on the cameras, in [`PostUpdate`]. Anything that
+/// changes it, such as the view from inside water, runs after.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FogSystems;
 
 /// How far the fog reaches from the camera at its full size, in blocks: the
 /// cylinder that ends it.
@@ -244,16 +250,27 @@ fn follow_the_drawn_world(
     fog.approach(reach.max(MIN_SCALE), time.delta_secs());
 }
 
-/// The [`DistanceFog`] falloff that carries `fog` to the shader. Bevy
-/// passes the atmospheric falloff's two vectors through unchanged; the
-/// shader reads them as `be` and `bi`.
+/// The [`DistanceFog`] falloff that carries `fog` to the shader.
 pub fn falloff(fog: &ChunkFog) -> FogFalloff {
     let FogShape { sideways, up, down } = fog.shape;
+    cylinder_falloff(Vec3::new(sideways, up, down) * fog.scale, FOG_START)
+}
+
+/// The [`DistanceFog`] falloff for fog that's clear up to `start` blocks
+/// from the camera and thick from `end`, in every direction.
+pub fn falloff_between(start: f32, end: f32) -> FogFalloff {
+    cylinder_falloff(Vec3::splat(end), start / end)
+}
+
+/// The falloff for fog ending at a cylinder `end` blocks out sideways, up
+/// and down, and starting `start` of the way there. Bevy passes the
+/// atmospheric falloff's two vectors to the shader unchanged, where they're
+/// read as `be` and `bi` (see `assets/shaders/voxel.wesl`): this is that
+/// encoding, not Bevy's atmospheric fog.
+fn cylinder_falloff(end: Vec3, start: f32) -> FogFalloff {
     FogFalloff::Atmospheric {
-        // Where the fog ends, sideways, up and down.
-        extinction: Vec3::new(sideways, up, down) * fog.scale,
-        // Where it starts, as a fraction of that.
-        inscattering: Vec3::new(FOG_START, 0.0, 0.0),
+        extinction: end,
+        inscattering: Vec3::new(start, 0.0, 0.0),
     }
 }
 
@@ -571,5 +588,20 @@ mod tests {
         let fog = *app.world().resource::<ChunkFog>();
         assert_eq!(fog.shape, FogShape::new(&further));
         assert!(fog.target < 1.0, "the new ring isn't drawn yet: {fog:?}");
+    }
+
+    /// Fog between two distances ends at the far one in every direction,
+    /// and starts the near one's share of the way there.
+    #[test]
+    fn fog_between_two_distances() {
+        let FogFalloff::Atmospheric {
+            extinction,
+            inscattering,
+        } = falloff_between(2.0, 8.0)
+        else {
+            panic!("not the cylinder encoding");
+        };
+        assert_eq!(extinction, Vec3::splat(8.0));
+        assert_eq!(inscattering.x, 0.25);
     }
 }

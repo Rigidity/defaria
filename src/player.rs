@@ -10,6 +10,11 @@
 //! - **F** with W sprints, a little faster on foot and twice as fast
 //!   flying. A sprinting jump gets a push forward. Sprinting and flying
 //!   widen the view (see `fov`).
+//! - **In a fluid** (water, lava) you move slower, by the fluid's
+//!   `move_speed`, the deeper you're in. Chest deep you swim: you sink
+//!   slowly, and **Space** swims up, so holding it keeps your head above
+//!   the surface, and swimming up against a wall climbs out over it. A
+//!   fall into deep water slows to a sink.
 //!
 //! The camera is the player's eyes. The player is a [`Body`] 0.6 blocks
 //! wide and 1.8 tall that climbs steps up to 0.6 (a slab) and collides
@@ -31,6 +36,7 @@ use bevy::{
 };
 
 use crate::{
+    fluid::FluidView,
     fly_camera::FlyCamera,
     physics::{Body, Shapes, WorldShapes, guard_edges},
 };
@@ -129,6 +135,24 @@ const FALL_FRICTION: f64 = 0.98;
 pub const JUMP_SPEED: f64 = 9.2474;
 /// A sprinting jump's push forward: 0.2 a tick.
 const SPRINT_JUMP_BOOST: f64 = 0.2 / TICK;
+/// How much of the body must be under a fluid to swim, rather than walk or
+/// fall: about chest deep.
+pub const SWIM_DEPTH: f64 = 0.6;
+/// How much must be under to keep swimming up, with Space held: less, so
+/// you rise until your feet are near enough the surface to step out onto
+/// a shore level with it.
+pub const SWIM_UP_DEPTH: f64 = 0.25;
+/// Swimming up, in blocks per second, in a fluid with a `move_speed` of 1;
+/// slower fluids scale it down.
+const SWIM_UP: f64 = 4.0;
+/// Sinking while swimming, likewise.
+const SINK: f64 = 2.0;
+/// How quickly swimming reaches its speed up or down, in seconds.
+const SWIM_RESPONSE: f64 = 0.25;
+/// Swimming up against a wall pushes up this fast, in blocks per second,
+/// while any of the body is in the fluid: a jump's speed, enough to climb
+/// out onto a side a block above the surface.
+const CLIMB_OUT_SPEED: f64 = JUMP_SPEED;
 
 pub struct PlayerPlugin;
 
@@ -242,6 +266,7 @@ fn move_player(
     keys: Res<ButtonInput<KeyCode>>,
     screens: Query<(), With<crate::ui::UiScreen>>,
     shapes: WorldShapes,
+    fluids: FluidView,
     mut players: Query<(&FlyCamera, &mut Player, &mut Body)>,
 ) {
     let dt = time.delta_secs_f64();
@@ -289,8 +314,22 @@ fn move_player(
         if player.sprinting && !player.flying {
             boost *= SPRINT;
         }
+        // In a fluid: slower the deeper, down to its `move_speed` waist
+        // deep; swimming once it's chest deep.
+        let (min, max) = (body.aabb().min, body.aabb().max);
+        let immersion = (!player.flying)
+            .then(|| fluids.immersion(body.position.x, body.position.z, min.y, max.y))
+            .flatten()
+            .and_then(|(kind, depth)| Some((fluids.fluid(kind)?.move_speed as f64, depth)));
+        let mut swim = None;
+        if let Some((move_speed, depth)) = immersion {
+            boost *= 1.0 - (1.0 - move_speed) * (depth * 2.0).min(1.0);
+            if depth >= if jump { SWIM_UP_DEPTH } else { SWIM_DEPTH } {
+                swim = Some(move_speed);
+            }
+        }
         let mut velocity = body.velocity;
-        if !player.flying && body.on_ground && jump {
+        if !player.flying && body.on_ground && jump && swim.is_none() {
             velocity.y = JUMP_SPEED;
             if player.sprinting {
                 velocity += forward * SPRINT_JUMP_BOOST;
@@ -305,6 +344,9 @@ fn move_player(
             let rise = jump as i8 as f64 - shift as i8 as f64;
             let rule = FLY_VERTICAL;
             drift(velocity.y, rule.accel() * rise, rule.decay(), dt)
+        } else if let Some(move_speed) = swim {
+            let target = if jump { SWIM_UP } else { -SINK } * move_speed;
+            drift(velocity.y, target / SWIM_RESPONSE, 1.0 / SWIM_RESPONSE, dt)
         } else {
             let decay = decay(FALL_FRICTION);
             drift(velocity.y, -TERMINAL_SPEED * decay, decay, dt)
@@ -320,7 +362,14 @@ fn move_player(
             }
             motion = guarded;
         }
+        let before = body.position;
         body.advance(motion, velocity, &shapes);
+        // Swimming up into a wall climbs out over it.
+        let moved = body.position - before;
+        let blocked = (moved.xz() - motion.xz()).length() > 1e-6;
+        if immersion.is_some_and(|(_, depth)| depth > 0.0) && jump && blocked {
+            body.velocity.y = body.velocity.y.max(CLIMB_OUT_SPEED);
+        }
         if player.flying && body.on_ground {
             player.flying = false;
         }
@@ -911,5 +960,94 @@ pub(crate) mod tests {
         hold(&mut app, &[KeyCode::KeyW]);
         run(&mut app, 1.0);
         assert_eq!(body(&app, player).position, feet);
+    }
+
+    /// Stone below `floor`, then water up to (not including) `top`.
+    fn pool(floor: i32, top: i32) -> impl Fn(IVec3) -> BlockState {
+        move |pos| {
+            if pos.y < floor {
+                block("stone")
+            } else if pos.y < top {
+                block("water")
+            } else {
+                BlockState::AIR
+            }
+        }
+    }
+
+    /// Water half as deep as the player slows walking to its
+    /// `move_speed`: half.
+    #[test]
+    fn wading_is_slower() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, pool(4, 5));
+        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 15.0));
+        run(&mut app, 0.1);
+        hold(&mut app, &[KeyCode::KeyW]);
+        run(&mut app, 1.0);
+        let start = body(&app, player).position;
+        run(&mut app, 0.5);
+        let moved = body(&app, player).position - start;
+        assert!((moved.z / 0.5 + WALK.speed * 0.5).abs() < 0.01, "{moved}");
+    }
+
+    /// In deep water the player sinks slowly, and holding Space swims up to
+    /// the surface and stays there, feet near enough it to step out.
+    #[test]
+    fn swimming_sinks_slowly_and_space_swims_up() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, pool(0, 12));
+        let player = spawn(&mut app, DVec3::new(8.5, 8.0, 8.5));
+        run(&mut app, 2.0);
+        let sinking = body(&app, player).velocity.y;
+        assert!((sinking + SINK * 0.5).abs() < 0.05, "sinks at {sinking}");
+
+        hold(&mut app, &[KeyCode::Space]);
+        run(&mut app, 6.0);
+        let mut lowest = f64::MAX;
+        let mut highest = f64::MIN;
+        for _ in 0..120 {
+            run(&mut app, FRAME.as_secs_f64());
+            let feet = body(&app, player).position.y;
+            lowest = lowest.min(feet);
+            highest = highest.max(feet);
+        }
+        // The surface is at 12. Floating there, the feet stay under it, but
+        // within a step of it.
+        assert!(highest < 12.0, "{highest}");
+        assert!(lowest > 12.0 - STEP_HEIGHT - 0.05, "{lowest}");
+    }
+
+    /// Swimming up against the side of a pool, its top a block above the
+    /// water, climbs out onto it.
+    #[test]
+    fn swimming_into_a_wall_climbs_out() {
+        // Water below 12 for z under 12, and stone up to 13 beyond.
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, |pos: IVec3| {
+            if pos.y < 0 || (pos.z >= 12 && pos.y < 13) {
+                block("stone")
+            } else if pos.y < 12 {
+                block("water")
+            } else {
+                BlockState::AIR
+            }
+        });
+        let player = spawn(&mut app, DVec3::new(8.5, 8.0, 8.5));
+        // Facing +Z.
+        app.world_mut().get_mut::<FlyCamera>(player).unwrap().yaw = std::f32::consts::PI;
+        hold(&mut app, &[KeyCode::Space, KeyCode::KeyW]);
+        run(&mut app, 6.0);
+        let feet = body(&app, player).position;
+        assert!(feet.z > 12.3 && feet.y >= 13.0, "{feet}");
+    }
+
+    /// A long fall into deep water slows to a sink rather than hitting the
+    /// bottom at full speed.
+    #[test]
+    fn deep_water_breaks_a_fall() {
+        let mut app = app(IVec3::new(8, 8, 8), FRAME, pool(-8, 12));
+        let player = spawn(&mut app, DVec3::new(8.5, 22.0, 8.5));
+        run(&mut app, 2.0);
+        let body = body(&app, player);
+        assert!(body.position.y < 12.0, "in the water: {}", body.position.y);
+        assert!(body.velocity.y > -3.0, "slowed: {}", body.velocity.y);
     }
 }

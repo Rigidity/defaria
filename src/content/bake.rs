@@ -15,11 +15,12 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use serde::de::DeserializeOwned;
 
 use super::{
-    AIR, BakedFace, Block, BlockBox, BlockState, Content, Direction, Item, ItemStateInfo,
-    MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Placement, Property, State, Texture,
-    TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*, state_count,
+    AIR, BakedFace, Block, BlockBox, BlockState, Content, Direction, FULL_FLUID, Fluid, Item,
+    ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Placement, Property,
+    State, Texture, TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*,
+    state_count,
 };
-use crate::block_texture::Palette;
+use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
 
 /// The kinds of definition, each in its own folder.
 #[derive(Debug, Clone, Copy)]
@@ -232,6 +233,23 @@ fn parse_file(
         Kind::Items => defs.items.push(def(id, namespace, file, text)?),
     }
     Ok(())
+}
+
+/// The box every fluid is drawn as (`fluid_box.json5`), built into the
+/// engine rather than taken from a mod.
+fn fluid_box() -> &'static Model {
+    static BOX: std::sync::LazyLock<Model> = std::sync::LazyLock::new(|| {
+        let def: ModelDef =
+            json5::from_str(include_str!("fluid_box.json5")).expect("the fluid box is valid JSON5");
+        model(&Def {
+            id: "fluid box".into(),
+            namespace: String::new(),
+            file: "src/content/fluid_box.json5".into(),
+            def,
+        })
+        .expect("the fluid box is a valid model")
+    });
+    &BOX
 }
 
 /// A palette from 2 to 8 hex colors, darkest first.
@@ -1218,14 +1236,28 @@ fn add_block(
         None,
     )?;
 
+    // A fluid is drawn as a box of its height, by the engine.
+    if block.fluid.is_some() {
+        let named = block.model.is_some() || block.variants.iter().any(|v| v.model.is_some());
+        if named {
+            return Err("a fluid has no `model`: it's drawn as a box as high as it's full".into());
+        }
+        if block.rotate.is_some() || block.variants.iter().any(|v| v.rotate.is_some()) {
+            return Err("a fluid can't be rotated".into());
+        }
+    }
+
     // Each state's property values, look and model, last property fastest.
     let mut looks = Vec::with_capacity(count);
     for (index, values) in combinations(&properties) {
         let look = look(block, &whens, &index);
-        let model = look
-            .model(&values, &def.namespace, content)
-            .map_err(|error| in_state(&values, error))?
-            .clone();
+        let model = if block.fluid.is_some() {
+            fluid_box().clone()
+        } else {
+            look.model(&values, &def.namespace, content)
+                .map_err(|error| in_state(&values, error))?
+                .clone()
+        };
         looks.push((index, values, look, model));
     }
     // A slot is skipped where the state's model doesn't have it, so a
@@ -1381,6 +1413,7 @@ fn bake_state(
             "light level {level} is too bright; the most is {MAX_LIGHT}"
         ));
     }
+    let fluid = def.fluid.as_ref().map(bake_fluid).transpose()?;
     // Turns a point in the block about the block's center.
     let turn = |p: Vec3| rotation * (p - Vec3::splat(0.5)) + Vec3::splat(0.5);
     let rotate_direction = |d: Direction| {
@@ -1422,7 +1455,11 @@ fn bake_state(
         .occludes
         .iter()
         .fold(0, |bits, &d| bits | rotate_direction(d).bit());
-    let boxes = if def.fluid { &[][..] } else { &model.collision };
+    let boxes = if def.fluid.is_some() {
+        &[][..]
+    } else {
+        &model.collision
+    };
     let collision = boxes
         .iter()
         .map(|b| {
@@ -1442,10 +1479,57 @@ fn bake_state(
         occludes,
         light,
         render: look.render.unwrap_or_default(),
-        fluid: def.fluid,
+        fluid,
         double_sided: def.double_sided,
         hardness,
         weight,
+    })
+}
+
+/// A block's `fluid`, with its amounts turned from blocks into
+/// [`FULL_FLUID`] units.
+fn bake_fluid(def: &FluidDef) -> Result<Fluid, String> {
+    let units = |name: &str, blocks: f32| -> Result<u16, String> {
+        if !(0.0..=1.0).contains(&blocks) {
+            return Err(format!(
+                "fluid `{name}` is {blocks}; it must be from 0 to 1 block"
+            ));
+        }
+        Ok((blocks * FULL_FLUID as f32).round() as u16)
+    };
+    if !(def.rate > 0.0 && def.rate.is_finite()) {
+        return Err(format!("fluid `rate` is {}; it must be above 0", def.rate));
+    }
+    if !(0.0..=1.0).contains(&def.move_speed) {
+        return Err(format!(
+            "fluid `move_speed` is {}; it must be from 0 to 1",
+            def.move_speed
+        ));
+    }
+    if !(def.view.distance > 0.0 && def.view.distance.is_finite()) {
+        return Err(format!(
+            "fluid view `distance` is {}; it must be above 0",
+            def.view.distance
+        ));
+    }
+    let ripple = units("ripple", def.ripple)?;
+    if ripple < MIN_RIPPLE {
+        return Err(format!(
+            "fluid `ripple` is {}; it must be at least {}, so that levelling off ends",
+            def.ripple,
+            MIN_RIPPLE as f32 / FULL_FLUID as f32
+        ));
+    }
+    let color = Srgba::hex(&def.view.color)
+        .map_err(|_| format!("`{}` isn't a hex color", def.view.color))?;
+    Ok(Fluid {
+        rate: def.rate,
+        fall: units("fall", def.fall)?.max(1),
+        film: units("film", def.film)?,
+        ripple,
+        move_speed: def.move_speed,
+        view_color: color.into(),
+        view_distance: def.view.distance,
     })
 }
 
@@ -1838,6 +1922,34 @@ mod tests {
         assert!(!content.state(crate::content::BlockState::AIR).is_opaque());
     }
 
+    /// A block's `fluid`, for tests that only need it to be a fluid.
+    pub(crate) const TEST_FLUID: &str = r##"fluid: {
+        rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5,
+        view: { color: "#203060", distance: 12 },
+    }"##;
+
+    /// A fluid's amounts are turned from blocks into thousandths, and a
+    /// `fall` too small to move anything moves one.
+    #[test]
+    fn fluid_amounts_are_baked_to_thousandths() {
+        let content = content(&[(
+            "blocks/pool.json5",
+            r##"{ textures: { all: "a" }, fluid: {
+                rate: 4, fall: 0.0001, film: 0.25, ripple: 0.05, move_speed: 0.3,
+                view: { color: "#102030", distance: 3 },
+            } }"##,
+        )]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let state = content.state(content.default_state("test:pool").unwrap());
+        let fluid = state.fluid.as_ref().unwrap();
+        assert_eq!((fluid.fall, fluid.film, fluid.ripple), (1, 250, 50));
+        assert_eq!(
+            (fluid.rate, fluid.move_speed, fluid.view_distance),
+            (4.0, 0.3, 3.0)
+        );
+        assert_eq!(fluid.view_color, Srgba::hex("#102030").unwrap().into());
+    }
+
     /// `render` says how a block's faces are drawn (opaque unless it says
     /// otherwise), and variants replace it. A see-through block lets light
     /// through its covered sides, and its covered sides hide only the
@@ -1861,15 +1973,15 @@ mod tests {
             ),
             (
                 "blocks/pool.json5",
-                r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
+                &format!(r#"{{ textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
             ),
             (
                 "blocks/tar.json5",
-                r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
+                &format!(r#"{{ textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
             ),
             (
                 "blocks/deep.json5",
-                r#"{ model: "pair", textures: { top: "a", bottom: "a" }, fluid: true }"#,
+                &format!(r#"{{ textures: {{ all: "a" }}, {TEST_FLUID} }}"#),
             ),
             (
                 "blocks/box.json5",
@@ -1891,9 +2003,9 @@ mod tests {
         }
         assert!(content.state(solid).blocks_light(Direction::Up));
         let pool = content.default_state("test:pool").unwrap();
-        assert!(content.state(pool).fluid && !content.state(solid).fluid);
+        assert!(content.state(pool).is_fluid() && !content.state(solid).is_fluid());
         assert_eq!(render(pool), Render::Opaque);
-        // A fluid has no collision, though its model has.
+        // A fluid has no collision.
         let collision = |id| &content.state(content.default_state(id).unwrap()).collision;
         assert_eq!(collision("test:box"), &[BlockBox::FULL]);
         assert!(collision("test:deep").is_empty());
@@ -2700,6 +2812,56 @@ mod tests {
             ),
             ("blocks/defaria:x.json5", "{}", "must be"),
             (
+                "blocks/x.json5",
+                r##"{ model: "quad", textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "a fluid has no `model`",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ rotate: [0, 90, 0], textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "a fluid can't be rotated",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 0, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `rate` is 0; it must be above 0",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1.5, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `fall` is 1.5; it must be from 0 to 1 block",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: -0.1, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `film` is -0.1",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.001, move_speed: 0.5, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `ripple` is 0.001; it must be at least 0.002",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 2, view: { color: "#203060", distance: 12 } } }"##,
+                "fluid `move_speed` is 2",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 0 } } }"##,
+                "fluid view `distance` is 0",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "blue", distance: 12 } } }"##,
+                "`blue` isn't a hex color",
+            ),
+            (
+                "blocks/x.json5",
+                r##"{ textures: { all: "a" }, fluid: { rate: 10, fall: 1, film: 0.06, ripple: 0.01, move_speed: 0.5, view: { color: "#203060", distance: 12 }, depth: 3 } }"##,
+                "unknown field `depth`",
+            ),
+            (
                 "models/x.json5",
                 r#"{ slots: { a: null }, faces: [{ texture: "a", vertices: [
                     { pos: [0, 0, 0], uv: [0, 0] }, { pos: [1, 0, 0], uv: [0, 0] },
@@ -3317,14 +3479,16 @@ mod tests {
         assert_eq!((air.hardness, air.weight), (0.0, 0.0));
         for state in &content.states[1..] {
             assert!(
-                state.hardness > 0.0 || state.fluid,
+                state.hardness > 0.0 || state.is_fluid(),
                 "{} hardness",
                 state.name
             );
             assert!(state.weight > 0.0, "{} weight", state.name);
         }
         for info in &content.item_states {
-            let fluid = info.block.is_some_and(|state| content.state(state).fluid);
+            let fluid = info
+                .block
+                .is_some_and(|state| content.state(state).is_fluid());
             assert!(info.hardness > 0.0 || fluid, "{} hardness", info.name);
             assert!(info.weight > 0.0, "{} weight", info.name);
             if let Some(state) = info.block {

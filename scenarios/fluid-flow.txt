@@ -1,0 +1,39 @@
+# Water poured at the top of a staircase cut into a block of stone runs
+# down the steps into a pit at the bottom and fills it to a level surface,
+# and lava poured at one end of a trench runs a little way and stops,
+# still thick. The `fluids` reports show that none is made or lost: the
+# totals before and after match.
+# Run: cargo headless scenarios/fluid-flow.txt
+camera 31 70 44 0 -55
+settle
+fill 20 30 20 44 50 32 stone
+# The staircase: a channel along +X, a step down every two blocks.
+fill 22 45 23 23 50 27 air
+fill 24 44 23 25 50 27 air
+fill 26 43 23 27 50 27 air
+fill 28 42 23 29 50 27 air
+fill 30 41 23 31 50 27 air
+fill 32 40 23 33 50 27 air
+# The pit at the bottom.
+fill 34 36 22 40 50 28 air
+# Forty blocks of water at the top of the stairs.
+fill 22 45 23 23 48 27 water
+# A trench, with four blocks of lava at one end.
+fill 22 49 29 33 50 31 air
+fill 22 49 30 22 50 31 lava
+wait 1
+fluids
+screenshot target/scenarios/fluid-flow/0-poured.png
+wait 30
+screenshot target/scenarios/fluid-flow/1-running.png
+wait 90
+screenshot target/scenarios/fluid-flow/2-filling.png
+# The last of it trickles to a stop within half a minute.
+wait 1800
+fluids
+inspect FluidStats
+screenshot target/scenarios/fluid-flow/3-settled.png
+wait 1
+camera 37 64 30 0 -80
+wait 2
+screenshot target/scenarios/fluid-flow/4-pit.png

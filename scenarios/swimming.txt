@@ -1,0 +1,35 @@
+# Swimming in a pool built in the air, six blocks deep, with its surface
+# level with the stone around it. Underwater the view is fogged blue and
+# the surface shows from below. The player sinks slowly, swims up with
+# Space, floats at the surface, and swims out onto the side.
+# Run: cargo headless scenarios/swimming.txt
+camera 27 60 40 0 -30
+settle
+fill 19 40 19 35 46 35 stone
+fill 20 41 20 34 46 34 water
+fill 19 47 19 35 47 35 air
+wait 1
+screenshot target/scenarios/swimming/0-pool.png
+wait 1
+# Into the water, eyes three blocks under, and stop flying.
+camera 27 44 27 0 0
+hold Space 2
+wait 3
+hold Space 2
+wait 30
+screenshot target/scenarios/swimming/1-underwater.png
+inspect Player
+inspect Body
+# Swim up and float.
+press Space
+wait 240
+inspect Body
+screenshot target/scenarios/swimming/3-floating.png
+# Swim north and out onto the side.
+press KeyW
+wait 170
+release KeyW
+release Space
+wait 30
+inspect Body
+screenshot target/scenarios/swimming/4-out.png

@@ -1,10 +1,17 @@
-// Still lava. It doesn't flow yet. Opaque and glowing, and a fluid like
-// water: you can walk into it, so it doesn't hide the faces around it, and
-// it's double-sided, so its surface shows from inside.
+// Lava. Opaque and glowing, and a fluid like water: you can walk into it,
+// so it doesn't hide the faces around it, and it's double-sided, so its
+// surface shows from inside. It's thick: it flows slowly, and stops
+// spreading while it's still a quarter of a block deep.
 {
   name: "Lava",
-  model: "cube",
-  fluid: true,
+  fluid: {
+    rate: 2,
+    fall: 0.5,
+    film: 0.25,
+    ripple: 0.05,
+    move_speed: 0.25,
+    view: { color: "#c2460c", distance: 2 },
+  },
   double_sided: true,
   textures: { all: "lava" },
   light: [15, 10, 4],

@@ -200,6 +200,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<crate::terrain::FluidChanged>()
             .add_observer(give_the_camera_mining)
             .add_systems(Update, (arm, mine).chain());
         app.world_mut().spawn((

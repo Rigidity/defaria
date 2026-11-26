@@ -39,11 +39,12 @@
 use bevy::{
     asset::RenderAssetUsages,
     mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexFormat},
+    platform::collections::HashMap,
     prelude::*,
 };
 
 use crate::{
-    content::{BakedFace, BlockState, Content, MAX_LIGHT, Render},
+    content::{BakedFace, BlockState, Content, Direction, FULL_FLUID, MAX_LIGHT, Render, Vertex},
     light::{ChunkLight, Light},
 };
 
@@ -87,33 +88,107 @@ impl Plugin for VoxelPlugin {
 
 /// A cube of voxels. Voxel `(x, y, z)` occupies the unit cube from
 /// `(x, y, z)` to `(x + 1, y + 1, z + 1)` in the chunk's local space.
+///
+/// A fluid voxel (a block with `fluid` set) also holds an amount of its
+/// fluid, from 1 to [`FULL_FLUID`]. Most fluid is full, so only the amounts
+/// of the voxels that aren't are kept, in `partial`; a fluid voxel that
+/// isn't there is full. Setting a voxel to another block forgets its
+/// amount.
 #[derive(Component, Reflect, Debug, Clone, PartialEq, Eq)]
 #[reflect(Component)]
 #[require(ChunkLight)]
 pub struct Chunk {
     voxels: Vec<BlockState>,
+    /// Each fluid voxel that isn't full, by voxel index: its amount in the
+    /// low [`AMOUNT_BITS`] bits, and above them the height it's drawn at
+    /// (see [`sticky_step`]), which fits in the bits left over.
+    partial: HashMap<u16, u16>,
 }
+
+/// The bits of a [`Chunk`]'s kept fluid that hold the amount: enough for
+/// anything under [`FULL_FLUID`].
+const AMOUNT_BITS: u32 = 10;
+const AMOUNT_MASK: u16 = (1 << AMOUNT_BITS) - 1;
+const _: () = assert!(FULL_FLUID <= AMOUNT_MASK + 1 && FLUID_STEPS < 1 << (16 - AMOUNT_BITS));
 
 impl Default for Chunk {
     fn default() -> Self {
-        Self {
-            voxels: vec![BlockState::AIR; CHUNK_VOLUME],
-        }
+        Self::filled(BlockState::AIR)
     }
 }
 
 impl Chunk {
-    /// A chunk with these voxels, in [`Chunk::index_of`] order. `None`
-    /// unless there are exactly [`CHUNK_VOLUME`].
+    /// A chunk with these voxels, in [`Chunk::index_of`] order, any fluid
+    /// in them full. `None` unless there are exactly [`CHUNK_VOLUME`].
     pub fn from_voxels(voxels: Vec<BlockState>) -> Option<Self> {
-        (voxels.len() == CHUNK_VOLUME).then_some(Self { voxels })
+        (voxels.len() == CHUNK_VOLUME).then(|| Self {
+            voxels,
+            partial: HashMap::new(),
+        })
     }
 
     /// A chunk of one block throughout.
     pub fn filled(state: BlockState) -> Self {
         Self {
             voxels: vec![state; CHUNK_VOLUME],
+            partial: HashMap::new(),
         }
+    }
+
+    /// The amount of fluid kept for the voxel at a chunk-local position:
+    /// `None` when none is kept, which for a fluid voxel means it's full.
+    /// See [`Chunk::fluid_amount_at`] for the amount itself.
+    pub fn partial_at(&self, pos: IVec3) -> Option<u16> {
+        self.partial
+            .get(&(Self::index_of(pos) as u16))
+            .map(|&kept| kept & AMOUNT_MASK)
+    }
+
+    /// Which of the [`FLUID_STEPS`] heights the fluid voxel at a
+    /// chunk-local position is drawn at (see [`sticky_step`]).
+    pub fn fluid_step_at(&self, pos: IVec3) -> u16 {
+        self.partial
+            .get(&(Self::index_of(pos) as u16))
+            .map_or(FLUID_STEPS, |&kept| kept >> AMOUNT_BITS)
+    }
+
+    /// The amount of fluid in the voxel at a chunk-local position: 0 if it
+    /// isn't a fluid.
+    pub fn fluid_amount_at(&self, pos: IVec3, content: &Content) -> u16 {
+        fluid_amount(content, self.at(pos), self.partial_at(pos))
+    }
+
+    /// Sets the amount of fluid in the voxel at a chunk-local position,
+    /// which should be a fluid, from 1 to [`FULL_FLUID`], and returns
+    /// whether the height it's drawn at changed (see [`sticky_step`]).
+    pub fn set_fluid_at(&mut self, pos: IVec3, amount: u16) -> bool {
+        self.store_fluid(pos, amount, self.fluid_step_at(pos))
+    }
+
+    /// [`Chunk::set_fluid_at`] for fluid that's just arrived in the voxel,
+    /// with no height drawn before to stick to: it's drawn at its amount's
+    /// own height (see [`fluid_step`]).
+    pub fn start_fluid_at(&mut self, pos: IVec3, amount: u16) -> bool {
+        self.store_fluid(pos, amount, fluid_step(amount))
+    }
+
+    fn store_fluid(&mut self, pos: IVec3, amount: u16, before: u16) -> bool {
+        debug_assert!((1..=FULL_FLUID).contains(&amount), "fluid amount {amount}");
+        let index = Self::index_of(pos) as u16;
+        if amount >= FULL_FLUID {
+            self.partial.remove(&index);
+            return before != FLUID_STEPS;
+        }
+        let step = sticky_step(amount, before);
+        self.partial.insert(index, amount | step << AMOUNT_BITS);
+        step != before
+    }
+
+    /// Every voxel that isn't full of fluid, by index, with its amount.
+    pub fn partial_fluid(&self) -> impl Iterator<Item = (usize, u16)> + '_ {
+        self.partial
+            .iter()
+            .map(|(&index, &kept)| (index as usize, kept & AMOUNT_MASK))
     }
 
     /// Every voxel, in [`Chunk::index_of`] order.
@@ -126,8 +201,14 @@ impl Chunk {
         self.voxels[Self::index(x, y, z)]
     }
 
+    /// Sets a voxel's block. A different block than it was forgets its
+    /// amount of fluid: a fluid set this way is full.
     pub fn set(&mut self, x: usize, y: usize, z: usize, state: BlockState) {
-        self.voxels[Self::index(x, y, z)] = state;
+        let index = Self::index(x, y, z);
+        if self.voxels[index] != state {
+            self.voxels[index] = state;
+            self.partial.remove(&(index as u16));
+        }
     }
 
     /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
@@ -137,7 +218,7 @@ impl Chunk {
 
     /// [`Chunk::set`] for a chunk-local position given as an `IVec3`.
     pub fn set_at(&mut self, pos: IVec3, state: BlockState) {
-        self.voxels[Self::index_of(pos)] = state;
+        self.set(pos.x as usize, pos.y as usize, pos.z as usize, state);
     }
 
     /// The voxel at an index from [`Chunk::index_of`].
@@ -192,6 +273,87 @@ impl Chunk {
     }
 }
 
+/// How many heights a fluid's surface is drawn at, from a sixteenth of a
+/// block up to a full block.
+pub const FLUID_STEPS: u16 = 16;
+
+/// Which of the [`FLUID_STEPS`] heights `amount` of fluid is drawn at: the
+/// next one up, so even a little shows. 0 for no fluid.
+pub fn fluid_step(amount: u16) -> u16 {
+    (amount.min(FULL_FLUID) as u32 * FLUID_STEPS as u32).div_ceil(FULL_FLUID as u32) as u16
+}
+
+/// The height fluid is drawn at, as one of the [`FLUID_STEPS`], given the
+/// one it was drawn at before: that one still, while `amount` is within
+/// half a step of it, and otherwise the amount's own [`fluid_step`]. Any
+/// fluid at all is drawn at least a step high. Flow
+/// nudges amounts by a few thousandths as it levels off, and without this,
+/// an amount at the edge between two heights would make the surface
+/// blink between them.
+pub fn sticky_step(amount: u16, before: u16) -> u16 {
+    let step = fluid_step(amount);
+    let size = FULL_FLUID as f32 / FLUID_STEPS as f32;
+    let (low, high) = ((before as f32 - 1.5) * size, (before as f32 + 0.5) * size);
+    if step != before && (amount as f32) > low && (amount as f32) <= high {
+        before
+    } else {
+        step
+    }
+}
+
+/// How high a voxel's fluid surface is, in blocks above the voxel's
+/// bottom: the whole voxel if the same fluid is above it (`covered`), so a
+/// column has no seams, and otherwise the height it's drawn at, one of the
+/// [`FLUID_STEPS`] (see [`Chunk::fluid_step_at`]). This is the surface you
+/// see, swim at, and see the fog start at.
+pub fn fluid_surface(step: u16, covered: bool) -> f32 {
+    if covered {
+        1.0
+    } else {
+        step as f32 / FLUID_STEPS as f32
+    }
+}
+
+/// The amount of fluid in a voxel of block `state`, with `partial` the
+/// amount its chunk keeps for it (see [`Chunk`]): 0 if it isn't a fluid.
+pub fn fluid_amount(content: &Content, state: BlockState, partial: Option<u16>) -> u16 {
+    if content.state(state).is_fluid() {
+        partial.unwrap_or(FULL_FLUID)
+    } else {
+        0
+    }
+}
+
+/// `face` (of a block from 0 to 1 high) squeezed to run from `low` to
+/// `high` up the block, with its texture cut off rather than squashed: a
+/// vertex keeps the texture coordinate it had at its new height, along the
+/// face's vertical edge.
+fn cut_face(face: &BakedFace, low: f32, high: f32) -> BakedFace {
+    let vertices = face
+        .vertices
+        .iter()
+        .map(|vertex| {
+            let y = low + vertex.pos.y * (high - low);
+            let partner = face
+                .vertices
+                .iter()
+                .find(|other| other.pos.xz() == vertex.pos.xz() && other.pos.y != vertex.pos.y);
+            let uv = partner.map_or(vertex.uv, |other| {
+                let along = (y - vertex.pos.y) / (other.pos.y - vertex.pos.y);
+                vertex.uv.lerp(other.uv, along)
+            });
+            Vertex {
+                pos: vertex.pos.with_y(y),
+                uv,
+            }
+        })
+        .collect();
+    BakedFace {
+        vertices,
+        ..face.clone()
+    }
+}
+
 /// The axis an axis-aligned vector points along: 0, 1 or 2 for X, Y or Z.
 pub fn axis_of(direction: IVec3) -> usize {
     if direction.x != 0 {
@@ -230,12 +392,16 @@ pub fn touching_offsets(local: IVec3) -> impl Iterator<Item = IVec3> {
 /// Voxels along each axis of a [`Neighborhood`].
 const PADDED: usize = CHUNK_SIZE + 2;
 
-/// A chunk's blocks and light and the layer of voxels around it, copied out
-/// for meshing. Positions are chunk-local, from -1 to [`CHUNK_SIZE`].
+/// A chunk's blocks, fluid and light and the layer of voxels around it,
+/// copied out for meshing. Positions are chunk-local, from -1 to
+/// [`CHUNK_SIZE`].
 #[derive(Debug, Clone)]
 pub struct Neighborhood {
     blocks: Vec<BlockState>,
     light: Vec<Light>,
+    /// The height each voxel's fluid is drawn at (see
+    /// [`Chunk::fluid_step_at`]), for the voxels that are fluid.
+    steps: Vec<u16>,
 }
 
 impl Neighborhood {
@@ -248,33 +414,60 @@ impl Neighborhood {
             chunk(IVec3::new(i % 3, i / 3 % 3, i / 9) - IVec3::ONE)
         });
         let size = IVec3::splat(CHUNK_SIZE as i32);
-        Self::from_fn(|pos| {
+        Self::with_steps(|pos| {
             let offset = pos.div_euclid(size) + IVec3::ONE;
             match chunks[(offset.x + offset.y * 3 + offset.z * 9) as usize] {
                 Some((chunk, light)) => {
                     let local = pos.rem_euclid(size);
-                    (chunk.at(local), light.at(local))
+                    (chunk.at(local), light.at(local), chunk.fluid_step_at(local))
                 }
-                None => (BlockState::AIR, OPEN_SKY),
+                None => (BlockState::AIR, OPEN_SKY, FLUID_STEPS),
             }
         })
     }
 
-    /// Fills every position from `voxel`.
+    /// Fills every position from `voxel`, with any fluid full.
+    #[cfg(test)]
     pub fn from_fn(voxel: impl Fn(IVec3) -> (BlockState, Light)) -> Self {
+        Self::with_fluid(|pos| {
+            let (block, light) = voxel(pos);
+            (block, light, None)
+        })
+    }
+
+    /// Fills every position from `voxel`: its block, light and the amount
+    /// of fluid kept for it (see [`Chunk::partial_at`]), drawn at the
+    /// amount's own height.
+    #[cfg(test)]
+    pub fn with_fluid(voxel: impl Fn(IVec3) -> (BlockState, Light, Option<u16>)) -> Self {
+        Self::with_steps(|pos| {
+            let (block, light, kept) = voxel(pos);
+            (block, light, kept.map_or(FLUID_STEPS, fluid_step))
+        })
+    }
+
+    /// Fills every position from `voxel`: its block, light and the height
+    /// its fluid is drawn at.
+    fn with_steps(voxel: impl Fn(IVec3) -> (BlockState, Light, u16)) -> Self {
         let mut blocks = Vec::with_capacity(PADDED.pow(3));
         let mut light = Vec::with_capacity(PADDED.pow(3));
+        let mut steps = Vec::with_capacity(PADDED.pow(3));
         let range = -1..=CHUNK_SIZE as i32;
         for y in range.clone() {
             for z in range.clone() {
                 for x in range.clone() {
-                    let (block, level) = voxel(IVec3::new(x, y, z));
+                    let (block, level, step) = voxel(IVec3::new(x, y, z));
                     blocks.push(block);
                     light.push(level);
+                    steps.push(step);
                 }
             }
         }
-        Self { blocks, light }
+        Self {
+            blocks,
+            light,
+            steps,
+        }
     }
 
     fn index(pos: IVec3) -> usize {
@@ -292,6 +485,79 @@ impl Neighborhood {
 
     pub fn light(&self, pos: IVec3) -> Light {
         self.light[Self::index(pos)]
+    }
+
+    /// How high the fluid of block `fluid` at `pos` is drawn (see
+    /// [`fluid_surface`]); 0 where there's none.
+    fn fluid_height(&self, fluid: BlockState, pos: IVec3) -> f32 {
+        if self.block(pos) != fluid {
+            return 0.0;
+        }
+        let above = pos + IVec3::Y;
+        let inside = above.cmple(IVec3::splat(CHUNK_SIZE as i32)).all();
+        let step = self.steps[Self::index(pos)];
+        fluid_surface(step, inside && self.block(above) == fluid)
+    }
+
+    /// The faces of the fluid voxel at `pos`, and their backs if it's
+    /// double-sided, cut to the height it's drawn at:
+    ///
+    /// - its top at its height, unless the same fluid is above it; below a
+    ///   full block, the top is hidden as any face is ([`Content::hides`]);
+    /// - each side from the height of the same fluid next to it (none if
+    ///   that's as high), or from the bottom against anything else, which
+    ///   hides it as usual;
+    /// - its bottom, unless the same fluid is below it.
+    fn fluid_faces(
+        &self,
+        content: &Content,
+        pos: IVec3,
+        builder: &mut MeshBuilder,
+        opaque: &impl Fn(IVec3) -> bool,
+    ) {
+        let voxel = self.block(pos);
+        let state = content.state(voxel);
+        let height = self.fluid_height(voxel, pos);
+        for face in &state.faces {
+            let Some(side) = face.cull else {
+                continue;
+            };
+            let next = pos + side.normal();
+            let neighbour = self.block(next);
+            let same = neighbour == voxel;
+            let low = match side {
+                Direction::Up | Direction::Down if same => continue,
+                Direction::Up if height < 1.0 => None,
+                Direction::Up | Direction::Down => Some(0.0),
+                _ if same => {
+                    let low = self.fluid_height(voxel, next);
+                    if low >= height {
+                        continue;
+                    }
+                    Some(low)
+                }
+                _ => Some(0.0),
+            };
+            let face = match low {
+                // A lowered top lies inside the voxel, so it's shaded from
+                // the voxel itself, and nothing beside it can hide it.
+                None => BakedFace {
+                    cull: None,
+                    ..cut_face(face, 0.0, height)
+                },
+                Some(low) => {
+                    if !same && content.hides(voxel, neighbour, side) {
+                        continue;
+                    }
+                    cut_face(face, low, height)
+                }
+            };
+            let shading = self.shade_face(pos, &face, state.emits_light(), opaque);
+            builder.push(pos.as_vec3(), &face, &shading, false);
+            if state.double_sided {
+                builder.push(pos.as_vec3(), &face, &shading, true);
+            }
+        }
     }
 
     /// Builds the meshes of every voxel's model faces in the middle chunk,
@@ -318,6 +584,10 @@ impl Neighborhood {
             let state = content.state(voxel);
             let glows = state.emits_light();
             let builder = &mut builders[state.render as usize];
+            if state.is_fluid() {
+                self.fluid_faces(content, pos, builder, &opaque_at);
+                continue;
+            }
             for face in &state.faces {
                 if face
                     .hidden_by(|side| content.hides(voxel, self.block(pos + side.normal()), side))
@@ -1320,6 +1590,167 @@ mod tests {
         assert_eq!(split(&[(A, "water"), (B, "lava")]), [12, 0, 10]);
         assert_eq!(split(&[(A, "glass"), (B, "lava")]), [12, 0, 5]);
         assert_eq!(split(&[(A, "leaves"), (B, "lava")]), [12, 5, 0]);
+    }
+
+    /// The translucent mesh of these blocks, each with the amount of fluid
+    /// kept for it.
+    fn fluid_mesh(blocks: &[(IVec3, &str, Option<u16>)]) -> Mesh {
+        Neighborhood::with_fluid(|pos| {
+            blocks
+                .iter()
+                .find(|(p, _, _)| *p == pos)
+                .map_or((BlockState::AIR, OPEN_SKY, None), |&(_, b, kept)| {
+                    (block(b), OPEN_SKY, kept)
+                })
+        })
+        .meshes(base())
+        .translucent
+    }
+
+    fn positions(mesh: &Mesh) -> Vec<Vec3> {
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions");
+        };
+        positions.iter().map(|&p| Vec3::from(p)).collect()
+    }
+
+    /// Fluid that isn't full is drawn at the next of 16 heights up: its top
+    /// lowered, and its sides cut short, their texture cut rather than
+    /// squashed.
+    #[test]
+    fn fluid_is_drawn_at_its_height() {
+        let half = fluid_mesh(&[(A, "water", Some(FULL_FLUID / 2))]);
+        assert_eq!(faces(&half), 12, "six faces, front and back");
+        let top = positions(&half).iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, A.y as f32 + 0.5);
+        // A sliver still shows, a sixteenth high.
+        let sliver = fluid_mesh(&[(A, "water", Some(1))]);
+        let top = positions(&sliver).iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, A.y as f32 + 1.0 / 16.0);
+        // The sides' texture runs from the middle of the tile down.
+        let Some(VertexAttributeValues::Float32x2(uvs)) = half.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("no uvs");
+        };
+        let mut vs: Vec<f32> = uvs.iter().map(|uv| uv[1]).collect();
+        vs.sort_by(f32::total_cmp);
+        vs.dedup();
+        assert_eq!(vs, [0.0, 0.5, 1.0]);
+    }
+
+    /// Between two voxels of the same fluid, only the higher one's side
+    /// shows, from the lower one's height up.
+    #[test]
+    fn fluid_shows_its_side_above_lower_fluid() {
+        let mesh = fluid_mesh(&[(A, "water", None), (B, "water", Some(FULL_FLUID / 4))]);
+        // A: top, bottom, three sides and the band over B; B: five faces.
+        assert_eq!(faces(&mesh), 2 * 11);
+        let band: Vec<Vec3> = positions(&mesh)
+            .into_iter()
+            .filter(|p| p.x == B.x as f32)
+            .filter(|p| p.y > A.y as f32 + 0.25)
+            .collect();
+        assert!(!band.is_empty());
+        let level = fluid_mesh(&[(A, "water", Some(490)), (B, "water", Some(500))]);
+        assert_eq!(faces(&level), 2 * 10, "drawn as high: no face between them");
+    }
+
+    /// Meshing reads the fluid amounts from the chunks themselves, across
+    /// a chunk border too: half a block of water against a quarter in the
+    /// next chunk shows its side above the quarter.
+    #[test]
+    fn fluid_heights_come_from_the_chunks_across_borders() {
+        let (here, there) = (IVec3::new(15, 5, 5), IVec3::new(0, 5, 5));
+        let mut middle = Chunk::default();
+        middle.set_at(here, block("water"));
+        middle.set_fluid_at(here, FULL_FLUID / 2);
+        let mut east = Chunk::default();
+        east.set_at(there, block("water"));
+        east.set_fluid_at(there, FULL_FLUID / 4);
+        let light = ChunkLight::default();
+        let meshes = Neighborhood::gather(|offset| match offset {
+            IVec3::ZERO => Some((&middle, &light)),
+            IVec3::X => Some((&east, &light)),
+            _ => None,
+        })
+        .meshes(base());
+        let positions = positions(&meshes.translucent);
+        let top = positions.iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, 5.5);
+        // The side against the east chunk starts a quarter up: only that
+        // band has corners there.
+        let band = positions
+            .iter()
+            .filter(|p| p.x == 16.0 && p.y == 5.25)
+            .count();
+        assert_eq!(band, 4, "front and back, two corners each");
+    }
+
+    /// A voxel keeps the height it's drawn at while its amount wobbles
+    /// within half a step of it, and moves once the amount is clearly at
+    /// another.
+    #[test]
+    fn drawn_heights_are_sticky() {
+        // A sixteenth is 62.5: step 8 is drawn for 438 to 500.
+        assert_eq!(sticky_step(500, 8), 8);
+        assert_eq!(sticky_step(501, 8), 8, "a little over");
+        assert_eq!(sticky_step(531, 8), 8);
+        assert_eq!(sticky_step(532, 8), 9, "half a step over");
+        assert_eq!(sticky_step(407, 8), 8, "a little under");
+        assert_eq!(sticky_step(406, 8), 7, "half a step under");
+        assert_eq!(sticky_step(200, 8), 4, "far off");
+        assert_eq!(sticky_step(1, 1), 1, "a sliver shows");
+        assert_eq!(sticky_step(1, 2), 1);
+
+        let pos = IVec3::new(1, 2, 3);
+        let mut chunk = Chunk::default();
+        chunk.set_at(pos, block("water"));
+        assert!(chunk.set_fluid_at(pos, 500), "from full");
+        assert_eq!(chunk.fluid_step_at(pos), 8);
+        for amount in [501, 499, 520, 470, 500] {
+            assert!(!chunk.set_fluid_at(pos, amount), "{amount}");
+            assert_eq!(chunk.partial_at(pos), Some(amount));
+        }
+        assert!(chunk.set_fluid_at(pos, 560));
+        assert_eq!(chunk.fluid_step_at(pos), 9);
+        assert!(chunk.set_fluid_at(pos, FULL_FLUID));
+        assert_eq!(chunk.fluid_step_at(pos), FLUID_STEPS);
+    }
+
+    /// A sliver of water on a pond's surface is drawn on top of it, and the
+    /// pond's top stays hidden under it, so the surface has no hole.
+    #[test]
+    fn a_sliver_on_a_surface_leaves_no_hole() {
+        let mesh = fluid_mesh(&[(A, "water", None), (A + IVec3::Y, "water", Some(1))]);
+        // Below: bottom and four sides; above: top and four sides.
+        assert_eq!(faces(&mesh), 2 * 10);
+        let top = positions(&mesh).iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, A.y as f32 + 1.0 + 1.0 / 16.0);
+    }
+
+    /// Fluid with the same fluid above it is drawn full height, so a falling
+    /// column has no seams, and has no top.
+    #[test]
+    fn fluid_under_fluid_is_full_height() {
+        let column = fluid_mesh(&[(A, "water", Some(100)), (A + IVec3::Y, "water", Some(100))]);
+        assert_eq!(faces(&column), 2 * 10);
+        let lower_sides_top = positions(&column)
+            .into_iter()
+            .filter(|p| p.y <= A.y as f32 + 1.0)
+            .map(|p| p.y)
+            .fold(0.0, f32::max);
+        assert_eq!(lower_sides_top, A.y as f32 + 1.0);
+    }
+
+    /// A full block over fluid hides its top only if the fluid is full: a
+    /// lowered top lies inside the voxel, below the block.
+    #[test]
+    fn a_block_over_fluid_hides_only_a_full_top() {
+        let stone = (A + IVec3::Y, "stone", None);
+        assert_eq!(faces(&fluid_mesh(&[(A, "water", None), stone])), 2 * 5);
+        assert_eq!(faces(&fluid_mesh(&[(A, "water", Some(500)), stone])), 2 * 6);
     }
 
     /// Nothing is hidden next to a cut-out block, not even another one:
