@@ -15,7 +15,7 @@ use super::{
     property::{check_count, combinations, connection_rule, properties},
     state::bake_state,
     texture::Textures,
-    when::When,
+    when::all_whens,
 };
 use crate::content::{
     Block, Connections, Content,
@@ -55,24 +55,20 @@ pub(super) fn add_block(
     if content.states.len() + count > u16::MAX as usize + 1 {
         return Err("out of block states: there are too many blocks".into());
     }
-    let whens = block
-        .variants
-        .iter()
-        .enumerate()
-        .map(|(i, variant)| {
-            When::new(&variant.when, &properties, &def.namespace, content)
-                .map_err(|error| format!("variant {}: {error}", i + 1))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let part_whens = block
-        .parts
-        .iter()
-        .enumerate()
-        .map(|(i, part)| {
-            When::new(&part.when, &properties, &def.namespace, content)
-                .map_err(|error| format!("part {}: {error}", i + 1))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let whens = all_whens(
+        "variant",
+        block.variants.iter().map(|variant| &variant.when),
+        &properties,
+        &def.namespace,
+        content,
+    )?;
+    let part_whens = all_whens(
+        "part",
+        block.parts.iter().map(|part| &part.when),
+        &properties,
+        &def.namespace,
+        content,
+    )?;
     let attributes = Attributes::new(
         block.hardness.as_ref(),
         block.weight.as_ref(),

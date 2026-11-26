@@ -177,6 +177,12 @@ fn item_variants_change_matching_states() {
                     texture: { texture: "ore", materials: { rock: "{head}", ore: "{head}" } },
                 },
                 { when: { head: "rock" }, name: "Rough {head} Tool" },
+                // Matches too, after the others, so it wins.
+                {
+                    when: { head: "#rock" },
+                    name: "Rocky {head} Tool",
+                    texture: { texture: "ore", materials: { rock: "{head}", ore: "iron" } },
+                },
             ],
         }"##,
     )]);
@@ -192,12 +198,18 @@ fn item_variants_change_matching_states() {
     assert_eq!(iron.name, "Iron Tool");
     assert_eq!(iron.texture, content.texture("test:bark(wood=test:iron)"));
     let rock = state("test:rock");
-    assert_eq!(rock.name, "Rough Rock Tool");
+    assert_eq!(rock.name, "Rocky Rock Tool");
     assert_eq!(
         rock.texture,
-        content.texture("test:ore(ore=test:rock,rock=test:rock)")
+        content.texture("test:ore(ore=test:iron,rock=test:rock)")
     );
-    // The metal head never makes the rock look's tile.
+    // Only the tiles states use are made: not the first rock variant's
+    // (which the last replaced), nor the rock look for the metal head.
+    assert!(
+        content
+            .texture("test:ore(ore=test:rock,rock=test:rock)")
+            .is_none()
+    );
     assert!(
         content
             .texture("test:ore(ore=test:iron,rock=test:iron)")
@@ -216,7 +228,11 @@ fn item_variants_work_on_block_items_and_report_mistakes() {
         ),
         (
             "items/log.json5",
-            r##"{ variants: [{ when: { wood: "#pale" }, name: "Pale {wood} Log" }] }"##,
+            r##"{ variants: [{
+                when: { wood: "#pale" },
+                name: "Pale {wood} Log",
+                texture: { texture: "bark", materials: { wood: "{wood}" } },
+            }] }"##,
         ),
     ]);
     assert!(content.errors.is_empty(), "{}", errors(&content));
@@ -229,6 +245,18 @@ fn item_variants_work_on_block_items_and_report_mistakes() {
     };
     assert_eq!(name("test:birch"), "Pale Birch Log");
     assert_eq!(name("test:oak"), "Log");
+    let texture = |wood: &str| {
+        content
+            .item_state(item.state(&[("wood", wood)]).unwrap())
+            .unwrap()
+            .texture
+    };
+    assert_eq!(
+        texture("test:birch"),
+        content.texture("test:bark(wood=test:birch)")
+    );
+    // Oak's icon is still the block, drawn in 3D.
+    assert_eq!(texture("test:oak"), None);
 
     let content = materials(&[(
         "items/tool.json5",

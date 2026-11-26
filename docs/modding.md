@@ -804,9 +804,9 @@ Log and a Birch Log item, but no item per axis. Set `item: false` on a
 property to leave it out, or on the block to have no item at all.
 
 The item is as hard and as heavy as the block state it places. To change
-the item (its name, icon, uniqueness, hardness, weight or stats), add an item file with
-the same name: what it leaves out comes from the block. It can't add
-properties or a `block`.
+the item (its name, icon, variants, uniqueness, hardness, weight or
+stats), add an item file with the same name: what it leaves out comes
+from the block. It can't add properties or a `block`.
 
 ### Block entities
 
@@ -1097,9 +1097,11 @@ a rock or a metal head, and a rock head has its own, chunkier image:
 }
 ```
 
-A block's item file can have variants too, over the item's properties. An item that places a block passes on the
-values of the properties the block has too (by name), and leaves the rest
-at their defaults.
+A block's item file can have variants too. Their `when` names the item's
+properties, so not a block property with `item: false`.
+
+An item that places a block passes on the values of the properties the
+block has too (by name), and leaves the rest at their defaults.
 
 The icon (in the hotbar and the inventory) is the `texture` tile, drawn
 flat and scaled up. An item with no `texture` that places a block shows

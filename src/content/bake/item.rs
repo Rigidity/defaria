@@ -11,7 +11,7 @@ use super::{
     mix::{Attributes, Numbers},
     property::{check_count, combinations, properties},
     texture::Textures,
-    when::When,
+    when::{When, all_whens},
 };
 use crate::content::{
     Block, BlockState, Content, FULL_FLUID, Item, ItemStateInfo, Property, State, qualify,
@@ -257,15 +257,13 @@ fn item_whens(
     properties: &[Property],
     content: &Content,
 ) -> Result<Vec<When>, String> {
-    def.def
-        .variants
-        .iter()
-        .enumerate()
-        .map(|(i, variant)| {
-            When::new(&variant.when, properties, &def.namespace, content)
-                .map_err(|error| format!("variant {}: {error}", i + 1))
-        })
-        .collect()
+    all_whens(
+        "variant",
+        def.def.variants.iter().map(|variant| &variant.when),
+        properties,
+        &def.namespace,
+        content,
+    )
 }
 
 /// The name and icon an item file gives the state at `index`: its own,
