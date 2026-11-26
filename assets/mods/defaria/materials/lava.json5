@@ -1,0 +1,6 @@
+// Dark red crust to yellow-white molten seams.
+{
+  palette: ["#3c0a04", "#8a1e06", "#d0480a", "#f4901a", "#ffd25a", "#fff4b0"],
+  hardness: 0,
+  weight: 3100,
+}

@@ -253,6 +253,17 @@ pub struct BlockDef {
     /// The light the block gives off: red, green and blue levels, 0 to 15.
     #[serde(default)]
     pub light: Option<[u8; 3]>,
+    /// How its faces are drawn: opaque (the default), cut out or
+    /// translucent.
+    #[serde(default)]
+    pub render: Option<Render>,
+    /// A fluid: nothing bumps into it whatever its model's collision, the
+    /// crosshair passes through it, and placing a block replaces it.
+    #[serde(default)]
+    pub fluid: bool,
+    /// Its faces show from behind as well as in front.
+    #[serde(default)]
+    pub double_sided: bool,
     /// How hard each state is to break. Left out, 0.
     #[serde(default)]
     pub hardness: Option<Attribute>,
@@ -291,6 +302,25 @@ pub struct VariantDef {
     /// The light the block gives off: red, green and blue levels, 0 to 15.
     #[serde(default)]
     pub light: Option<[u8; 3]>,
+    /// How the variant's faces are drawn, replacing the block's.
+    #[serde(default)]
+    pub render: Option<Render>,
+}
+
+/// How a block's faces are drawn.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Render {
+    /// Every pixel drawn solid. Its covered sides stop light and hide the
+    /// faces next to them (a fluid's only some: see `Content::hides`).
+    #[default]
+    Opaque,
+    /// Pixels with alpha under one half are holes; the rest are solid.
+    /// Hides no faces next to it, and lets light through.
+    Cutout,
+    /// Pixels blend with what's behind them by their alpha. Hides only the
+    /// same block's translucent faces next to it, and lets light through.
+    Translucent,
 }
 
 #[derive(Debug, Clone)]

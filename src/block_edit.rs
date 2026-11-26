@@ -3,7 +3,8 @@
 //!
 //! - While the cursor is locked, holding left click breaks the block under
 //!   the crosshair (see `mining`) and right click places the active block
-//!   against the face you're looking at. A property the block sets on
+//!   against the face you're looking at, into air or a fluid. The crosshair
+//!   passes through fluids. A property the block sets on
 //!   placement (a log's axis) comes from that face or your view. The click
 //!   that locks the cursor doesn't edit anything. The active block is the
 //!   active hotbar slot's (see `hotbar`); an item that places no block
@@ -185,9 +186,10 @@ fn ray_box(origin: Vec3, dir: Vec3, b: &BlockBox) -> Option<(f32, IVec3)> {
 }
 
 /// What the crosshair picks in a block: its collision boxes, or the whole
-/// block for one you walk through. Nothing for air.
+/// block for one you walk through. Nothing for air or a fluid, which the
+/// crosshair passes through.
 pub fn target_shape(content: &Content, state: BlockState) -> &[BlockBox] {
-    if state.is_air() {
+    if state.is_air() || content.state(state).fluid {
         return &[];
     }
     let boxes = &content.state(state).collision;
@@ -238,16 +240,16 @@ fn edit_blocks(
     };
     // Properties such as a log's axis follow the face clicked or the view.
     let block = content.placed(block, face, *camera.forward());
-    // Not into the camera, outside the world, over another block, or where
-    // it would overlap someone.
+    // Not into the camera, outside the world, over another block (but
+    // over air or a fluid), or where it would overlap someone.
     let overlaps = content.state(block).collision.iter().any(|b| {
         let b = Aabb::of_block(pos, b);
         bodies.iter().any(|body| body.aabb().intersects(&b))
     });
-    if pos == camera.translation.floor().as_ivec3()
-        || voxels.get(pos) != Some(BlockState::AIR)
-        || overlaps
-    {
+    let replaceable = voxels
+        .get(pos)
+        .is_some_and(|there| there.is_air() || content.state(there).fluid);
+    if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps {
         return;
     }
     voxels.set(pos, block);
@@ -532,10 +534,7 @@ mod tests {
                 50,
             )))
             .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial {
-                material: Handle::default(),
-                layers: default(),
-            })
+            .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .insert_resource(content)
             .insert_resource(hotbar)
             .init_resource::<ButtonInput<KeyCode>>()
@@ -675,6 +674,31 @@ mod tests {
         assert_eq!(voxel(&app, left, 12, 1, 5), log);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 11, 1, 5), BlockState::AIR);
+    }
+
+    /// The crosshair passes through fluids to the block behind, and placing
+    /// against it replaces the fluid in the way; mining the block behind
+    /// leaves the fluid alone.
+    #[test]
+    fn fluids_are_passed_through_and_replaced() {
+        let (mut app, left, _) = app();
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        for x in 12..14 {
+            chunk.set(x, 1, 5, block("water"));
+        }
+        chunk.set(13, 2, 5, block("lava"));
+        app.update();
+        assert_eq!(target_shape(base(), block("water")), []);
+        assert_eq!(target_shape(base(), block("lava")), []);
+        // The dirt behind the water is the target: placing goes into the
+        // water against it.
+        press_key(&mut app, KeyCode::Digit1);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("stone"));
+        assert_eq!(voxel(&app, left, 12, 1, 5), block("water"));
+        mine_target(&mut app);
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+        assert_eq!(voxel(&app, left, 12, 1, 5), block("water"));
     }
 
     /// A log placed against each face of a block runs along that face's

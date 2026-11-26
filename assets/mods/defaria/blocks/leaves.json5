@@ -1,0 +1,13 @@
+// A tree's leaves, of any wood. Cut out: the holes in the texture show
+// what's behind, and light gets through.
+{
+  name: "{wood} Leaves",
+  properties: {
+    wood: { materials: ["oak", "#wood"] },
+  },
+  model: "cube",
+  render: "cutout",
+  textures: { all: { texture: "leaves", materials: { wood: "{wood}" } } },
+  hardness: 0.2,
+  weight: 150,
+}

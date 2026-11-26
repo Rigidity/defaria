@@ -302,10 +302,7 @@ mod tests {
             .insert_resource(base().clone())
             .add_plugins((AssetPlugin::default(), TerrainPlugin, LightPlugin))
             .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial {
-                material: Handle::default(),
-                layers: default(),
-            });
+            .insert_resource(BlockMaterial::unloaded(Handle::default()));
         spawn_patch(app.world_mut());
         finish_meshing(&mut app);
         app

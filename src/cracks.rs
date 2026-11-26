@@ -137,7 +137,7 @@ fn show_cracks(
         .into_iter()
         .filter(|&side| {
             let neighbour = voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR);
-            content.covers(neighbour, side)
+            content.hides(state, neighbour, side)
         })
         .fold(0, |bits, side| bits | side.bit());
     if cracks.drawn != Some((state, hidden)) {
@@ -431,6 +431,28 @@ mod tests {
         mine(&mut app, Some((enclosed, block("stone"))), 0.55);
         let (stage, _, visibility, _, _) = overlay(&mut app);
         assert_eq!((stage, visibility), (None, Visibility::Hidden));
+    }
+
+    /// Faces next to see-through blocks show, so they crack: a stone with
+    /// leaves, glass, water and a tuft on its four sides, the slab on top
+    /// and nothing under it has five faces to crack.
+    #[test]
+    fn faces_beside_see_through_blocks_crack() {
+        let mut app = app();
+        let stone = IVec3::new(5, 0, 5);
+        let mut chunks = app.world_mut().query::<&mut Chunk>();
+        let mut chunk = chunks.single_mut(app.world_mut()).unwrap();
+        for (side, name) in [
+            (IVec3::X, "leaves"),
+            (IVec3::NEG_X, "glass"),
+            (IVec3::Z, "water"),
+            (IVec3::NEG_Z, "tuft"),
+        ] {
+            chunk.set_at(stone + side, block(name));
+        }
+        // The chunk ends below, so the bottom reads as air.
+        mine(&mut app, Some((stone, block("stone"))), 0.3);
+        assert_eq!(overlay(&mut app).3.len(), 5 * 4);
     }
 
     /// The mesh is rebuilt when a neighbour changes under the same target:

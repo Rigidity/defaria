@@ -35,7 +35,7 @@ use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, pre
 
 use crate::block_texture::Palette;
 pub use place::Placement;
-pub use schema::{Direction, PlaceFrom};
+pub use schema::{Direction, PlaceFrom, Render};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -175,6 +175,9 @@ pub struct Texture {
     /// The texture file's id alone: `defaria:log_side`.
     pub template: String,
     pub layers: Vec<TextureLayer>,
+    /// Whether a cut-out block's face shows it, so its mipmaps keep its
+    /// share of solid pixels (see `block_texture`).
+    pub cutout: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -361,6 +364,15 @@ pub struct State {
     /// The light it gives off: red, green and blue levels, up to
     /// [`MAX_LIGHT`].
     pub light: [u8; 3],
+    /// How its faces are drawn, which also decides whether it stops light
+    /// and hides the faces next to it.
+    pub render: Render,
+    /// Whether it's a fluid: it has no collision, the crosshair passes
+    /// through it, and placing a block replaces it.
+    pub fluid: bool,
+    /// Whether its faces show from behind too: from inside a glass block
+    /// or under water.
+    pub double_sided: bool,
     /// How hard it is to break, unitless: dirt is about 0.5 and stone
     /// about 1.5. Air's is 0.
     pub hardness: f32,
@@ -370,9 +382,15 @@ pub struct State {
 
 impl State {
     /// Whether light can't pass through it, and it shades the corners of
-    /// faces next to it: true when it covers every side.
+    /// faces next to it: true when it's drawn opaque and covers every side.
     pub fn is_opaque(&self) -> bool {
-        self.occludes == ALL_SIDES
+        self.render == Render::Opaque && self.occludes == ALL_SIDES
+    }
+
+    /// Whether light can't pass through its `side`, in or out: a side it
+    /// covers, unless it's see-through.
+    pub fn blocks_light(&self, side: Direction) -> bool {
+        self.render == Render::Opaque && self.occludes(side)
     }
 
     /// Whether it gives off any light.
@@ -547,10 +565,32 @@ impl Content {
         self.states.get(state.0 as usize).unwrap_or(&self.states[0])
     }
 
-    /// Whether `neighbour`, next to a block on its `side`, covers that
-    /// side, so the block's faces culled against it aren't drawn.
-    pub fn covers(&self, neighbour: BlockState, side: Direction) -> bool {
-        self.state(neighbour).occludes(side.opposite())
+    /// Whether `neighbour`, next to `block` on its `side`, hides that
+    /// side, so the block's faces culled against it aren't drawn. It must
+    /// cover the side facing the block, and then:
+    ///
+    /// - an opaque block hides it, unless it's a fluid and the face is a
+    ///   solid opaque block's: you can be inside a fluid, so the floor and
+    ///   walls of a lava pool stay drawn. Any other face against lava
+    ///   (water, glass, leaves) is hidden, so only one face is drawn there,
+    ///   and between two different opaque fluids the one with the higher
+    ///   block number keeps its face;
+    /// - a translucent one hides only the same block's translucent faces
+    ///   (water against water, glass against glass);
+    /// - a cut-out one hides nothing.
+    pub fn hides(&self, block: BlockState, neighbour: BlockState, side: Direction) -> bool {
+        let (own, next) = (self.state(block), self.state(neighbour));
+        next.occludes(side.opposite())
+            && match next.render {
+                Render::Opaque => {
+                    !next.fluid
+                        || next.block == own.block
+                        || own.render != Render::Opaque
+                        || (own.fluid && own.block < next.block)
+                }
+                Render::Cutout => false,
+                Render::Translucent => next.block == own.block && own.render == Render::Translucent,
+            }
     }
 
     /// The block `state` is a state of.

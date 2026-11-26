@@ -1,0 +1,4 @@
+// A pane, mostly clear: its alpha is in the image.
+{
+  layers: [{ image: "glass", material: "glass" }],
+}

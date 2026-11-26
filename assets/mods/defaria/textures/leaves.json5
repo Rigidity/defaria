@@ -1,0 +1,5 @@
+// Leaves of any wood, with holes in them. The `leaves` palette is the
+// wood's foliage.
+{
+  layers: [{ image: "leaves", material: "$wood", role: "leaves" }],
+}

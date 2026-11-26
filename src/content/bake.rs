@@ -571,6 +571,7 @@ impl Textures {
             id: key.clone(),
             template: id.into(),
             layers,
+            cutout: false,
         });
         content.texture_index.insert(key, layer);
         Ok(layer)
@@ -1037,6 +1038,7 @@ fn add_block(
                     attributes,
                     &def.namespace,
                     index,
+                    block,
                     content,
                     textures,
                 )
@@ -1052,6 +1054,11 @@ fn add_block(
         state_count: count as u16,
     });
     content.block_index.insert(def.id.clone(), index);
+    for state in states.iter().filter(|s| s.render == Render::Cutout) {
+        for face in &state.faces {
+            content.textures[face.layer as usize].cutout = true;
+        }
+    }
     content.states.extend(states);
     Ok(())
 }
@@ -1073,6 +1080,7 @@ struct Look<'d> {
     model: Option<&'d str>,
     rotate: Option<[i32; 3]>,
     light: Option<[u8; 3]>,
+    render: Option<Render>,
     textures: BTreeMap<&'d str, &'d TextureRef>,
 }
 
@@ -1082,6 +1090,7 @@ fn look<'d>(block: &'d BlockDef, whens: &[When], index: &[usize]) -> Look<'d> {
         model: block.model.as_deref(),
         rotate: block.rotate,
         light: block.light,
+        render: block.render,
         textures: block
             .textures
             .iter()
@@ -1094,6 +1103,7 @@ fn look<'d>(block: &'d BlockDef, whens: &[When], index: &[usize]) -> Look<'d> {
             look.model = variant.model.as_deref().or(look.model);
             look.rotate = variant.rotate.or(look.rotate);
             look.light = variant.light.or(look.light);
+            look.render = variant.render.or(look.render);
             look.textures.extend(
                 variant
                     .textures
@@ -1122,9 +1132,10 @@ impl Look<'_> {
     }
 }
 
-/// Bakes one block state, called `name`, with this hardness and weight:
-/// the model's faces rotated and textured. Textures for slots the model
-/// doesn't have are left out.
+/// Bakes one state of `def`, block number `block`, called `name`, with this
+/// hardness and weight: the model's faces rotated and textured. Textures
+/// for slots the model doesn't have are left out. A fluid has nothing to
+/// bump into, whatever its model's collision.
 fn bake_state(
     look: &Look,
     model: &Model,
@@ -1133,6 +1144,7 @@ fn bake_state(
     (hardness, weight): (f32, f32),
     namespace: &str,
     block: usize,
+    def: &BlockDef,
     content: &mut Content,
     textures: &Textures,
 ) -> Result<State, String> {
@@ -1184,8 +1196,8 @@ fn bake_state(
         .occludes
         .iter()
         .fold(0, |bits, &d| bits | rotate_direction(d).bit());
-    let collision = model
-        .collision
+    let boxes = if def.fluid { &[][..] } else { &model.collision };
+    let collision = boxes
         .iter()
         .map(|b| {
             let [a, c] = [b.min, b.max].map(turn);
@@ -1203,6 +1215,9 @@ fn bake_state(
         collision,
         occludes,
         light,
+        render: look.render.unwrap_or_default(),
+        fluid: def.fluid,
+        double_sided: def.double_sided,
         hardness,
         weight,
     })
@@ -1595,6 +1610,103 @@ mod tests {
                 .is_opaque()
         );
         assert!(!content.state(crate::content::BlockState::AIR).is_opaque());
+    }
+
+    /// `render` says how a block's faces are drawn (opaque unless it says
+    /// otherwise), and variants replace it. A see-through block lets light
+    /// through its covered sides, and its covered sides hide only the
+    /// faces they should. `fluid` is off unless set.
+    #[test]
+    fn blocks_are_drawn_as_their_render_says() {
+        // The quad covers its top.
+        let content = content(&[
+            (
+                "blocks/pane.json5",
+                r#"{
+                    properties: { kind: ["clear", "leafy", "solid"] },
+                    model: "quad",
+                    textures: { all: "a" },
+                    render: "translucent",
+                    variants: [
+                        { when: { kind: "leafy" }, render: "cutout" },
+                        { when: { kind: "solid" }, render: "opaque" },
+                    ],
+                }"#,
+            ),
+            (
+                "blocks/pool.json5",
+                r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
+            ),
+            (
+                "blocks/tar.json5",
+                r#"{ model: "quad", textures: { all: "a" }, fluid: true }"#,
+            ),
+            (
+                "blocks/deep.json5",
+                r#"{ model: "pair", textures: { top: "a", bottom: "a" }, fluid: true }"#,
+            ),
+            (
+                "blocks/box.json5",
+                r#"{ model: "pair", textures: { top: "a", bottom: "a" } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let pane = content.block("test:pane").unwrap();
+        let state = |kind| pane.state(&[("kind", kind)]).unwrap();
+        let [clear, leafy, solid] = ["clear", "leafy", "solid"].map(state);
+        let render = |s| content.state(s).render;
+        assert_eq!(
+            [clear, leafy, solid].map(render),
+            [Render::Translucent, Render::Cutout, Render::Opaque]
+        );
+        for see_through in [clear, leafy] {
+            let state = content.state(see_through);
+            assert!(state.occludes(Direction::Up) && !state.blocks_light(Direction::Up));
+        }
+        assert!(content.state(solid).blocks_light(Direction::Up));
+        let pool = content.default_state("test:pool").unwrap();
+        assert!(content.state(pool).fluid && !content.state(solid).fluid);
+        assert_eq!(render(pool), Render::Opaque);
+        // A fluid has no collision, though its model has.
+        let collision = |id| &content.state(content.default_state(id).unwrap()).collision;
+        assert_eq!(collision("test:box"), &[BlockBox::FULL]);
+        assert!(collision("test:deep").is_empty());
+
+        // What hides a block's bottom face, from below.
+        let hides = |block, neighbour| content.hides(block, neighbour, Direction::Down);
+        assert!(hides(clear, solid) && hides(leafy, solid));
+        assert!(
+            hides(clear, pool),
+            "an opaque fluid hides see-through faces"
+        );
+        // Two different opaque fluids: exactly one face between them.
+        let tar = content.default_state("test:tar").unwrap();
+        assert!(
+            hides(pool, tar) != hides(tar, pool),
+            "one face between two fluids"
+        );
+        assert!(!hides(solid, pool), "but not a solid opaque block's");
+        assert!(hides(pool, pool), "an opaque fluid hides itself");
+        assert!(hides(clear, clear), "the same translucent block");
+        assert!(
+            !hides(solid, clear),
+            "only the same block's translucent faces"
+        );
+        assert!(!hides(pool, clear), "another translucent block");
+        assert!(
+            !hides(pool, leafy) && !hides(leafy, leafy),
+            "cut-outs hide nothing"
+        );
+    }
+
+    #[test]
+    fn an_unknown_render_is_an_error() {
+        let content = content(&[(
+            "blocks/odd.json5",
+            r#"{ model: "quad", textures: { all: "a" }, render: "glowing" }"#,
+        )]);
+        assert!(content.block("test:odd").is_none());
+        assert!(errors(&content).contains("glowing"), "{}", errors(&content));
     }
 
     #[test]
@@ -2551,18 +2663,24 @@ mod tests {
     }
 
     /// Every block and item state in the base game has a hardness and a
-    /// weight, worked out from its materials where it has them.
+    /// weight, worked out from its materials where it has them. Fluids,
+    /// which can't be mined, needn't have a hardness.
     #[test]
     fn base_states_have_hardness_and_weight() {
         let content = crate::content::base();
         let air = content.state(BlockState::AIR);
         assert_eq!((air.hardness, air.weight), (0.0, 0.0));
         for state in &content.states[1..] {
-            assert!(state.hardness > 0.0, "{} hardness", state.name);
+            assert!(
+                state.hardness > 0.0 || state.fluid,
+                "{} hardness",
+                state.name
+            );
             assert!(state.weight > 0.0, "{} weight", state.name);
         }
         for info in &content.item_states {
-            assert!(info.hardness > 0.0, "{} hardness", info.name);
+            let fluid = info.block.is_some_and(|state| content.state(state).fluid);
+            assert!(info.hardness > 0.0 || fluid, "{} hardness", info.name);
             assert!(info.weight > 0.0, "{} weight", info.name);
             if let Some(state) = info.block {
                 let placed = content.state(state);

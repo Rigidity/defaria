@@ -102,7 +102,9 @@ kilograms for a whole block of the material, a cube a metre on each side,
 so it's the material's density in kg/m³: oak 750, stone 2600, iron 7870.
 Every material needs both.
 
-Each palette is 2 to 8 hex colors, darkest first. They're spread evenly over
+Each palette is 2 to 8 hex colors, darkest first: `#rrggbb`, or
+`#rrggbbaa` with an alpha, for see-through materials like water. They're
+spread evenly over
 the 8 gray levels and blended in between (in Oklab, so the steps look
 even). With exactly 8 colors, each level gets its own color as given. Few
 steps between the darkest and lightest colors give a calm texture; many
@@ -125,8 +127,8 @@ stacking them, bottom layer first.
 
 Each layer has an `image` and either a `material` or a `palette` of its own
 (the same format as a material's). Transparent pixels show the layers
-below. Block faces should end up fully opaque; item icons may be
-transparent.
+below. An opaque block's faces should end up fully opaque; see-through
+blocks (see [Rendering](#rendering)) and item icons may be transparent.
 
 A layer's `material` can be an **input**, `$name`, which whoever uses the
 texture fills in. `role` picks one of the material's `palettes` (its main
@@ -164,7 +166,8 @@ fills.
     north: "side", south: "side", east: "side", west: "side",
   },
   // Sides of the block this model covers completely. A neighbour's face
-  // against one of these is hidden, and light doesn't pass through them.
+  // against one of these is hidden, and light doesn't pass through them
+  // (unless the block is see-through: see Rendering).
   occludes: ["up", "down", "north", "south", "east", "west"],
   // The boxes the player bumps into and the crosshair picks. Optional:
   // left out, it's the box around every face (here the whole block).
@@ -241,12 +244,71 @@ fade. A block that gives off light is drawn fully lit. Variants can set
 `light` too; a later one replaces an earlier one's.
 
 Light doesn't pass through a side a block covers (its model's
-`occludes`), going in or out, but it passes through every other side. So a
+`occludes`), going in or out, but it passes through every other side, and
+through every side of a see-through block (see [Rendering](#rendering)). So a
 slab, which covers only its bottom, is lit from above and from the sides,
 and a roof of slabs shades what's under it like a full roof. A block that
 gives off light shines out of every side, covered or not. A block whose
 model covers all six sides is opaque: no light gets in, and it shades the
 corners of the faces next to it (ambient occlusion).
+
+### Rendering
+
+`render` says how the block's faces are drawn:
+
+```json5
+// blocks/leaves.json5
+{
+  name: "{wood} Leaves",
+  properties: { wood: { materials: ["oak", "#wood"] } },
+  model: "cube",
+  render: "cutout",
+  textures: { all: { texture: "leaves", materials: { wood: "{wood}" } } },
+}
+```
+
+- **`"opaque"`**, the default: every pixel is solid, and alpha is ignored.
+  A side the model covers hides the neighbour's face against it, unless
+  the block is a fluid (see [Fluids](#fluids)).
+- **`"cutout"`**: pixels with alpha under one half are holes, the rest
+  solid. For leaves and plants. Nothing is hidden next to it, not even
+  the same block, since you can see through its holes.
+- **`"translucent"`**: pixels blend with what's behind them by their
+  alpha, from the image or the palette (`#rrggbbaa`). For glass and
+  water. A side it covers hides only the same block's translucent faces
+  against it, so a wall of glass or a pond of water looks like one body.
+
+Variants can set `render`; a later one replaces an earlier one's. Light
+passes through every side of a cut-out or translucent block, and they
+cast no ambient occlusion.
+
+`double_sided: true` draws each face from behind as well, lit as its front
+is, for blocks you can be inside: water's surface shows from underneath,
+and lava's from inside it. It's set on the block, not in variants.
+
+### Fluids
+
+`fluid: true` makes a block a fluid: nothing bumps into it, whatever its
+model's `collision`, the crosshair passes through it (so you can't mine
+it), and placing a block where it is replaces it. Since you can be inside
+one, even an opaque fluid like lava doesn't hide the faces of solid opaque
+blocks next to it, so the floor and walls of a lava pool show from inside;
+it still hides its own faces, and those of anything else see-through
+(water, glass, leaves), so only one face is drawn where they meet. Make a
+fluid `double_sided` too, so its surface shows from inside. Fluids don't
+flow yet.
+
+```json5
+// blocks/water.json5
+{
+  name: "Water",
+  model: "cube",
+  render: "translucent",
+  double_sided: true,
+  fluid: true,
+  textures: { all: "water" },
+}
+```
 
 ### Hardness and weight
 
@@ -474,7 +536,8 @@ the textures hot reload. Every item state shows in the inventory.
 - Item data that isn't a fixed list of values, such as durability.
 - Weight is worked out but nothing uses it yet. Variants can't change
   hardness or weight.
-- Cut-out textures (leaves with holes): block faces are drawn opaque.
+- Fluids don't flow, and their textures don't move.
+- See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.

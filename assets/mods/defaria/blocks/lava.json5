@@ -1,0 +1,12 @@
+// Still lava. It doesn't flow yet. Opaque and glowing, and a fluid like
+// water: you can walk into it, so it doesn't hide the faces around it, and
+// it's double-sided, so its surface shows from inside.
+{
+  name: "Lava",
+  model: "cube",
+  fluid: true,
+  double_sided: true,
+  textures: { all: "lava" },
+  light: [15, 10, 4],
+  weight: 3100,
+}

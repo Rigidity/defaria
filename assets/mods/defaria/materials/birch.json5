@@ -4,6 +4,7 @@
   tags: ["wood"],
   palette: ["#8a7650", "#bca676", "#d2be8e", "#e2d2a4"],
   palettes: {
+    leaves: ["#3a5420", "#58782e", "#74963c", "#90b04e"],
     bark: ["#3a3632", "#9a948a", "#cfcac0", "#e8e4da"],
     heartwood: ["#a08a5c", "#c4ae7e", "#dac698", "#eadcb2"],
   },

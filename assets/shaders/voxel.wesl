@@ -45,6 +45,12 @@ const AMBIENT: f32 = 0.025;
 // Brightness of a fully occluded corner (ambient occlusion level 0); level 3
 // is open and fully bright.
 const OCCLUDED: f32 = 0.3;
+// Set on the layer of a double-sided block's back face (see BACK_FACE in
+// src/voxel.rs). A back is drawn this much farther away, as a share of its
+// distance, so a neighbour's face in the same plane (a slab's side beside
+// water or lava) wins the depth test instead of flickering with it.
+const BACK_FACE: u32 = 0x80000000u;
+const BACK_DEPTH_BIAS: f32 = 2e-5;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -55,7 +61,8 @@ struct Vertex {
     @location(3) corner: vec2<f32>,
     // Each corner's light: sky, red, green and blue as bytes, 255 = level 15.
     @location(4) light: vec4<u32>,
-    // The texture layer, then each corner's ambient occlusion as bytes, 0-3.
+    // The texture layer (with BACK_FACE on a back face), then each corner's
+    // ambient occlusion as bytes, 0-3.
     @location(5) face: vec2<u32>,
 };
 
@@ -75,6 +82,10 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let world_from_local = get_world_from_local(vertex.instance_index);
     let world_position = mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
     out.position = position_world_to_clip(world_position.xyz);
+    if (vertex.face.x & BACK_FACE) != 0u {
+        // Reversed depth: smaller is farther.
+        out.position.z = out.position.z * (1.0 - BACK_DEPTH_BIAS);
+    }
     out.world_position = world_position.xyz;
     out.world_normal = mesh_normal_local_to_world(vertex.normal, vertex.instance_index);
     out.uv = vertex.uv;
@@ -153,6 +164,29 @@ fn pixel_art_uv(uv: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
     return (edge + offset) / size;
 }
 
+// The alpha a texel is drawn with. Cut-out faces use alpha to coverage
+// with multisampling: the alpha is sharpened by how fast it changes across
+// the screen, so a hole's edge is about one pixel wide at any distance and
+// the samples smooth it. (The block texture's mipmaps keep each tile's
+// coverage, so cut-outs don't fade away with distance.) Without
+// multisampling they're an alpha test. Opaque and blended faces keep their
+// alpha.
+@if(ALPHA_TO_COVERAGE)
+fn cut_out(alpha: f32) -> f32 {
+    return (alpha - 0.5) / max(fwidth(alpha), 1e-4) + 0.5;
+}
+@if(MAY_DISCARD)
+fn cut_out(alpha: f32) -> f32 {
+    if alpha < 0.5 {
+        discard;
+    }
+    return 1.0;
+}
+@if(!ALPHA_TO_COVERAGE && !MAY_DISCARD)
+fn cut_out(alpha: f32) -> f32 {
+    return alpha;
+}
+
 // Fades `color` into the fog with distance from the camera.
 @if(DISTANCE_FOG)
 fn fogged(color: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
@@ -180,7 +214,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         blocks,
         blocks_sampler,
         pixel_art_uv(in.uv, size),
-        i32(in.face.x),
+        i32(in.face.x & ~BACK_FACE),
         dpdx(in.uv),
         dpdy(in.uv),
     );
@@ -193,5 +227,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let sky = lighting.sky.rgb * brightness(vec3<f32>(baked.x));
     let light = max(max(sky, brightness(block)), vec3<f32>(AMBIENT));
     let ao = mix(OCCLUDED, 1.0, occlusion(in.face.y, in.corner) / 3.0);
-    return vec4<f32>(fogged(texel.rgb * light * ao, in.world_position), 1.0);
+    let alpha = cut_out(texel.a);
+    return vec4<f32>(fogged(texel.rgb * light * ao, in.world_position), alpha);
 }

@@ -1,0 +1,10 @@
+// A tuft of grass, drawn as two crossed quads. It grows on grass in the
+// terrain.
+{
+  name: "Grass Tuft",
+  model: "cross",
+  render: "cutout",
+  textures: { all: "tuft" },
+  hardness: 0.05,
+  weight: 0.05,
+}

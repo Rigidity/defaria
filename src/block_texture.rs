@@ -43,7 +43,8 @@ pub fn build<'a>(
     image: impl Fn(&str) -> Option<&'a Image>,
 ) -> (Image, Vec<Vec<u8>>, Vec<String>) {
     let (tiles, errors) = tiles(textures, image);
-    (array_texture(&tiles), tiles, errors)
+    let cutout = |i: usize| textures.get(i).is_some_and(|t| t.cutout);
+    (array_texture(&tiles, cutout), tiles, errors)
 }
 
 /// Colorizes and stacks every texture: tile `i` is `textures[i]`, as
@@ -105,10 +106,11 @@ fn compose<'a>(
 }
 
 /// A 2D array texture with a full mip chain, one array layer per entry of
-/// `tiles` (each [`TILE_SIZE`] square, sRGB RGBA8).
+/// `tiles` (each [`TILE_SIZE`] square, sRGB RGBA8). Tile `i` is a cut-out
+/// if `cutout(i)`.
 /// An empty list gets one [`placeholder`] layer, since an array texture
 /// needs at least one.
-fn array_texture(tiles: &[Vec<u8>]) -> Image {
+fn array_texture(tiles: &[Vec<u8>], cutout: impl Fn(usize) -> bool) -> Image {
     let placeholder = [placeholder()];
     let tiles = if tiles.is_empty() {
         &placeholder[..]
@@ -116,15 +118,21 @@ fn array_texture(tiles: &[Vec<u8>]) -> Image {
         tiles
     };
     let mut data = Vec::new();
-    for tile in tiles {
+    for (i, tile) in tiles.iter().enumerate() {
         let mut level = tile.clone();
         let mut size = TILE_SIZE;
+        // Tiles cut-out blocks show keep their coverage; the rest (blended
+        // or opaque) keep their averaged alpha.
+        let coverage = cutout(i).then(|| coverage(tile, 1.0));
         // Layer-major: every mip of this layer, largest first.
         data.extend_from_slice(&level);
         while size > 1 {
             level = downsample(&level, size);
             size /= 2;
-            data.extend_from_slice(&level);
+            match coverage {
+                Some(coverage) => data.extend(keep_coverage(&level, coverage)),
+                None => data.extend_from_slice(&level),
+            }
         }
     }
 
@@ -166,33 +174,74 @@ fn sampler() -> ImageSamplerDescriptor {
     sampler
 }
 
-/// Halves a square sRGB RGBA8 image, averaging each 2×2 block in linear
-/// color. Alpha is linear already.
+/// Halves a square sRGB RGBA8 image, averaging each 2×2 block in linear,
+/// premultiplied color, so a clear pixel's color (black, usually) doesn't
+/// bleed into its solid neighbours. Alpha is linear already.
 fn downsample(pixels: &[u8], size: u32) -> Vec<u8> {
     let half = size / 2;
     let mut out = Vec::with_capacity((half * half * 4) as usize);
     for y in 0..half {
         for x in 0..half {
-            for channel in 0..4 {
-                let mut sum = 0.0;
-                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                    let i = (((2 * y + dy) * size + 2 * x + dx) * 4 + channel) as usize;
-                    let value = pixels[i] as f32 / 255.0;
-                    sum += if channel == 3 {
-                        value
-                    } else {
-                        Srgba::gamma_function(value)
-                    };
-                }
-                let mean = sum / 4.0;
-                let value = if channel == 3 {
-                    mean
-                } else {
-                    Srgba::gamma_function_inverse(mean)
-                };
-                out.push((value * 255.0).round() as u8);
+            let mut sum = Vec4::ZERO;
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let i = (((2 * y + dy) * size + 2 * x + dx) * 4) as usize;
+                let alpha = pixels[i + 3] as f32 / 255.0;
+                let rgb = Vec3::from_array(std::array::from_fn(|c| {
+                    Srgba::gamma_function(pixels[i + c] as f32 / 255.0)
+                }));
+                sum += (rgb * alpha).extend(alpha);
             }
+            let alpha = sum.w / 4.0;
+            let rgb = if sum.w > 0.0 {
+                sum.truncate() / sum.w
+            } else {
+                Vec3::ZERO
+            };
+            for value in rgb.to_array() {
+                out.push((Srgba::gamma_function_inverse(value) * 255.0).round() as u8);
+            }
+            out.push((alpha * 255.0).round() as u8);
         }
+    }
+    out
+}
+
+/// The alpha a cut-out pixel needs to be drawn: the shader's threshold.
+const CUTOFF: f32 = 0.5;
+
+/// The share of pixels drawn (alpha at least [`CUTOFF`]) once every alpha
+/// is multiplied by `scale`.
+fn coverage(pixels: &[u8], scale: f32) -> f32 {
+    let alphas = pixels.iter().skip(3).step_by(4);
+    let count = pixels.len() / 4;
+    let drawn = alphas
+        .filter(|&&a| a as f32 / 255.0 * scale >= CUTOFF)
+        .count();
+    drawn as f32 / count as f32
+}
+
+/// A smaller mip of a cut-out with its alphas scaled so at least `target`
+/// of its pixels are drawn, the share drawn at full size, and as few more
+/// as it can. Averaging alone shrinks thin parts away: a one-pixel stalk
+/// averages to a quarter alpha in the next mip and vanishes from the
+/// alpha test. (Castaño's alpha test coverage preservation.)
+fn keep_coverage(pixels: &[u8], target: f32) -> Vec<u8> {
+    // Coverage only grows with the scale: search for the best one.
+    let (mut low, mut high) = (0.0f32, 64.0f32);
+    for _ in 0..24 {
+        let middle = (low + high) / 2.0;
+        if coverage(pixels, middle) < target {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    // The least scale that reaches the target: a little more coverage
+    // rather than less, since thin parts vanishing is the worse mistake.
+    let scale = high;
+    let mut out = pixels.to_vec();
+    for alpha in out.iter_mut().skip(3).step_by(4) {
+        *alpha = (*alpha as f32 * scale).round().min(255.0) as u8;
     }
     out
 }
@@ -200,7 +249,7 @@ fn downsample(pixels: &[u8], size: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{BlockState, base};
+    use crate::content::{Render, base};
     use bevy::{
         color::ColorToPacked,
         image::{CompressedImageFormats, ImageFilterMode, ImageType},
@@ -290,8 +339,8 @@ mod tests {
         image
     }
 
-    /// Every PNG in every mod's images, including ones no texture uses yet
-    /// (leaves), decodes to a valid layer: 16×16, gray levels only.
+    /// Every PNG in every mod's images, including ones no texture uses
+    /// yet, decodes to a valid layer: 16×16, gray levels only.
     #[test]
     fn every_layer_file_is_valid() {
         fn pngs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -392,21 +441,18 @@ mod tests {
         );
     }
 
-    /// Every pixel of every tile a block shows is opaque: the shader
-    /// ignores alpha, so a hole would show the color hiding behind it.
-    /// (Item icons may be transparent.)
+    /// Every pixel of every tile an opaque block shows is opaque: opaque
+    /// faces ignore alpha, so a hole would show the color hiding behind it.
+    /// (See-through blocks and item icons may be transparent.)
     #[test]
-    fn block_tiles_are_opaque() {
+    fn opaque_block_tiles_are_opaque() {
         let image = build_base(&layers_on_disk());
         let content = base();
-        let mut layers: Vec<u32> = (0..content.states.len())
-            .flat_map(|i| {
-                content
-                    .state(BlockState(i as u16))
-                    .faces
-                    .iter()
-                    .map(|f| f.layer)
-            })
+        let mut layers: Vec<u32> = content
+            .states
+            .iter()
+            .filter(|state| state.render == Render::Opaque)
+            .flat_map(|state| state.faces.iter().map(|f| f.layer))
             .collect();
         layers.sort();
         layers.dedup();
@@ -420,6 +466,109 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Whether a tile is all solid or clear pixels, with some clear.
+    fn is_cutout(pixels: &[u8]) -> bool {
+        let alphas = || pixels.iter().skip(3).step_by(4);
+        alphas().all(|&a| a == 0 || a == 255) && alphas().any(|&a| a == 0)
+    }
+
+    /// Cut-out blocks' tiles are marked as cut-outs (so their mips keep
+    /// their coverage) and have holes; translucent blocks' are partly
+    /// transparent, and not marked.
+    #[test]
+    fn see_through_tiles_have_the_alpha_their_blocks_need() {
+        let (image, tiles, errors) =
+            build(&base().textures, |path| layers_on_disk_cached().get(path));
+        assert!(errors.is_empty(), "{errors:?}");
+        let tile = |id: &str| &tiles[base().texture(id).unwrap() as usize];
+        let marked = |id: &str| base().textures[base().texture(id).unwrap() as usize].cutout;
+        for id in ["defaria:leaves(wood=defaria:oak)", "defaria:tuft"] {
+            assert!(is_cutout(tile(id)) && marked(id), "{id}");
+        }
+        assert!(!marked("defaria:stone(rock=defaria:stone)"));
+        // The texture `build` makes keeps the leaves' coverage in the mips.
+        let leaves = base().texture("defaria:leaves(wood=defaria:oak)").unwrap();
+        let full = coverage(tile("defaria:leaves(wood=defaria:oak)"), 1.0);
+        for mip in 1..mip_levels(TILE_SIZE) {
+            let size = TILE_SIZE >> mip;
+            let level: Vec<u8> = (0..size)
+                .flat_map(|y| (0..size).map(move |x| (x, y)))
+                .flat_map(|(x, y)| pixel(&image, leaves, mip, x, y))
+                .collect();
+            assert!(coverage(&level, 1.0) >= full, "leaves' mip {mip}");
+        }
+        for id in ["defaria:glass", "defaria:water"] {
+            assert!(!marked(id), "{id}");
+            let alphas: Vec<u8> = tile(id).iter().skip(3).step_by(4).copied().collect();
+            assert!(!is_cutout(tile(id)), "{id}");
+            assert!(alphas.iter().any(|&a| a > 0 && a < 255), "{id}");
+        }
+    }
+
+    fn layers_on_disk_cached() -> &'static HashMap<String, Image> {
+        static LAYERS: std::sync::OnceLock<HashMap<String, Image>> = std::sync::OnceLock::new();
+        LAYERS.get_or_init(layers_on_disk)
+    }
+
+    /// Smaller mips average in premultiplied color: a clear pixel's color
+    /// doesn't bleed into the solid one next to it, and partly clear
+    /// pixels count by their alpha.
+    #[test]
+    fn clear_pixels_dont_bleed_into_mips() {
+        let clear = std::iter::repeat_n([0, 255, 0, 0], 3).flatten();
+        let pixels: Vec<u8> = [200, 100, 50, 255].into_iter().chain(clear).collect();
+        assert_eq!(downsample(&pixels, 2), [200, 100, 50, 64]);
+        // Opaque red and quarter-alpha blue: four parts red to one blue.
+        let pixels: Vec<u8> = [255, 0, 0, 255, 0, 0, 255, 64, 0, 0, 0, 0, 0, 0, 0, 0].to_vec();
+        let [r, g, b, a] = downsample(&pixels, 2)[..] else {
+            panic!("one pixel");
+        };
+        assert_eq!((g, a), (0, 80));
+        assert!(r > 220 && (100..140).contains(&b), "({r}, {b})");
+    }
+
+    /// A cut-out's mips keep at least the share of pixels drawn that the
+    /// full size has, so thin parts don't fade away in the distance: a
+    /// grid of one-pixel lines would average to under the cutoff
+    /// everywhere and vanish from the third mip on.
+    #[test]
+    fn cutout_mips_keep_their_coverage() {
+        let grid = tiles(|_, x, y| {
+            let drawn = x % 4 == 0 || y % 4 == 0;
+            [255, 255, 255, if drawn { 255 } else { 0 }]
+        });
+        let full = coverage(&grid[0], 1.0);
+        assert!((full - 7.0 / 16.0).abs() < 1e-6);
+        let image = array_texture(&grid, |_| true);
+        for mip in 1..mip_levels(TILE_SIZE) {
+            let size = TILE_SIZE >> mip;
+            let level: Vec<u8> = (0..size)
+                .flat_map(|y| (0..size).map(move |x| (x, y)))
+                .flat_map(|(x, y)| pixel(&image, 0, mip, x, y))
+                .collect();
+            let kept = coverage(&level, 1.0);
+            assert!(kept >= full, "mip {mip} keeps only {kept} drawn of {full}");
+        }
+        // Without keeping it, the averages fall under the cutoff.
+        let plain = downsample(&downsample(&grid[0], 16), 8);
+        assert!(coverage(&plain, 1.0) < full / 2.0);
+    }
+
+    /// Tiles that aren't cut-outs keep their averaged alpha, even ones of
+    /// only solid and clear pixels (a translucent pane with a clear
+    /// middle): scaling it would make them more opaque in the distance.
+    #[test]
+    fn blended_mips_keep_their_alpha() {
+        let glass = tiles(|_, _, _| [255, 255, 255, 64]);
+        let image = array_texture(&glass, |_| false);
+        for mip in 0..mip_levels(TILE_SIZE) {
+            assert_eq!(pixel(&image, 0, mip, 0, 0)[3], 64, "mip {mip}");
+        }
+        let frame = tiles(|_, x, _| [255, 255, 255, if x % 4 == 0 { 255 } else { 0 }]);
+        let image = array_texture(&frame, |_| false);
+        assert_eq!(pixel(&image, 0, 2, 0, 0)[3], 64, "a quarter solid");
     }
 
     /// A tile's pixels come from its palettes: with every layer a flat
@@ -502,7 +651,7 @@ mod tests {
 
     #[test]
     fn layers_hold_their_own_tile_and_full_mip_chains() {
-        let image = array_texture(&tiles(|i, _, _| [i as u8 * 20, 7, 9, 255]));
+        let image = array_texture(&tiles(|i, _, _| [i as u8 * 20, 7, 9, 255]), |_| false);
         let count = TILES;
         let size = image.texture_descriptor.size;
         assert_eq!(
@@ -528,7 +677,9 @@ mod tests {
 
     #[test]
     fn tile_pixels_keep_their_positions() {
-        let image = array_texture(&tiles(|i, x, y| [i as u8, x as u8, y as u8, 255]));
+        let image = array_texture(&tiles(|i, x, y| [i as u8, x as u8, y as u8, 255]), |_| {
+            false
+        });
         assert_eq!(pixel(&image, 1, 0, 5, 11), [1, 5, 11, 255]);
     }
 
@@ -536,10 +687,13 @@ mod tests {
     /// white on the left and black on the right stays that way.
     #[test]
     fn mips_keep_the_tile_the_right_way_round() {
-        let image = array_texture(&tiles(|_, x, _| {
-            let v = if x < TILE_SIZE / 2 { 255 } else { 0 };
-            [v, v, v, 255]
-        }));
+        let image = array_texture(
+            &tiles(|_, x, _| {
+                let v = if x < TILE_SIZE / 2 { 255 } else { 0 };
+                [v, v, v, 255]
+            }),
+            |_| false,
+        );
         for mip in 1..4 {
             let last = (TILE_SIZE >> mip) - 1;
             assert_eq!(pixel(&image, 0, mip, 0, last)[0], 255, "mip {mip}");
@@ -551,10 +705,13 @@ mod tests {
     /// sRGB, not the naive 128.
     #[test]
     fn mips_average_in_linear_color() {
-        let image = array_texture(&tiles(|_, x, y| {
-            let v = if (x + y).is_multiple_of(2) { 255 } else { 0 };
-            [v, v, v, 255]
-        }));
+        let image = array_texture(
+            &tiles(|_, x, y| {
+                let v = if (x + y).is_multiple_of(2) { 255 } else { 0 };
+                [v, v, v, 255]
+            }),
+            |_| false,
+        );
         for mip in 1..5 {
             assert_eq!(
                 pixel(&image, 0, mip, 0, 0),
@@ -568,16 +725,19 @@ mod tests {
     /// sRGB curve applied.
     #[test]
     fn mips_average_alpha_without_the_srgb_curve() {
-        let image = array_texture(&tiles(|_, x, y| {
-            let a = if (x + y).is_multiple_of(2) { 255 } else { 0 };
-            [0, 0, 0, a]
-        }));
+        let image = array_texture(
+            &tiles(|_, x, y| {
+                let a = if (x + y).is_multiple_of(2) { 255 } else { 0 };
+                [0, 0, 0, a]
+            }),
+            |_| false,
+        );
         assert_eq!(pixel(&image, 0, 1, 0, 0)[3], 128);
     }
 
     #[test]
     fn samples_with_mipmaps_and_anisotropy_clamped_to_each_tile() {
-        let image = array_texture(&tiles(|_, _, _| [0; 4]));
+        let image = array_texture(&tiles(|_, _, _| [0; 4]), |_| false);
         let ImageSampler::Descriptor(sampler) = image.sampler else {
             panic!("no sampler");
         };

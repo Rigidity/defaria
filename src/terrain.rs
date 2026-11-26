@@ -4,7 +4,9 @@
 //! Each column's height comes from noise mapped through splines, with
 //! plains, mountains, ridges and valleys (see [`shape`]). Below the surface
 //! is stone, then a few layers of dirt, then one layer of grass on top, except
-//! high up and on cliffs, which are bare stone. The world
+//! high up and on cliffs, which are bare stone. Here and there a tuft of
+//! grass grows on the grass. Hollows below [`SEA_LEVEL`] fill with water,
+//! and the ground at and under the water's edge is sand. The world
 //! goes on forever in every direction, up and down too, in 16×16×16 chunks:
 //! stone all the way down, air all the way up. Chunks are loaded and
 //! unloaded around the player (see `streaming`), so [`ChunkMap`] only holds
@@ -24,6 +26,7 @@ use std::sync::Arc;
 
 use bevy::{
     ecs::system::SystemParam,
+    mesh::Indices,
     platform::collections::{HashMap, HashSet},
     prelude::*,
     tasks::{AsyncComputeTaskPool, ComputeTaskPool, Task, futures::check_ready},
@@ -31,8 +34,10 @@ use bevy::{
 
 use crate::{
     content::{BlockState, Content},
+    fly_camera::FlyCamera,
     light::ChunkLight,
-    voxel::{CHUNK_SIZE, Chunk, Neighborhood, touching_offsets},
+    perlin::splitmix64,
+    voxel::{CHUNK_SIZE, Chunk, ChunkMeshes, Neighborhood, TranslucentFaces, touching_offsets},
     voxel_material::{BlockMaterial, VoxelMaterial},
 };
 
@@ -42,6 +47,11 @@ use shape::{NEIGHBOURS, TerrainShape};
 
 /// Layers of dirt under the grass.
 const DIRT_DEPTH: i32 = 3;
+/// Air below this height is water: the water's surface is the top of the
+/// voxels at `SEA_LEVEL - 1`.
+pub const SEA_LEVEL: i32 = 12;
+/// How many grass columns in 1000 grow a tuft of grass.
+const TUFTS_PER_THOUSAND: u64 = 80;
 
 pub struct TerrainPlugin;
 
@@ -52,7 +62,11 @@ impl Plugin for TerrainPlugin {
             .add_message::<VoxelChanged>()
             .add_systems(
                 Update,
-                (remesh_changed_chunks, apply_finished_meshes)
+                (
+                    remesh_changed_chunks,
+                    apply_finished_meshes,
+                    sort_translucent_faces,
+                )
                     .chain()
                     .in_set(RemeshChunks),
             );
@@ -178,7 +192,7 @@ pub struct Meshed;
 /// A mesh being built on the async task pool. Replacing or removing it
 /// cancels the build.
 #[derive(Component)]
-pub struct MeshTask(Task<Mesh>);
+pub struct MeshTask(Task<ChunkMeshes>);
 
 impl MeshTask {
     /// The mesh is built and waiting to be shown.
@@ -243,10 +257,20 @@ pub struct TerrainBlocks {
     pub grass: BlockState,
     pub dirt: BlockState,
     pub stone: BlockState,
+    pub sand: BlockState,
+    pub water: BlockState,
+    pub tuft: BlockState,
 }
 
 impl TerrainBlocks {
-    const IDS: [&str; 3] = ["defaria:grass", "defaria:dirt", "defaria:stone"];
+    const IDS: [&str; 6] = [
+        "defaria:grass",
+        "defaria:dirt",
+        "defaria:stone",
+        "defaria:sand",
+        "defaria:water",
+        "defaria:tuft",
+    ];
 
     /// The ids of the blocks the terrain needs that didn't load.
     pub fn missing(content: &Content) -> Vec<&'static str> {
@@ -256,8 +280,8 @@ impl TerrainBlocks {
             .collect()
     }
 
-    /// The base game's grass, dirt and stone. One that didn't load is
-    /// reported and left as air.
+    /// The base game's blocks the terrain is made of. One that didn't load
+    /// is reported and left as air.
     pub fn from_content(content: &Content) -> Self {
         let block = |name: &str| {
             let id = format!("defaria:{name}");
@@ -270,6 +294,9 @@ impl TerrainBlocks {
             grass: block("grass"),
             dirt: block("dirt"),
             stone: block("stone"),
+            sand: block("sand"),
+            water: block("water"),
+            tuft: block("tuft"),
         }
     }
 }
@@ -306,7 +333,20 @@ impl Terrain {
     /// The voxel at a world position.
     #[cfg(test)]
     pub fn voxel(&self, pos: IVec3) -> BlockState {
-        self.column_voxel(pos.y, self.height(pos.x, pos.z), self.is_rock(pos.x, pos.z))
+        let column = self.column(
+            pos.x,
+            pos.z,
+            self.height(pos.x, pos.z),
+            self.is_rock(pos.x, pos.z),
+        );
+        column.voxel(pos.y, &self.blocks)
+    }
+
+    /// What decides a column's voxels, besides its height: whether it's
+    /// bare rock, and whether a tuft grows on it.
+    fn column(&self, x: i32, z: i32, height: i32, rock: bool) -> Column {
+        let tuft = hash(self.shape.seed(), x, z) % 1000 < TUFTS_PER_THOUSAND;
+        Column { height, rock, tuft }
     }
 
     /// Fills one chunk of the world.
@@ -328,8 +368,9 @@ impl Terrain {
         let (lowest, highest) = columns().fold((i32::MAX, i32::MIN), |(low, high), (x, z)| {
             (low.min(at(x, z)), high.max(at(x, z)))
         });
-        // Most chunks are all sky or all stone; skip the voxel loop.
-        if origin.y >= highest {
+        // Most chunks are all sky or all stone; skip the voxel loop. (A
+        // tuft can stand on the highest column, at `highest`.)
+        if origin.y > highest && origin.y >= SEA_LEVEL {
             return Chunk::default();
         }
         if origin.y + size <= lowest - 1 - DIRT_DEPTH {
@@ -341,30 +382,48 @@ impl Terrain {
             let rock = self
                 .shape
                 .is_rock(height, NEIGHBOURS.map(|(dx, dz)| surface(x + dx, z + dz)));
+            let column = self.column(origin.x + x, origin.z + z, height, rock);
             let (x, z) = (x as usize, z as usize);
             for y in 0..CHUNK_SIZE {
-                chunk.set(
-                    x,
-                    y,
-                    z,
-                    self.column_voxel(origin.y + y as i32, height, rock),
-                );
+                chunk.set(x, y, z, column.voxel(origin.y + y as i32, &self.blocks));
             }
         }
         chunk
     }
+}
 
-    /// The voxel at height `y` in a column whose surface is `height`
-    /// voxels tall, and bare rock if `rock`.
-    fn column_voxel(&self, y: i32, height: i32, rock: bool) -> BlockState {
+/// One column of the terrain.
+struct Column {
+    /// Its top solid voxel is at `height - 1`.
+    height: i32,
+    /// Bare rock, without soil.
+    rock: bool,
+    /// A tuft of grass grows on it, if it's grass.
+    tuft: bool,
+}
+
+impl Column {
+    /// The voxel at height `y`.
+    fn voxel(&self, y: i32, blocks: &TerrainBlocks) -> BlockState {
+        let height = self.height;
+        // The top at the water's edge or under the water.
+        let shore = height <= SEA_LEVEL;
         match y {
+            y if y >= height && y < SEA_LEVEL => blocks.water,
+            y if y == height && self.tuft && !self.rock && !shore => blocks.tuft,
             y if y >= height => BlockState::AIR,
-            _ if rock => self.blocks.stone,
-            y if y == height - 1 => self.blocks.grass,
-            y if y >= height - 1 - DIRT_DEPTH => self.blocks.dirt,
-            _ => self.blocks.stone,
+            _ if self.rock => blocks.stone,
+            y if y >= height - 1 - DIRT_DEPTH && shore => blocks.sand,
+            y if y == height - 1 => blocks.grass,
+            y if y >= height - 1 - DIRT_DEPTH => blocks.dirt,
+            _ => blocks.stone,
         }
     }
+}
+
+/// A well-mixed number from a seed and a column, the same every time.
+fn hash(seed: u64, x: i32, z: i32) -> u64 {
+    splitmix64(&mut (seed ^ (x as u32 as u64) << 32 ^ z as u32 as u64))
 }
 
 /// Rebuilds the mesh of every chunk that was spawned or changed, or whose
@@ -389,6 +448,7 @@ pub fn remesh_changed_chunks(
     )>,
     mut completed: RemovedComponents<AwaitingNeighbours>,
     map: Res<ChunkMap>,
+    parts: Query<&ChunkParts>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<BlockMaterial>,
     content: Res<Content>,
@@ -443,7 +503,7 @@ pub fn remesh_changed_chunks(
         let pool = AsyncComputeTaskPool::get();
         for (entity, neighborhood) in later {
             let content = shared.clone();
-            let task = pool.spawn(async move { neighborhood.mesh(&content) });
+            let task = pool.spawn(async move { neighborhood.meshes(&content) });
             commands.entity(entity).insert(MeshTask(task));
         }
     }
@@ -451,48 +511,172 @@ pub fn remesh_changed_chunks(
     let built = ComputeTaskPool::get().scope(|scope| {
         for (entity, neighborhood) in &now {
             let content = &content;
-            scope.spawn(async move { (*entity, neighborhood.mesh(content)) });
+            scope.spawn(async move { (*entity, neighborhood.meshes(content)) });
         }
     });
-    for (entity, mesh) in built {
+    for (entity, built) in built {
         commands.entity(entity).remove::<MeshTask>();
-        show_mesh(&mut commands, entity, mesh, &mut meshes, &material);
+        let parts = parts.get(entity).ok();
+        show_meshes(&mut commands, entity, built, parts, &mut meshes, &material);
     }
 }
 
 /// Shows the meshes finished on the async task pool.
 pub fn apply_finished_meshes(
     mut commands: Commands,
-    mut tasks: Query<(Entity, &mut MeshTask)>,
+    mut tasks: Query<(Entity, &mut MeshTask, Option<&ChunkParts>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<BlockMaterial>,
 ) {
-    for (entity, mut task) in &mut tasks {
-        if let Some(mesh) = check_ready(&mut task.0) {
+    for (entity, mut task, parts) in &mut tasks {
+        if let Some(built) = check_ready(&mut task.0) {
             commands.entity(entity).remove::<MeshTask>();
-            show_mesh(&mut commands, entity, mesh, &mut meshes, &material);
+            show_meshes(&mut commands, entity, built, parts, &mut meshes, &material);
         }
     }
 }
 
+/// The child entities that draw a chunk's see-through faces: its own
+/// entity draws the opaque ones. Spawned the first time the chunk has any.
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
+pub struct ChunkParts {
+    pub cutout: Entity,
+    pub translucent: Entity,
+}
+
+/// Where the camera was, in its chunk-local [`TranslucentFaces`] sort's
+/// steps, when a translucent mesh's faces were last put in order. `None`
+/// until they first are.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+#[reflect(Component)]
+pub struct SortedFrom(Option<IVec3>);
+
+fn show_meshes(
+    commands: &mut Commands,
+    entity: Entity,
+    built: ChunkMeshes,
+    parts: Option<&ChunkParts>,
+    meshes: &mut Assets<Mesh>,
+    material: &BlockMaterial,
+) {
+    let ChunkMeshes {
+        opaque,
+        cutout,
+        translucent,
+        translucent_faces,
+    } = built;
+    commands.entity(entity).insert(Meshed);
+    show_mesh(commands, entity, opaque, meshes, &material.material);
+    let see_through = cutout.count_vertices() + translucent.count_vertices() > 0;
+    let parts = match parts {
+        Some(parts) => *parts,
+        // Most chunks never need them.
+        None if !see_through => return,
+        None => {
+            let mut part = |name: &str| {
+                commands
+                    .spawn((
+                        Name::new(name.to_string()),
+                        Transform::default(),
+                        Visibility::default(),
+                        ChildOf(entity),
+                    ))
+                    .id()
+            };
+            let parts = ChunkParts {
+                cutout: part("Cut-out faces"),
+                translucent: part("Translucent faces"),
+            };
+            commands.entity(entity).insert(parts);
+            parts
+        }
+    };
+    show_mesh(commands, parts.cutout, cutout, meshes, &material.cutout);
+    show_mesh(
+        commands,
+        parts.translucent,
+        translucent,
+        meshes,
+        &material.translucent,
+    );
+    commands
+        .entity(parts.translucent)
+        .insert((translucent_faces, SortedFrom::default()));
+}
+
+/// Draws `mesh` on `entity`, or nothing if it has no faces: chunks with
+/// nothing visible (all air, or buried) get no mesh, since the renderer
+/// warns about meshes with no vertices.
 fn show_mesh(
     commands: &mut Commands,
     entity: Entity,
     mesh: Mesh,
     meshes: &mut Assets<Mesh>,
-    material: &BlockMaterial,
+    material: &Handle<VoxelMaterial>,
 ) {
-    let mut chunk = commands.entity(entity);
-    chunk.insert(Meshed);
-    // Chunks with nothing visible (all air, or buried) get no mesh; the
-    // renderer warns about meshes with no vertices.
+    let mut part = commands.entity(entity);
     if mesh.count_vertices() > 0 {
-        chunk.insert((
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(material.material.clone()),
-        ));
+        part.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
     } else {
-        chunk.remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
+        part.remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
+    }
+}
+
+/// How far, in blocks, the camera can move before a translucent mesh this
+/// far away is sorted again: every block nearby, where the order changes
+/// most, and every chunk farther out.
+fn sort_step(distance: f32) -> i32 {
+    if distance < 2.0 * CHUNK_SIZE as f32 {
+        1
+    } else {
+        CHUNK_SIZE as i32
+    }
+}
+
+/// Where the camera is, chunk-local (`eye`), rounded to the steps a
+/// translucent mesh is sorted at (see [`sort_step`]). Far chunks' steps are
+/// staggered by chunk, so crossing a chunk border doesn't sort every one of
+/// them on the same frame.
+fn sort_position(eye: Vec3, coord: ChunkCoord) -> IVec3 {
+    let middle = Vec3::splat(CHUNK_SIZE as f32 / 2.0);
+    let step = sort_step(eye.distance(middle));
+    let mut state = coord.0.x as u64 ^ (coord.0.y as u64) << 21 ^ (coord.0.z as u64) << 42;
+    let bits = splitmix64(&mut state);
+    let offset = IVec3::new(bits as i32, (bits >> 16) as i32, (bits >> 32) as i32)
+        .rem_euclid(IVec3::splat(step));
+    ((eye.floor().as_ivec3() + offset).div_euclid(IVec3::splat(step)) * step) - offset
+}
+
+/// Puts each translucent mesh's faces in order, farthest from the camera
+/// first, when it's new or the camera has moved far enough (see
+/// [`sort_position`]). Only the indices change. A mesh whose faces all lie
+/// in one plane (open water) never needs it.
+pub fn sort_translucent_faces(
+    camera: Query<&Transform, With<FlyCamera>>,
+    mut parts: Query<(&TranslucentFaces, &Mesh3d, &ChildOf, &mut SortedFrom)>,
+    coords: Query<&ChunkCoord>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Ok(camera) = camera.single() else {
+        return;
+    };
+    for (faces, mesh, parent, mut sorted) in &mut parts {
+        if !faces.needs_sorting() {
+            continue;
+        }
+        let Ok(coord) = coords.get(parent.parent()) else {
+            continue;
+        };
+        let eye = camera.translation - coord.origin().as_vec3();
+        let at = sort_position(eye, *coord);
+        if sorted.0 == Some(at) {
+            continue;
+        }
+        sorted.0 = Some(at);
+        if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
+            mesh.insert_indices(Indices::U32(faces.indices_from(eye)));
+        }
     }
 }
 
@@ -509,6 +693,8 @@ pub fn spawn_chunk(
         .spawn((
             Name::new(format!("Chunk ({x}, {y}, {z})")),
             Transform::from_translation(coord.origin().as_vec3()),
+            // Its parts (see `ChunkParts`) inherit it.
+            Visibility::default(),
             coord,
             chunk,
             extra,
@@ -577,7 +763,7 @@ mod tests {
         testing::{PATCH_SIZE, finish_meshing, patch_chunks, spawn_patch},
         *,
     };
-    use crate::content::{base, block};
+    use crate::content::{self, base, block};
 
     fn terrain() -> Terrain {
         terrain_with(TerrainSettings::default())
@@ -603,11 +789,26 @@ mod tests {
                 let h = terrain.height(x, z0);
                 let top = if terrain.is_rock(x, z0) {
                     block("stone")
+                } else if h <= SEA_LEVEL {
+                    block("sand")
                 } else {
                     block("grass")
                 };
                 assert_eq!(terrain.voxel(IVec3::new(x, h - 1, z0)), top);
-                assert!(terrain.voxel(IVec3::new(x, h, z0)).is_air());
+                if top != block("grass") {
+                    let above = terrain.voxel(IVec3::new(x, h, z0));
+                    assert_ne!(above, block("tuft"), "a tuft on {top:?} at ({x}, {z0})");
+                }
+                assert!(
+                    !content::base()
+                        .state(terrain.voxel(IVec3::new(x, h, z0)))
+                        .is_opaque()
+                );
+                assert!(
+                    terrain
+                        .voxel(IVec3::new(x, h.max(SEA_LEVEL) + 1, z0))
+                        .is_air()
+                );
                 if let Some(&last) = heights.last() {
                     let step: i32 = h - last;
                     assert!(step.abs() <= 16, "a wall at ({x}, {z0})");
@@ -618,9 +819,12 @@ mod tests {
         }
     }
 
+    /// Grass over dirt over stone, or sand at and under the water's edge,
+    /// with water up to the sea level, and a tuft on some of the grass.
     #[test]
     fn columns_are_layered_grass_dirt_stone() {
         let terrain = terrain();
+        let (mut tufts, mut grass, mut ponds) = (0, 0, 0);
         for (x, z) in columns() {
             let height = terrain.height(x, z);
             assert!(
@@ -628,17 +832,82 @@ mod tests {
                 "patch holds the surface"
             );
             let at = |y| terrain.voxel(IVec3::new(x, y, z));
-            assert_eq!(at(height - 1), block("grass"));
-            for y in height..height + 100 {
-                assert_eq!(at(y), BlockState::AIR);
+            let shore = height <= SEA_LEVEL;
+            let (top, soil) = if shore {
+                (block("sand"), block("sand"))
+            } else {
+                (block("grass"), block("dirt"))
+            };
+            assert_eq!(at(height - 1), top);
+            let mut above = height;
+            if at(above) == block("tuft") {
+                assert!(!shore, "a tuft on the sand at ({x}, {z})");
+                tufts += 1;
+                above += 1;
+            }
+            for y in above..SEA_LEVEL {
+                assert_eq!(at(y), block("water"), "({x}, {y}, {z})");
+            }
+            ponds += (height < SEA_LEVEL) as u32;
+            grass += !shore as u32;
+            for y in above.max(SEA_LEVEL)..height + 100 {
+                assert_eq!(at(y), BlockState::AIR, "({x}, {y}, {z})");
             }
             for y in height - 100..height - 1 {
                 let expected = if y >= height - 1 - DIRT_DEPTH {
-                    block("dirt")
+                    soil
                 } else {
                     block("stone")
                 };
                 assert_eq!(at(y), expected, "({x}, {y}, {z}), height {height}");
+            }
+        }
+        // About 8% of the grass has a tuft, and the patch has a pond.
+        let share = tufts as f32 / grass as f32;
+        assert!(
+            (0.06..0.10).contains(&share),
+            "{share} of the grass has tufts"
+        );
+        assert!(ponds > 0, "no water in the patch");
+    }
+
+    /// Tufts grow only on grass: never on the bare rock of mountains and
+    /// cliffs, though the hash picks some of those columns too.
+    #[test]
+    fn tufts_grow_only_on_grass() {
+        let terrain = terrain();
+        let mut rock = 0;
+        for x in 1500..1564 {
+            for z in -400..-336 {
+                if !terrain.is_rock(x, z) {
+                    continue;
+                }
+                rock += 1;
+                let h = terrain.height(x, z);
+                assert_ne!(
+                    terrain.voxel(IVec3::new(x, h, z)),
+                    block("tuft"),
+                    "({x}, {z})"
+                );
+            }
+        }
+        assert!(rock > 500, "only {rock} rock columns");
+    }
+
+    /// Chunks generated whole match the voxels column by column, water and
+    /// tufts included, even where a chunk starts right at a tuft.
+    #[test]
+    fn chunks_match_the_voxels() {
+        let terrain = terrain();
+        for coord in patch_chunks() {
+            let chunk = terrain.chunk(coord);
+            for (x, y, z) in Chunk::positions() {
+                let local = IVec3::new(x as i32, y as i32, z as i32);
+                assert_eq!(
+                    chunk.at(local),
+                    terrain.voxel(coord.origin() + local),
+                    "{local} in {coord:?}"
+                );
             }
         }
     }
@@ -782,10 +1051,7 @@ mod tests {
             .insert_resource(base().clone())
             .add_plugins((AssetPlugin::default(), TerrainPlugin))
             .init_asset::<Mesh>()
-            .insert_resource(BlockMaterial {
-                material: Handle::default(),
-                layers: default(),
-            })
+            .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .init_resource::<ChangedChunks>()
             .add_systems(Update, record_changed.in_set(RemeshChunks));
         spawn_patch(app.world_mut());
@@ -996,5 +1262,203 @@ mod tests {
         assert_eq!(seen, expected);
         // Every bottom chunk has ground in it; empty upper ones get no mesh.
         assert!((64..=256).contains(&meshed), "{meshed} chunks have meshes");
+    }
+
+    /// A chunk with see-through blocks draws them on two child entities,
+    /// cut-out and translucent, each with its own material; most chunks
+    /// have none. The translucent faces are sorted farthest first from the
+    /// camera, and again when it moves far enough.
+    #[test]
+    fn see_through_faces_draw_on_their_own_parts_sorted() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(base().clone())
+            .add_plugins((AssetPlugin::default(), TerrainPlugin))
+            .init_asset::<Mesh>()
+            .init_asset::<VoxelMaterial>();
+        let reserve = || {
+            app.world()
+                .resource::<Assets<VoxelMaterial>>()
+                .reserve_handle()
+        };
+        let materials = BlockMaterial {
+            cutout: reserve(),
+            translucent: reserve(),
+            ..BlockMaterial::unloaded(reserve())
+        };
+        app.insert_resource(materials.clone());
+        let mut chunk = Chunk::default();
+        chunk.set(2, 2, 2, block("stone"));
+        chunk.set(4, 2, 2, block("leaves"));
+        chunk.set(6, 2, 2, block("glass"));
+        chunk.set(6, 2, 12, block("glass"));
+        // Away from the origin, so sorting from the world-space eye would
+        // put the panes in the other order.
+        let coord = ChunkCoord(IVec3::new(2, 0, -2));
+        let origin = coord.origin();
+        let camera = app
+            .world_mut()
+            .spawn((
+                FlyCamera::default(),
+                Transform::from_translation(origin.as_vec3() + Vec3::new(6.5, 2.5, 30.0)),
+            ))
+            .id();
+        // A pond walled in with stone: its faces are all in one plane.
+        let mut pond = Chunk::default();
+        for (x, y, z) in Chunk::positions() {
+            let edge = x == 0 || x == 15 || z == 0 || z == 15;
+            match y {
+                1 => pond.set(x, y, z, block("stone")),
+                2 if edge => pond.set(x, y, z, block("stone")),
+                2 => pond.set(x, y, z, block("water")),
+                _ => {}
+            }
+        }
+        let (plain, see_through, water) = app
+            .world_mut()
+            .run_system_once(move |mut commands: Commands, mut map: ResMut<ChunkMap>| {
+                let mut plain = Chunk::default();
+                plain.set(1, 1, 1, block("stone"));
+                let mut spawn = |at: IVec3, chunk: Chunk| {
+                    spawn_chunk(&mut commands, &mut map, ChunkCoord(at), chunk, ())
+                };
+                (
+                    spawn(IVec3::ZERO, plain),
+                    spawn(coord.0, chunk.clone()),
+                    spawn(IVec3::new(2, 0, 1), pond.clone()),
+                )
+            })
+            .unwrap();
+        finish_meshing(&mut app);
+        app.update();
+
+        assert!(app.world().get::<ChunkParts>(plain).is_none());
+        let parts = *app.world().get::<ChunkParts>(see_through).unwrap();
+        let world = app.world();
+        let material = |entity| {
+            world
+                .get::<MeshMaterial3d<VoxelMaterial>>(entity)
+                .unwrap()
+                .0
+                .clone()
+        };
+        let faces = |entity| {
+            let mesh = world.get::<Mesh3d>(entity).unwrap();
+            world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .unwrap()
+                .count_vertices()
+                / 4
+        };
+        assert_eq!(faces(see_through), 6);
+        assert_eq!(faces(parts.cutout), 6);
+        // Two panes of glass.
+        assert_eq!(faces(parts.translucent), 12);
+        assert_eq!(material(see_through), materials.material);
+        assert_eq!(material(parts.cutout), materials.cutout);
+        assert_eq!(material(parts.translucent), materials.translucent);
+        for part in [parts.cutout, parts.translucent] {
+            assert_eq!(world.get::<ChildOf>(part).unwrap().parent(), see_through);
+        }
+
+        // Seen from the south (+Z), the north pane's faces come first.
+        let first_face_z = |app: &App| {
+            let mesh = app.world().get::<Mesh3d>(parts.translucent).unwrap();
+            let mesh = app.world().resource::<Assets<Mesh>>().get(mesh).unwrap();
+            let Some(Indices::U32(indices)) = mesh.indices() else {
+                panic!("no indices");
+            };
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("no positions");
+            };
+            positions[indices[0] as usize][2]
+        };
+        assert!(first_face_z(&app) < 4.0);
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .z = origin.z as f32 - 20.0;
+        app.update();
+        assert!(first_face_z(&app) > 10.0);
+
+        let set = |app: &mut App, pos: IVec3, state: BlockState| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| {
+                    voxels.set(pos, state);
+                })
+                .unwrap();
+            finish_meshing(app);
+            app.update();
+        };
+        // An edit rebuilds the mesh in the order it's built in, south pane
+        // (z = 2) first; it's sorted again without the camera moving.
+        set(&mut app, origin + IVec3::new(6, 2, 7), block("glass"));
+        assert!(first_face_z(&app) > 10.0, "not sorted after an edit");
+
+        // A move within the same block doesn't sort it again.
+        let sorted = *app.world().get::<SortedFrom>(parts.translucent).unwrap();
+        let mesh = app.world().get::<Mesh3d>(parts.translucent).unwrap().id();
+        let mut events = app
+            .world()
+            .resource::<Messages<AssetEvent<Mesh>>>()
+            .get_cursor_current();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .z = origin.z as f32 - 19.7;
+        app.update();
+        app.update();
+        assert_eq!(
+            *app.world().get::<SortedFrom>(parts.translucent).unwrap(),
+            sorted
+        );
+        let messages = app.world().resource::<Messages<AssetEvent<Mesh>>>();
+        assert!(
+            !events.read(messages).any(|e| e.is_modified(mesh)),
+            "re-sorted after a small move"
+        );
+
+        // Without glass, the translucent part draws nothing.
+        // The pond's surface never needed sorting, however the camera moved.
+        let pond = app.world().get::<ChunkParts>(water).unwrap().translucent;
+        assert!(app.world().get::<Mesh3d>(pond).is_some());
+        assert_eq!(app.world().get::<SortedFrom>(pond), Some(&SortedFrom(None)));
+
+        for z in [2, 7, 12] {
+            set(&mut app, origin + IVec3::new(6, 2, z), BlockState::AIR);
+        }
+        assert!(app.world().get::<Mesh3d>(parts.translucent).is_none());
+        assert!(app.world().get::<Mesh3d>(parts.cutout).is_some());
+    }
+
+    /// Nearby, a translucent mesh is sorted again each block the camera
+    /// moves. Far away, each chunk every 16 blocks, but not all at the same
+    /// place, so crossing a line doesn't sort every far chunk on one frame.
+    #[test]
+    fn far_chunks_sort_at_staggered_places() {
+        let near = ChunkCoord(IVec3::ZERO);
+        for x in 0..20 {
+            let eye = Vec3::new(x as f32 + 0.5, 8.0, 8.0);
+            assert_eq!(sort_position(eye, near), eye.floor().as_ivec3());
+        }
+        // Flying 32 blocks along X, 100 blocks from each of 64 chunks: each
+        // sorts twice, at its own places.
+        let mut places = HashSet::new();
+        for i in 0..64 {
+            let coord = ChunkCoord(IVec3::new(i % 8, i / 8, 3));
+            let eye = |x: i32| Vec3::new(x as f32 + 0.5, 8.0, 108.0);
+            let changes: Vec<i32> = (1..=32)
+                .filter(|&x| sort_position(eye(x), coord) != sort_position(eye(x - 1), coord))
+                .collect();
+            assert_eq!(changes.len(), 2, "{coord:?}: {changes:?}");
+            assert_eq!(changes[1] - changes[0], 16);
+            places.insert(changes[0]);
+        }
+        assert!(places.len() >= 8, "only {} different places", places.len());
     }
 }

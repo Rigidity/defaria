@@ -1,0 +1,12 @@
+// Still water. It doesn't flow yet. Translucent and double-sided, so its
+// surface shows from underneath, and a fluid: the crosshair passes through
+// it and placing a block replaces it.
+{
+  name: "Water",
+  model: "cube",
+  render: "translucent",
+  double_sided: true,
+  fluid: true,
+  textures: { all: "water" },
+  weight: 1000,
+}

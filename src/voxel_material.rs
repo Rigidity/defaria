@@ -69,6 +69,9 @@ pub struct VoxelMaterial {
     pub blocks: Handle<Image>,
     #[uniform(2)]
     pub lighting: LightingUniform,
+    /// Opaque, cut out (alpha to coverage, with holes where the texture is
+    /// transparent) or blended.
+    pub alpha_mode: AlphaMode,
 }
 
 /// The light that isn't baked into chunk meshes. Kept up to date by
@@ -102,6 +105,10 @@ pub struct GpuDynamicLight {
 }
 
 impl Material for VoxelMaterial {
+    fn alpha_mode(&self) -> AlphaMode {
+        self.alpha_mode
+    }
+
     fn vertex_shader() -> ShaderRef {
         SHADER_PATH.into()
     }
@@ -151,10 +158,15 @@ const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 6] = [
     (ATTRIBUTE_FACE, "face: vec2<u32>"),
 ];
 
-/// The material every chunk mesh shares, and the images behind it.
+/// The materials chunk meshes are drawn with, one per
+/// [`Render`](crate::content::Render), and the images behind them. They
+/// differ only in how they blend: whatever changes one's texture or
+/// lighting changes all three (see [`BlockMaterial::all`]).
 #[derive(Resource, Debug, Clone)]
 pub struct BlockMaterial {
     pub material: Handle<VoxelMaterial>,
+    pub cutout: Handle<VoxelMaterial>,
+    pub translucent: Handle<VoxelMaterial>,
     /// The grayscale layer images as loaded, by asset path. The material's
     /// texture is built from them.
     pub layers: HashMap<String, Handle<Image>>,
@@ -181,13 +193,38 @@ impl FromWorld for BlockMaterial {
         // A handle with no image behind it yet: chunks don't draw until the
         // layers have loaded and the real texture replaces it.
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
-        let material = world
-            .resource_mut::<Assets<VoxelMaterial>>()
-            .add(VoxelMaterial {
-                blocks,
+        let mut materials = world.resource_mut::<Assets<VoxelMaterial>>();
+        let mut add = |alpha_mode| {
+            materials.add(VoxelMaterial {
+                blocks: blocks.clone(),
                 lighting: default(),
-            });
-        Self { material, layers }
+                alpha_mode,
+            })
+        };
+        Self {
+            material: add(AlphaMode::Opaque),
+            cutout: add(AlphaMode::AlphaToCoverage),
+            translucent: add(AlphaMode::Blend),
+            layers,
+        }
+    }
+}
+
+impl BlockMaterial {
+    /// Every material: opaque, cut-out and translucent.
+    pub fn all(&self) -> [&Handle<VoxelMaterial>; 3] {
+        [&self.material, &self.cutout, &self.translucent]
+    }
+
+    /// Materials with nothing behind them, for tests that don't draw.
+    #[cfg(test)]
+    pub fn unloaded(material: Handle<VoxelMaterial>) -> Self {
+        Self {
+            material,
+            cutout: Handle::default(),
+            translucent: Handle::default(),
+            layers: default(),
+        }
     }
 }
 
@@ -265,10 +302,13 @@ fn build_block_texture(
     }
     let texture = images.add(texture);
     tiles.0 = built;
-    // Assigning through `get_mut` marks the material modified, so its bind
-    // group is rebuilt with the new texture. The old texture is dropped.
-    if let Some(mut material) = materials.get_mut(&block.material) {
-        material.blocks = texture;
+    // Assigning through `get_mut` marks each material modified, so its
+    // bind group is rebuilt with the new texture. The old texture is
+    // dropped.
+    for handle in block.all() {
+        if let Some(mut material) = materials.get_mut(handle) {
+            material.blocks = texture.clone();
+        }
     }
 }
 
@@ -291,6 +331,8 @@ mod tests {
             "const MAX_DYNAMIC_LIGHTS: u32 = {MAX_DYNAMIC_LIGHTS}u;"
         )));
         assert!(shader.contains("fn vertex("));
+        let back = format!("const BACK_FACE: u32 = 0x{:08x}u;", crate::voxel::BACK_FACE);
+        assert!(shader.contains(&back), "the shader doesn't declare {back}");
         // The vertex inputs at the locations `specialize` feeds them to.
         for (location, (_, declaration)) in VERTEX_INPUTS.iter().enumerate() {
             let input = format!("@location({location}) {declaration}");
@@ -420,6 +462,12 @@ mod tests {
 
         let new = material_texture(&app);
         assert_ne!(new.id(), old.id(), "rebuilt texture must be a new asset");
+        // The cut-out and translucent materials use the new texture too.
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        for handle in block.all() {
+            assert_eq!(materials.get(handle).unwrap().blocks, new);
+        }
         let texture = app.world().resource::<Assets<Image>>().get(&new).unwrap();
         // The stone tile's first pixel is the darkest stone color now.
         let darkest = base().materials["defaria:stone"].palette.color(0);
@@ -434,6 +482,24 @@ mod tests {
         assert!(
             material_events.modified(&app),
             "material wasn't marked modified"
+        );
+    }
+
+    /// The three chunk materials blend as their names say: opaque, cut out
+    /// with alpha to coverage, and blended.
+    #[test]
+    fn each_material_draws_its_way() {
+        let app = app();
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        let modes = block.all().map(|h| materials.get(h).unwrap().alpha_mode);
+        assert_eq!(
+            modes,
+            [
+                AlphaMode::Opaque,
+                AlphaMode::AlphaToCoverage,
+                AlphaMode::Blend
+            ]
         );
     }
 

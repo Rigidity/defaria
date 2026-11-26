@@ -358,6 +358,35 @@ fn slabs_stop_light_only_at_their_bottom() {
     world.assert_matches_reference();
 }
 
+/// See-through blocks (leaves, glass, water, plants) let light through as
+/// if they were air, though they cover their sides: a roof of them shades
+/// nothing, and a lamp shines through them.
+#[test]
+fn see_through_blocks_let_light_through() {
+    for name in ["leaves", "glass", "water", "tuft"] {
+        let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
+        world.load(&mut queue, IVec3::ZERO, |pos| {
+            if pos.y <= 3 {
+                block("stone")
+            } else if (8..=10).contains(&pos.y) {
+                block(name)
+            } else {
+                BlockState::AIR
+            }
+        });
+        world.run(&mut queue);
+        for y in [9, 5] {
+            let at = IVec3::new(3, y, 4);
+            assert_eq!(world.light(at).sky(), MAX_LIGHT, "{name} at {at}");
+        }
+        let lamp = IVec3::new(3, 6, 4);
+        world.set(&mut queue, lamp, block("lamp"));
+        world.run(&mut queue);
+        assert_eq!(world.light(IVec3::new(3, 9, 4)).block()[0], 12, "{name}");
+        world.assert_matches_reference();
+    }
+}
+
 /// A side that's covered stops light across chunk borders too, and the
 /// sky from outside the loaded chunks stops at a covered top.
 #[test]

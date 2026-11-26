@@ -97,16 +97,19 @@ fn update_lighting(
             .iter()
             .map(|(light, transform)| (*light, transform.translation())),
     );
-    // Only touch the material when something changed: modifying it makes
+    // Only touch a material when something changed: modifying it makes
     // the renderer prepare it again, along with every chunk that uses it.
     // That's cheap with a few hundred chunks (a moving light costs ~0.2 ms a
     // frame); with many more, move the lights to a buffer of their own.
-    if materials
-        .get(&block.material)
-        .is_some_and(|material| material.lighting != uniform)
-        && let Some(mut material) = materials.get_mut(&block.material)
-    {
-        material.lighting = uniform;
+    // All three chunk materials (opaque, cut-out, translucent) get it.
+    for handle in block.all() {
+        if materials
+            .get(handle)
+            .is_some_and(|material| material.lighting != uniform)
+            && let Some(mut material) = materials.get_mut(handle)
+        {
+            material.lighting = uniform;
+        }
     }
 }
 
@@ -198,24 +201,34 @@ mod tests {
         .init_resource::<ButtonInput<KeyCode>>()
         .init_resource::<SkyLight>()
         .init_asset::<VoxelMaterial>();
-        let material = app
-            .world_mut()
-            .resource_mut::<Assets<VoxelMaterial>>()
-            .add(VoxelMaterial {
+        let mut materials = app.world_mut().resource_mut::<Assets<VoxelMaterial>>();
+        let mut add = |alpha_mode| {
+            materials.add(VoxelMaterial {
                 blocks: Handle::default(),
                 lighting: default(),
-            });
-        app.insert_resource(BlockMaterial {
-            material,
-            layers: default(),
-        });
+                alpha_mode,
+            })
+        };
+        let block = BlockMaterial {
+            cutout: add(AlphaMode::AlphaToCoverage),
+            translucent: add(AlphaMode::Blend),
+            ..BlockMaterial::unloaded(add(AlphaMode::Opaque))
+        };
+        app.insert_resource(block);
         app
     }
 
+    /// The chunk materials' lighting: the same in all three (opaque,
+    /// cut-out and translucent), so see-through blocks are lit alike.
     fn lighting(app: &App) -> LightingUniform {
         let block = app.world().resource::<BlockMaterial>();
         let materials = app.world().resource::<Assets<VoxelMaterial>>();
-        materials.get(&block.material).unwrap().lighting
+        let [opaque, rest @ ..] = block.all().map(|h| materials.get(h).unwrap().lighting);
+        assert!(
+            rest.iter().all(|l| *l == opaque),
+            "the materials' lighting differs"
+        );
+        opaque
     }
 
     /// The player's light reaches the chunk material where the player is,
