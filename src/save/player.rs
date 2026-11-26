@@ -12,7 +12,10 @@ use bevy::platform::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::write_atomically;
-use crate::content::{Content, ItemState};
+use crate::{
+    content::{Content, ItemState},
+    game_mode::GameMode,
+};
 
 /// The `player.json5` format this build writes.
 pub const PLAYER_FORMAT: u32 = 1;
@@ -24,6 +27,9 @@ pub const PLAYER_FILE: &str = "player.json5";
 #[serde(deny_unknown_fields)]
 pub struct PlayerFile {
     pub format: u32,
+    /// Creative or survival.
+    #[serde(default)]
+    pub game_mode: GameMode,
     /// The hotbar slot in hand, from 0.
     pub active_slot: usize,
     /// Each hotbar slot's item, by name, or `None` for an empty one.
@@ -162,6 +168,7 @@ mod tests {
         assert_eq!(read(&folder), Ok(None));
         let file = PlayerFile {
             format: PLAYER_FORMAT,
+            game_mode: GameMode::Survival,
             active_slot: 3,
             hotbar: vec![Some("defaria:lamp".into()), None],
             inventory: vec![SavedStack {

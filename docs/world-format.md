@@ -48,6 +48,7 @@ seed the game would otherwise use.
 ```json5
 {
   format: 1,          // this file's format
+  game_mode: "survival", // or "creative" (the default)
   active_slot: 2,     // the hotbar slot in hand, 0 to 8
   // Each hotbar slot's item, or null for an empty slot.
   hotbar: ["defaria:dirt", null, "defaria:pickaxe[handle=defaria:oak,head=defaria:iron]"],

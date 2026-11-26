@@ -13,6 +13,7 @@ mod fluid;
 mod fly_camera;
 mod fog;
 mod fov;
+pub mod game_mode;
 pub mod headless;
 mod hotbar;
 pub mod inventory;
@@ -64,6 +65,7 @@ impl Plugin for GamePlugin {
             mining::MiningPlugin,
             cracks::CracksPlugin,
             fluid::FluidPlugin,
+            game_mode::GameModePlugin,
         ));
     }
 }

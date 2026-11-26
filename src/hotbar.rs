@@ -4,7 +4,8 @@
 //!
 //! A slot doesn't hold items: it names a kind of item, and shows how many
 //! of it the player's [`Inventory`] has. Running out leaves the slot as it
-//! was, at 0 and dimmed, ready for when more turn up (as in Factorio).
+//! was, at 0 and dimmed (in survival), ready for when more turn up (as in
+//! Factorio).
 //!
 //! - The number keys 1–9 pick the active slot, in game or in a screen
 //!   (unless a text field has the keyboard).
@@ -28,6 +29,7 @@ use bevy::{
 
 use crate::{
     content::{BlockState, Content, ItemState},
+    game_mode::GameMode,
     inventory::Inventory,
     player::LocalPlayer,
     ui::{ItemSlot, PointerTravel, UiTheme, item_slot, playing, typing},
@@ -252,14 +254,29 @@ fn click_slot(
 /// Each slot's item, how many the player has (dimmed at none), and which
 /// is active.
 fn show_hotbar(
-    player: Option<Single<(Ref<Hotbar>, Ref<Inventory>, Ref<ActiveSlot>), With<LocalPlayer>>>,
+    player: Option<
+        Single<
+            (
+                Ref<Hotbar>,
+                Ref<Inventory>,
+                Ref<ActiveSlot>,
+                Option<Ref<GameMode>>,
+            ),
+            With<LocalPlayer>,
+        >,
+    >,
     mut slots: Query<(&HotbarSlot, &mut ItemSlot)>,
 ) {
     let Some(player) = player else {
         return;
     };
-    let (hotbar, inventory, active) = player.into_inner();
-    let changed = hotbar.is_changed() || inventory.is_changed() || active.is_changed();
+    let (hotbar, inventory, active, mode) = player.into_inner();
+    // In creative (the default) there's always more: nothing dims.
+    let creative = mode.as_ref().is_none_or(|mode| mode.is_creative());
+    let changed = hotbar.is_changed()
+        || inventory.is_changed()
+        || active.is_changed()
+        || mode.is_some_and(|mode| mode.is_changed());
     for (&HotbarSlot(index), mut slot) in &mut slots {
         if !changed && !slot.is_added() {
             continue;
@@ -270,7 +287,7 @@ fn show_hotbar(
             item,
             count,
             selected: index == active.0,
-            dimmed: item.is_some() && count == 0,
+            dimmed: item.is_some() && count == 0 && !creative,
         });
     }
 }
@@ -360,7 +377,14 @@ mod tests {
             .add_plugins(HotbarPlugin);
         let (inventory, hotbar) = new_player(base());
         app.world_mut()
-            .spawn((LocalPlayer, inventory, hotbar, ActiveSlot::default()));
+            // In survival, where a slot whose item ran out dims.
+            .spawn((
+                LocalPlayer,
+                inventory,
+                hotbar,
+                ActiveSlot::default(),
+                GameMode::Survival,
+            ));
         app.update();
         app
     }

@@ -3,8 +3,8 @@
 //!
 //! - E opens and closes it, while no other screen is open; Escape closes it
 //!   too (see [`crate::ui::screen`]).
-//! - The catalog, on top, lists every item the mods define, scrolling when
-//!   there are more than fit.
+//! - In creative, the catalog, on top, lists every item the mods define,
+//!   scrolling when there are more than fit.
 //! - Under it, the player's inventory lists what they carry, sorted, with
 //!   how many of each and the weight they carry out of what they can.
 //! - The hotbar below stays where it is and takes part: items are dragged
@@ -20,6 +20,7 @@ use super::{
 };
 use crate::{
     content::Content,
+    game_mode::GameMode,
     hotbar::hotbar_height,
     player::LocalPlayer,
     ui::{UiScreen, UiTheme, typing},
@@ -67,6 +68,7 @@ fn toggle_inventory(
     inventories: Query<Entity, With<InventoryScreen>>,
     screens: Query<(), With<UiScreen>>,
     theme: Res<UiTheme>,
+    player: Option<Single<&GameMode, With<LocalPlayer>>>,
 ) {
     if !keys.just_pressed(KeyCode::KeyE) {
         return;
@@ -75,7 +77,8 @@ fn toggle_inventory(
         // Escape may close it this frame too.
         commands.entity(inventory).try_despawn();
     } else if screens.is_empty() {
-        spawn_inventory(&mut commands, &theme);
+        let creative = player.is_none_or(|mode| mode.is_creative());
+        spawn_inventory(&mut commands, &theme, creative);
     }
 }
 
@@ -96,7 +99,8 @@ fn heading(theme: &UiTheme, title: &str, extra: impl Bundle, above: f32) -> impl
     )
 }
 
-fn spawn_inventory(commands: &mut Commands, theme: &UiTheme) {
+/// Spawns the screen, with the catalog in `creative`.
+fn spawn_inventory(commands: &mut Commands, theme: &UiTheme, creative: bool) {
     let player = ListSource::Inventory(Owner::LocalPlayer);
     commands
         .spawn((
@@ -128,17 +132,19 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme) {
                 BorderColor::all(theme.panel_border),
             ))
             .with_children(|panel| {
-                panel.spawn(heading(theme, "Items", (), 0.0));
-                item_list(
-                    panel,
-                    theme,
-                    ItemList {
-                        source: ListSource::Catalog,
-                        sends_to: Some(player),
-                    },
-                    CATALOG_ROWS,
-                    Name::new("Catalog"),
-                );
+                if creative {
+                    panel.spawn(heading(theme, "Items", (), 0.0));
+                    item_list(
+                        panel,
+                        theme,
+                        ItemList {
+                            source: ListSource::Catalog,
+                            sends_to: Some(player),
+                        },
+                        CATALOG_ROWS,
+                        Name::new("Catalog"),
+                    );
+                }
                 panel.spawn(heading(
                     theme,
                     "Inventory",
@@ -148,14 +154,16 @@ fn spawn_inventory(commands: &mut Commands, theme: &UiTheme) {
                         theme.text_font(),
                         TextColor(theme.text_dim),
                     ),
-                    6.0,
+                    if creative { 6.0 } else { 0.0 },
                 ));
+                // In survival there's nowhere for the items to go.
+                let sends_to = creative.then_some(ListSource::Catalog);
                 item_list(
                     panel,
                     theme,
                     ItemList {
                         source: player,
-                        sends_to: Some(ListSource::Catalog),
+                        sends_to,
                     },
                     INVENTORY_ROWS,
                     Name::new("Inventory list"),
@@ -636,6 +644,27 @@ mod tests {
         app.world_mut().spawn(UiScreen);
         run_more(&mut app, "hold KeyE 1\nwait 2");
         assert!(!is_open(&mut app));
+    }
+
+    /// In survival the screen is just what's carried: no catalog, and
+    /// clicking an entry moves nothing.
+    #[test]
+    fn survival_has_no_catalog() {
+        let mut app = test_game(Script::parse("wait 1").unwrap());
+        settle(&mut app);
+        run_more(
+            &mut app,
+            "hold MouseLeft 1\nwait 1\nhold KeyC 1\nwait 2\nhold KeyE 1\nwait 3",
+        );
+        assert!(is_open(&mut app));
+        let mut lists = app.world_mut().query::<&ItemList>();
+        let sources: Vec<ListSource> = lists.iter(app.world()).map(|list| list.source).collect();
+        assert_eq!(sources, [ListSource::Inventory(Owner::LocalPlayer)]);
+        let before = inventory(&mut app);
+        let stone = item(&app, "defaria:stone");
+        let at = mine_at(&mut app, stone);
+        run_more(&mut app, &click("MouseLeft", at));
+        assert_eq!(inventory(&mut app), before);
     }
 
     #[test]

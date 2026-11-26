@@ -24,7 +24,9 @@ use bevy::{
 use crate::{
     content::{BlockBox, BlockState, Content, Direction},
     fly_camera::{FlyCamera, FlyCameraSystems},
+    game_mode::{GameMode, use_up},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
+    inventory::Inventory,
     physics::{Aabb, Body},
     player::LocalPlayer,
     terrain::{RemeshChunks, Voxels},
@@ -218,7 +220,17 @@ fn edit_blocks(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&Transform, With<FlyCamera>>,
-    player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
+    player: Option<
+        Single<
+            (
+                &Hotbar,
+                &ActiveSlot,
+                Option<&mut Inventory>,
+                Option<&GameMode>,
+            ),
+            With<LocalPlayer>,
+        >,
+    >,
     content: Res<Content>,
     bodies: Query<&Body>,
     mut voxels: Voxels,
@@ -232,10 +244,14 @@ fn edit_blocks(
     let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
         return;
     };
-    let Some((hotbar, active)) = player.as_deref() else {
+    let Some(player) = player else {
         return;
     };
-    let Some(block) = hotbar.block(**active, &content) else {
+    let (hotbar, active, inventory, mode) = player.into_inner();
+    let Some(item) = hotbar.item(*active) else {
+        return;
+    };
+    let Some(block) = hotbar.block(*active, &content) else {
         return;
     };
     let Some((pos, face)) = hit.place_at() else {
@@ -253,6 +269,11 @@ fn edit_blocks(
         .get(pos)
         .is_some_and(|there| there.is_air() || content.state(there).is_fluid());
     if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps {
+        return;
+    }
+    // In survival, only what you have, and placing uses it up.
+    let mode = mode.copied().unwrap_or_default();
+    if !use_up(mode, inventory.map(Mut::into_inner), item) {
         return;
     }
     voxels.set(pos, block);
@@ -340,7 +361,7 @@ mod tests {
         content::{base, block, grass, test_mod},
         headless::{Script, settle, test_game},
         hotbar::select_with_keys,
-        inventory::{Inventory, player::new_player},
+        inventory::player::new_player,
         mining::{Mining, MiningPlugin},
         player::SIZE,
         terrain::{
