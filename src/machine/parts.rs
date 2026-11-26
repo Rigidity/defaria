@@ -131,8 +131,9 @@ impl BlockEntityPart for MachineActive {
     }
 }
 
-/// The energy a machine holds, in energy units, and how fast it may take
-/// and give it. Only `stored` is saved; the rest comes from the block.
+/// The energy a machine holds, in joules, and how fast (in watts) it may take
+/// and give it, make it and use it. Only `stored` is saved; the rest comes
+/// from the block.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[reflect(Component)]
 pub struct EnergyBuffer {
@@ -142,6 +143,10 @@ pub struct EnergyBuffer {
     pub max_in: u64,
     /// The most it gives in a second.
     pub max_out: u64,
+    /// What it makes on its own in a second (a creative generator).
+    pub generate: u64,
+    /// What it uses up in a second while it works (a powered lamp).
+    pub uses: u64,
 }
 
 impl EnergyBuffer {
@@ -151,6 +156,8 @@ impl EnergyBuffer {
             capacity: spec.capacity,
             max_in: spec.max_in,
             max_out: spec.max_out,
+            generate: spec.generate,
+            uses: spec.uses,
         }
     }
 

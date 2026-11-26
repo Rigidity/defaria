@@ -97,7 +97,7 @@ changes.
    fluid in a voxel) and `fluids` (each fluid's total in the loaded world
    and how much of it is active), `network` (the network the conduit at a
    voxel is part of: kind, size, frozen or running, its ports and their
-   roles), `camera` (put the
+   roles, and on an energy network what it stored, produced and consumed), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -282,6 +282,11 @@ documented in `docs/modding.md`; keep that file, the serde types in
   network that reaches into an unloaded chunk. Solvers keep what each
   network holds in a `NetworkMap` (`NetworkState`), which merges and
   splits with it. Network kinds are data (`networks/` in a mod).
+  `src/network/energy.rs`: the `energy` solver, in `FixedUpdate` at 20
+  network ticks a second: moves energy between machines' `EnergyBuffer`s
+  by their ports' roles, capped by the network's weakest wire, makes it
+  in generators and uses it up in machines with `use`, and reports each
+  network's (`EnergyReport`).
 - `src/game_mode.rs`: creative and survival (`GameMode` on the player,
   C switches): whether breaking gives items and placing uses them up.
 - `src/inventory/`: inventories. `model.rs` has `Inventory` (how many of

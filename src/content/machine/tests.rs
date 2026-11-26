@@ -33,7 +33,9 @@ fn base_machines_have_their_ports_and_stores() {
         Some(EnergySpec {
             capacity: 100_000,
             max_in: 1000,
-            max_out: 1000
+            max_out: 1000,
+            generate: 0,
+            uses: 0,
         })
     );
     assert!(content.block_of(battery).has_block_entity());
@@ -242,7 +244,9 @@ fn numbers_come_from_materials() {
         Some(EnergySpec {
             capacity: 1000,
             max_in: 5,
-            max_out: 0
+            max_out: 0,
+            generate: 0,
+            uses: 0,
         })
     );
     assert_eq!(copper.tanks[0].capacity, 2000);

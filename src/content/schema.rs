@@ -453,7 +453,7 @@ impl PortRole {
     }
 }
 
-/// A machine's energy buffer, in energy units.
+/// A machine's energy buffer, in joules, rates in watts.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct EnergyDef {
@@ -465,6 +465,15 @@ pub struct EnergyDef {
     /// The most it gives in a second.
     #[serde(default = "zero")]
     pub max_out: Attribute,
+    /// What it makes on its own each second, into its buffer while there's
+    /// room: a creative generator.
+    #[serde(default = "zero")]
+    pub generate: Attribute,
+    /// What it uses up each second while it's working; it works (and is
+    /// in its `active_state`) only while its buffer pays for it: a
+    /// powered lamp.
+    #[serde(default = "zero", rename = "use")]
+    pub uses: Attribute,
 }
 
 fn zero() -> Attribute {

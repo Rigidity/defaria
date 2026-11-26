@@ -32,7 +32,7 @@
   category: "machines",
   machine: {
     ports: [{ faces: ["front", "back"], network: "electric", role: "store" }],
-    // Energy units; see docs/decisions.md.
+    // Joules, and watts; see docs/decisions.md.
     energy: { capacity: 100000, max_in: 1000, max_out: 1000 },
   },
 }

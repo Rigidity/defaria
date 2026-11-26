@@ -3,6 +3,97 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Power is one pool per network, capped by its weakest wire, in joules and watts (2026-11-26)
+
+**Context.** Before the energy solver (#112), the spike (#110) had to
+decide how much electrical detail the game has: one pool per network,
+per-path limits (a max-flow solve), voltage tiers (GregTech,
+IndustrialCraft), or loss over distance; what an overloaded wire does;
+the units; and the network tick rate.
+
+**Decision.** One pool per network, as the issue recommended. Each
+network tick, producers offer (up to their `max_out` and what they
+hold), consumers ask (up to their `max_in` and their room), and storage
+does both: consumers are served from producers first, then from storage;
+what producers have left charges storage (`balance` in
+`src/network/energy.rs`). What consumers *need* to run this tick (their
+`use`, and an `EnergyNeed` set by whatever runs them: a recipe's share
+of its energy), less what its buffer already holds, is served first;
+only what's left tops their buffers up, in proportion to the room each
+has. A machine that can pay for its tick from its buffer needs nothing,
+so one that can't run on its own is served before it, rather than power
+going into a furnace holding 5 kJ while an empty one never starts. In a
+shortage the needs are served
+whole, the one needing least first, until the power runs out
+(`serve_smallest_first`): some machines run and the rest wait, dark.
+Shared in proportion to what each asked, as the solver first did, a
+long line of lamps (20 W) beside furnaces (500 W) on a 1000 W wire got
+under a joule a tick each, which rounds to nothing, so every lamp went
+dark and the furnaces ran in bursts: a network using all its power
+looked dead. Served whole by what each asked rather than what each
+needed, as it did next, a machine filling its buffer took the power one
+that was working needed: two electric furnaces (#115, 500 W recipes) on
+a 1000 W generator, one asking its `max_in` of 1000 W to fill a 10 kJ
+buffer, left the other waiting about 20 seconds, then dropping out
+between recipes. *Provisional, for the user to decide*: needs first,
+served whole and smallest first, then top-ups shared, is the
+conservative pick; the other ways are keeping it all proportional (with
+fractions carried over ticks so small loads aren't rounded away),
+capping a recipe machine's demand at its recipe's rate plus a little
+headroom, or a priority set per machine. Everything moved on a network in a tick is
+capped by its *throughput*, its weakest conduit's: one iron wire (170 W)
+limits a copper network (1000 W) everywhere. An overloaded wire caps
+throughput; nothing burns out. No voltage tiers and no loss over
+distance.
+
+Units are **joules and watts**, with game-scaled numbers rather than
+realistic ones (as Factorio does): #114's integer energy units are
+joules and its per-second rates watts, so nothing changed but the
+names. Real names give screens (#119) prefixes for free (kJ, MW) and
+need no explaining, and nobody minds that a lamp is 20 W and a battery
+holds 100 kJ. Energy is held only in machines' buffers: wires hold none
+(capacity 0), so merging and splitting moves no energy and a chunk
+unloading takes none with it.
+
+The network tick is fixed at **20 Hz** (`TICKS_PER_SECOND`), counted
+out of `FixedUpdate`'s time, and fluid and item networks should run at
+the same rate. A rate per second is split into whole joules per tick that
+add up to exactly that rate over each second (`per_tick`). Energy enters
+the world only at machines with `generate` (the creative generator) and
+leaves only at machines with `use` (the powered lamp), which are active
+exactly while their buffer pays for the tick. A machine on two networks
+keeps to its rates over both.
+
+**What's wrong with it.** A thin wire is a bottleneck for the whole
+network, not where it is, so a network that's one long copper trunk and
+one iron spur is limited to 170 W everywhere. Wires have nothing to do
+with distance or layout, so where generators go doesn't matter. Batteries
+on one network don't even out between themselves, and a battery between
+two networks passes energy through in one tick. In a shortage the
+smallest machines always win, whatever matters more to the player, and
+which of equal ones run goes by position; the one the power runs out on
+gets part of its demand and may turn on and off (relighting each time).
+`use` is all or
+nothing: a machine can't run slower on less power. Every buffer that
+changes is saved again on that frame (the block entities' way), and the
+throughputs are worked out again for every energy network on any frame a
+conduit changes. The powered lamp's item icon is drawn from its default,
+unlit state, so in the inventory it looks like grey stone; an item can
+only swap that for a flat `texture`, not a lit 3D block (deferred: a way
+for a block's item to name the state its icon shows).
+
+**What should replace it.** If players want to plan wiring: per-path
+limits (a max-flow solve when the network changes, cached), then loss
+over distance from `conductivity`. Voltage tiers only if the game grows
+into big tiered machines, with burning out as a choice per network kind.
+A rolling average or a little hysteresis on machines' active states so
+short power doesn't flicker, and recipes (#115) that slow down rather
+than stop.
+
+**When to revisit.** When players build networks big enough that one
+thin wire is a surprise, when machine screens (#119) show power, or when
+power shows in frame times.
+
 ## Machines hold items in slots, not by weight (2026-11-26)
 
 **Context.** The player's inventory has no slots or stack sizes, only a

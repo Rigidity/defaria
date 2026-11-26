@@ -27,7 +27,7 @@
 //! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). Like any edit, it's followed by the engine setting connection properties, so `pipe` joins the pipes next to it. |
 //! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
-//! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to, each with its role (`produce`, `store`, `input`, ...); or `none`. |
+//! | `network <x> <y> <z>` | Print the network the conduit at that voxel is part of: its id, kind and solver, how many conduits and chunks it has, its capacity, whether it's running or frozen (a face joined into a chunk that isn't loaded) and the machine faces (ports) it's joined to, each with its role (`produce`, `store`, `input`, ...); or `none`. On an energy network, also what its storage holds and could, what producers gave and consumers took in the last second, and its throughput (its weakest wire's). |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
@@ -904,12 +904,21 @@ fn fluid_report(world: &mut World) -> String {
 /// The `network` report for the conduit at `pos`.
 fn network_report(world: &World, pos: IVec3) -> String {
     let ports = world.resource::<crate::machine::MachinePorts>();
-    crate::network::describe(
-        world.resource::<crate::network::Networks>(),
-        world.resource::<Content>(),
-        pos,
-        |id, port| ports.role(id, port),
-    )
+    let networks = world.resource::<crate::network::Networks>();
+    let mut line =
+        crate::network::describe(networks, world.resource::<Content>(), pos, |id, port| {
+            ports.role(id, port)
+        });
+    let energy = networks.at(pos).and_then(|id| {
+        let kind = networks.get(id)?.kind();
+        let report = world.get_resource::<crate::network::energy::EnergyReport>()?;
+        (world.resource::<Content>().networks[kind].solver == crate::content::Solver::Energy)
+            .then(|| crate::network::energy::describe(report, id))
+    });
+    if let Some(energy) = energy {
+        line += &format!("; {energy}");
+    }
+    line
 }
 
 fn place_camera(
@@ -1709,6 +1718,27 @@ mod tests {
         assert_eq!(
             network_report(world, IVec3::new(50, 21, 50)),
             "network at 50 21 50: none"
+        );
+    }
+
+    /// On an energy network, `network` adds what it stored, produced and
+    /// consumed: a generator lighting a lamp over a wire.
+    #[test]
+    fn the_network_report_says_what_energy_moved() {
+        let (mut app, exit) = run_game(
+            "wait 2\n\
+             fill 49 20 50 49 20 50 creative_generator\n\
+             fill 50 20 50 53 20 50 wire\n\
+             fill 52 21 50 52 21 50 powered_lamp\n\
+             wait 90\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let line = network_report(app.world_mut(), IVec3::new(51, 20, 50));
+        assert!(
+            line.ends_with(
+                "; energy: stored 0 of 0 J, produced 20 J and consumed 20 J in the last second, throughput 1000 W"
+            ),
+            "{line}"
         );
     }
 

@@ -1,0 +1,6 @@
+// A powered lamp while it's dark: the lamp's crystal in dull greys.
+{
+  layers: [
+    { image: "gravel", palette: ["#3a3a3e", "#5a5a60", "#7c7c84", "#a0a0a8"] },
+  ],
+}

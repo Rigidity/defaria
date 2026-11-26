@@ -153,7 +153,9 @@ fn placing_a_machine_gives_it_its_parts() {
             stored: 0,
             capacity: 500,
             max_in: 50,
-            max_out: 0
+            max_out: 0,
+            generate: 0,
+            uses: 0,
         })
     );
     let tanks = part::<Tanks>(&app, POS).unwrap();

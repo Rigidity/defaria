@@ -20,6 +20,7 @@ update the row when a layer is replaced.
 | `ore.png` | Retro Diffusion for where the nuggets go (in color, so the ore could be told from the stone); the generated nuggets were one or two pixels, so redrawn by hand as six small clusters at the same spots, lit from the top left (levels 6, 5, 4 and 3, 2 underneath), transparent elsewhere. An overlay stacked over `stone.png`, colored by the ore material's `ore` palette | 2026-11-25 | `rd_plus__mc_texture` | grey stone with several small clusters of shiny orange metal ore nuggets embedded in it, flat block surface texture, even lighting | `2fb46ee2-fd9c-4080-824f-6089fb27c603` | 98% |
 | `machine_side.png` | Retro Diffusion, unused: came back as a flat plate in a frame; the casing in `scripts/draw-machines.py` keeps its layout (frame, rivets in the corners) | 2026-11-26 | `rd_lite__default` | close-up of a riveted metal machine casing panel filling the entire frame edge to edge, a flat plate with a raised metal frame around it and a small rivet in each corner, no outline, no border, no background, grayscale, even lighting | `13120796-e715-4d9b-ac35-b67e5c3878a0` | 98% |
 | `crate_side.png` | Retro Diffusion, unused: came back as a crate seen at an angle, off-centre; its crossed braces drawn by `scripts/draw-machines.py` | 2026-11-26 | `rd_lite__default` | close-up of the side of a reinforced metal storage crate filling the entire frame edge to edge, a thick metal frame with corner brackets, crossed diagonal braces and a small square socket in the center, no outline, no border, no background, grayscale, even lighting | `2c4f9362-4a4e-40e8-a651-86a7ebdabb04` | 98% |
+| `generator_front.png` | Retro Diffusion, unused: came back as a round generator object in color; the round wheel in the middle drawn by `scripts/draw-machines.py` | 2026-11-26 | `rd_lite__default` | close-up of the front of a metal electric generator filling the entire frame edge to edge, a riveted metal casing with a large round copper coil wound in rings in the middle, no outline, no border, no background, grayscale, even lighting | `421344a0-dcc1-446b-9ef4-70e0d5fbfc31` | 98% |
 
 ## Drawn by script
 
@@ -76,6 +77,9 @@ feature drawn into the panel.
 - `machine_top.png`: the casing with a vent grille of four slots.
 - `battery_side.png`: the casing with a tall charge window of three lit
   horizontal bars.
+- `generator_front.png`: the casing with a flywheel behind a round opening:
+  a rim, four spokes and a hub. Idea from the Retro Diffusion generator
+  in the table above.
 - `tank_side.png`: the casing with a vertical sight glass and three gauge
   marks beside it.
 - `crate_side.png`: the casing's frame around a dark panel with crossed
