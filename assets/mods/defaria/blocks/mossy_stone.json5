@@ -1,0 +1,12 @@
+// Stone with moss on it. Now and then (on a random tick) the moss creeps
+// onto bare stone next to it that's open to the air
+// (scripts/mossy_stone.luau).
+{
+  name: "Mossy Stone",
+  model: "cube",
+  textures: { all: "mossy_stone" },
+  hardness: 1.5,
+  weight: 2600,
+  category: "natural",
+  script: "mossy_stone",
+}

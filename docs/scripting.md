@@ -6,9 +6,9 @@ something *does*. They're written in [Luau](https://luau.org), a fast,
 sandboxed dialect of Lua 5.1 with optional types (why Luau: see
 `docs/decisions.md`).
 
-The runtime is in place; the hooks that call scripts come with machines
-(#118) and with scripted blocks and items (#122). This page grows with
-them.
+Blocks and items name a script with `script` (see
+[modding.md](modding.md#scripts)), and its hooks run as things happen to
+them. Machines' hooks come with #118.
 
 ## Where scripts go
 
@@ -41,10 +41,118 @@ Every script in every mod loads when the game starts: its top level runs
 once, defining its hooks (and anything else it keeps). Variables at a
 script's top level keep their values between calls, but they're shared by
 everything that uses the script and they're lost when the scripts reload,
-so state that belongs to one machine goes in its saved data (#118).
+so state that belongs to one block goes in its saved data ([Data](#data)).
 
-The hooks themselves (`on_tick`, `on_placed`, `on_broken`, ...) and what
-they're passed are documented with the features that call them.
+The hooks themselves and what they're passed are below, for
+[blocks and items](#block-and-item-hooks); machines' come with #118.
+
+## Block and item hooks
+
+A block's script (`script` in its file) can define:
+
+| Hook | When |
+|---|---|
+| `on_used(block, player)` | A player used the block: right click on it. Using a block whose script defines this doesn't place a block against it; sneaking with something in hand does. On a machine it takes the click from the machine's screen, and with a wrench in hand the wrench takes it. `player` may be nil for uses that aren't a player's. |
+| `on_placed(block)` | The block was put in its voxel, by anyone: a player, a script, a scenario. |
+| `on_broken(block, old)` | It was replaced by another block (air, when broken). `block` is the voxel as it is now, and `old` what was there: `{ id, name, state }`. Its block entity, and with it its `data`, is already gone. |
+| `on_neighbour_changed(block, face)` | The block on that face of it (`"up"`, `"north"`, ...) changed, or its properties did. |
+| `on_random_tick(block)` | Now and then, at random: about once a minute on average. For things that grow or spread at their own pace. |
+
+An item's script can define `on_use(item, player)`: a player used the
+item in hand (right click) and the click didn't use the block it's on
+(a block whose script defines `on_used`, a machine's screen, a wrench on
+a conduit). Returning `true` uses one of it up, in survival.
+
+```lua
+-- scripts/switch_lamp.luau: using it turns it on and off.
+function on_used(block, player)
+	block:set_state({ lit = not block.state.lit })
+	block.data.switched += 1
+end
+```
+
+Hooks run with the simulation (60 times a second), on the tick after
+what caused them, and what they change are ordinary edits: they're lit,
+drawn and saved like a player's, and run the hooks they cause in turn, a
+tick later. A block whose script doesn't define a hook costs nothing for
+it. An `on_neighbour_changed` for a face, or an `on_random_tick`, that's
+still waiting to run isn't queued again: when it runs, it sees the block
+as it is by then. When a block's hook fails, that voxel's script is disabled until the
+scripts reload or another block is placed there; when an item's does,
+that item's script is.
+
+### Blocks
+
+A hook's `block` is a handle on a block by position:
+
+| | |
+|---|---|
+| `block.pos` | Its position, a `vector`. |
+| `block.id` | Its block's id: `"defaria:stone"`, or `"air"`. |
+| `block.name` | Its state's name: `"Granite Iron Ore"`. |
+| `block.state` | Its property values, a table: `true`/`false` for the properties whose values are `"true"`/`"false"`, text otherwise (`block.state.rock == "defaria:granite"`). |
+| `block.data` | Its block entity's data, a table, or nil for a block with no `block_entity` (see [Data](#data)). |
+| `block:stat(name)` | A stat of its state (`hardness`, `weight` or one of the block's `stats`), or nil. |
+| `block:neighbour(face)` | The block next to it on that face, or nil if that isn't loaded. |
+| `block:set_state(values)` | Sets some of its properties: `block:set_state({ lit = true })`. Returns whether it changed. A property or value the block doesn't have is an error. |
+| `block:set(id, values?)` | Makes it another block, in its default state or with some properties set: `block:set("defaria:stone", { ore = "defaria:iron" })`. Returns whether it changed. `block:set("air")` breaks it, dropping nothing. It's an error to put fluid in a voxel or replace fluid (a machine's tanks pour and draw it), or to replace a block that has a block entity (a machine, a pipe, a block with `data`), which would lose what it holds, or to make one from another block, which only placing it does. Plain blocks it may make from air or turn into others (moss spreading over stone), so a script can make or remove what mining a block gives. |
+
+A hook can change only its own block and the six next to it
+(`block:neighbour(face):set(...)`); changing anything further is an
+error. An item's `on_use` can change the block the player looks at and
+the six next to it. Any loaded block can be read; the `data` of one out
+of reach is a read-only copy. A position further
+than 2^30 from the origin on any axis is an error.
+
+Handles last as long as the hook they were given to. Keeping one in a
+variable and using it in a later call is an error.
+
+### The world
+
+`world` is a global, read-only:
+
+| | |
+|---|---|
+| `world.block(pos)` | A handle on the block at `pos` (a vector, or `x, y, z`), or nil if it isn't loaded. |
+| `world.block_def(id)` | What a block is: `{ id, name, properties, script }`, with `properties` each property's values (`properties.lit == { "false", "true" }`), or nil if there's no such block. |
+| `world.item_def(id)` | What an item is: `{ id, name, block, script }`, `block` the id of the block it places, or nil if there's no such item. |
+| `world.faces` | The six faces' names: `up`, `down`, `north`, `south`, `east`, `west`. |
+
+### Players and items
+
+`player` is a table: `pos` (the eyes) and `look` (the way they look)
+are vectors, `mode` is `"creative"` or `"survival"`, `sneaking` a
+boolean, and `target` the block they look at (a handle, or nil) with
+`face`, the face of it they look at. `item` is `{ id, name, state }`.
+
+### Data
+
+A block with a `block_entity` keeps a table of its own between calls,
+saved with the world: `block.data`. It starts as the block's
+`block_entity.data`, or empty. Change it as any table; what's in it when
+the hook returns is saved, if the hook succeeds (a hook that fails
+leaves it as it was). It keeps only plain values: numbers, strings,
+booleans, and tables of them with string keys or as lists, at most 32
+deep and 16 KiB saved. Anything else (a function, a handle) is an error
+when the hook returns.
+
+Variables at a script's top level are shared by every block that uses
+the script and are lost when the scripts reload, so anything that
+belongs to one block goes in its data.
+
+### Random ticks
+
+Each tick, one voxel at random in each loaded chunk is picked, and if
+its block's script defines `on_random_tick`, it runs: so each block is
+ticked about once a minute on average. At most 64 run in a tick (picked
+at random among those due), so a world full of growing things slows
+them all evenly rather than slowing the game. None are picked while more
+than a tick's worth of block hooks (1,024) is waiting. Chunks with no such block
+in them cost nothing. In headless scenarios, `random-ticks <n>` picks `n`
+voxels a chunk instead, to watch growth quickly.
+
+`math.random` is seeded the same way every time the scripts load, so
+headless runs repeat.
 
 ## Modules
 
@@ -110,6 +218,11 @@ is split into a client and a server.
   A step is about one loop iteration or one function call, so the budget
   is roughly a millisecond of work. A call that runs out is stopped;
   catching the error with `pcall` doesn't get past it.
+- **Steps a tick.** Block hooks may use 250,000 steps between them in one
+  tick (`HookSettings::steps_per_tick`), about 3 ms of work. Once they're
+  spent, the hooks still waiting run on the next tick, oldest first, so
+  scripted blocks that keep setting each other off slow down rather than
+  slowing the game.
 - **Memory.** Each mod's scripts may use 32 MiB between them by default
   (`ScriptSettings::memory_limit`). An allocation past that fails with an
   error.
@@ -120,9 +233,15 @@ is split into a client and a server.
   stopped the same way when it runs past. The steps are the limit to
   write scripts against, the same on every machine; the time limit is a
   safety net that a slow computer may hit sooner than a fast one.
+- **Time a tick.** For the same reason, block hooks may take only 4 ms of
+  wall clock between them in one tick (`HookSettings::time_per_tick`);
+  once that's passed, the rest wait for the next tick, as when the steps
+  run out (the first hook of a tick always runs). A call stopped for
+  running out of steps or time counts as its whole step budget against
+  the tick's steps, however few it used.
 
-The limits are in the `ScriptSettings` resource; changing them reloads
-the scripts.
+The limits are in the `ScriptSettings` resource (and the per-tick ones
+in `HookSettings`); changing `ScriptSettings` reloads the scripts.
 
 ## Errors
 
@@ -159,4 +278,26 @@ arguments. A `Caller` is what gets disabled when a call fails: an entity,
 a block position, or anything else. Call hooks from `FixedUpdate`, with
 the rest of the simulation. `ScriptsReloaded` is sent after a reload.
 
-Tests use the test mods in `tests/fixtures/script-mods/`.
+Blocks' and items' hooks are called in `script::hooks`, with
+`ScriptWorld::call` (`src/script/api/`): a system parameter with the
+voxels, the content and blocks' data, which puts the world in reach of
+the script for the call and saves the `data` it changed after. Its
+`origin` is the block the call may change around. Handles are made with
+`BlockRef::create(lua, pos)`. To hand a script engine state of your own
+as well (a machine's buffers), set the call up with `ScriptWorld::begin`
+and make it in `ScriptRuntime::call_scoped`'s scope:
+
+```rust
+let call = world.begin(Some(pos));
+runtime.call_scoped(caller, script, "on_tick", |lua, scope, hook| {
+    let machine = scope.create_userdata_ref_mut(&mut machine)?;
+    call.run(lua, scope, hook, |lua, _content| Ok((BlockRef::create(lua, pos)?, machine)))
+})
+```
+
+`ScriptIndex` says which blocks and items have scripts and which hooks
+they define, rebuilt when the scripts reload. Random ticks are in
+`script::random_tick` (`RandomTicks` sets their rate and cap).
+
+Tests use the test mods in `tests/fixtures/script-mods/`, and the hooks'
+tests a test mod of their own (`src/script/hooks/tests.rs`).

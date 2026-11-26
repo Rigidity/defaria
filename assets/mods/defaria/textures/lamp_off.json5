@@ -1,0 +1,7 @@
+// The lamp's crystal, unlit: the gravel speckle in cloudy grays with a
+// hint of amber.
+{
+  layers: [
+    { image: "gravel", palette: ["#4a4640", "#625c52", "#7c7466", "#968c78"] },
+  ],
+}

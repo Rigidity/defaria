@@ -3,6 +3,101 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Block and item scripts: hooks a tick later, writes within one step, capped random ticks (2026-11-26)
+
+**Context.** Blocks and items name scripts (#122) whose hooks run when
+they're used, placed, broken, when a neighbour changes, and on random
+ticks. Scripts must change the world only through the engine's own paths,
+stay cheap with thousands of scripted blocks loaded, and run with the
+simulation so they can move to a server.
+
+**Decision.** Hooks run in `FixedUpdate`, from the `VoxelChanged` and
+`PropertiesUpdated` messages and use messages of the frames before, so
+a hook runs a tick after its cause, and what it changes runs the next
+hooks a tick later again. Scripts reach the world through `ScriptWorld`:
+`set_state` goes through `Voxels::update` (so a lamp switching keeps its
+block entity and fluid, and isn't an edit that wakes fluid), and `set`
+through `Voxels::set`. `set` refuses to put fluid in a voxel, to replace
+fluid, to replace a block that has a block entity, and to make one (a
+different block with a block entity), so no script makes or loses fluid,
+a machine (a creative generator), its contents or a block's data (provisional, for
+the user to confirm: the conservative reading of "scripts only move
+things"). It does make plain blocks from air and turn plain blocks into
+others, which moss or a growing crop needs, so a script can make or
+remove block items: mining what it set gives an item (provisional, for
+the user to confirm; the alternatives are letting `set` only replace a
+block with one of the same material, or never fill air, or only make
+blocks their definition lists as ones scripts may set). A hook may change only its own block and the six
+next to it (an item's, the block looked at and its six), and read any
+loaded block. Block handles reach the world through a function the call
+puts in the Lua registry, made in the call's scope, and carry the call's
+serial, so a kept handle fails. A block's `data` is its block entity's
+`BlockData`, turned into a Lua table when first read in a call and saved
+back when the hook succeeds; out of the hook's reach, it's a read-only
+copy, never saved. Random ticks pick one voxel per loaded
+chunk per tick, only in chunks known to hold a random-ticking block, and
+run at most 64 hooks a tick, chosen at random among those due; other
+block hooks run at most 1,024 a tick, and until they've used 250,000
+steps between them (each call still gets its own budget, so a tick can
+go over by one call's) or taken 4 ms of wall clock
+(`HookSettings::time_per_tick`, a safety net for library calls, which do
+any amount of work in a step, and for logging; the first hook of a tick
+always runs), the rest waiting; a call stopped for running out counts as
+its whole step budget. A neighbour hook (for a face)
+or random tick already waiting isn't queued again, so blocks that keep
+setting each other off faster than their hooks run queue at most one
+hook per face rather than more every tick; random ticks aren't picked
+while more than a tick's worth (1,024) of hooks is waiting; and past
+65,536 waiting hooks new ones are dropped, with a warning (given again
+only once the queue has drained below half of that), so scripts
+that set off ever more edits can't use up memory. One pool for every
+mod, and its size and the tick's 4 ms, are provisional, for the user to
+confirm. A block's errors
+disable its voxel (`Caller::Block`) until another block is placed there.
+Using a scripted block is a right click handled in `BlockUseSystems`,
+as machine screens and the wrench are, taking the click: after the
+wrench (an item's action in hand wins) and before a machine's screen
+(so a scripted machine's `on_used` replaces its screen); using a
+scripted item comes after every block use, so a block that does
+something when used (a machine's screen) wins over the item in hand.
+Luau's `math.random` is seeded with 0 when the scripts load, and hooks
+are queued in a fixed order (edits, then uses, then random ticks),
+after fluid flow and the fluid solver (the other systems that edit
+voxels in `FixedUpdate`), so headless runs repeat.
+
+**What's wrong with it.** A tick's delay per step means a chain of
+scripted blocks reacting to each other moves a block a tick. The one-step
+write limit rules out scripts that build anything bigger than their
+neighbourhood (a tree growing from a sapling). A script can't break a
+block with a block entity, its own included, make one (a machine
+growing another), or make a fluid source, even where a mod means it to (a sponge, a spring). `on_broken` comes after
+the block entity is gone, so a broken block's script can't read its
+data (to drop what it held). Chunks that lose their last random-ticking
+block stay on the list until they unload. Every random tick and hook is
+a Lua call even when the script returns at once. The tick's pool of
+steps is shared by every mod, so one mod's busy blocks slow every mod's
+hooks. The tick's time limit makes how many hooks run in a tick depend
+on the computer's speed when hooks are slow, so heavy scripted worlds
+don't repeat exactly between runs. A call can still run for its own 20
+ms past the tick's 4 ms, and a single call may log 100 lines of 4 KiB.
+Dropping hooks once the queue is full loses them, `on_placed`
+and `on_broken` included, and a backlog delays every block's hooks, in
+every mod. Two handles' world
+calls go through Lua for each field read, which is slower than a typed
+API.
+
+**What should replace it.** Run hooks the same tick when the
+simulation has a proper ordering of events; let scripts ask for writes
+further away through a budgeted, deferred edit queue (with a check that
+the target chunk is loaded and owned); hand `on_broken` the block
+entity's parts before it's despawned (machines, #118, will need this to
+drop their contents); count random-ticking blocks per chunk to drop
+chunks that have none.
+
+**When to revisit.** With machines' scripts (#118), when trees or
+structures want to grow from scripts, or if random ticks show up in
+frame times.
+
 ## Blocked conduit faces: a mask in the block entity, drawn as no arm (2026-11-26)
 
 **Context.** A wrench (#121) blocks a conduit's face so it doesn't join
@@ -39,8 +134,8 @@ conduits opens from either side, as it does from a machine's face
   which for a thin wire is a small target, or at the face of the block
   the arm reached (a machine's port), which the wrench takes as the
   conduit's. With a wrench in hand, right click on any block is the
-  wrench's, so it never opens a machine's screen (provisional, for the
-  user to confirm: controls).
+  wrench's, so it never opens a machine's screen or uses a scripted
+  block (provisional, for the user to confirm: controls).
 - Every conduit has a block entity, an entity each in memory, though a
   wire or tube keeps nothing in it until a face is blocked (one with
   nothing to save isn't written to disk). Deferred: giving a voxel a
@@ -453,15 +548,16 @@ machine's back.
 **What's wrong with it.** Rebuilding the index costs time in proportion
 to every port in the loaded world on any frame a conduit or block
 entity changes (mining a block anywhere counts). It's small (a lookup per
-port) at the scale of a few thousand ports. Ports must be the same in a
-machine's active and idle states for conduits to follow, as the
-connection properties don't re-evaluate on a property update (only on
-edits). A machine facing up or down takes west as its left.
+port) at the scale of a few thousand ports. A machine's ports may
+differ between its states (active and idle, or turned by a script's
+`set_state`): since #122 a property update that changes what a voxel
+offers its sides rechecks its neighbours' connections
+(`around_updates`), so conduits follow. A machine facing up or down
+takes west as its left.
 
 **What should replace it.** Update the index per network from
 `NetworkChanged` and the voxels that changed, once worlds have many
-machines. Re-evaluate neighbours' connections on property updates if
-ports ever change with state.
+machines.
 
 ## Networks follow connection properties, live only in loaded chunks, and split by search (2026-11-26)
 

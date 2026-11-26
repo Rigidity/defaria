@@ -106,7 +106,9 @@ changes.
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
    `settle` (wait for the world around the camera to load and clear of fog,
-   after a `camera` jump somewhere new). The full format is documented at the top of
+   after a `camera` jump somewhere new) and `random-ticks` (pick more
+   voxels a chunk for random ticks, so scripted blocks grow or spread
+   quickly enough to watch). The full format is documented at the top of
    `src/headless.rs`. The world loads around the camera in the background;
    the script starts once the first view has loaded. Headless runs play a
    world kept in memory, so every run starts the same; add `--world <folder>`
@@ -355,8 +357,14 @@ documented in `docs/modding.md`; keep that file, the serde types in
   and chunk formats, documented in `docs/world-format.md`. Keep the two in
   step, and bump a format's version when it changes.
 - `src/script/`: mod scripts (Luau, through `mlua`): loading each mod's
-  `scripts/`, the sandbox, budgets and errors. Documented in
-  `docs/scripting.md`.
+  `scripts/`, the sandbox, budgets and errors. `api/` is what hooks are
+  handed (block handles, the `world` global, players, items, blocks'
+  `data`) and `ScriptWorld::call`, which calls a hook with it; `hooks.rs`
+  calls blocks' and items' scripts (`on_used`, `on_placed`, `on_broken`,
+  `on_neighbour_changed`, items' `on_use`) and `random_tick.rs` gives
+  blocks random ticks; `using.rs` turns right clicks into uses of
+  scripted blocks (in `block_edit::BlockUseSystems`) and items (after
+  every block use). Documented in `docs/scripting.md`.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `src/content.rs` (and `src/content/`): mod loading and the `Content`
   registry.

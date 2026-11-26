@@ -229,6 +229,7 @@ pub(super) fn new_state(
         globals.raw_set(name, Value::Nil)?;
     }
     globals.raw_set("log", log_table(&lua, &scripts.id, log)?)?;
+    globals.raw_set("world", super::api::world_table(&lua)?)?;
     let mut allowed = vec![scripts.id.clone()];
     allowed.extend(scripts.dependencies.iter().cloned());
     let mod_id = scripts.id.clone();
@@ -246,6 +247,8 @@ pub(super) fn new_state(
             require(lua, &sources, &id)
         })?,
     )?;
+    // The same random numbers every run, so headless runs repeat.
+    lua.load("math.randomseed(0)").exec()?;
     lua.set_named_registry_value(ENVS, lua.create_table()?)?;
     lua.set_named_registry_value(RESULTS, lua.create_table()?)?;
     // Globals and the libraries become read-only, and every script gets a

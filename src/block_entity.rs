@@ -228,9 +228,16 @@ pub struct BlockData(pub BTreeMap<String, Value>);
 impl BlockEntityPart for BlockData {
     const KEY: &'static str = "data";
 
+    /// The block's `data` to start with; an empty table for a scripted
+    /// block that has a block entity but no `data`, so its script has
+    /// somewhere to keep things.
     fn new(state: BlockState, content: &Content) -> Option<Self> {
-        let block = content.block_of(state).block_entity.as_ref()?;
-        block.data.clone().map(Self)
+        let block = content.block_of(state);
+        let entity = block.block_entity.as_ref()?;
+        match &entity.data {
+            Some(data) => Some(Self(data.clone())),
+            None => block.script.is_some().then(Self::default),
+        }
     }
 
     fn save(&self, _: &Content) -> Value {

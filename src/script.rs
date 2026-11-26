@@ -7,26 +7,35 @@
 //! globals and each has a memory cap, and a globals table per script
 //! within it. A script defines hooks, global functions named `on_*`,
 //! that the engine calls through [`ScriptRuntime::call`] with engine state
-//! passed in as userdata. Nothing calls hooks yet: machines (#118) and
-//! blocks and items (#122) will.
+//! passed in as userdata. [`api`] is what hooks are handed (block handles,
+//! the `world` global, players, items and blocks' `data`), and
+//! [`ScriptWorld::call`] calls a hook with it; [`hooks`] calls blocks' and
+//! items' scripts as things happen to them, and [`random_tick`] gives
+//! blocks random ticks.
 //!
 //! Scripts only ever change game state through what they're handed, never
 //! rendering or UI, so they can run on a server once the game is split.
 //! Calls into them belong in `FixedUpdate`, with the simulation.
 
+pub mod api;
 mod error;
+pub mod hooks;
+pub mod random_tick;
 #[cfg(feature = "dev")]
 mod reload;
 mod runtime;
 mod sandbox;
 pub mod source;
+pub(crate) mod using;
 
 use std::time::Duration;
 
 use bevy::{asset::io::file::FileAssetReader, prelude::*};
 
 use crate::content::{self, Content};
+pub use api::ScriptWorld;
 pub use error::{CallError, ErrorKind, ScriptError};
+pub use hooks::{BlockUsed, HookSystems, ItemUsed, ScriptIndex};
 pub use runtime::{Caller, ScriptRuntime};
 pub use sandbox::{LogLevel, LogLine};
 pub use source::ScriptSources;
@@ -81,6 +90,8 @@ impl Plugin for ScriptPlugin {
                 Update,
                 apply_settings.run_if(resource_changed::<ScriptSettings>),
             );
+        hooks::plugin(app);
+        using::plugin(app);
         #[cfg(feature = "dev")]
         reload::plugin(app);
     }

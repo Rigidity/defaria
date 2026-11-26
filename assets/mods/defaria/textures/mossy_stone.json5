@@ -1,0 +1,7 @@
+// Stone with clumps of moss over it.
+{
+  layers: [
+    { image: "stone", material: "stone" },
+    { image: "moss", material: "grass" },
+  ],
+}

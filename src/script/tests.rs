@@ -261,6 +261,21 @@ fn long_library_calls_are_stopped_by_the_time_limit() {
     assert!(took < Duration::from_secs(2), "took {took:?}");
 }
 
+/// A call the clock stopped, after a few slow steps, counts as its whole
+/// step budget, so a tick's pool of steps can't be drained by slow
+/// library calls at a few steps each.
+#[test]
+fn a_call_that_runs_out_counts_as_its_whole_budget() {
+    let mut runtime = ScriptRuntime::new(fixture(), ScriptSettings::default());
+    let before = runtime.steps_spent();
+    failure(runtime.call_with(CALLER, "scripted:runaway", "on_sort", ()));
+    assert!(runtime.steps_used("scripted").unwrap() < 1_000);
+    assert_eq!(
+        runtime.steps_spent() - before,
+        ScriptSettings::default().step_budget
+    );
+}
+
 #[test]
 fn a_smaller_budget_stops_sooner() {
     let mut runtime = ScriptRuntime::new(
@@ -427,7 +442,7 @@ fn changing_the_settings_reloads() {
     assert_eq!(runtime.settings().step_budget, 10);
 }
 
-/// The base game has no scripts yet, and loads with none failing.
+/// The base game's scripts load with none failing.
 #[test]
 fn the_game_starts_its_script_runtime() {
     let mut app = crate::headless::test_game(crate::headless::Script::default());

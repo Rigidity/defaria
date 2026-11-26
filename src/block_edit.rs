@@ -13,7 +13,9 @@
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
 //! - Right click on a block that does something when used (a machine
-//!   opens its screen) uses it instead of placing against it. Features
+//!   opens its screen, a script's `on_used` runs) uses it instead of
+//!   placing against it, and an item that does something when used (the
+//!   wrench, a script's `on_use`) is used instead of placing. Features
 //!   handle that in [`BlockUseSystems`].
 //!
 //! Edits go through [`Voxels`], and the terrain remeshes the changed chunks
@@ -97,7 +99,7 @@ pub struct BlockEditSystems;
 ///
 /// They run in order of precedence, each taking the click from those
 /// after it: the wrench (an item's action, in hand) first, then a
-/// machine's screen.
+/// block's script's `on_used`, then a machine's screen.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockUseSystems;
 
@@ -390,7 +392,12 @@ mod tests {
         hotbar::select_with_keys,
         inventory::player::new_player,
         mining::{Mining, MiningPlugin},
+        player::Player,
         player::SIZE,
+        script::{
+            BlockUsed, ItemUsed, ScriptIndex,
+            using::{use_scripted_block, use_scripted_item},
+        },
         terrain::{
             ChunkCoord, ChunkMap, Terrain, TerrainBlocks, VoxelChanged, apply_finished_meshes,
             remesh_changed_chunks, testing::finish_meshing,
@@ -611,6 +618,8 @@ mod tests {
             .add_message::<VoxelChanged>()
             .add_message::<crate::terrain::PropertiesUpdated>()
             .add_message::<crate::terrain::FluidChanged>()
+            .add_message::<BlockUsed>()
+            .add_message::<ItemUsed>()
             .add_systems(
                 Update,
                 (
@@ -910,6 +919,94 @@ mod tests {
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
         assert_eq!(voxel(&app, left, 14, 1, 5), block("soil"));
+    }
+
+    /// [`app`] with the base game's script index.
+    fn scripted_app() -> (App, Entity, Entity) {
+        let (mut app, left, right) = app();
+        let ids: Vec<String> = base().mods.iter().map(|m| m.id.clone()).collect();
+        let runtime = crate::script::ScriptRuntime::new(
+            crate::script::ScriptSources::read(std::path::Path::new("assets/mods"), &ids),
+            default(),
+        );
+        app.insert_resource(ScriptIndex::new(base(), &runtime))
+            .add_systems(
+                Update,
+                (use_scripted_block, use_scripted_item)
+                    .chain()
+                    .after(select_with_keys)
+                    .before(edit_blocks),
+            );
+        (app, left, right)
+    }
+
+    fn drain<M: Message>(app: &mut App) -> Vec<M> {
+        app.world_mut()
+            .resource_mut::<Messages<M>>()
+            .drain()
+            .collect()
+    }
+
+    /// Right click on a block whose script takes it uses it rather than
+    /// placing against it, even with an empty hand; sneaking with a block
+    /// in hand places.
+    #[test]
+    fn right_click_uses_a_scripted_block_instead_of_placing() {
+        let (mut app, left, _) = scripted_app();
+        let lamp = block("switch_lamp");
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(14, 1, 5, lamp);
+        press_key(&mut app, KeyCode::Digit6);
+        drain::<BlockUsed>(&mut app);
+        click(&mut app, MouseButton::Right);
+        let used = drain::<BlockUsed>(&mut app);
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].pos, IVec3::new(14, 1, 5));
+        let view = used[0].player.unwrap();
+        assert_eq!(
+            view.target,
+            Some((IVec3::new(14, 1, 5), Some(Direction::West)))
+        );
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+
+        let mut hotbar = player(&mut app).0;
+        let active = player(&mut app).1;
+        hotbar.assign(active.0, None);
+        set_hotbar(&mut app, hotbar);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(drain::<BlockUsed>(&mut app).len(), 1);
+
+        let entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<LocalPlayer>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(entity).insert(Player {
+            sneaking: true,
+            ..default()
+        });
+        press_key(&mut app, KeyCode::Digit1);
+        click(&mut app, MouseButton::Right);
+        assert!(drain::<BlockUsed>(&mut app).is_empty());
+        assert!(!voxel(&app, left, 13, 1, 5).is_air());
+    }
+
+    /// Right click with an item whose script has `on_use` uses the item.
+    #[test]
+    fn right_click_uses_a_scripted_item() {
+        let (mut app, left, _) = scripted_app();
+        let moss = base().default_item("defaria:moss");
+        let mut hotbar = player(&mut app).0;
+        hotbar.assign(0, moss);
+        set_hotbar(&mut app, hotbar);
+        press_key(&mut app, KeyCode::Digit1);
+        click(&mut app, MouseButton::Right);
+        let used = drain::<ItemUsed>(&mut app);
+        assert_eq!(used.len(), 1);
+        assert_eq!(Some(used[0].item), moss);
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
     }
 
     /// The left chunk's block at x = 0 faces -X, where there's no chunk.

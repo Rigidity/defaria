@@ -330,6 +330,11 @@ pub struct BlockDef {
     /// and item slots. A machine has a block entity, which keeps them.
     #[serde(default)]
     pub machine: Option<MachineDef>,
+    /// The script whose hooks run for it (`on_used`, `on_placed`,
+    /// `on_broken`, `on_neighbour_changed`, `on_random_tick`): a script id,
+    /// `"name"` for this mod's `scripts/name.luau`. See `docs/scripting.md`.
+    #[serde(default)]
+    pub script: Option<String>,
 }
 
 /// A block's `machine`: what it connects to and what it holds.
@@ -816,6 +821,10 @@ pub struct ItemDef {
     /// What using it (right click) does, besides placing its block.
     #[serde(default)]
     pub action: Option<ItemAction>,
+    /// The script whose `on_use` hook runs when it's used: a script id, as
+    /// for a block's. A block's item doesn't take its block's script.
+    #[serde(default)]
+    pub script: Option<String>,
 }
 
 /// A built-in thing an item does when it's used (right clicked).
