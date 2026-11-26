@@ -8,7 +8,8 @@ use super::{
     fluid::bake_fluid, look::Look, mix::Numbers, model::rotation, parts::Part, texture::Textures,
 };
 use crate::content::{
-    BakedFace, BlockBox, Content, Direction, MAX_LIGHT, Model, State, StatePart, Vertex,
+    BakedFace, BlockBox, Content, Direction, MAX_LIGHT, Model, SideTexture, State, StatePart,
+    Vertex,
     schema::{BlockDef, TextureRef},
 };
 
@@ -70,15 +71,17 @@ pub(super) fn bake_state(
     Ok(state)
 }
 
-/// The texture layer of the faces culled against `side`, if there are
-/// any and they all have the same one.
-fn side_texture(faces: &[BakedFace], side: Direction) -> Option<u32> {
+/// The textures of the faces culled against `side`.
+pub(super) fn side_texture(faces: &[BakedFace], side: Direction) -> SideTexture {
     let mut layers = faces
         .iter()
         .filter(|face| face.cull == Some(side))
         .map(|face| face.layer);
-    let first = layers.next()?;
-    layers.all(|layer| layer == first).then_some(first)
+    match layers.next() {
+        None => SideTexture::None,
+        Some(first) if layers.all(|layer| layer == first) => SideTexture::One(first),
+        Some(_) => SideTexture::Mixed,
+    }
 }
 
 /// Adds one part's faces, boxes and covered sides to `state`.

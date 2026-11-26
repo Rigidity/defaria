@@ -1412,7 +1412,8 @@ property picks the color, while states that only differ in something
 invisible there (a connection, a rotation that keeps the texture) still
 join into one pane. It's decided per side of a state, not per face: each
 state bakes, for each side, the one tile of every face it culls against
-that side, and a side whose faces have different tiles hides none.
+that side (`SideTexture`). A side whose faces have different tiles
+matches nothing, and a covered side with no faces matches anything.
 
 **What's wrong with it.** Connected textures (a frame that opens toward a
 neighbour) would give the two faces different tiles, and their seam would
@@ -1470,8 +1471,8 @@ item state, and every combination of materials a texture is used with is
 baked on the CPU into its own layer of the block texture array.
 
 **Decision.** Keep expanding combinations up front, and keep baking each
-texture's combinations into finished tiles. The base game has 712 block
-states, 211 item states and 218 tiles. Baking stays even when tiles run
+texture's combinations into finished tiles. The base game has 724 block
+states, 223 item states and 230 tiles. Baking stays even when tiles run
 short: coloring in the shader instead (gray layers plus a palette per
 face) doesn't fit layered textures. Each face would need a variable-length
 list of layers to color and blend per pixel, and filtering breaks: mips

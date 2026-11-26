@@ -349,7 +349,9 @@ block's, the same for all its states; variants can't change it.
   glass, whether a material property or a plain one picks the color, but
   not between two of a block's states that look the same there (other
   properties, such as a connection, don't split it). Where a state's
-  faces against one side have different textures, it hides none of them.
+  faces against one side have different textures, none of them is
+  hidden; where the neighbour covers the side but has no faces against
+  it, there's no seam to keep, and they're hidden.
 
 Variants can set `render`; a later one replaces an earlier one's. Light
 passes through every side of a cut-out or translucent block, and they

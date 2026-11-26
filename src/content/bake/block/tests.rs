@@ -1,5 +1,8 @@
 use super::*;
-use crate::content::{BlockBox, Direction, bake::test_util::*, test_mod as content};
+use crate::content::{
+    BakedFace, BlockBox, Direction, SideTexture, bake::state::side_texture, bake::test_util::*,
+    test_mod as content,
+};
 
 #[test]
 fn a_minimal_block_loads_with_an_item() {
@@ -135,6 +138,8 @@ fn blocks_are_drawn_as_their_render_says() {
     );
     assert!(!hides(solid, pool), "but not a solid opaque block's");
     assert!(hides(pool, pool), "an opaque fluid hides itself");
+    // The quad has no face on its bottom: nothing to make a seam with.
+    assert!(hides(clear, clear), "the same translucent block");
     assert!(
         !hides(solid, clear),
         "only the same block's translucent faces"
@@ -217,6 +222,37 @@ fn translucent_faces_hide_only_faces_with_their_texture() {
         !hides(grey, other),
         "another block, even with the same texture"
     );
+}
+
+/// A side's faces bake to the one texture they share, or none, or
+/// mixed; mixed never matches, and no faces match anything.
+#[test]
+fn a_side_bakes_to_its_faces_texture() {
+    let face = |layer, cull| BakedFace {
+        vertices: Vec::new(),
+        normal: Vec3::Y,
+        layer,
+        cull,
+    };
+    let up = Some(Direction::Up);
+    let side = |faces: &[BakedFace]| side_texture(faces, Direction::Up);
+    assert_eq!(side(&[]), SideTexture::None);
+    assert_eq!(
+        side(&[face(3, None), face(4, Some(Direction::Down))]),
+        SideTexture::None
+    );
+    assert_eq!(side(&[face(3, up), face(3, up)]), SideTexture::One(3));
+    assert_eq!(side(&[face(3, up), face(4, up)]), SideTexture::Mixed);
+
+    let (none, three, four, mixed) = (
+        SideTexture::None,
+        SideTexture::One(3),
+        SideTexture::One(4),
+        SideTexture::Mixed,
+    );
+    assert!(three.matches(three) && !three.matches(four));
+    assert!(none.matches(three) && three.matches(none) && none.matches(none));
+    assert!(!mixed.matches(mixed) && !mixed.matches(three) && !none.matches(mixed));
 }
 
 #[test]
