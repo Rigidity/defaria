@@ -1,0 +1,51 @@
+# Item networks: a creative item source feeding two crates through
+# tubes. The source keeps its slots full of planks; the tube under it
+# runs to both crates' tops (their inputs), and the network moves four
+# planks a second (iron tubes' throughput), to each crate in turn.
+# `inspect Slots` shows the crates filling evenly and the source full.
+# Then a crate of iron ore feeds an electric furnace (powered by a
+# creative generator) through a tube into its top, and a tube from its
+# bottom takes the ingots on to a second crate: `inspect Slots` shows
+# all four ore smelted into four ingots in that crate.
+# Run: cargo headless scenarios/item-network.txt
+camera 30 52 41 0 -35                                     # south of it, looking down
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 24 45 26 36 45 34 stone                              # the platform
+fill 24 46 26 36 52 34 air                                # and clear air above it
+fill 30 49 30 30 49 30 item_source                        # gives out of its bottom
+fill 28 48 30 32 48 30 tube                               # under it, to both sides
+fill 28 47 30 28 47 30 crate                              # takes in through its top
+fill 32 47 30 32 47 30 crate
+wait 2
+network 30 48 30                                          # the source's output and both crates' inputs
+inspect ItemSource
+wait 180                                                  # three seconds: about twelve planks
+inspect Slots
+camera 33.5 50.5 35.5 20 -25                              # from the south-east
+wait 2
+screenshot target/scenarios/item-network/0-source-and-crates.png
+wait 1
+# A crate feeding the electric furnace, and the ingots going on to
+# another crate.
+fill 24 45 36 36 45 44 stone                              # a second platform
+fill 24 46 36 36 52 44 air
+fill 30 50 40 30 50 40 crate                              # the ore, giving out of its bottom
+fill 30 49 40 30 49 40 tube                               # into the furnace's top
+fill 30 48 40 30 48 40 electric_furnace[facing=south]
+fill 30 48 39 30 48 39 wire                               # its back, to the generator's side
+fill 31 48 39 31 48 39 creative_generator[facing=south]
+fill 30 47 40 32 47 40 tube                               # from its bottom over to the crate's top
+fill 32 46 40 32 46 40 crate
+wait 2
+put 30 50 40 items 4 stone[ore=defaria:iron]
+network 30 49 40                                          # the ore crate's output and the furnace's input
+network 31 47 40                                          # the furnace's output and the crate's input
+wait 240                                                  # four seconds: the first ingot under way
+inspect RecipeProgress
+camera 34.5 50.5 45.5 25 -25                              # from the south-east
+wait 2
+screenshot target/scenarios/item-network/1-furnace-working.png
+wait 1200                                                 # twenty more: all four smelted
+inspect Slots                                             # four iron ingots in the second crate
+screenshot target/scenarios/item-network/2-ingots-in-crate.png

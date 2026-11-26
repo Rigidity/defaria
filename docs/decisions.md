@@ -3,6 +3,55 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Items move instantly along tubes, round-robin, inputs first (2026-11-26)
+
+**Context.** The item solver (#120) needs to decide how items get from a
+machine's output to another's input: whether they travel visibly through
+the tubes or jump, which input gets each, and what's in a tube that's
+broken or a network that freezes.
+
+**Decision.** Items move instantly, from one machine's slot group straight
+into another's, in `FixedUpdate` on network ticks (20 Hz, as energy and
+fluid). A network moves as many items a second as the `throughput` of
+its slowest tube (worked out when the networks change, in `ItemRates`),
+as credit it saves up a tick at a time (in thousandths of an item,
+handed out per tick as energy is, so a rate holds exactly over each
+second; at most a tick's worth and one item, so an idle network doesn't
+burst), and at
+most 64 in one tick. Each item goes from a giver (`output`, `store`) to a
+taker (`input`, `store`), never `store` to `store` nor into its own slot
+group; inputs before stores; round-robin between givers and between
+takers, with a cursor per network kept in `NetworkMap<ItemRouting>`,
+which merging keeps one network's of and splitting resets (it holds no
+items). Item ports can have a `filter` by item id or material (and
+material tag). A recipe machine's input groups take only what one of its
+type's recipes takes, as they do by hand (#119): an item no taker takes
+stays where it is and the giver's next item is tried, so a furnace whose
+output tube also runs past a second furnace sends its glass on to a
+crate rather than jamming the second with it (provisional, for the user,
+with #119's rule). With instant transport, nothing is ever in a tube, so
+nothing is dropped, returned or held when one is broken or the network
+freezes: a frozen network just moves nothing. A tube's `capacity` (1)
+is unused. The creative item source is a machine with `emits`, a slot
+group kept full out of nothing; it's the only thing that makes items
+until recipes (#115).
+
+**What's wrong with it.** You can't see items move, and a long tube is as
+fast as a short one: distance means nothing. The rate is the slowest
+tube's, not the narrowest path's between the two machines, so one iron
+tube anywhere on a gold network slows all of it. Round-robin is per item,
+not per stack, which is fine at a few items a second and fair, but
+moves at most 64 a tick. Routing is greedy: a giver's first slot that
+some taker accepts goes first, and there are no priorities beyond inputs
+before stores. Items aren't tagged, so filters go by item id and
+material only.
+
+**What should replace it.** Items travelling through tubes at a speed,
+as entities or instanced meshes, with a tube's capacity limiting how many
+are in it at once, and then deciding what happens to those in a broken
+tube (#124). Port priorities, and path-based rates, if networks
+grow large. Item tags, for filters, once items have them.
+
 ## Fluid networks are one shared tank of one fluid, and pumps are stats (2026-11-26)
 
 **Context.** The fluid solver (#113) moves fluid between machines on

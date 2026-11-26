@@ -353,6 +353,8 @@ fn networks_list_their_machine_ports() {
             role: PortRole::Consume,
             tank: None,
             slots: None,
+            filter: None,
+            state: oven("north"),
             entity,
         }]
     );

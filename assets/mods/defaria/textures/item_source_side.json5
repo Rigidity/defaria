@@ -1,0 +1,7 @@
+// The creative item source's face: the machine casing in gold, so it
+// stands out from the machines that make what they give.
+{
+  layers: [
+    { image: "machine_side", material: "gold" },
+  ],
+}

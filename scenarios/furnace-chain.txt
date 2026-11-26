@@ -1,0 +1,33 @@
+# Two electric furnaces on one tube line, with sand and iron ore mixed in
+# the crate on top. The first furnace smelts both; its output tube runs
+# past the second furnace's top to a crate beside it. The second has no
+# recipe for glass or ingots, so it takes none of them and they all go
+# on to the crate: `inspect Slots` at the end shows four glass and four
+# iron ingots in it, and nothing left in either furnace.
+# Run: cargo headless scenarios/furnace-chain.txt
+camera 34.5 44 36.5 30 -10                                # south-east of it
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 24 39 24 38 39 38 stone                              # the platform
+fill 24 40 24 38 50 38 air                                # and clear air above it
+fill 30 46 30 30 46 30 crate                              # sand and ore, giving out of its bottom
+fill 30 45 30 30 45 30 tube                               # into the first furnace's top
+fill 30 44 30 30 44 30 electric_furnace[facing=south]
+fill 30 43 30 31 43 30 tube                               # from its bottom, over the second
+fill 30 42 30 30 42 30 electric_furnace[facing=south]     # takes in through its top
+fill 31 42 30 31 42 30 crate                              # and to this crate's top
+fill 31 44 29 31 44 29 creative_generator[facing=north]
+fill 30 41 29 30 44 29 wire                               # the furnaces' backs, to the generator
+wait 2
+put 30 46 30 items 4 soil[soil=defaria:sand]
+put 30 46 30 items 4 stone[ore=defaria:iron]
+network 30 45 30                                          # the crate's output and the first furnace's input
+network 31 43 30                                          # its output, the second's input and the crate's
+wait 600                                                  # ten seconds: sand done, ore under way
+inspect RecipeProgress
+screenshot target/scenarios/furnace-chain/0-working.png
+wait 1
+wait 1500                                                 # twenty-five more: all eight smelted
+inspect Slots                                             # four glass and four ingots in the crate
+inspect RecipeProgress
+screenshot target/scenarios/furnace-chain/1-done.png

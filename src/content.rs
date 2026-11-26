@@ -39,8 +39,8 @@ use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, pre
 use crate::block_texture::Palette;
 pub use connect::{Connections, Joins, Rule, SIDE_VALUES};
 pub use machine::{
-    EnergySpec, FACING, MAX_SLOTS, Machine, MachinePort, MachineRecipes, SlotGroupSpec, TankSpec,
-    resolve_face,
+    Emits, EnergySpec, FACING, ItemFilter, MAX_SLOTS, Machine, MachinePort, MachineRecipes,
+    SlotGroupSpec, TankSpec, resolve_face,
 };
 pub use place::Placement;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};

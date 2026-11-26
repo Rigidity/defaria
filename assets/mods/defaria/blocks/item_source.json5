@@ -1,0 +1,17 @@
+// Creative and testing only: an endless supply of planks. It keeps its
+// nine slots full, out of nothing, and tubes take them out of its bottom
+// (the gold socket), so item networks can be tried without anything
+// that makes items.
+{
+  name: "Creative Item Source",
+  model: "cube",
+  textures: { side: "item_source_side", up: "machine_top", down: "item_port" },
+  hardness: 2,
+  weight: 2000,
+  category: "machines",
+  machine: {
+    ports: [{ faces: ["down"], network: "item", role: "output" }],
+    slots: { items: 9 },
+    emits: { item: "planks" },
+  },
+}

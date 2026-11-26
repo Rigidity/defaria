@@ -290,6 +290,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
   by their ports' roles, capped by the network's weakest wire, makes it
   in generators and uses it up in machines with `use`, and reports each
   network's (`EnergyReport`).
+  `src/network/item.rs` is the item solver: tubes move items instantly
+  between machines' slot groups, round-robin, inputs before stores,
+  through port filters, at the slowest tube's rate; and creative
+  machines with `emits` (`ItemSource`) keep a slot group full.
 - `src/game_mode.rs`: creative and survival (`GameMode` on the player,
   C switches): whether breaking gives items and placing uses them up.
 - `src/inventory/`: inventories. `model.rs` has `Inventory` (how many of

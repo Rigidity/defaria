@@ -23,7 +23,7 @@ use super::{
     connect::side_properties,
     index_of,
     load::LoadedMod,
-    machine::{MachineMix, check_tank_fluids},
+    machine::{MachineMix, check_machine_items, check_tank_fluids},
     qualify,
     recipe::bake_recipe,
     schema::*,
@@ -232,6 +232,16 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         match bake_recipe(&def.id, &def.namespace, &def.def, &content) {
             Ok(recipes) => content.add_recipes(recipes),
             Err(error) => report(&def.file, Err(error)),
+        }
+    }
+    for def in &defs.blocks {
+        if let Some(machine) = &def.def.machine
+            && content.block(&def.id).is_some()
+        {
+            report(
+                &def.file,
+                check_machine_items(machine, &def.namespace, &content),
+            );
         }
     }
     content

@@ -83,6 +83,7 @@ impl Plugin for GamePlugin {
             network::energy::EnergyPlugin,
             fluid_network::FluidNetworkPlugin,
             recipe::RecipePlugin,
+            network::ItemNetworkPlugin,
             script::ScriptPlugin,
         ));
     }
