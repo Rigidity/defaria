@@ -6,6 +6,8 @@
   name: "Water",
   render: "translucent",
   double_sided: true,
+  // Light loses two more levels a block in it, so deep water is dark.
+  light_filter: 2,
   fluid: {
     rate: 20,
     fall: 1,

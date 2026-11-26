@@ -106,7 +106,8 @@ impl TestWorld {
     }
 
     fn run(&mut self, queue: &mut LightQueue) -> HashSet<IVec3> {
-        let remesh = queue.run(self, &Self::table());
+        let sky = self.sky.clone();
+        let remesh = queue.run(self, &Self::table(), &*sky);
         assert!(queue.is_empty(), "work left over");
         remesh
     }
@@ -119,10 +120,7 @@ impl TestWorld {
     fn set(&mut self, queue: &mut LightQueue, pos: IVec3, state: BlockState) {
         let (coord, local) = split(pos);
         self.chunks.get_mut(&coord).unwrap().0.set_at(local, state);
-        let outside_sky = local.y == CHUNK_SIZE as i32 - 1
-            && !self.chunks.contains_key(&(coord + IVec3::Y))
-            && self.sky.shines_into(coord, local.x, local.z);
-        queue.voxel_changed(pos, outside_sky);
+        queue.voxel_changed(pos);
     }
 
     fn light(&self, pos: IVec3) -> Light {
@@ -162,7 +160,13 @@ impl TestWorld {
                     && !self.chunks.contains_key(&(coord + IVec3::Y))
                     && self.sky.shines_into(coord, local.x, local.z)
                     && !table.closed(state, UP);
-                let source = if sky { MAX_LIGHT } else { emitted };
+                // The sky from outside comes into the top voxel from above,
+                // so it loses what that voxel filters out.
+                let source = if sky {
+                    table.entering(state, MAX_LIGHT)
+                } else {
+                    emitted
+                };
                 if source > 0 && level(&mut light, pos, source) {
                     buckets[source as usize].push(pos);
                 }
@@ -227,7 +231,8 @@ impl Rng {
     }
 }
 
-/// Caves of stone with lamps of every colour in them, the same for a seed.
+/// Caves of stone with lamps of every colour, slabs, water and leaves in
+/// them, the same for a seed.
 fn random_block(seed: u64) -> impl Fn(IVec3) -> BlockState {
     move |pos: IVec3| {
         let mut rng = Rng(seed
@@ -242,6 +247,8 @@ fn random_block(seed: u64) -> impl Fn(IVec3) -> BlockState {
             6..=8 => block("blue_lamp"),
             9..=11 => block("green_lamp"),
             12..=40 => block("stone_slab"),
+            41..=70 => block("water"),
+            71..=100 => block("leaves"),
             n if n < 400 => block("stone"),
             _ => BlockState::AIR,
         }
@@ -358,12 +365,12 @@ fn slabs_stop_light_only_at_their_bottom() {
     world.assert_matches_reference();
 }
 
-/// See-through blocks (leaves, glass, water, plants) let light through as
-/// if they were air, though they cover their sides: a roof of them shades
-/// nothing, and a lamp shines through them.
+/// See-through blocks with no light filter (glass, plants) let light
+/// through as if they were air, though they cover their sides: a roof of
+/// them shades nothing, and a lamp shines through them.
 #[test]
 fn see_through_blocks_let_light_through() {
-    for name in ["leaves", "glass", "water", "tuft"] {
+    for name in ["glass", "tuft"] {
         let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
         world.load(&mut queue, IVec3::ZERO, |pos| {
             if pos.y <= 3 {
@@ -385,6 +392,160 @@ fn see_through_blocks_let_light_through() {
         assert_eq!(world.light(IVec3::new(3, 9, 4)).block()[0], 12, "{name}");
         world.assert_matches_reference();
     }
+}
+
+/// The base mod's filters: water dims light two levels a block more than
+/// air, leaves one, and glass and plants none.
+#[test]
+fn base_light_filters() {
+    let table = TestWorld::table();
+    for (name, filter) in [("water", 2), ("leaves", 1), ("glass", 0), ("tuft", 0)] {
+        assert_eq!(
+            table.entering(block(name), MAX_LIGHT),
+            MAX_LIGHT - filter,
+            "{name}"
+        );
+    }
+    assert_eq!(table.entering(block("water"), 1), 0, "never below 0");
+    assert!(
+        !table.same_light(block("water"), block("glass")),
+        "light treats them differently, by their filters alone"
+    );
+}
+
+/// Sky light falling straight down through a lake loses water's filter
+/// as it comes into each voxel, and once it's below full strength, the
+/// level per block as well: a lake darkens with depth, also where it
+/// crosses a chunk border.
+#[test]
+fn sky_light_darkens_down_through_water() {
+    let (mut world, mut queue) = (TestWorld::new(1), LightQueue::default());
+    let lake = |pos: IVec3| match pos.y {
+        ..=3 => block("stone"),
+        4..=18 => block("water"),
+        _ => BlockState::AIR,
+    };
+    for coord in [IVec3::ZERO, IVec3::Y] {
+        world.load(&mut queue, coord, lake);
+    }
+    world.run(&mut queue);
+    let column = IVec3::new(5, 0, 7);
+    assert_eq!(world.light(column.with_y(19)).sky(), MAX_LIGHT, "above");
+    for (y, expected) in [(18, 13), (17, 10), (16, 7), (15, 4), (14, 1), (13, 0)] {
+        assert_eq!(world.light(column.with_y(y)).sky(), expected, "y {y}");
+    }
+    world.assert_matches_reference();
+}
+
+/// Water in the top layer filters the sky coming in from outside the
+/// loaded chunks too.
+#[test]
+fn water_filters_the_sky_from_outside() {
+    let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, |pos| {
+        if pos.y >= 14 {
+            block("water")
+        } else {
+            BlockState::AIR
+        }
+    });
+    world.run(&mut queue);
+    let column = IVec3::new(5, 0, 7);
+    assert_eq!(world.light(column.with_y(15)).sky(), 13);
+    assert_eq!(world.light(column.with_y(14)).sky(), 10);
+    assert_eq!(world.light(column.with_y(13)).sky(), 9, "air under it");
+    world.assert_matches_reference();
+}
+
+/// A removal coming from beside a top voxel that filters the sky from
+/// outside (here, light taken away by a block placed next to it) clears it,
+/// and the outside sky comes back into it, not just its neighbours' light.
+#[test]
+fn the_outside_sky_comes_back_into_filtering_voxels() {
+    let (mut world, mut queue) = (TestWorld::open(), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, |pos| {
+        if pos.y == 15 && pos.x == 5 {
+            block("water")
+        } else {
+            BlockState::AIR
+        }
+    });
+    world.run(&mut queue);
+    let water = IVec3::new(5, 15, 5);
+    assert_eq!(world.light(water).sky(), 13);
+    world.set(&mut queue, water + IVec3::X, block("stone"));
+    world.run(&mut queue);
+    assert_eq!(world.light(water).sky(), 13);
+    world.assert_matches_reference();
+}
+
+/// Light going sideways through a hedge of leaves loses a level more per
+/// block, in one chunk and across into the next.
+#[test]
+fn light_dims_sideways_through_leaves() {
+    // No sky: only y = 1 and up gets it, and nothing's loaded there.
+    let (mut world, mut queue) = (TestWorld::new(1), LightQueue::default());
+    let hedge = |pos: IVec3| {
+        if (14..=17).contains(&pos.x) {
+            block("leaves")
+        } else {
+            BlockState::AIR
+        }
+    };
+    for coord in [IVec3::ZERO, IVec3::X] {
+        world.load(&mut queue, coord, hedge);
+    }
+    world.set(&mut queue, IVec3::new(12, 8, 8), block("lamp"));
+    world.run(&mut queue);
+    for (x, expected) in [(13, 14), (14, 12), (15, 10), (16, 8), (17, 6), (18, 5)] {
+        let at = IVec3::new(x, 8, 8);
+        assert_eq!(world.light(at).block()[0], expected, "x {x}");
+    }
+    world.assert_matches_reference();
+}
+
+/// Placing a filtering block dims what's under it, swapping it for one
+/// that filters less (or glass, which doesn't) brightens it, and taking it
+/// away does too.
+#[test]
+fn edits_add_and_remove_filtering() {
+    let (mut world, mut queue) = (TestWorld::new(1), LightQueue::default());
+    // A pit one voxel wide, so light reaches its floor only from above.
+    let pit = |pos: IVec3| {
+        let hole = pos.x == 5 && pos.z == 7 && pos.y >= 8;
+        if pos.y <= 20 && !hole {
+            block("stone")
+        } else {
+            BlockState::AIR
+        }
+    };
+    for coord in [IVec3::ZERO, IVec3::Y] {
+        world.load(&mut queue, coord, pit);
+    }
+    world.run(&mut queue);
+    let floor = IVec3::new(5, 8, 7);
+    assert_eq!(world.light(floor).sky(), MAX_LIGHT);
+    let top = IVec3::new(5, 20, 7);
+    world.set(&mut queue, top, block("water"));
+    world.run(&mut queue);
+    assert_eq!(world.light(top).sky(), 13);
+    assert_eq!(world.light(floor).sky(), 1, "12 blocks down");
+    world.assert_matches_reference();
+    world.set(&mut queue, top, block("leaves"));
+    world.run(&mut queue);
+    assert_eq!(world.light(top).sky(), 14);
+    assert_eq!(world.light(floor).sky(), 2);
+    world.assert_matches_reference();
+    world.set(&mut queue, top, block("glass"));
+    world.run(&mut queue);
+    assert_eq!(world.light(floor).sky(), MAX_LIGHT);
+    world.assert_matches_reference();
+    world.set(&mut queue, top, block("water"));
+    world.run(&mut queue);
+    world.set(&mut queue, top, BlockState::AIR);
+    world.run(&mut queue);
+    assert_eq!(world.light(floor).sky(), MAX_LIGHT);
+    world.assert_matches_reference();
 }
 
 /// A side that's covered stops light across chunk borders too, and the
@@ -421,7 +582,8 @@ fn covered_sides_stop_light_across_chunk_borders() {
         });
         store.chunks.insert(coord, (chunk, ChunkLight::default()));
     }
-    queue.run(&mut store, &table);
+    let sky = store.sky.clone();
+    queue.run(&mut store, &table, &*sky);
     let sky = |pos: IVec3| store.light(pos).sky();
     // The covered top keeps the outside sky out of its voxel, but it
     // isn't a full block: light comes in at the sides.
@@ -472,7 +634,8 @@ fn light_sources_shine_only_their_own_light_through_covered_sides() {
     store
         .chunks
         .insert(IVec3::ZERO, (chunk, ChunkLight::default()));
-    queue.run(&mut store, &table);
+    let sky = store.sky.clone();
+    queue.run(&mut store, &table, &*sky);
     assert_eq!(store.light(glow).block()[0], 14);
     // Its own 10, less one: not the lamp's 14, less one.
     assert_eq!(store.light(above).block()[0], 9);
@@ -619,6 +782,8 @@ fn edits_keep_the_light_right() {
         BlockState::AIR,
         block("stone"),
         block("stone_slab"),
+        block("water"),
+        block("leaves"),
         block("lamp"),
         block("red_lamp"),
         block("blue_lamp"),
@@ -742,6 +907,8 @@ fn random_loads_and_edits_keep_the_light_right() {
         block("stone"),
         block("stone"),
         block("stone_slab"),
+        block("water"),
+        block("leaves"),
         block("lamp"),
         block("red_lamp"),
         block("blue_lamp"),
@@ -901,6 +1068,8 @@ fn random_loads_unloads_and_edits_under_open_sky_keep_the_light_right() {
         BlockState::AIR,
         block("stone"),
         block("stone"),
+        block("water"),
+        block("leaves"),
         block("lamp"),
         block("blue_lamp"),
     ];

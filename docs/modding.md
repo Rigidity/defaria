@@ -302,6 +302,23 @@ gives off light shines out of every side, covered or not. A block whose
 model covers all six sides is opaque: no light gets in, and it shades the
 corners of the faces next to it (ambient occlusion).
 
+```json5
+{
+  name: "Water",
+  render: "translucent",
+  light_filter: 2,                 // 0 to 15; left out, 0
+}
+```
+
+`light_filter` dims light coming into the block: it loses that many
+levels on top of the one per block, from lamps and the sky alike. Sky
+light shining straight down stays at full strength only through blocks
+with no filter: coming into water it drops 2 levels, and from there 3
+levels a block, like any light that isn't at full strength, so a deep
+lake's floor is dark. The base game's water has 2 and leaves 1, so the
+ground under a tree is shaded; glass and plants have none. It's the
+block's, the same for all its states; variants can't change it.
+
 ### Rendering
 
 `render` says how the block's faces are drawn:
@@ -1259,13 +1276,14 @@ and tanks (a player, a tube, a pipe, a script), it runs on them the same.
   against the side of a block can't pick its half from the upper or lower
   part of that side.
 - Item data that isn't a fixed list of values, such as durability.
-- Variants can't change hardness, weight or stats.
+- Variants can't change hardness, weight, stats or `light_filter`.
+- A light filter dims every colour alike, so water doesn't tint what's
+  under it, and a fluid's is the same however full it is.
 - Variants can't add or remove parts; a part's `when` does that.
 - Fluids' textures don't move, and their surfaces are flat steps rather
   than slopes.
 - Fluids only flow into air: not into blocks that don't fill their
   voxel, such as slabs and plants.
-- See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
 - A wire carrying more than it can doesn't burn out; it caps what the
   network moves. Wires lose nothing over distance, and there are no

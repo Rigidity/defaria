@@ -34,12 +34,19 @@ pub(super) fn bake_state(
             "light level {level} is too bright; the most is {MAX_LIGHT}"
         ));
     }
+    let light_filter = def.light_filter;
+    if light_filter > MAX_LIGHT {
+        return Err(format!(
+            "light_filter {light_filter} is too much; the most is {MAX_LIGHT}"
+        ));
+    }
     let fluid = def.fluid.as_ref().map(bake_fluid).transpose()?;
     let mut state = State {
         block,
         name,
         values: values.to_vec(),
         light,
+        light_filter,
         render: look.render.unwrap_or_default(),
         double_sided: def.double_sided,
         hardness: numbers.hardness,
@@ -165,6 +172,50 @@ mod tests {
         assert!(content.block("test:sun").is_none());
         assert!(
             errors(&content).contains("light level 16"),
+            "{}",
+            errors(&content)
+        );
+    }
+
+    /// `light_filter` is the block's, on every state, 0 if left out, and
+    /// at most the brightest light, 15.
+    #[test]
+    fn blocks_filter_the_light_they_say() {
+        let content = content(&[
+            (
+                "blocks/murk.json5",
+                r#"{
+                    properties: { shade: ["a", "b"] },
+                    model: "quad",
+                    textures: { all: "a" },
+                    light_filter: 3,
+                }"#,
+            ),
+            (
+                "blocks/plain.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/void.json5",
+                r#"{ model: "quad", textures: { all: "a" }, light_filter: 16 }"#,
+            ),
+            (
+                "blocks/ink.json5",
+                r#"{ model: "quad", textures: { all: "a" }, light_filter: 15 }"#,
+            ),
+        ]);
+        let murk = content.block("test:murk").unwrap();
+        for shade in ["a", "b"] {
+            let state = content.state(murk.state(&[("shade", shade)]).unwrap());
+            assert_eq!(state.light_filter, 3, "{shade}");
+        }
+        let plain = content.state(content.default_state("test:plain").unwrap());
+        assert_eq!(plain.light_filter, 0);
+        let ink = content.state(content.default_state("test:ink").unwrap());
+        assert_eq!(ink.light_filter, 15);
+        assert!(content.block("test:void").is_none());
+        assert!(
+            errors(&content).contains("light_filter 16"),
             "{}",
             errors(&content)
         );

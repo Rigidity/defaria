@@ -1281,26 +1281,32 @@ images shared between them, let a material name its images by role, the
 way it names palettes (`images: { soil: "sand" }`), and have `{soil}` look
 there first.
 
-## See-through blocks let all light through (2026-11-25)
+## Light filters are per block and dim every colour alike (2026-11-26)
 
 **Context.** Leaves, glass, water and plants are drawn see-through
-(`render` in `docs/modding.md`). Light used to stop at any side a block
-covers; see-through blocks cover their sides too, so their faces against
-each other can be hidden.
+(`render` in `docs/modding.md`) and light ignores their covered sides
+(`State::blocks_light` in `src/content.rs`). Without anything more, under
+a tree was as bright as open ground and a deep lake's floor was in full
+sky light.
 
-**Decision.** Light ignores the covered sides of see-through blocks: it
-passes through leaves, glass, water and plants as if they were air
-(`State::blocks_light` in `src/content.rs`), and they cast no ambient
-occlusion.
+**Decision.** A block's `light_filter` (water 2, leaves 1, glass and
+plants 0) is how many levels light loses coming into it, on top of the
+level per block, for block and sky light (`LightTable::entering` in
+`src/light/propagate.rs`). Sky light straight down keeps full strength
+only through unfiltered blocks, as in Minecraft. The sky that comes into
+the loaded chunks from above (`OutsideSky`) is full strength; only loaded
+voxels filter it.
 
-**What's wrong with it.** Under a tree is as bright as open ground, and
-the bottom of a deep lake is in full sky light. Minecraft dims light a
-level or more through leaves and water.
+**What's wrong with it.** The filter is the block's, not the state's or
+the fluid amount's: a thin film of water dims light as much as a full
+block. It dims red, green, blue and sky alike, so water doesn't tint what's
+under it blue. And a lake or forest above the loaded chunks doesn't shade
+what's below them, since the sky from outside doesn't know about it.
 
-**What should replace it.** A per-block light filter: how many levels light
-loses passing through (leaves 1, water 2 or 3), applied in
-`src/light/propagate.rs` as light steps into the block. Sky light coming
-straight down should lose it too, so a deep lake darkens with depth.
+**What should replace it.** A filter per channel (a tinted filter, so
+water passes more blue), scaled by how full a fluid voxel is, and an
+`OutsideSky` that knows the columns above the loaded area (see "Sky light
+comes in above whatever's loaded").
 
 ## Translucent faces are sorted per chunk, on the CPU (2026-11-25)
 

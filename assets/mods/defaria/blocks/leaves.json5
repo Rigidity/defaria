@@ -1,5 +1,5 @@
 // A tree's leaves, of any wood. Cut out: the holes in the texture show
-// what's behind, and light gets through.
+// what's behind, and light gets through, a level dimmer.
 {
   name: "{wood} Leaves",
   properties: {
@@ -7,6 +7,8 @@
   },
   model: "cube",
   render: "cutout",
+  // Light loses a level more a block in them: the shade under a tree.
+  light_filter: 1,
   textures: { all: { texture: "leaves", materials: { wood: "{wood}" } } },
   hardness: 0.2,
   weight: 150,
