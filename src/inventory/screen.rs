@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use super::{
     Inventory,
-    list::{ItemList, ListSource, Owner, item_list},
+    list::{ItemList, ListSource, ListSystems, Owner, item_list},
 };
 use crate::{
     content::Content,
@@ -38,7 +38,15 @@ impl Plugin for ScreenPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<InventoryScreen>()
             .register_type::<WeightLabel>()
-            .add_systems(Update, (toggle_inventory.run_if(not(typing)), show_weight));
+            .add_systems(
+                Update,
+                (
+                    // Before the lists fill, so they're full on the first
+                    // frame the screen shows.
+                    toggle_inventory.run_if(not(typing)).before(ListSystems),
+                    show_weight.after(toggle_inventory),
+                ),
+            );
     }
 }
 
@@ -546,6 +554,38 @@ mod tests {
         assert_eq!(hotbar(&mut app).0[0], before.0[7]);
         assert_eq!(hotbar(&mut app).0[7], before.0[0]);
         assert_eq!(active(&mut app), ActiveSlot(0));
+    }
+
+    /// A click on a hotbar slot that moves a pixel or two on the frame
+    /// it's let go is still a click: the slot is made active, not cleared.
+    #[test]
+    fn a_jittery_click_keeps_the_hotbar_slot() {
+        let mut app = open_inventory();
+        let before = hotbar(&mut app);
+        let slot_3 = hotbar_slot_at(&mut app, 2);
+        run_more(
+            &mut app,
+            &format!(
+                "cursor {} {}\nwait 1\npress MouseLeft\nwait 1\ncursor {} {}\nrelease MouseLeft\nwait 2",
+                slot_3.x,
+                slot_3.y,
+                slot_3.x + 2.0,
+                slot_3.y
+            ),
+        );
+        assert_eq!(hotbar(&mut app), before);
+        assert_eq!(active(&mut app), ActiveSlot(2));
+    }
+
+    /// The lists are full on the first frame the screen shows.
+    #[test]
+    fn lists_are_full_when_the_screen_opens() {
+        let mut app = test_game(Script::parse("wait 1").unwrap());
+        settle(&mut app);
+        run_more(&mut app, "hold MouseLeft 1\nwait 1\npress KeyE");
+        assert!(is_open(&mut app));
+        let mut entries = app.world_mut().query::<&ListEntry>();
+        assert!(entries.iter(app.world()).count() > 0);
     }
 
     /// With the screen open, clicking a hotbar slot makes it active, and

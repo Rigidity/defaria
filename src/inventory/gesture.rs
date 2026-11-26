@@ -259,10 +259,14 @@ fn drop_on(
 /// is cleared.
 fn end_drag(
     _: On<PointerDragEnd>,
+    travel: Res<PointerTravel>,
     mut dragging: ResMut<Dragging>,
     mut players: Query<&mut Hotbar, With<LocalPlayer>>,
 ) {
+    // Only a real drag: a click that moved a pixel as it was let go is
+    // still a click (and picking may not have sent a drop onto the slot).
     if let Dragging::HotbarSlot(slot, false) = *dragging
+        && !travel.is_click()
         && let Ok(mut hotbar) = players.single_mut()
     {
         hotbar.assign(slot, None);

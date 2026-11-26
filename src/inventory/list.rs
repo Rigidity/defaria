@@ -25,9 +25,14 @@ impl Plugin for ListPlugin {
             .register_type::<ListEntry>()
             // In Update, not just before the UI's own systems: an entry
             // spawned in PostUpdate draws faded for its first frame.
-            .add_systems(Update, refresh_lists);
+            .add_systems(Update, refresh_lists.in_set(ListSystems));
     }
 }
+
+/// Keeps item lists in step with what they show. Screens that spawn lists
+/// in Update run before it, so a new list is filled on its first frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ListSystems;
 
 /// Whose inventory something on screen shows.
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash)]
