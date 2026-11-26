@@ -44,7 +44,7 @@ use bevy::{
 };
 
 use crate::{
-    content::{BakedFace, BlockState, Content, FULL_FLUID, MAX_LIGHT, Render},
+    content::{BakedFace, BlockState, Content, Direction, FULL_FLUID, MAX_LIGHT, Render, Vertex},
     light::{ChunkLight, Light},
 };
 
@@ -261,6 +261,36 @@ pub fn fluid_amount(content: &Content, state: BlockState, partial: Option<u16>) 
     }
 }
 
+/// `face` (of a block from 0 to 1 high) squeezed to run from `low` to
+/// `high` up the block, with its texture cut off rather than squashed: a
+/// vertex keeps the texture coordinate it had at its new height, along the
+/// face's vertical edge.
+fn cut_face(face: &BakedFace, low: f32, high: f32) -> BakedFace {
+    let vertices = face
+        .vertices
+        .iter()
+        .map(|vertex| {
+            let y = low + vertex.pos.y * (high - low);
+            let partner = face
+                .vertices
+                .iter()
+                .find(|other| other.pos.xz() == vertex.pos.xz() && other.pos.y != vertex.pos.y);
+            let uv = partner.map_or(vertex.uv, |other| {
+                let along = (y - vertex.pos.y) / (other.pos.y - vertex.pos.y);
+                vertex.uv.lerp(other.uv, along)
+            });
+            Vertex {
+                pos: vertex.pos.with_y(y),
+                uv,
+            }
+        })
+        .collect();
+    BakedFace {
+        vertices,
+        ..face.clone()
+    }
+}
+
 /// The axis an axis-aligned vector points along: 0, 1 or 2 for X, Y or Z.
 pub fn axis_of(direction: IVec3) -> usize {
     if direction.x != 0 {
@@ -299,12 +329,16 @@ pub fn touching_offsets(local: IVec3) -> impl Iterator<Item = IVec3> {
 /// Voxels along each axis of a [`Neighborhood`].
 const PADDED: usize = CHUNK_SIZE + 2;
 
-/// A chunk's blocks and light and the layer of voxels around it, copied out
-/// for meshing. Positions are chunk-local, from -1 to [`CHUNK_SIZE`].
+/// A chunk's blocks, fluid and light and the layer of voxels around it,
+/// copied out for meshing. Positions are chunk-local, from -1 to
+/// [`CHUNK_SIZE`].
 #[derive(Debug, Clone)]
 pub struct Neighborhood {
     blocks: Vec<BlockState>,
     light: Vec<Light>,
+    /// The amount of fluid each chunk keeps for the voxel (see
+    /// [`Chunk::partial_at`]), 0 where it keeps none.
+    partial: Vec<u16>,
 }
 
 impl Neighborhood {
@@ -317,33 +351,49 @@ impl Neighborhood {
             chunk(IVec3::new(i % 3, i / 3 % 3, i / 9) - IVec3::ONE)
         });
         let size = IVec3::splat(CHUNK_SIZE as i32);
-        Self::from_fn(|pos| {
+        Self::with_fluid(|pos| {
             let offset = pos.div_euclid(size) + IVec3::ONE;
             match chunks[(offset.x + offset.y * 3 + offset.z * 9) as usize] {
                 Some((chunk, light)) => {
                     let local = pos.rem_euclid(size);
-                    (chunk.at(local), light.at(local))
+                    (chunk.at(local), light.at(local), chunk.partial_at(local))
                 }
-                None => (BlockState::AIR, OPEN_SKY),
+                None => (BlockState::AIR, OPEN_SKY, None),
             }
         })
     }
 
-    /// Fills every position from `voxel`.
+    /// Fills every position from `voxel`, with any fluid full.
+    #[cfg(test)]
     pub fn from_fn(voxel: impl Fn(IVec3) -> (BlockState, Light)) -> Self {
+        Self::with_fluid(|pos| {
+            let (block, light) = voxel(pos);
+            (block, light, None)
+        })
+    }
+
+    /// Fills every position from `voxel`: its block, light and the amount
+    /// of fluid kept for it (see [`Chunk::partial_at`]).
+    pub fn with_fluid(voxel: impl Fn(IVec3) -> (BlockState, Light, Option<u16>)) -> Self {
         let mut blocks = Vec::with_capacity(PADDED.pow(3));
         let mut light = Vec::with_capacity(PADDED.pow(3));
+        let mut partial = Vec::with_capacity(PADDED.pow(3));
         let range = -1..=CHUNK_SIZE as i32;
         for y in range.clone() {
             for z in range.clone() {
                 for x in range.clone() {
-                    let (block, level) = voxel(IVec3::new(x, y, z));
+                    let (block, level, kept) = voxel(IVec3::new(x, y, z));
                     blocks.push(block);
                     light.push(level);
+                    partial.push(kept.unwrap_or(0));
                 }
             }
         }
-        Self { blocks, light }
+        Self {
+            blocks,
+            light,
+            partial,
+        }
     }
 
     fn index(pos: IVec3) -> usize {
@@ -361,6 +411,84 @@ impl Neighborhood {
 
     pub fn light(&self, pos: IVec3) -> Light {
         self.light[Self::index(pos)]
+    }
+
+    /// How high the fluid of block `fluid` at `pos` is drawn, in blocks: a
+    /// full block if the same fluid is above it, so a column has no seams,
+    /// and otherwise its amount's [`fluid_step`]. 0 where there's none.
+    fn fluid_height(&self, content: &Content, fluid: BlockState, pos: IVec3) -> f32 {
+        if self.block(pos) != fluid {
+            return 0.0;
+        }
+        let above = pos + IVec3::Y;
+        let inside = above.cmple(IVec3::splat(CHUNK_SIZE as i32)).all();
+        if inside && self.block(above) == fluid {
+            return 1.0;
+        }
+        let kept = self.partial[Self::index(pos)];
+        let amount = fluid_amount(content, fluid, (kept > 0).then_some(kept));
+        fluid_step(amount) as f32 / FLUID_STEPS as f32
+    }
+
+    /// The faces of the fluid voxel at `pos`, and their backs if it's
+    /// double-sided, cut to the height it's drawn at:
+    ///
+    /// - its top at its height, unless the same fluid is above it; below a
+    ///   full block, the top is hidden as any face is ([`Content::hides`]);
+    /// - each side from the height of the same fluid next to it (none if
+    ///   that's as high), or from the bottom against anything else, which
+    ///   hides it as usual;
+    /// - its bottom, unless the same fluid is below it.
+    fn fluid_faces(
+        &self,
+        content: &Content,
+        pos: IVec3,
+        builder: &mut MeshBuilder,
+        opaque: &impl Fn(IVec3) -> bool,
+    ) {
+        let voxel = self.block(pos);
+        let state = content.state(voxel);
+        let height = self.fluid_height(content, voxel, pos);
+        for face in &state.faces {
+            let Some(side) = face.cull else {
+                continue;
+            };
+            let next = pos + side.normal();
+            let neighbour = self.block(next);
+            let same = neighbour == voxel;
+            let low = match side {
+                Direction::Up | Direction::Down if same => continue,
+                Direction::Up if height < 1.0 => None,
+                Direction::Up | Direction::Down => Some(0.0),
+                _ if same => {
+                    let low = self.fluid_height(content, voxel, next);
+                    if low >= height {
+                        continue;
+                    }
+                    Some(low)
+                }
+                _ => Some(0.0),
+            };
+            let face = match low {
+                // A lowered top lies inside the voxel, so it's shaded from
+                // the voxel itself, and nothing beside it can hide it.
+                None => BakedFace {
+                    cull: None,
+                    ..cut_face(face, 0.0, height)
+                },
+                Some(low) => {
+                    if !same && content.hides(voxel, neighbour, side) {
+                        continue;
+                    }
+                    cut_face(face, low, height)
+                }
+            };
+            let shading = self.shade_face(pos, &face, state.emits_light(), opaque);
+            builder.push(pos.as_vec3(), &face, &shading, false);
+            if state.double_sided {
+                builder.push(pos.as_vec3(), &face, &shading, true);
+            }
+        }
     }
 
     /// Builds the meshes of every voxel's model faces in the middle chunk,
@@ -387,6 +515,10 @@ impl Neighborhood {
             let state = content.state(voxel);
             let glows = state.emits_light();
             let builder = &mut builders[state.render as usize];
+            if state.is_fluid() {
+                self.fluid_faces(content, pos, builder, &opaque_at);
+                continue;
+            }
             for face in &state.faces {
                 if face
                     .hidden_by(|side| content.hides(voxel, self.block(pos + side.normal()), side))
@@ -1389,6 +1521,94 @@ mod tests {
         assert_eq!(split(&[(A, "water"), (B, "lava")]), [12, 0, 10]);
         assert_eq!(split(&[(A, "glass"), (B, "lava")]), [12, 0, 5]);
         assert_eq!(split(&[(A, "leaves"), (B, "lava")]), [12, 5, 0]);
+    }
+
+    /// The translucent mesh of these blocks, each with the amount of fluid
+    /// kept for it.
+    fn fluid_mesh(blocks: &[(IVec3, &str, Option<u16>)]) -> Mesh {
+        Neighborhood::with_fluid(|pos| {
+            blocks
+                .iter()
+                .find(|(p, _, _)| *p == pos)
+                .map_or((BlockState::AIR, OPEN_SKY, None), |&(_, b, kept)| {
+                    (block(b), OPEN_SKY, kept)
+                })
+        })
+        .meshes(base())
+        .translucent
+    }
+
+    fn positions(mesh: &Mesh) -> Vec<Vec3> {
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions");
+        };
+        positions.iter().map(|&p| Vec3::from(p)).collect()
+    }
+
+    /// Fluid that isn't full is drawn at the next of 16 heights up: its top
+    /// lowered, and its sides cut short, their texture cut rather than
+    /// squashed.
+    #[test]
+    fn fluid_is_drawn_at_its_height() {
+        let half = fluid_mesh(&[(A, "water", Some(FULL_FLUID / 2))]);
+        assert_eq!(faces(&half), 12, "six faces, front and back");
+        let top = positions(&half).iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, A.y as f32 + 0.5);
+        // A sliver still shows, a sixteenth high.
+        let sliver = fluid_mesh(&[(A, "water", Some(1))]);
+        let top = positions(&sliver).iter().map(|p| p.y).fold(0.0, f32::max);
+        assert_eq!(top, A.y as f32 + 1.0 / 16.0);
+        // The sides' texture runs from the middle of the tile down.
+        let Some(VertexAttributeValues::Float32x2(uvs)) = half.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("no uvs");
+        };
+        let mut vs: Vec<f32> = uvs.iter().map(|uv| uv[1]).collect();
+        vs.sort_by(f32::total_cmp);
+        vs.dedup();
+        assert_eq!(vs, [0.0, 0.5, 1.0]);
+    }
+
+    /// Between two voxels of the same fluid, only the higher one's side
+    /// shows, from the lower one's height up.
+    #[test]
+    fn fluid_shows_its_side_above_lower_fluid() {
+        let mesh = fluid_mesh(&[(A, "water", None), (B, "water", Some(FULL_FLUID / 4))]);
+        // A: top, bottom, three sides and the band over B; B: five faces.
+        assert_eq!(faces(&mesh), 2 * 11);
+        let band: Vec<Vec3> = positions(&mesh)
+            .into_iter()
+            .filter(|p| p.x == B.x as f32)
+            .filter(|p| p.y > A.y as f32 + 0.25)
+            .collect();
+        assert!(!band.is_empty());
+        let level = fluid_mesh(&[(A, "water", Some(490)), (B, "water", Some(500))]);
+        assert_eq!(faces(&level), 2 * 10, "drawn as high: no face between them");
+    }
+
+    /// Fluid with the same fluid above it is drawn full height, so a falling
+    /// column has no seams, and has no top.
+    #[test]
+    fn fluid_under_fluid_is_full_height() {
+        let column = fluid_mesh(&[(A, "water", Some(100)), (A + IVec3::Y, "water", Some(100))]);
+        assert_eq!(faces(&column), 2 * 10);
+        let lower_sides_top = positions(&column)
+            .into_iter()
+            .filter(|p| p.y <= A.y as f32 + 1.0)
+            .map(|p| p.y)
+            .fold(0.0, f32::max);
+        assert_eq!(lower_sides_top, A.y as f32 + 1.0);
+    }
+
+    /// A full block over fluid hides its top only if the fluid is full: a
+    /// lowered top lies inside the voxel, below the block.
+    #[test]
+    fn a_block_over_fluid_hides_only_a_full_top() {
+        let stone = (A + IVec3::Y, "stone", None);
+        assert_eq!(faces(&fluid_mesh(&[(A, "water", None), stone])), 2 * 5);
+        assert_eq!(faces(&fluid_mesh(&[(A, "water", Some(500)), stone])), 2 * 6);
     }
 
     /// Nothing is hidden next to a cut-out block, not even another one:

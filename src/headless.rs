@@ -24,8 +24,10 @@
 //! | `scroll <lines>` | Turn the mouse wheel that many notches this frame: positive away from you (up), negative toward you. |
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
 //! | `grain` | Print a texture-noise number for this frame (see below). |
-//! | `inspect <Component>` | Print that component on every entity that has it. |
+//! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
 //! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). |
+//! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
+//! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start). |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance. |
@@ -101,7 +103,8 @@ use bevy::{
 };
 
 use crate::{
-    content::{BlockState, Content},
+    content::{BlockState, Content, FULL_FLUID},
+    fluid::FluidStats,
     fly_camera::{FlyCamera, MAX_PITCH},
     fog::ChunkFog,
     physics::Body,
@@ -109,6 +112,7 @@ use crate::{
     streaming::StreamingStatus,
     terrain::Voxels,
     view_bob::ViewBob,
+    voxel::Chunk,
 };
 
 /// Fixed time step for every headless frame.
@@ -208,6 +212,13 @@ pub enum Command {
         max: IVec3,
         block: String,
     },
+    Pour {
+        pos: IVec3,
+        fluid: String,
+        /// In blocks.
+        amount: f32,
+    },
+    Fluids,
     Camera {
         position: Vec3,
         /// Degrees left of north.
@@ -324,6 +335,22 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
                 block: args[6].to_string(),
             });
         }
+        "pour" => {
+            expect(5)?;
+            commands.push(Command::Pour {
+                pos: IVec3::new(
+                    parse_number(args[0])?,
+                    parse_number(args[1])?,
+                    parse_number(args[2])?,
+                ),
+                fluid: args[3].to_string(),
+                amount: parse_number(args[4])?,
+            });
+        }
+        "fluids" => {
+            expect(0)?;
+            commands.push(Command::Fluids);
+        }
         "camera" => {
             expect(5)?;
             commands.push(Command::Camera {
@@ -385,6 +412,8 @@ struct ScriptRunner {
     world_commands: Vec<Command>,
     /// Whether a `timing` report is due at the end of this frame.
     timing: bool,
+    /// Whether a `fluids` report is due at the end of this frame.
+    fluid_report: bool,
     /// Wall-clock frame times since the last `timing`.
     frame_times: Vec<Duration>,
     /// Captures requested but not yet delivered by the renderer.
@@ -406,6 +435,7 @@ impl ScriptRunner {
             && self.inspections.is_empty()
             && self.world_commands.is_empty()
             && !self.timing
+            && !self.fluid_report
     }
 }
 
@@ -542,7 +572,10 @@ fn run_script(
             Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
             Command::Grain => runner.captures.push(Capture::Grain),
             Command::Inspect(name) => runner.inspections.push(name),
-            Command::Fill { .. } | Command::Camera { .. } => runner.world_commands.push(command),
+            Command::Fill { .. } | Command::Pour { .. } | Command::Camera { .. } => {
+                runner.world_commands.push(command)
+            }
+            Command::Fluids => runner.fluid_report = true,
             Command::Timing => runner.timing = true,
             Command::Settle => {
                 runner.settling = Some(0);
@@ -560,6 +593,10 @@ fn apply_world_commands(world: &mut World) {
         let result = match command {
             Command::Fill { min, max, block } => world
                 .run_system_cached_with(fill, (min, max, block))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
+            Command::Pour { pos, fluid, amount } => world
+                .run_system_cached_with(pour, (pos, fluid, amount))
                 .map_err(|error| error.to_string())
                 .and_then(|result| result),
             Command::Camera {
@@ -630,6 +667,50 @@ fn fill(
         }
     }
     Ok(())
+}
+
+fn pour(
+    In((pos, id, amount)): In<(IVec3, String, f32)>,
+    content: Res<Content>,
+    mut voxels: Voxels,
+) -> Result<(), String> {
+    let state = fill_state(&content, &id).map_err(|error| format!("pour: {error}"))?;
+    if !content.state(state).is_fluid() {
+        return Err(format!("pour: `{id}` isn't a fluid"));
+    }
+    let units = (amount * FULL_FLUID as f32).round();
+    if !(1.0..=FULL_FLUID as f32).contains(&units) {
+        return Err(format!(
+            "pour: {amount} blocks is out of range; it must be over 0 and at most 1"
+        ));
+    }
+    voxels.set(pos, state);
+    voxels.set_fluid(pos, units as u16);
+    Ok(())
+}
+
+/// The `fluids` report: each fluid's total in the loaded world, in
+/// thousandths of a block, and the active voxels.
+fn fluid_report(world: &mut World) -> String {
+    let mut totals: std::collections::BTreeMap<String, u64> = default();
+    let mut chunks = world.query::<&Chunk>();
+    let content = world.resource::<Content>();
+    for chunk in chunks.iter(world) {
+        for index in 0..chunk.voxels().len() {
+            let pos = Chunk::position_of(index);
+            let amount = chunk.fluid_at(pos, content);
+            if amount > 0 {
+                let name = &content.blocks[content.state(chunk.at(pos)).block].id;
+                *totals.entry(name.clone()).or_default() += amount as u64;
+            }
+        }
+    }
+    let stats = world.resource::<FluidStats>();
+    let mut line = format!("fluids: {} active", stats.active);
+    for (name, total) in totals {
+        line += &format!(", {name} {total}");
+    }
+    line
 }
 
 fn place_camera(
@@ -707,6 +788,9 @@ fn observe(world: &mut World) {
         if runner.timing {
             report_timing(&mut runner, frame);
         }
+    }
+    if std::mem::take(&mut world.resource_mut::<ScriptRunner>().fluid_report) {
+        println!("[frame {frame}] {}", fluid_report(world));
     }
     for name in inspections {
         match inspect(world, &name) {
@@ -901,9 +985,10 @@ fn inspect(world: &mut World, name: &str) -> Result<Vec<String>, String> {
         .ok_or_else(|| {
             format!("no reflected type named `{name}` (it may be ambiguous; try the full path)")
         })?;
-    let component = registration
-        .data::<ReflectComponent>()
-        .ok_or_else(|| format!("`{name}` isn't a component with #[reflect(Component)]"))?;
+    // Resources are components too, on an entity of their own.
+    let component = registration.data::<ReflectComponent>().ok_or_else(|| {
+        format!("`{name}` isn't a component or resource with #[reflect(Component)] or #[reflect(Resource)]")
+    })?;
 
     let mut entities = world.query::<EntityRef>();
     Ok(entities
