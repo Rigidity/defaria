@@ -55,7 +55,7 @@ use crate::{
     content::Content,
     meshing::{RemeshChunks, remesh_changed_chunks},
     world::ChunkArray,
-    world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
+    world::{Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
 };
 pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
 use sky::Sky;
@@ -224,8 +224,6 @@ fn queue_unloaded_chunk(
 fn queue_changed_voxels(
     mut changes: MessageReader<VoxelChanged>,
     mut updates: MessageReader<PropertiesUpdated>,
-    map: Res<ChunkMap>,
-    sky: Res<Sky>,
     table: Res<LightTable>,
     mut queue: ResMut<LightQueue>,
 ) {
@@ -234,11 +232,7 @@ fn queue_changed_voxels(
         .filter(|update| !table.same_light(update.before, update.after))
         .map(|update| update.pos);
     for pos in changes.read().map(|change| change.pos).chain(updated) {
-        let (coord, local) = ChunkCoord::split(pos);
-        let outside_sky = local.y == CHUNK_SIZE as i32 - 1
-            && map.get(ChunkCoord(coord.0 + IVec3::Y)).is_none()
-            && sky.shines_into(coord.0, local.x, local.z);
-        queue.voxel_changed(pos, outside_sky);
+        queue.voxel_changed(pos);
     }
 }
 
@@ -271,6 +265,7 @@ impl ChunkStore for EcsChunks<'_, '_, '_> {
 pub fn propagate_light(
     mut queue: ResMut<LightQueue>,
     table: Res<LightTable>,
+    sky: Res<Sky>,
     map: Res<ChunkMap>,
     mut chunks: Query<(&'static Chunk, &'static mut ChunkLight)>,
 ) {
@@ -283,6 +278,7 @@ pub fn propagate_light(
             chunks: &mut chunks,
         },
         &table,
+        &**sky,
     );
     for coord in remesh {
         if let Some(entity) = map.get(ChunkCoord(coord))

@@ -424,6 +424,10 @@ pub struct State {
     /// The light it gives off: red, green and blue levels, up to
     /// [`MAX_LIGHT`].
     pub light: [u8; 3],
+    /// How many levels light loses coming into it, on top of the level
+    /// per block it always loses: water's 2 and leaves' 1 dim what's
+    /// under them. Up to [`MAX_LIGHT`].
+    pub light_filter: u8,
     /// How its faces are drawn, which also decides whether it stops light
     /// and hides the faces next to it.
     pub render: Render,

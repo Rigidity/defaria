@@ -16,7 +16,8 @@
 //!    carries on from there. A neighbour at least as bright was lit some
 //!    other way; it's queued to spread its light back into what was cleared.
 //! 2. **Addition.** Spread light outward from every queued voxel, dropping a
-//!    level per block, raising each voxel it reaches that's darker. Each
+//!    level per block (and more into a block with a light filter, such as
+//!    water), raising each voxel it reaches that's darker. Each
 //!    chunk's nodes are handled brightest first, so a voxel is usually set
 //!    once, to its final level.
 //!
@@ -62,6 +63,9 @@ pub struct LightTable {
     closed: Vec<u8>,
     /// The sky channel is always 0: blocks don't give off sky light.
     emits: Vec<Light>,
+    /// Per state, the levels light loses coming into it, on top of the one
+    /// per block.
+    filter: Vec<u8>,
 }
 
 impl LightTable {
@@ -85,6 +89,7 @@ impl LightTable {
                 .iter()
                 .map(|s| Light::new(0, s.light))
                 .collect(),
+            filter: content.states.iter().map(|s| s.light_filter).collect(),
         }
     }
 
@@ -97,10 +102,18 @@ impl LightTable {
     }
 
     /// Whether light treats the two states the same: they close the same
-    /// sides and give off the same light.
+    /// sides, give off the same light and dim it as much.
     pub fn same_light(&self, a: BlockState, b: BlockState) -> bool {
         self.closed.get(a.0 as usize) == self.closed.get(b.0 as usize)
             && self.emits.get(a.0 as usize) == self.emits.get(b.0 as usize)
+            && self.filter.get(a.0 as usize) == self.filter.get(b.0 as usize)
+    }
+
+    /// The level light offered at `level` to a voxel of `state` from
+    /// outside it gets in with: less the levels `state` filters out.
+    fn entering(&self, state: BlockState, level: u8) -> u8 {
+        let filter = self.filter.get(state.0 as usize).copied().unwrap_or(0);
+        level.saturating_sub(filter)
     }
 
     /// Whether light can't come into `state` through all of its sides.
@@ -123,7 +136,8 @@ impl LightTable {
 
     /// The level `channel`'s light reaches a voxel of `to` with, stepping
     /// in from its neighbour of `from` toward `DIRECTIONS[direction]`,
-    /// where it would be `next` with nothing in the way.
+    /// where it would be `next` with nothing in the way: 0 through a side
+    /// either covers, and less what `to` filters out.
     fn passing(
         &self,
         from: BlockState,
@@ -135,7 +149,7 @@ impl LightTable {
         if self.closed(to, opposite(direction)) {
             0
         } else {
-            self.leaving(from, direction, channel, next)
+            self.entering(to, self.leaving(from, direction, channel, next))
         }
     }
 
@@ -192,7 +206,7 @@ pub fn light_alone(
         chunks,
         lights: vec![ChunkLight::default(); chunks.len()],
     };
-    queue.run(&mut store, table);
+    queue.run(&mut store, table, sky);
     // Most are open sky or solid rock, lit evenly throughout.
     for light in &mut store.lights {
         light.compact();
@@ -471,9 +485,9 @@ impl LightQueue {
     }
 
     /// Queues the light around a voxel that changed, by world position.
-    /// `outside_sky` says whether sky light shines into it from outside the
-    /// loaded chunks (see [`OutsideSky`]).
-    pub fn voxel_changed(&mut self, pos: IVec3, outside_sky: bool) {
+    /// The removal offers it the sky from outside again if it's in a top
+    /// layer (see [`Fill::offer_outside_sky`]).
+    pub fn voxel_changed(&mut self, pos: IVec3) {
         let (coord, local) = split(pos);
         let index = Chunk::index_of(local);
         for channel in self.removals.iter_mut() {
@@ -482,11 +496,6 @@ impl LightQueue {
                 level: 0,
                 flags: CHANGED,
             });
-        }
-        // The sky shines into the top layer from outside, so no neighbour
-        // spreads it back: offer it again, as on loading.
-        if outside_sky {
-            self.add(SKY, coord, index, MAX_LIGHT, OUTSIDE | heading(DOWN));
         }
     }
 
@@ -504,13 +513,18 @@ impl LightQueue {
     /// Does all the queued work. Returns the chunks whose meshes show light
     /// that changed: each chunk whose light changed, and the chunks across
     /// the border from each voxel on its edge that changed.
-    pub fn run(&mut self, store: &mut impl ChunkStore, table: &LightTable) -> HashSet<IVec3> {
+    pub fn run(
+        &mut self,
+        store: &mut impl ChunkStore,
+        table: &LightTable,
+        sky: &dyn OutsideSky,
+    ) -> HashSet<IVec3> {
         let mut remesh = HashSet::new();
         for channel in 0..CHANNELS {
             let (removals, additions) = (&mut self.removals[channel], &mut self.additions[channel]);
             while let Some(coord) = removals.keys().next().copied() {
                 let nodes = removals.remove(&coord).unwrap_or_default();
-                let mut fill = Fill::new(coord, channel, table, removals, additions);
+                let mut fill = Fill::new(coord, channel, table, sky, removals, additions);
                 store.with_chunk(coord, |chunk, light| fill.remove(nodes, chunk, light));
                 fill.report(&mut remesh);
             }
@@ -519,7 +533,7 @@ impl LightQueue {
                 if store.is_loaded(coord + IVec3::Y) {
                     nodes.retain(|node| node.flags & OUTSIDE == 0);
                 }
-                let mut fill = Fill::new(coord, channel, table, removals, additions);
+                let mut fill = Fill::new(coord, channel, table, sky, removals, additions);
                 store.with_chunk(coord, |chunk, light| fill.add(nodes, chunk, light));
                 fill.report(&mut remesh);
             }
@@ -534,6 +548,7 @@ struct Fill<'a> {
     coord: IVec3,
     channel: usize,
     table: &'a LightTable,
+    sky: &'a dyn OutsideSky,
     removals: &'a mut HashMap<IVec3, Vec<Node>>,
     additions: &'a mut HashMap<IVec3, Vec<Node>>,
     /// The chunks whose meshes show a voxel whose light changed, as a bit
@@ -546,6 +561,7 @@ impl<'a> Fill<'a> {
         coord: IVec3,
         channel: usize,
         table: &'a LightTable,
+        sky: &'a dyn OutsideSky,
         removals: &'a mut HashMap<IVec3, Vec<Node>>,
         additions: &'a mut HashMap<IVec3, Vec<Node>>,
     ) -> Self {
@@ -553,6 +569,7 @@ impl<'a> Fill<'a> {
             coord,
             channel,
             table,
+            sky,
             removals,
             additions,
             touched: 0,
@@ -586,6 +603,7 @@ impl<'a> Fill<'a> {
                 spread.push(node.index);
             }
             let pos = Chunk::position_of(index);
+            self.offer_outside_sky(pos);
             for (i, direction) in DIRECTIONS.into_iter().enumerate() {
                 let (coord, neighbour) = self.step(pos + direction);
                 if changed {
@@ -617,6 +635,12 @@ impl<'a> Fill<'a> {
         for mut node in nodes {
             if node.level == 0 {
                 node.level = light.get(node.index as usize).get(self.channel);
+            } else if heading_of(node.flags).is_some() {
+                // Light stepping in from another chunk, or the sky outside,
+                // loses what this voxel filters out.
+                node.level = self
+                    .table
+                    .entering(chunk.get_index(node.index as usize), node.level);
             }
             buckets[node.level as usize].push(node);
         }
@@ -674,6 +698,20 @@ impl<'a> Fill<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// Offers the sky from outside the loaded chunks again to a voxel whose
+    /// sky light was cleared, if it's in the top layer and the sky shines
+    /// into it (dropped in [`LightQueue::run`] if a chunk is loaded above),
+    /// since no neighbour spreads that light back. That's a voxel that
+    /// changed, or one that filters the sky and so is lit dimmer than full
+    /// sky, which a removal coming from beside it can clear.
+    fn offer_outside_sky(&mut self, pos: IVec3) {
+        let top = pos.y == CHUNK_SIZE as i32 - 1;
+        if self.channel == SKY && top && self.sky.shines_into(self.coord, pos.x, pos.z) {
+            let index = Chunk::index_of(pos) as u16;
+            self.queue_addition(self.coord, index, MAX_LIGHT, OUTSIDE | heading(DOWN));
         }
     }
 

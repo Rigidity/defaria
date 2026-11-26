@@ -1,0 +1,46 @@
+# Water and leaves dim the light passing through them. On a grass
+# platform built in the air: a lake whose floor steps down from one block
+# deep to fourteen, so each step is darker than the last, and a tree with a
+# wide canopy, whose shade falls on the grass under it. Seen from above
+# the lake, under water looking down the steps and back up them from the
+# deep end, and beside the tree, with the player's light off.
+# Run: cargo headless scenarios/light-filter.txt
+wait 5
+fill 20 45 16 60 45 50 soil[turf=defaria:grass]
+# The lake's basin: stone, with a sand floor stepping down along x.
+fill 40 30 22 57 45 42 stone
+fill 41 44 23 42 44 41 soil[soil=defaria:sand]
+fill 41 45 23 42 45 41 water
+fill 43 42 23 44 42 41 soil[soil=defaria:sand]
+fill 43 43 23 44 45 41 water
+fill 45 40 23 46 40 41 soil[soil=defaria:sand]
+fill 45 41 23 46 45 41 water
+fill 47 38 23 48 38 41 soil[soil=defaria:sand]
+fill 47 39 23 48 45 41 water
+fill 49 36 23 50 36 41 soil[soil=defaria:sand]
+fill 49 37 23 50 45 41 water
+fill 51 34 23 52 34 41 soil[soil=defaria:sand]
+fill 51 35 23 52 45 41 water
+fill 53 31 23 56 31 41 soil[soil=defaria:sand]
+fill 53 32 23 56 45 41 water
+# A tree with a wide canopy, three leaves thick.
+fill 26 46 30 26 51 30 log
+fill 22 52 26 30 54 34 leaves
+press KeyL                     # the player's light starts on: off
+wait 1
+release KeyL
+camera 48.5 64 52 0 -50        # above the lake, from the south
+wait 2
+screenshot target/scenarios/light-filter/0-lake.png
+wait 1
+camera 43.5 44.8 24 -125 -30   # under water, looking down the steps
+wait 2
+screenshot target/scenarios/light-filter/1-steps.png
+wait 1
+camera 55 33 32 90 15          # at the deep end, looking back up them
+wait 2
+screenshot target/scenarios/light-filter/2-deep.png
+wait 1
+camera 26 48 40 0 -15          # the tree, and the shade under it
+wait 2
+screenshot target/scenarios/light-filter/3-tree.png

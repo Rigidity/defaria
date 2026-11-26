@@ -282,6 +282,10 @@ pub struct BlockDef {
     /// The light the block gives off: red, green and blue levels, 0 to 15.
     #[serde(default)]
     pub light: Option<[u8; 3]>,
+    /// How many levels light loses passing into the block, on top of the
+    /// level per block it always loses: 0 to 15. Left out, 0.
+    #[serde(default)]
+    pub light_filter: u8,
     /// How its faces are drawn: opaque (the default), cut out or
     /// translucent.
     #[serde(default)]
