@@ -25,7 +25,7 @@
 //! | `screenshot <path.png>` | Save this frame as a PNG. |
 //! | `grain` | Print a texture-noise number for this frame (see below). |
 //! | `inspect <Type>` | Print that component on every entity that has it, or that resource. |
-//! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). |
+//! | `fill <x0> <y0> <z0> <x1> <y1> <z1> <block>` | Set every voxel in the box between the two corners (both included) to a block, by id (`defaria:stone`, or `stone` for the base game's; `air` clears), in its default state or with some properties set as in a saved name (`log[axis=x,wood=defaria:birch]`). Like any edit, it's followed by the engine setting connection properties, so `pipe` joins the pipes next to it. |
 //! | `pour <x> <y> <z> <fluid> <amount>` | Put `amount` blocks of a fluid (`water`, `lava` or any block with `fluid` set, named as for `fill`) in one voxel, from a sliver to `1`, a full block, replacing what's there. It flows from there. |
 //! | `fluids` | Print how much of each fluid there is in the loaded world, in thousandths of a block, and how many voxels of it are active (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
@@ -1413,6 +1413,37 @@ mod tests {
         assert!((camera.pitch + 10f32.to_radians()).abs() < 1e-5);
         // Yaw 180 faces south (+Z), at the lamp.
         assert!(transform.forward().z > 0.9);
+    }
+
+    /// End to end: pipes `fill` sets in the game join the pipes next to
+    /// them, whatever sides the fill named, and a wire beside them doesn't.
+    #[test]
+    fn filled_pipes_join_each_other() {
+        let (mut app, exit) = run_game(
+            "wait 2\n\
+             fill 50 20 50 52 20 50 pipe[up=true]\n\
+             fill 51 21 50 51 21 50 pipe\n\
+             fill 53 20 50 53 20 50 wire\n\
+             wait 1\n",
+        );
+        assert_eq!(exit, AppExit::Success);
+        let content = crate::content::base();
+        use crate::content::Direction::{self, *};
+        let world = app.world_mut();
+        let joined = |world: &mut World, pos: IVec3| {
+            let (coord, local) = ChunkCoord::split(pos);
+            let entity = world.resource::<ChunkMap>().get(coord).unwrap();
+            let state = world.get::<crate::voxel::Chunk>(entity).unwrap().at(local);
+            Direction::ALL
+                .into_iter()
+                .filter(|&side| content.joined(state, side))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(joined(world, IVec3::new(50, 20, 50)), [East]);
+        assert_eq!(joined(world, IVec3::new(51, 20, 50)), [Up, East, West]);
+        assert_eq!(joined(world, IVec3::new(52, 20, 50)), [West]);
+        assert_eq!(joined(world, IVec3::new(51, 21, 50)), [Down]);
+        assert_eq!(joined(world, IVec3::new(53, 20, 50)), []);
     }
 
     /// `settle` waits for the world around a new camera position to load,

@@ -582,6 +582,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<crate::terrain::PropertiesUpdated>()
             .add_message::<crate::terrain::FluidChanged>()
             .add_systems(
                 Update,

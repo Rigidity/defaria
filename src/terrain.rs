@@ -61,6 +61,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
             .add_message::<FluidChanged>()
+            .add_message::<PropertiesUpdated>()
             .add_systems(
                 Update,
                 (
@@ -177,6 +178,18 @@ pub struct FluidChanged {
     pub by_flow: bool,
 }
 
+/// The engine set some of a voxel's properties from the world around it,
+/// through [`Voxels::update`], such as which sides a pipe joins (see
+/// `connections`). The block is the same one, so this isn't an edit: it
+/// doesn't wake fluid, and a fluid in the voxel stays.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertiesUpdated {
+    pub pos: IVec3,
+    pub before: BlockState,
+    /// Another state of the same block.
+    pub after: BlockState,
+}
+
 /// Every loaded chunk's entity, by its coordinate.
 #[derive(Resource, Debug, Default)]
 pub struct ChunkMap(HashMap<ChunkCoord, Entity>);
@@ -228,6 +241,7 @@ pub struct Voxels<'w, 's> {
     chunks: Query<'w, 's, &'static mut Chunk>,
     changes: MessageWriter<'w, VoxelChanged>,
     fluid_changes: MessageWriter<'w, FluidChanged>,
+    updates: MessageWriter<'w, PropertiesUpdated>,
 }
 
 impl Voxels<'_, '_> {
@@ -270,6 +284,35 @@ impl Voxels<'_, '_> {
             before,
             after: state,
             partial_before,
+        });
+        true
+    }
+
+    /// Sets the voxel at a world position to `state`, another state of the
+    /// block it holds, as the engine does when properties it derives from
+    /// the world change. It isn't an edit: any fluid it holds is kept, and
+    /// it sends [`PropertiesUpdated`] rather than [`VoxelChanged`]. The
+    /// chunks that show it are remeshed, once a frame however many voxels
+    /// change. Returns whether it changed.
+    pub fn update(&mut self, pos: IVec3, state: BlockState) -> bool {
+        let (coord, local) = ChunkCoord::split(pos);
+        let Some(mut chunk) = self
+            .map
+            .get(coord)
+            .and_then(|entity| self.chunks.get_mut(entity).ok())
+        else {
+            return false;
+        };
+        let before = chunk.at(local);
+        if before == state {
+            return false;
+        }
+        chunk.bypass_change_detection().update_at(local, state);
+        self.touched(pos);
+        self.updates.write(PropertiesUpdated {
+            pos,
+            before,
+            after: state,
         });
         true
     }
@@ -1648,6 +1691,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<PropertiesUpdated>()
             .add_message::<FluidChanged>();
         let edge = IVec3::new(15, 5, 5);
         for coord in [IVec3::ZERO, IVec3::X] {
@@ -1692,6 +1736,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<PropertiesUpdated>()
             .add_message::<FluidChanged>();
         let pos = IVec3::new(3, 4, 5);
         let mut chunk = Chunk::default();

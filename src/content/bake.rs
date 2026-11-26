@@ -15,10 +15,10 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use serde::de::DeserializeOwned;
 
 use super::{
-    AIR, BakedFace, Block, BlockBox, BlockState, Category, Content, Direction, FULL_FLUID, Fluid,
-    Item, ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE, Placement, Property,
-    State, StatePart, Texture, TextureLayer, Vertex, index_of, load::LoadedMod, qualify, schema::*,
-    state_count,
+    AIR, BakedFace, Block, BlockBox, BlockState, Category, Connections, Content, Direction,
+    FULL_FLUID, Fluid, Item, ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model, ModelFace, NONE,
+    Placement, Property, State, StatePart, Texture, TextureLayer, Vertex, connect::side_properties,
+    index_of, load::LoadedMod, qualify, schema::*, state_count,
 };
 use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
 
@@ -119,6 +119,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             properties: Vec::new(),
             first_state: 0,
             state_count: 1,
+            connections: None,
         }],
         states: vec![State {
             name: "Air".into(),
@@ -1098,12 +1099,59 @@ fn properties(
     content: &Content,
     for_block: bool,
 ) -> Result<Vec<Property>, String> {
-    defs.iter()
-        .map(|(name, def)| {
-            property(name, def, namespace, content, for_block)
-                .map_err(|error| format!("property `{name}`: {error}"))
+    let mut out = Vec::new();
+    for (name, def) in defs {
+        let made = match def {
+            PropertyDef::Full(spec) if spec.connections.is_some() => {
+                connection_properties(spec, for_block)
+            }
+            _ => property(name, def, namespace, content, for_block).map(|p| vec![p]),
+        };
+        out.extend(made.map_err(|error| format!("property `{name}`: {error}"))?);
+    }
+    // A connections property's sides sort in among the others.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Some(pair) = out.windows(2).find(|pair| pair[0].name == pair[1].name) {
+        return Err(format!(
+            "there are two properties called `{}`: a `connections` property makes `north`, \
+             `south`, `east`, `west`, `up` and `down`",
+            pair[0].name
+        ));
+    }
+    Ok(out)
+}
+
+/// The six side properties a `connections` property becomes.
+fn connection_properties(spec: &PropertySpec, for_block: bool) -> Result<Vec<Property>, String> {
+    if !for_block {
+        return Err("`connections` is only for block properties".into());
+    }
+    let alone = spec.values.is_none()
+        && spec.materials.is_none()
+        && !spec.optional
+        && spec.default.is_none()
+        && spec.item.is_none()
+        && spec.place.is_none();
+    if !alone {
+        return Err("`connections` goes alone: the engine sets its values".into());
+    }
+    Ok(side_properties().collect())
+}
+
+/// The rule a block's `connections` property names, with its mod.
+fn connection_rule(
+    defs: &BTreeMap<String, PropertyDef>,
+    namespace: &str,
+) -> Result<Option<String>, String> {
+    let found = defs.iter().find_map(|(name, def)| match def {
+        PropertyDef::Full(spec) => spec.connections.as_ref().map(|rule| (name, rule)),
+        PropertyDef::Values(_) => None,
+    });
+    found
+        .map(|(name, rule)| {
+            qualify(rule, namespace).map_err(|error| format!("property `{name}`: {error}"))
         })
-        .collect()
+        .transpose()
 }
 
 fn property(
@@ -1353,6 +1401,8 @@ fn add_block(
 ) -> Result<(), String> {
     let block = &def.def;
     let properties = properties(&block.properties, &def.namespace, content, true)?;
+    let connections = connection_rule(&block.properties, &def.namespace)?
+        .and_then(|rule| Connections::new(rule, &properties));
     let count = check_count(&properties)?;
     if content.states.len() + count > u16::MAX as usize + 1 {
         return Err("out of block states: there are too many blocks".into());
@@ -1474,6 +1524,7 @@ fn add_block(
         properties,
         first_state: content.states.len() as u16,
         state_count: count as u16,
+        connections,
     });
     content.block_index.insert(def.id.clone(), index);
     for state in states.iter().filter(|s| s.render == Render::Cutout) {

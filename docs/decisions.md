@@ -3,6 +3,55 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Connections are block states, matched by rule name (2026-11-26)
+
+**Context.** Pipes and wires join whatever is next to them that they can
+connect to (#108), without the player choosing. Network kinds and conduit
+groups (#111), machine ports (#114) and a wrench that blocks a face
+(#121) build on it.
+
+**Decision.** A `connections` property becomes six boolean properties,
+so a joined side is part of the block state, stored in the chunk and
+saved with it like any other property, and drawn by multipart models.
+The engine derives them: `Content::connected` sets each side from
+`Content::accepts`, the one check of whether the neighbour takes the
+rule on the facing side, which for now is "it's a block with the same
+rule name", on any side. The `connections` plugin runs it for the
+voxels around every `VoxelChanged` and for connecting blocks in chunks
+that just loaded and the faces of their neighbours, in `Update` after
+edits and before remeshing, so a placed pipe is drawn joined on the same
+frame. A side facing an unloaded chunk keeps its value, so unloading
+changes nothing and loading catches up. Updates go through
+`Voxels::update` and send `PropertiesUpdated`, not `VoxelChanged`: they
+don't wake fluid, keep any fluid in the voxel, aren't edits to mining
+(which now compares blocks, not states), and don't cascade, because a
+neighbour's sides depend on which block is next to it, not on that
+block's sides. Light relights them only if the two states differ for
+light, and the chunk is saved with them.
+
+**What's wrong with it.** Every combination of sides is a separate
+state, 64 per combination of the block's other properties. Rules match
+by exact name, and every face of a block accepts its rule, so a machine
+can't take a pipe on one face only and two kinds of pipe can't share a
+network yet. Being derived from the world, the sides can't hold
+anything the player chose: a face blocked by a wrench has to live
+elsewhere (the block entity) and be read by `accepts`. A chunk saved
+before its neighbour changed loads stale and is fixed a frame later.
+Placing checks only the placed block's default state against the bodies
+around it (`block_edit`), not the arms it grows once joined, nor the
+arms its neighbours grow toward it: a pipe placed beside one the player
+stands against can push an arm into the player. Deferred: checking the
+joined state, and the neighbours' new states, before placing.
+
+**What should replace it.** `accepts` grows into the conduit and port
+rules: network kinds and groups (#111), ports accepting a rule on a
+face (#114) and faces blocked in the block entity (#121), all in that
+one function, so every caller agrees. If states run short, the sides
+move out of the state into per-voxel data the mesher reads.
+
+**When to revisit.** With #111, #114 and #121, or when the state limit
+is hit.
+
 ## Multipart states are flattened at load, and parts don't cull each other (2026-11-26)
 
 **Context.** Blocks have `parts` (#107): models added to a state where

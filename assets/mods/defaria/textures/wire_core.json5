@@ -1,0 +1,6 @@
+// The knot where a wire's arms meet.
+{
+  layers: [
+    { image: "wire_core", material: "$metal" },
+  ],
+}

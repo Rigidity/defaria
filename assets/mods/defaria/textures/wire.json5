@@ -1,0 +1,7 @@
+// The side of a wire's arm: a thin cable across the middle of the tile.
+// Seen end-on, the same few pixels of cable stand for its cut end.
+{
+  layers: [
+    { image: "wire", material: "$metal" },
+  ],
+}

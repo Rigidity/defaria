@@ -518,12 +518,10 @@ a model for each of the 64 ways its arms can go:
 
 ```json5
 // models/pipe_arm.json5 points north; each part turns it to its side.
+// `connect` becomes the six properties `north` to `down` (see
+// Connections), which the engine sets as pipes join.
 {
-  properties: {
-    north: ["false", "true"], south: ["false", "true"],
-    east: ["false", "true"], west: ["false", "true"],
-    up: ["false", "true"], down: ["false", "true"],
-  },
+  properties: { connect: { connections: "pipe" } },
   textures: { all: "pipe_core", side: "pipe_side", end: "pipe_end" },
   parts: [
     { model: "pipe_core" },                          // no `when`: always
@@ -664,6 +662,34 @@ properties: {
 `place` is for blocks' plain properties only, and not with `item: true`:
 the item doesn't carry a value that placing picks.
 
+### Connections
+
+A block that joins whatever is next to it, such as a pipe or a wire, has
+a property with `connections`, naming the rule it connects by:
+
+```json5
+properties: {
+  metal: { materials: "#metal" },
+  connect: { connections: "pipe" },   // a rule, like an id: `pipe` is `<this mod>:pipe`
+},
+```
+
+- It becomes six plain properties, `north`, `south`, `east`, `west`, `up`
+  and `down`, each `"false"` or `"true"`, which `when` and `{property}`
+  use like any other. Its own name isn't used. They count toward the 4096
+  states: 64 for each combination of the block's other properties.
+- The engine sets them, not the player: each side is `"true"` when the
+  block on that side accepts the rule on the side facing it. For now that
+  means it's a block with a `connections` property naming the same rule,
+  so pipes join pipes (of any metal) and wires join wires, but not each
+  other. They're set as the block is placed, whenever a neighbour
+  changes, and when a chunk loads beside it; a side facing a part of the
+  world that isn't loaded keeps its value.
+- A `connections` property has nothing else: no `values`, `default`,
+  `item` or `place`. A block has at most one, and no other property
+  called one of the six sides. It's for blocks only; the item doesn't
+  carry the sides.
+
 ### Conditions
 
 A `when` gives each property it cares about one of:
@@ -775,5 +801,8 @@ leave gaps in `order` so other mods can slot theirs between.
   voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
+- Connections only join blocks with the same rule; blocks that accept a
+  rule on some faces only (machine ports) and rules that group several
+  kinds come with networks and machines.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.

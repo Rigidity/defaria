@@ -87,7 +87,7 @@ pub struct MiningSystems;
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
 #[reflect(Component)]
 pub struct Mining {
-    /// The block being mined, and its state when mining started.
+    /// The block being mined, and its state now.
     pub target: Option<(IVec3, BlockState)>,
     /// From 0 when mining starts to 1 when the block breaks.
     pub progress: f32,
@@ -157,7 +157,13 @@ fn mine(
     };
     let target = (hit.block, voxels.get(hit.block).unwrap_or(BlockState::AIR));
     let seconds = break_time(content.state(target.1).hardness);
-    if mining.target == Some(target) {
+    // The engine updating its properties (a pipe joining one placed next
+    // to it) doesn't make it another target.
+    let same = mining.target.is_some_and(|(pos, state)| {
+        pos == target.0 && content.state(state).block == content.state(target.1).block
+    });
+    if same {
+        mining.target = Some(target);
         mining.elapsed += time.delta();
     } else {
         // This frame's time went by before it was the target.
@@ -214,6 +220,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ChunkMap>()
             .add_message::<VoxelChanged>()
+            .add_message::<crate::terrain::PropertiesUpdated>()
             .add_message::<crate::terrain::FluidChanged>()
             .add_observer(give_the_camera_mining)
             .add_systems(Update, (arm, mine).chain());
@@ -312,6 +319,30 @@ mod tests {
         frame(&mut app, false);
         assert_eq!(at(&mut app, stone), BlockState::AIR);
         assert_eq!(mining(&mut app).target, None);
+    }
+
+    /// A pipe being mined that joins a pipe placed next to it is the same
+    /// target: mining carries on rather than starting over.
+    #[test]
+    fn a_property_update_keeps_the_progress() {
+        let mut app = app();
+        let pos = IVec3::new(5, 1, 5);
+        let content = base();
+        let lone = content.default_state("defaria:pipe").unwrap();
+        let joined = content
+            .block_state("defaria:pipe", &[("south", "true")])
+            .unwrap();
+        set(&mut app, pos, lone);
+        frame(&mut app, true);
+        frame(&mut app, false);
+        frame(&mut app, false);
+        let before = mining(&mut app).progress;
+        assert!(before > 0.0);
+        set(&mut app, pos, joined);
+        frame(&mut app, false);
+        let after = mining(&mut app);
+        assert!(after.progress > before, "{} after {before}", after.progress);
+        assert_eq!(after.target, Some((pos, joined)));
     }
 
     #[test]

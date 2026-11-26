@@ -1,28 +1,37 @@
-# Multipart models: pipes on a flat stone platform built in the air, each
-# a core plus an arm for every side its properties say. Along the front,
-# west to east: a lone core, a straight run of three (north–south), a
-# corner, a tee, a cross with an arm up, and one with all six arms. Behind
-# them: a vertical run of three standing on the platform, an iron run into
-# a stone block (its end against the stone is hidden), and copper and gold
-# pipes.
+# Multipart models and connections: pipes placed on a flat stone platform
+# built in the air, each joining the pipes next to it, so each is a core
+# plus an arm for every side it's joined on. Along the front, west to
+# east: a lone core, a straight run of three (north–south), a corner, a
+# tee, a cross with an arm up, and a pipe in the air with a pipe on all six
+# sides. Behind them: a vertical run of three standing on the platform, an
+# iron run ending at a stone block (no arm into it), a run of copper, iron
+# and gold pipes (metals join each other), and a wire run with a corner
+# beside a pipe, which it doesn't join.
 # Run: cargo headless scenarios/pipe-parts.txt
 wait 5
 fill 20 45 20 44 45 44 stone                              # the platform
 fill 22 46 30 22 46 30 pipe                               # a lone core
-fill 25 46 29 25 46 29 pipe[south=true]                   # a run of three
-fill 25 46 30 25 46 30 pipe[north=true,south=true]
-fill 25 46 31 25 46 31 pipe[north=true]
-fill 28 46 30 28 46 30 pipe[north=true,east=true]         # a corner
-fill 31 46 30 31 46 30 pipe[east=true,west=true,south=true]  # a tee
-fill 34 46 30 34 46 30 pipe[north=true,south=true,east=true,west=true,up=true]
-fill 37 46 30 37 46 30 pipe[north=true,south=true,east=true,west=true,up=true,down=true]
-fill 22 46 25 22 46 25 pipe[up=true]                      # a vertical run
-fill 22 47 25 22 47 25 pipe[up=true,down=true]
-fill 22 48 25 22 48 25 pipe[down=true]
-fill 26 46 25 27 46 25 pipe[east=true,west=true]          # a run into stone
+fill 25 46 29 25 46 31 pipe                               # a run of three
+fill 28 46 30 28 46 30 pipe                               # a corner
+fill 28 46 29 28 46 29 pipe
+fill 29 46 30 29 46 30 pipe
+fill 31 46 30 33 46 30 pipe                               # a tee
+fill 32 46 31 32 46 31 pipe
+fill 35 46 30 37 46 30 pipe                               # a cross with an arm up
+fill 36 46 29 36 46 31 pipe
+fill 36 47 30 36 47 30 pipe
+fill 40 46 30 40 48 30 pipe                               # six arms
+fill 39 47 30 41 47 30 pipe
+fill 40 47 29 40 47 31 pipe
+fill 22 46 25 22 48 25 pipe                               # a vertical run
+fill 26 46 25 27 46 25 pipe                               # a run into stone
 fill 28 46 25 28 46 25 stone
-fill 31 46 25 31 46 25 pipe[metal=defaria:copper,east=true,west=true]
-fill 34 46 25 34 46 25 pipe[metal=defaria:gold,north=true,up=true]
+fill 31 46 25 31 46 25 pipe[metal=defaria:copper]         # mixed metals
+fill 32 46 25 32 46 25 pipe
+fill 33 46 25 33 46 25 pipe[metal=defaria:gold]
+fill 35 46 25 35 46 25 pipe                               # a pipe, then wires
+fill 36 46 25 39 46 25 wire
+fill 39 46 24 39 46 24 wire
 camera 30 50.5 35.5 0 -35                                 # south of it, looking down
 wait 2
 screenshot target/scenarios/pipe-parts/0-overview.png
@@ -31,10 +40,14 @@ camera 28.5 47.6 32.5 15 -25                              # close up on the run,
 wait 2
 screenshot target/scenarios/pipe-parts/1-close.png
 wait 1
-camera 36 47.8 32 -20 -30                                 # the cross and the six-armed one
+camera 38 48.8 33.5 -10 -25                               # the cross and the six-armed one
 wait 2
 screenshot target/scenarios/pipe-parts/2-cross.png
 wait 1
-camera 25.5 48.5 29.5 10 -22                              # the vertical run and the run into stone
+camera 30 48.5 28.5 0 -30                                 # the back row
 wait 2
 screenshot target/scenarios/pipe-parts/3-back.png
+wait 1
+camera 37 48.5 28.5 0 -40                                 # the pipe and the wires
+wait 2
+screenshot target/scenarios/pipe-parts/4-wires.png

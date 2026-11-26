@@ -1,19 +1,14 @@
-// A metal pipe: a core with an arm out to each side it's joined on. Each
-// side's property says whether its arm is there; for now they're set by
-// hand (`fill pipe[north=true,east=true]` in a scenario) and placing one
-// gives just the core. Every arm is the same model, `pipe_arm`, which
-// points north, turned to face its side. Its arms' ends are round, so its
-// faces are cut out.
+// A metal pipe: a core with an arm out to each side it's joined on. Its
+// `connect` property becomes six, `north` to `down`, which the engine sets
+// to whether the block on that side is a pipe too (anything connecting by
+// the `pipe` rule), so pipes join the pipes they're placed next to. Every
+// arm is the same model, `pipe_arm`, which points north, turned to face
+// its side. Its arms' ends are round, so its faces are cut out.
 {
   name: "{metal} Pipe",
   properties: {
     metal: { materials: "#metal", default: "iron" },
-    north: ["false", "true"],
-    south: ["false", "true"],
-    east: ["false", "true"],
-    west: ["false", "true"],
-    up: ["false", "true"],
-    down: ["false", "true"],
+    connect: { connections: "pipe" },
   },
   textures: {
     all: { texture: "pipe_core", materials: { metal: "{metal}" } },

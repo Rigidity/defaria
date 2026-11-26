@@ -25,6 +25,7 @@
 //! `voxel_material`), so they hot reload; the JSON5 files don't yet.
 
 mod bake;
+mod connect;
 pub mod load;
 mod place;
 pub mod schema;
@@ -34,6 +35,7 @@ use std::{collections::BTreeMap, ops::Range, path::Path};
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
 
 use crate::block_texture::Palette;
+pub use connect::{Connections, SIDE_VALUES};
 pub use place::Placement;
 pub use schema::{Direction, PlaceFrom, Render};
 
@@ -351,6 +353,8 @@ pub struct Block {
     pub properties: Vec<Property>,
     pub first_state: u16,
     pub state_count: u16,
+    /// The properties the engine sets from the neighbours, if it has them.
+    pub connections: Option<Connections>,
 }
 
 impl Block {

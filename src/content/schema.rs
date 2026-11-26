@@ -139,6 +139,13 @@ pub struct PropertySpec {
     /// Only for plain block properties.
     #[serde(default)]
     pub place: Option<PlaceDef>,
+    /// The rule the block connects to its neighbours by. The property
+    /// becomes six: `north`, `south`, `east`, `west`, `up` and `down`, each
+    /// `"false"` or `"true"`, set by the engine to whether the neighbour on
+    /// that side accepts the rule. Nothing else goes with it. Only for
+    /// blocks, once per block.
+    #[serde(default)]
+    pub connections: Option<String>,
 }
 
 /// How a property is set when the block is placed: `"face"` or `"look"`,
