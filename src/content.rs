@@ -560,6 +560,12 @@ impl Content {
         self.block(id).map(Block::default_state)
     }
 
+    /// Block `id`'s state with these property values, the rest at their
+    /// defaults. `None` for a block, property or value that isn't there.
+    pub fn block_state(&self, id: &str, values: &[(&str, &str)]) -> Option<BlockState> {
+        self.block(id)?.state(values)
+    }
+
     /// What `state` looks like. Air for a state that doesn't exist.
     pub fn state(&self, state: BlockState) -> &State {
         self.states.get(state.0 as usize).unwrap_or(&self.states[0])
@@ -722,9 +728,7 @@ pub fn base_texture(name: &str) -> u32 {
 /// The default state of base game block `defaria:<name>`.
 #[cfg(test)]
 pub fn block(name: &str) -> BlockState {
-    base()
-        .default_state(&format!("defaria:{name}"))
-        .unwrap_or_else(|| panic!("no block defaria:{name}"))
+    block_with(name, &[])
 }
 
 /// The state of base game block `defaria:<name>` with these property
@@ -732,8 +736,7 @@ pub fn block(name: &str) -> BlockState {
 #[cfg(test)]
 pub fn block_with(name: &str, values: &[(&str, &str)]) -> BlockState {
     base()
-        .block(&format!("defaria:{name}"))
-        .and_then(|block| block.state(values))
+        .block_state(&format!("defaria:{name}"), values)
         .unwrap_or_else(|| panic!("no block defaria:{name} with {values:?}"))
 }
 

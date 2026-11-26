@@ -268,7 +268,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{base, block};
+    use crate::content::{base, block, grass};
 
     fn names() -> StateNames {
         StateNames::new(base())
@@ -315,7 +315,7 @@ mod tests {
             let state = match pos.y {
                 y if y < height - 3 => block("stone"),
                 y if y < height - 1 => block("soil"),
-                y if y < height => crate::content::grass(),
+                y if y < height => grass(),
                 _ => BlockState::AIR,
             };
             ground.set_at(pos, state);

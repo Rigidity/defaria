@@ -706,7 +706,7 @@ fn set_sky_color(mut commands: Commands) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{Direction, Render, base, block, test_mod};
+    use crate::content::{Direction, Render, base, block, grass, sand, test_mod};
     use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
 
     /// A completely full chunk: stone, topped with dirt, topped with grass.
@@ -714,7 +714,7 @@ mod tests {
         let mut chunk = Chunk::default();
         for (x, y, z) in Chunk::positions() {
             let state = match y {
-                y if y == CHUNK_SIZE - 1 => crate::content::grass(),
+                y if y == CHUNK_SIZE - 1 => grass(),
                 y if y >= CHUNK_SIZE - 4 => block("soil"),
                 _ => block("stone"),
             };
@@ -798,7 +798,7 @@ mod tests {
         let mut west = Chunk::default();
         west.set(15, 0, 0, block("stone"));
         let mut corner = Chunk::default();
-        corner.set(0, 15, 15, crate::content::sand());
+        corner.set(0, 15, 15, sand());
         let mut light = ChunkLight::default();
         light.set_at(IVec3::new(15, 0, 0), Light::new(3, [4, 5, 6]));
         let dark = ChunkLight::default();
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(n.light(IVec3::ZERO), Light::DARK);
         assert_eq!(n.block(IVec3::new(-1, 0, 0)), block("stone"));
         assert_eq!(n.light(IVec3::new(-1, 0, 0)), Light::new(3, [4, 5, 6]));
-        assert_eq!(n.block(IVec3::new(16, -1, -1)), crate::content::sand());
+        assert_eq!(n.block(IVec3::new(16, -1, -1)), sand());
         assert_eq!(n.block(IVec3::new(16, 16, 16)), BlockState::AIR);
         assert_eq!(n.light(IVec3::new(16, 16, 16)), OPEN_SKY);
     }
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn grass_has_a_top_sides_and_a_dirt_bottom() {
-        let grass = crate::content::grass();
+        let grass = grass();
         assert_eq!(tile_on(grass, IVec3::Y), "turf");
         assert_eq!(tile_on(grass, IVec3::NEG_Y), "soil");
         for side in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
@@ -954,12 +954,12 @@ mod tests {
     #[test]
     fn each_face_samples_its_own_tile_layer() {
         let mut chunk = Chunk::default();
-        chunk.set(1, 1, 1, crate::content::grass());
+        chunk.set(1, 1, 1, grass());
         let mesh = mesh(&chunk, air);
         let normals = vec3s(&mesh, Mesh::ATTRIBUTE_NORMAL);
         let content = base();
         for (normal, face) in normals.iter().zip(faces_of(&mesh)) {
-            let tile = tile_on(crate::content::grass(), normal.as_ivec3());
+            let tile = tile_on(grass(), normal.as_ivec3());
             let template = &content.textures[face[0] as usize].template;
             assert_eq!(*template, format!("defaria:{tile}"));
         }

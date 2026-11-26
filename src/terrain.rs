@@ -264,41 +264,55 @@ pub struct TerrainBlocks {
 }
 
 impl TerrainBlocks {
-    const IDS: [&str; 4] = [
-        "defaria:soil",
-        "defaria:stone",
-        "defaria:water",
-        "defaria:tuft",
+    /// Each block state the terrain is made of: its block and the property
+    /// values it doesn't leave at their defaults, in field order.
+    const STATES: [(&str, &[(&str, &str)]); 6] = [
+        ("defaria:soil", &[("turf", "defaria:grass")]),
+        ("defaria:soil", &[]),
+        ("defaria:stone", &[]),
+        ("defaria:soil", &[("soil", "defaria:sand")]),
+        ("defaria:water", &[]),
+        ("defaria:tuft", &[]),
     ];
 
-    /// The ids of the blocks the terrain needs that didn't load.
-    pub fn missing(content: &Content) -> Vec<&'static str> {
-        Self::IDS
-            .into_iter()
-            .filter(|id| content.block(id).is_none())
+    /// Each of [`Self::STATES`], if it loaded.
+    fn states(content: &Content) -> [Option<BlockState>; 6] {
+        Self::STATES.map(|(id, values)| content.block_state(id, values))
+    }
+
+    /// The states the terrain needs that didn't load, named as saves name
+    /// them (`defaria:soil[soil=defaria:sand]`).
+    pub fn missing(content: &Content) -> Vec<String> {
+        Self::STATES
+            .iter()
+            .zip(Self::states(content))
+            .filter(|(_, state)| state.is_none())
+            .map(|((id, values), _)| match values {
+                [] => id.to_string(),
+                values => {
+                    let values: Vec<_> = values.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                    format!("{id}[{}]", values.join(","))
+                }
+            })
             .collect()
     }
 
     /// The base game's blocks the terrain is made of. One that didn't load
     /// is reported and left as air.
     pub fn from_content(content: &Content) -> Self {
-        let block = |name: &str, values: &[(&str, &str)]| {
-            let id = format!("defaria:{name}");
-            content
-                .block(&id)
-                .and_then(|block| block.state(values))
-                .unwrap_or_else(|| {
-                    error!("the terrain needs block `{id}` with {values:?}, which didn't load");
-                    BlockState::AIR
-                })
-        };
+        let missing = Self::missing(content);
+        if !missing.is_empty() {
+            error!("the terrain needs {missing:?}, which didn't load; they're left as air");
+        }
+        let [grass, dirt, stone, sand, water, tuft] =
+            Self::states(content).map(|state| state.unwrap_or(BlockState::AIR));
         Self {
-            grass: block("soil", &[("turf", "defaria:grass")]),
-            dirt: block("soil", &[]),
-            stone: block("stone", &[]),
-            sand: block("soil", &[("soil", "defaria:sand")]),
-            water: block("water", &[]),
-            tuft: block("tuft", &[]),
+            grass,
+            dirt,
+            stone,
+            sand,
+            water,
+            tuft,
         }
     }
 }
@@ -980,6 +994,29 @@ mod tests {
         let mut content = base().clone();
         assert!(content.forget_block("defaria:stone"));
         assert_eq!(TerrainBlocks::missing(&content), ["defaria:stone"]);
+    }
+
+    /// Without the sand material, the soil block still loads but has no
+    /// sand state, which the terrain needs for its shores.
+    #[test]
+    fn missing_terrain_states_are_named() {
+        let (mut mods, errors) = crate::content::load::read_mods(
+            std::path::Path::new("assets/mods"),
+            crate::content::MODS_DIR,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let base = mods
+            .iter_mut()
+            .find(|m| m.dir.ends_with("defaria"))
+            .unwrap();
+        assert!(base.files.remove("materials/sand.json5").is_some());
+        let content = Content::from_mods(mods);
+        assert!(content.block("defaria:soil").is_some());
+        assert_eq!(
+            TerrainBlocks::missing(&content),
+            ["defaria:soil[soil=defaria:sand]"]
+        );
+        assert_eq!(TerrainBlocks::from_content(&content).sand, BlockState::AIR);
     }
 
     #[test]

@@ -3091,6 +3091,7 @@ mod tests {
         // Soil counts three times as much as turf.
         let grass = content.state(soil.state(&[("turf", "defaria:grass")]).unwrap());
         assert_eq!(grass.hardness, (3.0 * 0.5 + 0.6) / 4.0);
+        assert_eq!(grass.weight, (3.0 * 1500.0 + 1400.0) / 4.0);
         // An iron pickaxe on an oak handle weighs a kilogram or two.
         let pickaxe = content.default_item_info("defaria:pickaxe").unwrap();
         assert!((1.0..3.0).contains(&pickaxe.weight), "{}", pickaxe.weight);

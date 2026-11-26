@@ -334,7 +334,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        content::{base, block, test_mod},
+        content::{base, block, grass, test_mod},
         headless::{Script, settle, test_game},
         hotbar::{default_hotbar, select_with_keys},
         mining::{Mining, MiningPlugin},
@@ -928,7 +928,7 @@ mod tests {
     /// Frames, at the headless runner's 60 per second, that holding left
     /// click on grass takes to break it.
     fn grass_frames() -> u32 {
-        let seconds = crate::mining::break_time(base().state(crate::content::grass()).hardness);
+        let seconds = crate::mining::break_time(base().state(grass()).hardness);
         (seconds * 60.0).ceil() as u32
     }
 
@@ -951,7 +951,7 @@ mod tests {
 
         let top = IVec3::new(x, height - 1, z);
         let below = top - IVec3::Y;
-        assert_eq!(world_voxel(&mut app, top), crate::content::grass());
+        assert_eq!(world_voxel(&mut app, top), grass());
         let below_before = world_voxel(&mut app, below);
         assert!(!below_before.is_air());
 
@@ -975,7 +975,7 @@ mod tests {
              hold MouseLeft {hold}  # lock the cursor, and keep holding\n\
              wait 2\n"
         ));
-        assert_eq!(world_voxel(&mut app, top), crate::content::grass());
+        assert_eq!(world_voxel(&mut app, top), grass());
         let mut miners = app.world_mut().query::<&Mining>();
         assert_eq!(miners.single(app.world()).unwrap().target, None);
     }
