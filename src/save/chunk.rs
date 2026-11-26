@@ -14,12 +14,13 @@
 use bevy::{platform::collections::HashMap, prelude::*};
 
 use crate::{
+    block_entity::{BlockEntityData, SavedPart, read_text, read_value, write_text, write_value},
     content::{BlockState, Content, FULL_FLUID},
     voxel::{CHUNK_VOLUME, Chunk},
 };
 
 /// The chunk format this build writes.
-pub const CHUNK_FORMAT: u8 = 2;
+pub const CHUNK_FORMAT: u8 = 3;
 /// How hard zlib tries: 0 (store) to 10. 6 is its usual default; it's
 /// nearly as small as the slowest levels on voxel data and much faster.
 const COMPRESSION_LEVEL: u8 = 6;
@@ -71,8 +72,19 @@ impl StateNames {
         }
     }
 
+    /// Whether a block with this id is defined.
+    pub fn has_block(&self, id: &str) -> bool {
+        self.by_block.contains_key(id)
+    }
+
     pub fn name(&self, state: BlockState) -> &str {
         self.names.get(state.0 as usize).unwrap_or(&self.names[0])
+    }
+
+    /// The id of the block of `state`.
+    pub fn block_id(&self, state: BlockState) -> &str {
+        let name = self.name(state);
+        name.split_once('[').map_or(name, |(id, _)| id)
     }
 
     /// The state saved as `name`. A block that's gone (its mod was removed)
@@ -119,6 +131,21 @@ pub fn encode(chunk: &Chunk, names: &StateNames) -> Vec<u8> {
     for (index, amount) in partial {
         write_varint(&mut payload, index as u64);
         write_varint(&mut payload, amount as u64);
+    }
+
+    // Block entities, in voxel order too.
+    let mut entities: Vec<(usize, &BlockEntityData)> = chunk.block_entities().collect();
+    entities.sort_unstable_by_key(|&(index, _)| index);
+    write_varint(&mut payload, entities.len() as u64);
+    for (index, data) in entities {
+        write_varint(&mut payload, index as u64);
+        write_text(&mut payload, &data.kind);
+        write_varint(&mut payload, data.parts.len() as u64);
+        for (key, part) in &data.parts {
+            write_text(&mut payload, key);
+            write_varint(&mut payload, part.version as u64);
+            write_value(&mut payload, &part.value);
+        }
     }
 
     let mut blob = vec![CHUNK_FORMAT];
@@ -177,6 +204,36 @@ pub fn decode(blob: &[u8], names: &StateNames) -> Result<Chunk, String> {
             return Err("a voxel has no fluid in it".into());
         }
         chunk.start_fluid_at(Chunk::position_of(index), amount as u16);
+    }
+
+    let entities = reader.length(CHUNK_VOLUME)?;
+    for _ in 0..entities {
+        let index = reader.length(CHUNK_VOLUME - 1)?;
+        let kind = read_text(&mut reader)?;
+        let count = reader.length(usize::MAX)?;
+        let mut data = BlockEntityData {
+            kind,
+            parts: default(),
+        };
+        for _ in 0..count {
+            let key = read_text(&mut reader)?;
+            let version = reader.length(u32::MAX as usize)? as u32;
+            let value = read_value(&mut reader)?;
+            data.parts.insert(key, SavedPart { version, value });
+        }
+        let pos = Chunk::position_of(index);
+        // Kept only while its voxel is still the block that had it: a
+        // block that's gone has become air.
+        if !names.has_block(&data.kind) {
+            warn!("dropped a `{}` block entity: no mod defines it", data.kind);
+        } else if names.block_id(chunk.at(pos)) != data.kind {
+            warn!(
+                "dropped a `{}` block entity: its voxel is another block",
+                data.kind
+            );
+        } else {
+            chunk.set_block_entity_at(pos, data);
+        }
     }
     if !reader.is_done() {
         return Err("chunk has trailing bytes".into());
@@ -415,6 +472,8 @@ mod tests {
                 write_varint(&mut payload, index);
                 write_varint(&mut payload, amount);
             }
+            // No block entities.
+            write_varint(&mut payload, 0);
             let mut blob = vec![CHUNK_FORMAT];
             blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(&payload, 6));
             decode(&blob, &names)

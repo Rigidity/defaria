@@ -773,6 +773,31 @@ the item (its name, icon, uniqueness, hardness, weight or stats), add an item fi
 the same name: what it leaves out comes from the block. It can't add
 properties or a `block`.
 
+### Block entities
+
+A block with `block_entity` gives each of its voxels data of its own,
+beyond its state, saved with its chunk: what a machine stores, or a
+script's table. Placing the block makes a new one; changing only its
+state (a furnace turning lit) keeps it; breaking or replacing the block
+removes it.
+
+```json5
+{
+  name: "Counter",
+  model: "cube",
+  textures: { all: "lamp" },
+  block_entity: {
+    // Plain data a new one starts with: numbers, strings, booleans,
+    // and lists and tables of them. Optional.
+    data: { count: 0, label: "start" },
+  },
+}
+```
+
+`block_entity: {}` gives the block one with no data of its own. Features
+of the game (machines, conduits, scripts) add their own parts to the
+block entities of the blocks they apply to.
+
 ## Items
 
 `items/<name>.json5`.

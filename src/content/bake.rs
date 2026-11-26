@@ -126,6 +126,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             first_state: 0,
             state_count: 1,
             connections: None,
+            block_entity: None,
         }],
         states: vec![State {
             name: "Air".into(),
@@ -1643,6 +1644,7 @@ fn add_block(
         first_state: content.states.len() as u16,
         state_count: count as u16,
         connections,
+        block_entity: block.block_entity.clone(),
     });
     content.block_index.insert(def.id.clone(), index);
     for state in states.iter().filter(|s| s.render == Render::Cutout) {

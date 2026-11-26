@@ -44,6 +44,7 @@ use bevy::{
 };
 
 use crate::{
+    block_entity::BlockEntityData,
     content::{BakedFace, BlockState, Content, Direction, FULL_FLUID, MAX_LIGHT, Render, Vertex},
     light::{ChunkLight, Light},
 };
@@ -94,6 +95,11 @@ impl Plugin for VoxelPlugin {
 /// of the voxels that aren't are kept, in `partial`; a fluid voxel that
 /// isn't there is full. Setting a voxel to another block forgets its
 /// amount.
+///
+/// A chunk that isn't spawned also holds its voxels' block entities (see
+/// `block_entity`), by voxel index. Once it's spawned they're entities
+/// under it instead, and are written back into a copy of it when it's
+/// saved.
 #[derive(Component, Reflect, Debug, Clone, PartialEq, Eq)]
 #[reflect(Component)]
 #[require(ChunkLight)]
@@ -103,6 +109,8 @@ pub struct Chunk {
     /// low [`AMOUNT_BITS`] bits, and above them the height it's drawn at
     /// (see [`sticky_step`]), which fits in the bits left over.
     partial: HashMap<u16, u16>,
+    /// Block entities, by voxel index, while the chunk isn't spawned.
+    block_entities: HashMap<u16, BlockEntityData>,
 }
 
 /// The bits of a [`Chunk`]'s kept fluid that hold the amount: enough for
@@ -124,6 +132,7 @@ impl Chunk {
         (voxels.len() == CHUNK_VOLUME).then(|| Self {
             voxels,
             partial: HashMap::new(),
+            block_entities: HashMap::new(),
         })
     }
 
@@ -132,6 +141,7 @@ impl Chunk {
         Self {
             voxels: vec![state; CHUNK_VOLUME],
             partial: HashMap::new(),
+            block_entities: HashMap::new(),
         }
     }
 
@@ -189,6 +199,29 @@ impl Chunk {
         self.partial
             .iter()
             .map(|(&index, &kept)| (index as usize, kept & AMOUNT_MASK))
+    }
+
+    /// The block entity kept for the voxel at a chunk-local position, while
+    /// the chunk isn't spawned.
+    pub fn block_entity_at(&self, pos: IVec3) -> Option<&BlockEntityData> {
+        self.block_entities.get(&(Self::index_of(pos) as u16))
+    }
+
+    /// Keeps a block entity for the voxel at a chunk-local position.
+    pub fn set_block_entity_at(&mut self, pos: IVec3, data: BlockEntityData) {
+        self.block_entities.insert(Self::index_of(pos) as u16, data);
+    }
+
+    /// Every block entity kept, by voxel index.
+    pub fn block_entities(&self) -> impl Iterator<Item = (usize, &BlockEntityData)> + '_ {
+        self.block_entities
+            .iter()
+            .map(|(&index, data)| (index as usize, data))
+    }
+
+    /// Takes the block entities kept, leaving none, by voxel index.
+    pub fn take_block_entities(&mut self) -> HashMap<u16, BlockEntityData> {
+        std::mem::take(&mut self.block_entities)
     }
 
     /// Every voxel, in [`Chunk::index_of`] order.

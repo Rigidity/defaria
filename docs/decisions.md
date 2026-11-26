@@ -196,6 +196,40 @@ and tools can show units. Real units for power once #110 decides them.
 
 **When to revisit.** When a second mod defines stats, when #110 decides
 power units, or when fluids get temperatures (#113).
+## Block entities: kind is the block, saved forms kept as parts change (2026-11-26)
+
+**Context.** Block entities (#109) hold per-voxel data beyond the block
+state: machines' buffers (#114), a conduit's blocked faces (#121), scripts'
+data (#118). Each needs a kind, saved with it, and a way for features to
+add data and save it.
+
+**Decision.** A block entity's kind is the id of the block that has it,
+and a block has one when its definition has `block_entity`. Features add
+*parts*: components implementing `BlockEntityPart` (`src/block_entity.rs`),
+registered with `register_block_entity_part`, each saved under a key as a
+plain `Value` with its own version. The saved form of every part is
+written to a `SavedParts` component whenever the part changes, rather than
+read from the components when the chunk saves, because the streaming
+systems that save chunks can't take a query over arbitrary components
+next to their mutable resources (in Bevy 0.20 resources are components,
+and `EntityRef` conflicts with them). Lifecycle follows `VoxelChanged`:
+a different block removes the old one and makes a new one. The base game
+has no block with a block entity yet; the tests use a test mod.
+
+**What's wrong with it.** A part that changes every tick is re-serialised
+every frame it changes, and its saved form is kept in memory twice. A part
+changed after `BlockEntitySystems` on the frame the game exits isn't in
+that save. Kinds can't be shared between blocks, and data for a block
+that changes into another block (a furnace becoming a different furnace)
+is lost.
+
+**What should replace it.** Saving that reads parts directly when the
+chunk is saved (an exclusive save step, or queries built for the
+registered parts), so nothing is serialised until it's needed. Named kinds
+separate from blocks if blocks ever need to hand data on to each other.
+
+**When to revisit.** When machine simulation (#114, #112) shows up in
+frame times, or when a feature needs data to survive a block swap.
 
 ## Inventories count items, limited by a provisional weight (2026-11-25)
 
