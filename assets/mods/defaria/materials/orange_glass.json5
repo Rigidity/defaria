@@ -1,0 +1,8 @@
+// A warm orange. A color of stained glass.
+{
+  name: "Orange",
+  tags: ["stained_glass"],
+  palette: ["#6a300a", "#b45a14", "#e07e24", "#f8a650"],
+  hardness: 0.3,
+  weight: 2500,
+}

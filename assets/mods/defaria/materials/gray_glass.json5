@@ -1,0 +1,8 @@
+// A smoky mid gray. A color of stained glass.
+{
+  name: "Gray",
+  tags: ["stained_glass"],
+  palette: ["#3e4246", "#5e6268", "#80848a", "#a2a6aa"],
+  hardness: 0.3,
+  weight: 2500,
+}

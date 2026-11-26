@@ -1,0 +1,8 @@
+// A rosy pink. A color of stained glass.
+{
+  name: "Pink",
+  tags: ["stained_glass"],
+  palette: ["#6a2446", "#b04878", "#d8709e", "#f4a2c4"],
+  hardness: 0.3,
+  weight: 2500,
+}

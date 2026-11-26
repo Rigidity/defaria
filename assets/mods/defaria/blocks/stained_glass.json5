@@ -1,0 +1,13 @@
+// Glass in any color with the `stained_glass` tag. Translucent, like
+// glass: the faces between two blocks of the same color are hidden, but
+// a seam shows between two colors, since their faces' textures differ.
+{
+  name: "{color} Stained Glass",
+  properties: { color: { materials: "#stained_glass", default: "white_glass" } },
+  model: "cube",
+  render: "translucent",
+  textures: { all: { texture: "stained_glass", materials: { color: "{color}" } } },
+  hardness: { materials: { color: 1 } },
+  weight: { materials: { color: 1 } },
+  category: "building",
+}

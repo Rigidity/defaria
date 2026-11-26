@@ -1397,6 +1397,36 @@ water passes more blue), scaled by how full a fluid voxel is, and an
 `OutsideSky` that knows the columns above the loaded area (see "Sky light
 comes in above whatever's loaded").
 
+## Translucent faces cull by the texture where they meet (2026-11-26)
+
+**Context.** A translucent block hid every translucent face of the same
+block next to it, so with stained glass as one block whose color is a
+property, red glass beside blue lost the seam between them (#82). The
+options were to compare states, to compare the faces' textures, or to let
+a block name the property that splits it (`cull_by`).
+
+**Decision.** Compare textures: two faces of the same translucent block
+that meet hide each other only when they have the same baked tile. It
+needs nothing in the mod format and works whether a material or a plain
+property picks the color, while states that only differ in something
+invisible there (a connection, a rotation that keeps the texture) still
+join into one pane. It's decided per side of a state, not per face: each
+state bakes, for each side, the one tile of every face it culls against
+that side, and a side whose faces have different tiles hides none.
+
+**What's wrong with it.** Connected textures (a frame that opens toward a
+neighbour) would give the two faces different tiles, and their seam would
+show. Two different blocks with the same texture (glass and a future
+glass slab) never hide each other. A side made of several faces with
+different tiles draws them all against the same block.
+
+**What should replace it.** If connected textures come, let a block say
+what splits it (`cull_by: "color"`), or compare a per-state "look" key
+that ignores connection properties, beside the texture rule.
+
+**When to revisit.** Connected glass, or translucent blocks whose sides
+mix textures.
+
 ## Translucent faces are sorted per chunk, on the CPU (2026-11-25)
 
 **Context.** Translucent faces (glass, water) blend with what's behind

@@ -1,0 +1,8 @@
+// An amber brown. A color of stained glass.
+{
+  name: "Brown",
+  tags: ["stained_glass"],
+  palette: ["#3a220e", "#5e3a1c", "#7e5430", "#9e7048"],
+  hardness: 0.3,
+  weight: 2500,
+}

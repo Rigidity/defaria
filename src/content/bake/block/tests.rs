@@ -135,7 +135,6 @@ fn blocks_are_drawn_as_their_render_says() {
     );
     assert!(!hides(solid, pool), "but not a solid opaque block's");
     assert!(hides(pool, pool), "an opaque fluid hides itself");
-    assert!(hides(clear, clear), "the same translucent block");
     assert!(
         !hides(solid, clear),
         "only the same block's translucent faces"
@@ -144,6 +143,79 @@ fn blocks_are_drawn_as_their_render_says() {
     assert!(
         !hides(pool, leafy) && !hides(leafy, leafy),
         "cut-outs hide nothing"
+    );
+}
+
+/// A translucent block hides its own faces against it only where the
+/// two faces that meet have the same texture, so a seam shows between
+/// two colors of one block. Other properties don't split it, nor does
+/// how a face is culled on another side.
+#[test]
+fn translucent_faces_hide_only_faces_with_their_texture() {
+    // A top face culled up and a bottom face culled down, covering both.
+    let layer = r#"{
+        slots: { all: null, top: "all", bottom: "all" },
+        occludes: ["up", "down"],
+        faces: [
+            { texture: "top", cull: "up", vertices: [
+                { pos: [0, 1, 1], uv: [0, 1] }, { pos: [1, 1, 1], uv: [1, 1] },
+                { pos: [1, 1, 0], uv: [1, 0] }, { pos: [0, 1, 0], uv: [0, 0] },
+            ] },
+            { texture: "bottom", cull: "down", vertices: [
+                { pos: [0, 0, 0], uv: [0, 1] }, { pos: [1, 0, 0], uv: [1, 1] },
+                { pos: [1, 0, 1], uv: [1, 0] }, { pos: [0, 0, 1], uv: [0, 0] },
+            ] },
+        ],
+    }"#;
+    let content = content(&[
+        ("models/layer.json5", layer),
+        (
+            "blocks/pane.json5",
+            r#"{
+                properties: {
+                    color: ["grey", "red", "red_under"],
+                    lit: ["no", "yes"],
+                },
+                model: "layer",
+                render: "translucent",
+                textures: { all: "a" },
+                variants: [
+                    { when: { color: "red" }, textures: { all: "b" } },
+                    { when: { color: "red_under" }, textures: { all: "a", bottom: "b" } },
+                ],
+            }"#,
+        ),
+        (
+            "blocks/other.json5",
+            r#"{ model: "layer", render: "translucent", textures: { all: "a" } }"#,
+        ),
+    ]);
+    assert!(content.errors.is_empty(), "{}", errors(&content));
+    let pane = content.block("test:pane").unwrap();
+    let state = |color, lit| pane.state(&[("color", color), ("lit", lit)]).unwrap();
+    let (grey, red, under) = (
+        state("grey", "no"),
+        state("red", "no"),
+        state("red_under", "no"),
+    );
+    // `block`'s top against `above`'s bottom.
+    let hides = |block, above| content.hides(block, above, Direction::Up);
+    assert!(hides(grey, grey) && hides(red, red), "one color");
+    assert!(
+        hides(grey, state("grey", "yes")),
+        "another state, the same texture"
+    );
+    assert!(
+        !hides(grey, red) && !hides(red, grey),
+        "a seam between colors"
+    );
+    // `under`'s top is grey and its bottom red: what meets decides.
+    assert!(!hides(grey, under) && hides(under, grey));
+    assert!(hides(red, under) && !hides(under, red));
+    let other = content.default_state("test:other").unwrap();
+    assert!(
+        !hides(grey, other),
+        "another block, even with the same texture"
     );
 }
 

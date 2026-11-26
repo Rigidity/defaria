@@ -343,7 +343,13 @@ block's, the same for all its states; variants can't change it.
 - **`"translucent"`**: pixels blend with what's behind them by their
   alpha, from the image or the palette (`#rrggbbaa`). For glass and
   water. A side it covers hides only the same block's translucent faces
-  against it, so a wall of glass or a pond of water looks like one body.
+  against it, so a wall of glass or a pond of water looks like one body,
+  and only where the two faces that meet have the same texture (the same
+  tile, materials included). So a seam shows between red and blue stained
+  glass, whether a material property or a plain one picks the color, but
+  not between two of a block's states that look the same there (other
+  properties, such as a connection, don't split it). Where a state's
+  faces against one side have different textures, it hides none of them.
 
 Variants can set `render`; a later one replaces an earlier one's. Light
 passes through every side of a cut-out or translucent block, and they

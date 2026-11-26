@@ -64,7 +64,21 @@ pub(super) fn bake_state(
         })?;
     }
     state.fluid = fluid;
+    for side in Direction::ALL {
+        state.side_textures[side as usize] = side_texture(&state.faces, side);
+    }
     Ok(state)
+}
+
+/// The texture layer of the faces culled against `side`, if there are
+/// any and they all have the same one.
+fn side_texture(faces: &[BakedFace], side: Direction) -> Option<u32> {
+    let mut layers = faces
+        .iter()
+        .filter(|face| face.cull == Some(side))
+        .map(|face| face.layer);
+    let first = layers.next()?;
+    layers.all(|layer| layer == first).then_some(first)
 }
 
 /// Adds one part's faces, boxes and covered sides to `state`.

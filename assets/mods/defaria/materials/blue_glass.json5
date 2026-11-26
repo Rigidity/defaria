@@ -1,0 +1,8 @@
+// A rich blue. A color of stained glass.
+{
+  name: "Blue",
+  tags: ["stained_glass"],
+  palette: ["#12245e", "#1e3c9a", "#3460c8", "#6088e8"],
+  hardness: 0.3,
+  weight: 2500,
+}

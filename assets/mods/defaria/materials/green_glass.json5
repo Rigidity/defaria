@@ -1,0 +1,8 @@
+// A leafy green. A color of stained glass.
+{
+  name: "Green",
+  tags: ["stained_glass"],
+  palette: ["#1a4a14", "#2e7a22", "#48a234", "#74c652"],
+  hardness: 0.3,
+  weight: 2500,
+}

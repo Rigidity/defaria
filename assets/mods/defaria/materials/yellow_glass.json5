@@ -1,0 +1,8 @@
+// A golden yellow. A color of stained glass.
+{
+  name: "Yellow",
+  tags: ["stained_glass"],
+  palette: ["#6e5a0a", "#b8981a", "#e4c432", "#faea6e"],
+  hardness: 0.3,
+  weight: 2500,
+}

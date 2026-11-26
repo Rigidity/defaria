@@ -417,6 +417,11 @@ pub struct State {
     /// Bit per [`Direction`]: sides this state covers completely, which
     /// is the sides any of its parts covers.
     occludes: u8,
+    /// Per [`Direction`], by its number: the texture layer of every face
+    /// it culls against that side, when they all have the same one. A
+    /// translucent face hides only against a face with the same texture
+    /// (see [`Content::hides`]).
+    side_textures: [Option<u32>; 6],
     /// The models the state is made of, in order: its own model, then each
     /// of the block's `parts` that matches it. Meshing, light and physics
     /// use the union in `faces`, `collision` and `occludes`; this keeps
@@ -554,6 +559,12 @@ impl State {
     /// face against it.
     pub fn occludes(&self, side: Direction) -> bool {
         self.occludes & side.bit() != 0
+    }
+
+    /// The texture layer of the faces it culls against `side`, if it has
+    /// any there and they all have the same one.
+    pub fn side_texture(&self, side: Direction) -> Option<u32> {
+        self.side_textures[side as usize]
     }
 }
 
@@ -782,8 +793,10 @@ impl Content {
     ///   (water, glass, leaves) is hidden, so only one face is drawn there,
     ///   and between two different opaque fluids the one with the higher
     ///   block number keeps its face;
-    /// - a translucent one hides only the same block's translucent faces
-    ///   (water against water, glass against glass);
+    /// - a translucent one hides only the same block's translucent faces,
+    ///   and only where the two faces that meet have the same texture
+    ///   (water against water, red glass against red glass), so a seam
+    ///   shows between red and blue stained glass;
     /// - a cut-out one hides nothing.
     pub fn hides(&self, block: BlockState, neighbour: BlockState, side: Direction) -> bool {
         let (own, next) = (self.state(block), self.state(neighbour));
@@ -796,7 +809,13 @@ impl Content {
                         || (own.is_fluid() && own.block < next.block)
                 }
                 Render::Cutout => false,
-                Render::Translucent => next.block == own.block && own.render == Render::Translucent,
+                Render::Translucent => {
+                    next.block == own.block
+                        && own.render == Render::Translucent
+                        && own
+                            .side_texture(side)
+                            .is_some_and(|layer| next.side_texture(side.opposite()) == Some(layer))
+                }
             }
     }
 
