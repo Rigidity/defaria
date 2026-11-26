@@ -6,14 +6,35 @@
 
 use super::{BlockState, Content, Direction, Property, index_of, offset_of};
 
+/// What a block's connection properties join by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rule {
+    /// A rule's name, as `mod:name`: blocks with the same rule join.
+    Named(String),
+    /// Its state's [`Conduit`](super::Conduit): conduits on the same
+    /// network kind and group join, and so do ports of that kind.
+    Conduit,
+}
+
+/// What a block joining its neighbour offers it, for
+/// [`Content::accepts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Joins<'a> {
+    /// Blocks connecting by a named rule.
+    Rule(&'a str),
+    /// A conduit on network kind `kind` (an index into
+    /// [`Content::networks`]), in a group or none.
+    Network { kind: usize, group: Option<&'a str> },
+}
+
 /// The values of each side's property: not joined, then joined.
 pub const SIDE_VALUES: [&str; 2] = ["false", "true"];
 
 /// A block's connection properties.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Connections {
-    /// The rule it connects by, as `mod:name`.
-    pub rule: String,
+    /// What it connects by.
+    pub rule: Rule,
     /// The property for each side, in [`Direction::ALL`] order, as an index
     /// into the block's properties. Value 0 is `false`, 1 is `true`.
     pub sides: [usize; 6],
@@ -23,7 +44,7 @@ impl Connections {
     /// The connections of a block with these properties (sorted by name, as
     /// a block's are), which include the six sides' (see
     /// [`side_properties`]). `None` if one is missing.
-    pub(super) fn new(rule: String, properties: &[Property]) -> Option<Self> {
+    pub(super) fn new(rule: Rule, properties: &[Property]) -> Option<Self> {
         let mut sides = [0; 6];
         for side in Direction::ALL {
             sides[side as usize] = properties.iter().position(|p| p.name == side.name())?;
@@ -44,17 +65,49 @@ pub(super) fn side_properties() -> impl Iterator<Item = Property> {
 }
 
 impl Content {
-    /// Whether `state` takes a connection by `rule` on its `side`: for now,
-    /// whether it's a block that connects by the same rule, on any side.
+    /// What `state` offers the blocks next to it: its named rule, or its
+    /// conduit's network kind and group. `None` for a block that doesn't
+    /// connect.
+    pub fn joins(&self, state: BlockState) -> Option<Joins<'_>> {
+        match &self.block_of(state).connections.as_ref()?.rule {
+            Rule::Named(rule) => Some(Joins::Rule(rule)),
+            Rule::Conduit => self.conduit(state).map(|conduit| Joins::Network {
+                kind: conduit.network,
+                group: conduit.group.as_deref(),
+            }),
+        }
+    }
+
+    /// Whether `state` takes a connection from a block offering `joins`
+    /// on its `side`:
     ///
-    /// This is the one place that decides what joins what. Network kinds
-    /// and conduit groups (#111) and machine ports that accept a rule on a
-    /// face (#114) belong here, so everything that connects agrees.
-    pub fn accepts(&self, state: BlockState, rule: &str, _side: Direction) -> bool {
-        self.block_of(state)
-            .connections
-            .as_ref()
-            .is_some_and(|connections| connections.rule == rule)
+    /// - by a named rule, a block that connects by the same rule, on any
+    ///   side;
+    /// - by a network, a conduit on the same network kind and in the same
+    ///   group (or both in none), on any side, or a block with a port of
+    ///   that kind on that side ([`Content::has_port`]).
+    ///
+    /// This is the one place that decides what joins what, so the
+    /// connection properties, the networks and everything else agree.
+    pub fn accepts(&self, state: BlockState, joins: Joins, side: Direction) -> bool {
+        match joins {
+            Joins::Rule(rule) => self.block_of(state).connections.as_ref().is_some_and(
+                |connections| matches!(&connections.rule, Rule::Named(own) if own == rule),
+            ),
+            Joins::Network { kind, group } => {
+                let conduit = self.conduit(state).is_some_and(|conduit| {
+                    conduit.network == kind && conduit.group.as_deref() == group
+                });
+                conduit || self.has_port(state, kind, side)
+            }
+        }
+    }
+
+    /// Whether `state` has a port on network kind `kind` on its `side`, so
+    /// conduits of that kind join it there and it's on their network. No
+    /// block has ports yet: machine definitions (#114) add them here.
+    pub fn has_port(&self, _state: BlockState, _kind: usize, _side: Direction) -> bool {
+        false
     }
 
     /// Whether the engine sets some of `state`'s properties from its
@@ -76,11 +129,14 @@ impl Content {
         let Some(connections) = &block.connections else {
             return state;
         };
+        let Some(joins) = self.joins(state) else {
+            return state;
+        };
         let offset = (state.0 - block.first_state) as usize;
         let mut index = index_of(&block.properties, offset);
         for side in Direction::ALL {
             if let Some(next) = neighbour(side) {
-                let joined = self.accepts(next, &connections.rule, side.opposite());
+                let joined = self.accepts(next, joins, side.opposite());
                 index[connections.sides[side as usize]] = joined as usize;
             }
         }
@@ -101,7 +157,7 @@ impl Content {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{base, block, test_mod};
+    use crate::content::{Solver, base, block, test_mod};
 
     fn pipe(content: &Content, joined: &[Direction]) -> BlockState {
         let values: Vec<(&str, &str)> = joined.iter().map(|side| (side.name(), "true")).collect();
@@ -113,7 +169,7 @@ mod tests {
         let content = base();
         let block = content.block("defaria:pipe").unwrap();
         let connections = block.connections.as_ref().unwrap();
-        assert_eq!(connections.rule, "defaria:pipe");
+        assert_eq!(connections.rule, Rule::Conduit);
         for side in Direction::ALL {
             let property = &block.properties[connections.sides[side as usize]];
             assert_eq!(property.name, side.name());
@@ -205,9 +261,9 @@ mod tests {
         let a = content.default_state("test:a").unwrap();
         let b = content.default_state("test:b").unwrap();
         let c = content.default_state("test:c").unwrap();
-        assert!(content.accepts(b, "test:duct", Direction::Up));
-        assert!(content.accepts(a, "test:duct", Direction::Up));
-        assert!(!content.accepts(c, "test:duct", Direction::Up));
+        assert!(content.accepts(b, Joins::Rule("test:duct"), Direction::Up));
+        assert!(content.accepts(a, Joins::Rule("test:duct"), Direction::Up));
+        assert!(!content.accepts(c, Joins::Rule("test:duct"), Direction::Up));
         // The other properties sort in among the sides, and keep working.
         let block = content.block("test:a").unwrap();
         let names: Vec<_> = block.properties.iter().map(|p| p.name.as_str()).collect();
@@ -268,6 +324,161 @@ mod tests {
         )]);
         assert!(
             content.errors.iter().any(|e| e.contains("only for block")),
+            "{:?}",
+            content.errors
+        );
+    }
+
+    #[test]
+    fn base_conduits_carry_their_metals_stats() {
+        let content = base();
+        let kind = |id: &str| content.network(id).unwrap();
+        let ids: Vec<&str> = content.networks.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["defaria:electric", "defaria:fluid", "defaria:item"]);
+        assert_eq!(
+            content.networks[kind("defaria:fluid")].solver,
+            Solver::Fluid
+        );
+        let conduit = |id: &str, values: &[(&str, &str)]| {
+            content
+                .conduit(content.block_state(id, values).unwrap())
+                .unwrap()
+                .clone()
+        };
+        let iron = conduit("defaria:pipe", &[]);
+        assert_eq!(iron.network, kind("defaria:fluid"));
+        assert_eq!(iron.group, None);
+        assert_eq!((iron.capacity, iron.throughput), (0.5, 1.0));
+        let gold = conduit("defaria:pipe", &[("metal", "defaria:gold"), ("up", "true")]);
+        assert_eq!((gold.capacity, gold.throughput), (0.5, 1.5));
+        let copper = conduit("defaria:wire", &[]);
+        assert_eq!(copper.network, kind("defaria:electric"));
+        assert_eq!((copper.capacity, copper.throughput), (0.0, 1000.0));
+        let iron_wire = conduit("defaria:wire", &[("metal", "defaria:iron")]);
+        assert!((iron_wire.throughput - 170.0).abs() < 1e-3);
+        let tube = conduit("defaria:tube", &[]);
+        assert_eq!(tube.network, kind("defaria:item"));
+        assert_eq!((tube.capacity, tube.throughput), (1.0, 4.0));
+        assert_eq!(content.conduit(block("stone")), None);
+        // Each connects by its conduit.
+        let pipe = content.default_state("defaria:pipe").unwrap();
+        assert_eq!(
+            content.joins(pipe),
+            Some(Joins::Network {
+                kind: kind("defaria:fluid"),
+                group: None
+            })
+        );
+        assert!(content.accepts(pipe, content.joins(pipe).unwrap(), Direction::Up));
+        let tube = content.default_state("defaria:tube").unwrap();
+        assert!(!content.accepts(tube, content.joins(pipe).unwrap(), Direction::Up));
+    }
+
+    #[test]
+    fn groups_are_filled_per_state_and_kept_apart() {
+        let content = test_mod(&[
+            ("models/m.json5", "{ faces: [] }"),
+            (
+                "networks/power.json5",
+                r#"{ name: "Power", solver: "energy" }"#,
+            ),
+            (
+                "blocks/cable.json5",
+                r#"{ model: "m", properties: { color: ["red", "blue"], connect: { connections: true } },
+                     conduit: { network: "power", group: "{color}_cable", capacity: 0, throughput: 5 } }"#,
+            ),
+            (
+                "blocks/bare.json5",
+                r#"{ model: "m", properties: { connect: { connections: true } },
+                     conduit: { network: "test:power", capacity: 1, throughput: 5 } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let red = content
+            .block_state("test:cable", &[("color", "red")])
+            .unwrap();
+        let blue = content
+            .block_state("test:cable", &[("color", "blue")])
+            .unwrap();
+        let bare = content.default_state("test:bare").unwrap();
+        assert_eq!(
+            content.conduit(red).unwrap().group.as_deref(),
+            Some("red_cable")
+        );
+        let joins = |state| content.joins(state).unwrap();
+        assert!(content.accepts(red, joins(red), Direction::North));
+        assert!(!content.accepts(blue, joins(red), Direction::North));
+        assert!(!content.accepts(bare, joins(red), Direction::North));
+        assert!(!content.accepts(red, joins(bare), Direction::North));
+        assert!(content.accepts(bare, joins(bare), Direction::North));
+        // The sides follow: a red cable joins red, not blue.
+        let state = content.connected(red, |side| {
+            Some(if side == Direction::East { red } else { blue })
+        });
+        assert!(content.joined(state, Direction::East));
+        assert!(!content.joined(state, Direction::West));
+    }
+
+    #[test]
+    fn conduit_mistakes_are_reported() {
+        let network = (
+            "networks/power.json5",
+            r#"{ name: "Power", solver: "energy" }"#,
+        );
+        for (file, error) in [
+            (
+                r#"{ model: "m", properties: { c: { connections: true } },
+                     conduit: { network: "steam", capacity: 1, throughput: 1 } }"#,
+                "no network kind `test:steam`",
+            ),
+            (
+                r#"{ model: "m", conduit: { network: "power", capacity: 1, throughput: 1 } }"#,
+                "needs a property with `connections: true`",
+            ),
+            (
+                r#"{ model: "m", properties: { c: { connections: true } } }"#,
+                "has none",
+            ),
+            (
+                r#"{ model: "m", properties: { c: { connections: "wire" } },
+                     conduit: { network: "power", capacity: 1, throughput: 1 } }"#,
+                "write `connections: true`",
+            ),
+            (
+                r#"{ model: "m", properties: { c: { connections: false } } }"#,
+                "a rule's name, or `true`",
+            ),
+            (
+                r#"{ model: "m", properties: { c: { connections: true } },
+                     conduit: { network: "power", capacity: 1 } }"#,
+                "throughput",
+            ),
+            (
+                r#"{ model: "m", properties: { c: { connections: true } },
+                     conduit: { network: "power", group: "{colour}", capacity: 1, throughput: 1 } }"#,
+                "{colour}",
+            ),
+        ] {
+            let content = test_mod(&[
+                ("models/m.json5", "{ faces: [] }"),
+                network,
+                ("blocks/thing.json5", file),
+            ]);
+            assert!(
+                content.errors.iter().any(|e| e.contains(error)),
+                "{file}: {:?}",
+                content.errors
+            );
+        }
+        let content = test_mod(&[(
+            "networks/steam.json5",
+            r#"{ name: "Steam", solver: "gas" }"#,
+        )]);
+        assert!(
+            content
+                .errors
+                .iter()
+                .any(|e| e.contains("networks/steam.json5")),
             "{:?}",
             content.errors
         );

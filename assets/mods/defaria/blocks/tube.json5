@@ -1,0 +1,35 @@
+// An item tube: glass arms, the pipe's shape, out of a metal junction box
+// to each side it's joined on, on the item network. Tubes join tubes, not
+// pipes or wires. The glass is see-through, so it's drawn translucent.
+{
+  name: "{frame} Tube",
+  properties: {
+    frame: { materials: "#metal", default: "iron" },
+    connect: { connections: true },
+  },
+  textures: {
+    all: { texture: "pipe_core", materials: { metal: "{frame}" } },
+    side: "tube_side",
+    end: "tube_end",
+  },
+  parts: [
+    { model: "pipe_core" },
+    { when: { north: "true" }, model: "pipe_arm" },
+    { when: { south: "true" }, model: "pipe_arm", rotate: [0, 180, 0] },
+    { when: { west: "true" }, model: "pipe_arm", rotate: [0, 90, 0] },
+    { when: { east: "true" }, model: "pipe_arm", rotate: [0, 270, 0] },
+    { when: { up: "true" }, model: "pipe_arm", rotate: [90, 0, 0] },
+    { when: { down: "true" }, model: "pipe_arm", rotate: [270, 0, 0] },
+  ],
+  render: "translucent",
+  hardness: { base: 0.4, materials: { frame: 1 } },
+  weight: { base: 0.05, materials: { frame: 1 } },
+  category: "building",
+  // One item in transit in each tube, and the frame's throughput in
+  // items a second.
+  conduit: {
+    network: "item",
+    capacity: 1,
+    throughput: { base: 4, materials: { frame: 1 } },
+  },
+}

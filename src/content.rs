@@ -35,9 +35,9 @@ use std::{collections::BTreeMap, ops::Range, path::Path};
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
 
 use crate::block_texture::Palette;
-pub use connect::{Connections, SIDE_VALUES};
+pub use connect::{Connections, Joins, Rule, SIDE_VALUES};
 pub use place::Placement;
-pub use schema::{Direction, PlaceFrom, Render};
+pub use schema::{Direction, PlaceFrom, Render, Solver};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -413,6 +413,37 @@ pub struct State {
     pub weight: f32,
     /// The block's `stats`, worked out for this state.
     pub stats: BTreeMap<String, f32>,
+    /// Set for a conduit: the network it's part of, and what it carries.
+    pub conduit: Option<Conduit>,
+}
+
+/// A block state that's part of a network: a wire, pipe or tube.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conduit {
+    /// Index into [`Content::networks`].
+    pub network: usize,
+    /// Conduits join only those with the same group (or both none).
+    pub group: Option<String>,
+    /// What it holds, in its solver's units.
+    pub capacity: f32,
+    /// What it passes on a second, in its solver's units.
+    pub throughput: f32,
+}
+
+impl Conduit {
+    /// Whether it joins `other`: the same network kind and group.
+    pub fn joins(&self, other: &Conduit) -> bool {
+        self.network == other.network && self.group == other.group
+    }
+}
+
+/// A kind of network, from `networks/<name>.json5`: electric, fluid, item,
+/// or one a mod adds on one of the engine's solvers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkKind {
+    pub id: String,
+    pub name: String,
+    pub solver: Solver,
 }
 
 /// One model in a block state, turned and textured, and where its share
@@ -611,9 +642,12 @@ pub struct Content {
     pub item_states: Vec<ItemStateInfo>,
     /// In the order the inventory lists them.
     pub categories: Vec<Category>,
+    /// Network kinds, in load order.
+    pub networks: Vec<NetworkKind>,
     /// What went wrong while loading, one message per problem.
     pub errors: Vec<String>,
     category_index: HashMap<String, usize>,
+    network_index: HashMap<String, usize>,
     texture_index: HashMap<String, u32>,
     block_index: HashMap<String, usize>,
     item_index: HashMap<String, usize>,
@@ -710,6 +744,17 @@ impl Content {
                 Render::Cutout => false,
                 Render::Translucent => next.block == own.block && own.render == Render::Translucent,
             }
+    }
+
+    /// The network kind with this id, as an index into
+    /// [`Content::networks`].
+    pub fn network(&self, id: &str) -> Option<usize> {
+        self.network_index.get(id).copied()
+    }
+
+    /// What `state` carries, if it's a conduit.
+    pub fn conduit(&self, state: BlockState) -> Option<&Conduit> {
+        self.state(state).conduit.as_ref()
     }
 
     /// The block `state` is a state of.

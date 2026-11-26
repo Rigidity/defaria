@@ -94,7 +94,7 @@ fn in_loaded_chunks(
 }
 
 /// The voxel on a chunk's `side` at `a`, `b` across it.
-fn face_voxel(side: Direction, a: i32, b: i32, last: i32) -> IVec3 {
+pub(crate) fn face_voxel(side: Direction, a: i32, b: i32, last: i32) -> IVec3 {
     let n = side.normal();
     let edge = |v: i32| if v > 0 { last } else { 0 };
     match n {

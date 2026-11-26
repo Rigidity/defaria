@@ -95,7 +95,8 @@ changes.
    Bevy's picking as a real mouse does), `type` (type text into whatever
    has the keyboard, such as a text field), `pour` (put an amount of a
    fluid in a voxel) and `fluids` (each fluid's total in the loaded world
-   and how much of it is active), `camera` (put the
+   and how much of it is active), `network` (the network the conduit at a
+   voxel is part of: kind, size, frozen or running, its ports), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -273,6 +274,13 @@ documented in `docs/modding.md`; keep that file, the serde types in
   joined sides) in step with their neighbours, after edits and on chunk
   load, through `Voxels::update`. Whether a neighbour takes a connection
   is decided in one place, `Content::accepts` (`src/content/connect.rs`).
+- `src/network.rs` (and `src/network/`): networks of conduits (wires,
+  pipes, tubes; blocks with a `conduit`): `Networks` keeps which conduits
+  form which network, following the connection properties, merging and
+  splitting as blocks change and chunks load and unload, and freezing a
+  network that reaches into an unloaded chunk. Solvers keep what each
+  network holds in a `NetworkMap` (`NetworkState`), which merges and
+  splits with it. Network kinds are data (`networks/` in a mod).
 - `src/game_mode.rs`: creative and survival (`GameMode` on the player,
   C switches): whether breaking gives items and placing uses them up.
 - `src/inventory/`: inventories. `model.rs` has `Inventory` (how many of

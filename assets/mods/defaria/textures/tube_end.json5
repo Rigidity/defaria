@@ -1,0 +1,4 @@
+// A tube end-on: a glass ring.
+{
+  layers: [{ image: "tube_end", material: "glass" }],
+}

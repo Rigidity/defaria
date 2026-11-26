@@ -59,6 +59,9 @@ samples it.
   a dark hollow.
 - `pipe_core.png`: the junction box face, 10 pixels (3–12): a bevelled
   plate with four bolts and a round cap; transparent around it.
+- `tube_side.png`, `tube_end.png`: the glass item tube, the same layout as
+  the pipe: solid rims and collars, a nearly clear middle (alpha 40) and a
+  broken highlight streak. Partly transparent, for a translucent block.
 
 ## Cracks (`cracks/`)
 

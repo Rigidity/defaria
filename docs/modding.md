@@ -22,6 +22,7 @@ assets/mods/<folder>/
   blocks/            blocks and their states
   items/             items (blocks get one automatically)
   categories/        headings items are listed under in the inventory
+  networks/          kinds of network conduits form
 ```
 
 Every folder except the manifest is optional, and each may have
@@ -116,7 +117,7 @@ wires. A mod adding stats of its own should start their names with its id
 | Stat | Meaning | Materials |
 |---|---|---|
 | `conductivity` | How well it carries power, copper being 1 | copper 1, gold 0.7, iron 0.17 |
-| `throughput` | How much a pipe of it carries, iron being 1 | gold 1.5, copper 1.25, iron 1, woods 0.5 |
+| `throughput` | How much a pipe or tube of it carries, iron being 1 | gold 1.5, copper 1.25, iron 1, woods 0.5 |
 | `max_temperature` | The hottest it holds, in kelvin | iron 1811, copper 1358, gold 1337, woods 570 |
 
 Each palette is 2 to 8 hex colors, darkest first: `#rrggbb`, or
@@ -521,7 +522,8 @@ a model for each of the 64 ways its arms can go:
 // `connect` becomes the six properties `north` to `down` (see
 // Connections), which the engine sets as pipes join.
 {
-  properties: { connect: { connections: "pipe" } },
+  properties: { connect: { connections: true } },
+  conduit: { network: "fluid", capacity: 0.5, throughput: 1 },
   textures: { all: "pipe_core", side: "pipe_side", end: "pipe_end" },
   parts: [
     { model: "pipe_core" },                          // no `when`: always
@@ -664,13 +666,22 @@ the item doesn't carry a value that placing picks.
 
 ### Connections
 
-A block that joins whatever is next to it, such as a pipe or a wire, has
-a property with `connections`, naming the rule it connects by:
+A block that joins whatever is next to it, such as a fence, has a
+property with `connections`, naming the rule it connects by:
+
+```json5
+properties: {
+  connect: { connections: "fence" },   // a rule, like an id: `fence` is `<this mod>:fence`
+},
+```
+
+A [conduit](#conduits) connects by its network instead, and says so with
+`true`:
 
 ```json5
 properties: {
   metal: { materials: "#metal" },
-  connect: { connections: "pipe" },   // a rule, like an id: `pipe` is `<this mod>:pipe`
+  connect: { connections: true },   // joins by its `conduit`'s network and group
 },
 ```
 
@@ -679,16 +690,64 @@ properties: {
   use like any other. Its own name isn't used. They count toward the 4096
   states: 64 for each combination of the block's other properties.
 - The engine sets them, not the player: each side is `"true"` when the
-  block on that side accepts the rule on the side facing it. For now that
-  means it's a block with a `connections` property naming the same rule,
-  so pipes join pipes (of any metal) and wires join wires, but not each
+  block on that side accepts the connection on the side facing it. By a
+  rule, that's a block with a `connections` property naming the same
+  rule, on any side. By a network, it's a conduit on the same network
+  kind and in the same group (or both in none), on any side, or (once
+  machines have them) a block with a port of that kind on that face. So
+  pipes join pipes (of any metal), and wires join wires, but not each
   other. They're set as the block is placed, whenever a neighbour
   changes, and when a chunk loads beside it; a side facing a part of the
   world that isn't loaded keeps its value.
 - A `connections` property has nothing else: no `values`, `default`,
   `item` or `place`. A block has at most one, and no other property
   called one of the six sides. It's for blocks only; the item doesn't
-  carry the sides.
+  carry the sides. `true` is only for a conduit, and a conduit must have
+  one with `true`.
+
+### Conduits
+
+A wire, pipe or tube is a block with a `conduit`: it carries one kind of
+network, and the conduits joined to each other form a network.
+
+```json5
+// blocks/wire.json5
+{
+  name: "{metal} Wire",
+  properties: {
+    metal: { materials: "#metal", default: "copper" },
+    connect: { connections: true },
+  },
+  conduit: {
+    network: "electric",                     // networks/electric.json5
+    capacity: 0,                             // holds nothing
+    // 1000 for each unit of its metal's conductivity.
+    throughput: { base: 1000, stat: "conductivity", materials: { metal: 1 } },
+  },
+  // ...model, parts and textures as for any block
+}
+```
+
+- **`network`** is a [network kind](#networks), a reference like any
+  other.
+- **`group`**, optional, keeps conduits of the same kind apart: two
+  conduits join only if both have the same group or neither has one. It
+  can use `{property}`, filled with the state's value (a material's id),
+  so one cable file with a `color` property and `group: "{color}"` gives
+  cables of each colour that run side by side without joining.
+- **`capacity`** is what one of it holds and **`throughput`** what it
+  passes on a second, both in its network's solver's units (the base
+  game's pipes: blocks of fluid; wires: energy; tubes: items). Each is an
+  [attribute](#hardness-weight-and-stats), so it can come from the block's
+  materials' stats. A network's capacity is the sum of its conduits'.
+
+A network follows the connection properties: two conduits are on the same
+network when their sides facing each other are both joined. A conduit's
+joined side facing any other block is a port on the network (a machine's
+face). A network with a joined side facing a chunk that isn't loaded is
+frozen, as it may go on out there: its solver skips it until the chunk
+loads. Networks are worked out from the world as chunks load; nothing
+about them is saved.
 
 ### Conditions
 
@@ -786,6 +845,26 @@ says otherwise. Items in no category come last, under "Other". The base
 game's are Natural (10), Building (20), Lighting (30) and Tools (40);
 leave gaps in `order` so other mods can slot theirs between.
 
+## Networks
+
+`networks/<name>.json5`: a kind of network that [conduits](#conduits)
+form.
+
+```json5
+// networks/electric.json5
+{
+  name: "Electric",   // required
+  solver: "energy",   // required: "energy", "fluid" or "item"
+}
+```
+
+The solver is the engine's code that runs the network: `energy` (power
+from producers to consumers), `fluid` (one shared tank of one fluid) or
+`item` (items moved between machines). A mod can add a kind on any of
+them, a steam network on the `fluid` solver say, and conduits on it join
+only each other. The base game's kinds are `electric`, `fluid` and
+`item`, with wires, pipes and tubes.
+
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
@@ -801,8 +880,9 @@ leave gaps in `order` so other mods can slot theirs between.
   voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
-- Connections only join blocks with the same rule; blocks that accept a
-  rule on some faces only (machine ports) and rules that group several
-  kinds come with networks and machines.
+- No block has ports yet, so conduits join only other conduits; machine
+  ports, which accept a network kind on some faces only, come with
+  machines.
+- Networks don't carry anything yet: the solvers come next.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.

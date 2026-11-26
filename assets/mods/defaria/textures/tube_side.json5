@@ -1,0 +1,4 @@
+// The side of a tube's arm: a glass band across the middle of the tile.
+{
+  layers: [{ image: "tube_side", material: "glass" }],
+}

@@ -1,14 +1,15 @@
-// A metal pipe: a core with an arm out to each side it's joined on. Its
-// `connect` property becomes six, `north` to `down`, which the engine sets
-// to whether the block on that side is a pipe too (anything connecting by
-// the `pipe` rule), so pipes join the pipes they're placed next to. Every
+// A metal pipe, on the fluid network: a core with an arm out to each side
+// it's joined on. Its `connect` property becomes six, `north` to `down`,
+// which the engine sets to whether the block on that side is on the same
+// network kind (any conduit with `network: "fluid"` and no group), so
+// pipes join the pipes they're placed next to and form one network. Every
 // arm is the same model, `pipe_arm`, which points north, turned to face
 // its side. Its arms' ends are round, so its faces are cut out.
 {
   name: "{metal} Pipe",
   properties: {
     metal: { materials: "#metal", default: "iron" },
-    connect: { connections: "pipe" },
+    connect: { connections: true },
   },
   textures: {
     all: { texture: "pipe_core", materials: { metal: "{metal}" } },
@@ -28,4 +29,11 @@
   hardness: { base: 0.5, materials: { metal: 1 } },
   weight: { base: 0.1, materials: { metal: 1 } },
   category: "building",
+  // Half a block of fluid in each pipe, and the metal's throughput in
+  // blocks a second.
+  conduit: {
+    network: "fluid",
+    capacity: 0.5,
+    throughput: { materials: { metal: 1 } },
+  },
 }

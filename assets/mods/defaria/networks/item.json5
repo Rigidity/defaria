@@ -1,0 +1,3 @@
+// Items, carried by tubes from machine to machine. Run by the engine's
+// item solver.
+{ name: "Item", solver: "item" }
