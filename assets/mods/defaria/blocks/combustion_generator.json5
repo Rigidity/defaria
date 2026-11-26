@@ -1,0 +1,49 @@
+// Burns fuel into electricity (`combustion` recipes): logs, planks and
+// coal ore in its fuel slot, or lava in its tank. Its front faces you as
+// you place it; wires join its back, tubes put fuel in through
+// its top, and pipes fill its tank through its left side. It glows while
+// it burns, and stops (keeping its fuel's progress) while its buffer is
+// full.
+{
+  name: "Combustion Generator",
+  properties: {
+    lit: ["false", "true"],
+    // Facing you: the opposite of the way you look.
+    facing: {
+      values: ["north", "south", "east", "west"],
+      place: { from: "look", values: { north: "south", south: "north", east: "west", west: "east" } },
+    },
+  },
+  model: "cube",
+  // The cube's north face is the front, so its left is west.
+  textures: {
+    side: "combustion_generator_side",
+    up: "item_port",
+    down: "machine_top",
+    north: "combustion_generator_front",
+    south: "energy_port",
+    west: "fluid_port",
+  },
+  variants: [
+    { when: { lit: "true" }, textures: { north: "combustion_generator_front_lit" }, light: [12, 7, 3] },
+    { when: { facing: "south" }, rotate: [0, 180, 0] },
+    { when: { facing: "east" }, rotate: [0, 270, 0] },
+    { when: { facing: "west" }, rotate: [0, 90, 0] },
+  ],
+  hardness: 2,
+  weight: 2500,
+  category: "machines",
+  machine: {
+    ports: [
+      { faces: ["back"], network: "electric", role: "produce" },
+      { faces: ["up"], network: "item", role: "input" },
+      { faces: ["left"], network: "fluid", role: "input" },
+    ],
+    // Joules, and watts: it gives at most what a copper wire carries.
+    energy: { capacity: 10000, max_out: 1000 },
+    slots: { fuel: 1 },
+    tanks: { fuel: { capacity: 4, accepts: ["lava"] } },
+    recipes: { type: "combustion", inputs: ["fuel"] },
+    active_state: { lit: "true" },
+  },
+}

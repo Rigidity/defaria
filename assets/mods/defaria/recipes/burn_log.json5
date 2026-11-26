@@ -1,0 +1,7 @@
+// A log of any wood burns for 15 seconds at 1 kW.
+{
+  type: "combustion",
+  inputs: [{ item: "log" }],
+  outputs: [{ energy: 15000 }],
+  time: 15,
+}

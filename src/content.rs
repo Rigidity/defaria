@@ -29,6 +29,7 @@ mod connect;
 pub mod load;
 mod machine;
 mod place;
+mod recipe;
 pub mod schema;
 
 use std::{collections::BTreeMap, ops::Range, path::Path};
@@ -38,9 +39,11 @@ use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, pre
 use crate::block_texture::Palette;
 pub use connect::{Connections, Joins, Rule, SIDE_VALUES};
 pub use machine::{
-    EnergySpec, FACING, MAX_SLOTS, Machine, MachinePort, SlotGroupSpec, TankSpec, resolve_face,
+    EnergySpec, FACING, MAX_SLOTS, Machine, MachinePort, MachineRecipes, SlotGroupSpec, TankSpec,
+    resolve_face,
 };
 pub use place::Placement;
+pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};
 pub use schema::{Direction, PlaceFrom, PortRole, Render, Solver};
 
 /// The mods folder, relative to `assets/`.
@@ -657,6 +660,9 @@ pub struct Content {
     pub categories: Vec<Category>,
     /// Network kinds, in load order.
     pub networks: Vec<NetworkKind>,
+    /// Every recipe, templated ones once for each combination of their
+    /// materials, in load order.
+    pub recipes: Vec<Recipe>,
     /// What went wrong while loading, one message per problem.
     pub errors: Vec<String>,
     category_index: HashMap<String, usize>,
@@ -664,6 +670,11 @@ pub struct Content {
     texture_index: HashMap<String, u32>,
     block_index: HashMap<String, usize>,
     item_index: HashMap<String, usize>,
+    recipe_index: HashMap<String, usize>,
+    /// Each recipe type's recipes, as indices into `recipes`.
+    recipe_types: HashMap<String, Vec<usize>>,
+    /// The item states some recipe of each type takes, sorted.
+    recipe_items: HashMap<String, Vec<ItemState>>,
 }
 
 impl FromWorld for Content {
@@ -703,6 +714,11 @@ impl Content {
         let mut errors = Vec::new();
         let ordered = load::order(mods, &mut errors);
         let mut content = bake::bake(ordered, &mut errors);
+        let (mut problems, warnings) = recipe::check_recipe_machines(&content);
+        errors.append(&mut problems);
+        for warning in warnings {
+            warn!("{warning}");
+        }
         content.errors = errors;
         content
     }

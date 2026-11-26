@@ -1,0 +1,10 @@
+// A bar of any metal, as the electric furnace smelts out of ore.
+{
+  name: "{metal} Ingot",
+  properties: { metal: { materials: "#metal", default: "iron" } },
+  texture: { texture: "ingot", materials: { metal: "{metal}" } },
+  hardness: { materials: { metal: 1 } },
+  // A tenth of a litre of the metal.
+  weight: { base: 0.0001, materials: { metal: 1 } },
+  category: "materials",
+}

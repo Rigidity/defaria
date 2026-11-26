@@ -1,0 +1,4 @@
+// The combustion generator's flywheel side; see images/SOURCES.md.
+{
+  layers: [{ image: "generator_front", material: "iron" }],
+}

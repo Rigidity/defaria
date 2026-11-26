@@ -1,0 +1,7 @@
+// The combustion generator's front while it burns fuel.
+{
+  layers: [
+    { image: "furnace_front", material: "copper" },
+    { image: "furnace_fire", material: "lava" },
+  ],
+}

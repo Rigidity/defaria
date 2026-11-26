@@ -23,6 +23,7 @@ assets/mods/<folder>/
   items/             items (blocks get one automatically)
   categories/        headings items are listed under in the inventory
   networks/          kinds of network conduits form
+  recipes/           what recipe machines take, make and need
   scripts/           Luau scripts, see scripting.md
 ```
 
@@ -834,6 +835,8 @@ machine does with what it holds.
     slots: { input: 1, output: 1 },
     // Its state while it works; the defaults when it stops.
     active_state: { lit: "true" },
+    // The recipes it runs (see Recipes).
+    recipes: "baking",
   },
 }
 ```
@@ -875,6 +878,13 @@ Every field is optional; `machine: {}` is a machine with nothing.
 - **`active_state`**: property values, other than their defaults, the
   machine has while working, set by the engine and undone when it stops. Its
   other properties (`facing`) stay as they are.
+- **`recipes`**: makes it a recipe machine, running the
+  [recipes](#recipes) of this type. The short form takes inputs from the
+  slot group and tank called `input` and puts outputs in those called
+  `output`; the long form names its own, slot groups and tanks alike:
+  `recipes: { type: "combustion", inputs: ["fuel"], outputs: [] }` (a
+  name that's both a slot group and a tank means both). A recipe machine
+  uses energy for its recipes itself, so it has no `energy.use`.
 
 Every number (capacities and rates) is an
 [attribute](#hardness-weight-and-stats), so a machine of better metal
@@ -952,8 +962,8 @@ other (`"building"`, or `"othermod:machines"`):
 
 A block's item is in the block's category, unless an item file for it
 says otherwise. Items in no category come last, under "Other". The base
-game's are Natural (10), Building (20), Lighting (30), Machines (35) and
-Tools (40);
+game's are Natural (10), Materials (15), Building (20), Lighting (30),
+Machines (35) and Tools (40);
 leave gaps in `order` so other mods can slot theirs between.
 
 ## Networks
@@ -992,6 +1002,95 @@ them, a steam network on the `fluid` solver say, and conduits on it join
 only each other. The base game's kinds are `electric`, `fluid` and
 `item`, with wires, pipes and tubes.
 
+## Recipes
+
+`recipes/<name>.json5`: something a recipe machine does. A machine with
+`recipes` (see [Machines](#machines)) runs those of its type: it takes
+the inputs from its input slots and tanks, uses energy from its buffer
+over the recipe's time, and puts the outputs in its output slots and
+tanks. Its input slot groups take only items that one of its type's
+recipes takes, whatever puts them there, so nothing sits in a furnace
+that it can't smelt.
+
+```json5
+// recipes/smelt_sand.json5
+{
+  type: "smelting",                 // run by machines with `recipes: "smelting"`
+  inputs: [{ item: "soil", when: { soil: "sand", turf: "none" } }],
+  outputs: [{ item: "glass" }],
+  energy: 1500,                     // joules, drawn evenly over its time
+  time: 3,                          // seconds
+}
+```
+
+- **`type`** is a plain name (lowercase letters, digits and `_`), not an
+  id: any mod's recipes of a type run in every machine of that type, so a
+  mod's `smelting` recipes work in the base game's furnace.
+- **`inputs`** (at least one) are each an item or a fluid:
+  - `{ item, when, count }`: `count` (default 1, at most 64) of an item.
+    **`when`** says what its properties must be, as a variant's `when`
+    does (see [Conditions](#conditions)); properties it leaves out can be
+    anything, so `{ item: "log" }` takes a log of any wood.
+  - `{ fluid, amount }`: `amount` blocks of a fluid (a block with
+    `fluid`), as little as a thousandth.
+- **`outputs`** are each an item, a fluid or energy:
+  - `{ item, properties, count }`: `count` of an item, with these
+    property values and the rest at its defaults;
+  - `{ fluid, amount }`;
+  - `{ energy }`: joules made into the machine's buffer, evenly over the
+    recipe's time. This is how a generator works: its recipes burn fuel
+    into energy.
+- **`energy`**: joules it uses, evenly over its time; 0 if left out.
+- **`time`**: how long it takes, in seconds, counted in network ticks (20
+  a second).
+
+**Materials.** `materials` names materials the inputs and outputs use:
+the recipe is made once for each combination, with `{name}` in them
+filled with the material's id. A combination that names something that
+isn't there is skipped, so one file smelts every ore that has an ingot
+into it, and coal (an `#ore` but not a `#metal`) makes no recipe:
+
+```json5
+// recipes/smelt_ore.json5
+{
+  type: "smelting",
+  materials: { ore: "#ore" },       // a material, `#tag` or a list of them
+  inputs: [{ item: "stone", when: { ore: "{ore}" } }],
+  outputs: [{ item: "ingot", properties: { metal: "{ore}" } }],
+  energy: 2000,
+  time: 4,
+}
+```
+
+Each combination is its own recipe, with an id of the file's and its
+materials: `defaria:smelt_ore[ore=defaria:iron]`. A recipe none of whose
+combinations work is an error.
+
+Once everything has loaded, a recipe machine that can't run any recipe
+of its type is an error naming the block and why for each recipe: none
+of the type at all, items or fluids with no input or output slot group or
+tank of the machine's to take or hold them, more of a fluid than its
+tanks for it hold together, inputs or outputs needing more tanks (one
+fluid each) than the machine has for them, or more slots (64 of one kind
+of item, or one unique item, each) than its
+slot groups have slots, energy with no buffer or nothing to fill it (no
+`consume` or `store` energy port with a `max_in`, and no `generate`), or
+more energy in one tick than the buffer holds. A machine that can run
+only some of them, and a recipe type no machine runs, are warnings.
+
+**Running.** On each network tick, a machine that isn't running a recipe
+tries its type's recipes in order (each mod's by id, mods in load order)
+and starts the first whose inputs it holds, whose outputs would fit, and
+whose first tick of energy it can pay for (and, for a generator, has room
+for). It takes the inputs then. Each tick it pays its share of the
+energy; while its buffer can't pay, or a generator's has no room, it
+waits where it is, and goes on when it can. When every tick has run, the
+outputs go in, or it waits until they fit, and the next recipe starts
+straight away. The machine is in its `active_state` while it holds a
+recipe, running or waiting for energy or room, so it doesn't blink while
+power is short. Whatever put the inputs in its slots
+and tanks (a player, a tube, a pipe, a script), it runs on them the same.
+
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
@@ -1013,5 +1112,8 @@ only each other. The base game's kinds are `electric`, `fluid` and
   network moves. Wires lose nothing over distance, and there are no
   voltages.
 - A slot's size (64) is the same for every machine.
+- A recipe machine with too little power stops and starts rather than
+  running slower; recipes can't take a tool without using it up, or give
+  something only some of the time.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.

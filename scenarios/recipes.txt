@@ -1,0 +1,36 @@
+# Recipe machines: a combustion generator burns logs into power for two
+# electric furnaces over a copper wire, in a closed stone room so only the
+# machines light it. One furnace smelts iron ore into ingots, the other
+# sand into glass; each glows while it works and goes dark when it's done.
+# `put` fills the machines as tubes would; `inspect RecipeProgress` shows
+# each one's recipe, progress and status.
+# Run: cargo headless scenarios/recipes.txt
+camera 30 43 35 0 -12                                     # inside the room, looking north
+settle                                                    # so it's loaded, whatever the radius
+wait 5
+fill 18 40 18 42 52 40 stone                              # the room's walls, floor and roof
+fill 19 41 19 41 51 39 air                                # and the air inside
+# All three face south, toward the camera; wires join their backs.
+fill 27 41 30 27 41 30 electric_furnace[facing=south]
+fill 30 41 30 30 41 30 combustion_generator[facing=south]
+fill 33 41 30 33 41 30 electric_furnace[facing=south]
+fill 27 41 29 33 41 29 wire                               # along their backs
+wait 2
+put 30 41 30 fuel 4 log                                   # four oak logs: a minute of 1 kW
+put 27 41 30 input 4 stone[ore=defaria:iron]              # 4 s and 2 kJ each
+put 33 41 30 input 4 soil[soil=defaria:sand]              # 3 s and 1.5 kJ each
+wait 60
+inspect RecipeProgress                                    # all three running
+network 30 41 29                                          # about 1 kW produced (the furnaces started under a second ago), all of it used
+screenshot target/scenarios/recipes/0-working.png
+wait 1
+camera 30 47 34 0 -50                                     # from above, the wire behind them
+wait 2
+screenshot target/scenarios/recipes/1-above.png
+wait 1
+camera 30 43 35 0 -12
+wait 1200                                                 # 20 s: every ore and the sand done
+inspect RecipeProgress                                    # the furnaces idle, the generator charging
+inspect Slots                                             # four iron ingots and four glass
+screenshot target/scenarios/recipes/2-done.png
+wait 1

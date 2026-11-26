@@ -353,6 +353,99 @@ pub struct MachineDef {
     /// defaults.
     #[serde(default)]
     pub active_state: BTreeMap<String, String>,
+    /// The recipes it runs: a recipe type, or `{ type, inputs, outputs }`
+    /// naming where it takes and puts things.
+    #[serde(default)]
+    pub recipes: Option<MachineRecipesDef>,
+}
+
+/// A machine's `recipes`: the type of recipe it runs, and the slot groups
+/// and tanks it takes inputs from and puts outputs in.
+#[derive(Debug, Clone)]
+pub struct MachineRecipesDef {
+    pub kind: String,
+    /// Slot groups and tanks, by name. Left out, whichever are called
+    /// `input`.
+    pub inputs: Option<Vec<String>>,
+    /// Left out, whichever are called `output`.
+    pub outputs: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct MachineRecipesSpec {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    inputs: Option<Vec<String>>,
+    #[serde(default)]
+    outputs: Option<Vec<String>>,
+}
+
+/// `recipes/<name>.json5`: what a recipe machine takes, makes and needs.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeDef {
+    /// Which machines run it: those with `recipes` of this type.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Names for materials, each a material, `#tag` or a list of them. The
+    /// recipe is made once for each combination, with `{name}` in the
+    /// inputs and outputs filled with the material's id.
+    #[serde(default)]
+    pub materials: BTreeMap<String, OneOrMany>,
+    pub inputs: Vec<RecipeInputDef>,
+    #[serde(default)]
+    pub outputs: Vec<RecipeOutputDef>,
+    /// The energy it uses, in joules, drawn evenly over its time.
+    #[serde(default)]
+    pub energy: u64,
+    /// How long it takes, in seconds.
+    pub time: f32,
+}
+
+/// One of a recipe's inputs: some of an item, or an amount of a fluid.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeInputDef {
+    #[serde(default)]
+    pub item: Option<String>,
+    /// For an item, what its properties must be, as in a variant's `when`.
+    /// Properties it leaves out can be anything.
+    #[serde(default)]
+    pub when: BTreeMap<String, Condition>,
+    /// How many of the item. Default 1.
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub fluid: Option<String>,
+    /// How much of the fluid, in blocks.
+    #[serde(default)]
+    pub amount: Option<f32>,
+}
+
+/// One of a recipe's outputs: some of an item, an amount of a fluid, or
+/// energy.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeOutputDef {
+    #[serde(default)]
+    pub item: Option<String>,
+    /// For an item, its property values; the rest are its defaults.
+    #[serde(default)]
+    pub properties: BTreeMap<String, String>,
+    /// How many of the item. Default 1.
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub fluid: Option<String>,
+    /// How much of the fluid, in blocks.
+    #[serde(default)]
+    pub amount: Option<f32>,
+    /// Joules made into the machine's energy buffer, evenly over the
+    /// recipe's time: a generator.
+    #[serde(default)]
+    pub energy: Option<u64>,
 }
 
 /// A face, or several, of a machine that conduits of one network kind join.
@@ -829,7 +922,8 @@ deserialize_forms!(
     OneOrMany,
     Attribute,
     PlaceDef,
-    ConnectionsDef
+    ConnectionsDef,
+    MachineRecipesDef
 );
 
 fn seq<'de, T: Deserialize<'de>, A: SeqAccess<'de>>(seq: A) -> Result<T, A::Error> {
@@ -942,5 +1036,26 @@ impl Forms for ConnectionsDef {
         } else {
             Err(E::invalid_value(Unexpected::Bool(value), &Self::EXPECTING))
         }
+    }
+}
+
+impl Forms for MachineRecipesDef {
+    const EXPECTING: &'static str = "a recipe type, or `{ type, inputs, outputs }`";
+
+    fn from_str<E: de::Error>(value: &str) -> Result<Self, E> {
+        Ok(MachineRecipesDef {
+            kind: value.into(),
+            inputs: None,
+            outputs: None,
+        })
+    }
+
+    fn from_map<'de, A: MapAccess<'de>>(m: A) -> Result<Self, A::Error> {
+        let spec: MachineRecipesSpec = map(m)?;
+        Ok(MachineRecipesDef {
+            kind: spec.kind,
+            inputs: spec.inputs,
+            outputs: spec.outputs,
+        })
     }
 }

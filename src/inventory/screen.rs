@@ -810,7 +810,14 @@ mod tests {
         };
         assert_eq!(
             names(true),
-            ["Natural", "Building", "Lighting", "Machines", "Tools"]
+            [
+                "Natural",
+                "Materials",
+                "Building",
+                "Lighting",
+                "Machines",
+                "Tools"
+            ]
         );
         // The new player's hotbar items: natural blocks, building blocks
         // and lamps.

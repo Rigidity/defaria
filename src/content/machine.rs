@@ -11,7 +11,7 @@ use super::{
     BlockState, Content, Direction, FULL_FLUID, Property,
     bake::{Mix, rotation},
     check_namespace, offset_of, qualify,
-    schema::{MachineDef, PortFace, PortRole, Solver},
+    schema::{Attribute, MachineDef, MachineRecipesDef, PortFace, PortRole, Solver},
 };
 
 /// The most slots a group may have.
@@ -34,6 +34,20 @@ pub struct Machine {
     /// This state with those properties back at their defaults: the state
     /// it's in when it stops.
     pub idle: BlockState,
+    /// The recipes it runs, if it's a recipe machine.
+    pub recipes: Option<MachineRecipes>,
+}
+
+/// What a recipe machine runs, and where it takes inputs from and puts
+/// outputs: indices into [`Machine::slots`] and [`Machine::tanks`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MachineRecipes {
+    /// The recipe type, such as `smelting`.
+    pub kind: String,
+    pub input_slots: Vec<usize>,
+    pub input_tanks: Vec<usize>,
+    pub output_slots: Vec<usize>,
+    pub output_tanks: Vec<usize>,
 }
 
 /// A face of a machine that conduits of one network kind join.
@@ -165,6 +179,7 @@ pub(super) struct MachineMix {
     active: Vec<(usize, usize)>,
     /// The `facing` property's index, if a port needs it.
     facing: Option<usize>,
+    recipes: Option<MachineRecipes>,
 }
 
 struct PortMix {
@@ -340,6 +355,12 @@ impl MachineMix {
             active.push((p, v));
         }
 
+        let recipes = def
+            .recipes
+            .as_ref()
+            .map(|recipes| machine_recipes(recipes, def, &tanks, &slots))
+            .transpose()?;
+
         Ok(MachineMix {
             ports,
             energy,
@@ -347,6 +368,7 @@ impl MachineMix {
             slots,
             active,
             facing,
+            recipes,
         })
     }
 
@@ -433,8 +455,57 @@ impl MachineMix {
             slots: self.slots.clone(),
             active: state(&active),
             idle: state(&idle),
+            recipes: self.recipes.clone(),
         })
     }
+}
+
+/// A machine's `recipes`, its slot groups and tanks found by name.
+fn machine_recipes(
+    def: &MachineRecipesDef,
+    machine: &MachineDef,
+    tanks: &[(String, Mix, Vec<String>)],
+    slots: &[SlotGroupSpec],
+) -> Result<MachineRecipes, String> {
+    check_namespace(&def.kind).map_err(|error| format!("machine recipe type {error}"))?;
+    let uses = machine.energy.as_ref().map(|energy| &energy.uses);
+    if uses.is_some_and(|uses| !matches!(uses, Attribute::Fixed(n) if *n == 0.0)) {
+        return Err(
+            "a recipe machine draws its recipes' energy itself; leave out `energy.use`".into(),
+        );
+    }
+    let find = |names: &Option<Vec<String>>, default: &str| {
+        let mut found_slots = Vec::new();
+        let mut found_tanks = Vec::new();
+        let (names, explicit) = match names {
+            Some(names) => (names.clone(), true),
+            None => (vec![default.to_string()], false),
+        };
+        for (i, name) in names.iter().enumerate() {
+            if names[..i].contains(name) {
+                return Err(format!("machine `recipes` names `{name}` twice"));
+            }
+            let group = slots.iter().position(|group| &group.name == name);
+            let tank = tanks.iter().position(|(tank, ..)| tank == name);
+            if explicit && group.is_none() && tank.is_none() {
+                return Err(format!(
+                    "machine `recipes` names `{name}`, which isn't one of its slot groups or tanks"
+                ));
+            }
+            found_slots.extend(group);
+            found_tanks.extend(tank);
+        }
+        Ok((found_slots, found_tanks))
+    };
+    let (input_slots, input_tanks) = find(&def.inputs, "input")?;
+    let (output_slots, output_tanks) = find(&def.outputs, "output")?;
+    Ok(MachineRecipes {
+        kind: def.kind.clone(),
+        input_slots,
+        input_tanks,
+        output_slots,
+        output_tanks,
+    })
 }
 
 /// The index of the tank or slot group a port names in `names`, or the

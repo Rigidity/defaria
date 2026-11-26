@@ -357,7 +357,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["Natural", "Building", "Lighting", "Machines", "Tools"]
+            [
+                "Natural",
+                "Materials",
+                "Building",
+                "Lighting",
+                "Machines",
+                "Tools"
+            ]
         );
         // Every item, once, in item order within each.
         let total: usize = grouped.iter().map(|section| section.entries.len()).sum();
@@ -369,7 +376,7 @@ mod tests {
                 .all(|pair| pair[0].item < pair[1].item)
         }));
         let pickaxe = content.default_item("defaria:pickaxe").unwrap();
-        assert!(grouped[4].entries.iter().any(|stack| stack.item == pickaxe));
+        assert!(grouped[5].entries.iter().any(|stack| stack.item == pickaxe));
         // An inventory's few: only their sections.
         let stone = content.default_item("defaria:stone").unwrap();
         let grouped = sections(content, vec![ItemStack::new(stone, 4)]);

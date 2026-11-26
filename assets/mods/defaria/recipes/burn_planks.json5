@@ -1,0 +1,7 @@
+// Planks burn for 4 seconds at 1 kW.
+{
+  type: "combustion",
+  inputs: [{ item: "planks" }],
+  outputs: [{ energy: 4000 }],
+  time: 4,
+}

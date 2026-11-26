@@ -21,12 +21,13 @@ update the row when a layer is replaced.
 | `machine_side.png` | Retro Diffusion, unused: came back as a flat plate in a frame; the casing in `scripts/draw-machines.py` keeps its layout (frame, rivets in the corners) | 2026-11-26 | `rd_lite__default` | close-up of a riveted metal machine casing panel filling the entire frame edge to edge, a flat plate with a raised metal frame around it and a small rivet in each corner, no outline, no border, no background, grayscale, even lighting | `13120796-e715-4d9b-ac35-b67e5c3878a0` | 98% |
 | `crate_side.png` | Retro Diffusion, unused: came back as a crate seen at an angle, off-centre; its crossed braces drawn by `scripts/draw-machines.py` | 2026-11-26 | `rd_lite__default` | close-up of the side of a reinforced metal storage crate filling the entire frame edge to edge, a thick metal frame with corner brackets, crossed diagonal braces and a small square socket in the center, no outline, no border, no background, grayscale, even lighting | `2c4f9362-4a4e-40e8-a651-86a7ebdabb04` | 98% |
 | `generator_front.png` | Retro Diffusion, unused: came back as a round generator object in color; the round wheel in the middle drawn by `scripts/draw-machines.py` | 2026-11-26 | `rd_lite__default` | close-up of the front of a metal electric generator filling the entire frame edge to edge, a riveted metal casing with a large round copper coil wound in rings in the middle, no outline, no border, no background, grayscale, even lighting | `421344a0-dcc1-446b-9ef4-70e0d5fbfc31` | 98% |
+| `furnace_front.png` | Retro Diffusion, unused: came back as a furnace object with a chimney, not a face; its layout (vent slot over a framed firebox in the lower middle) drawn by `scripts/draw-machines.py` | 2026-11-26 | `rd_lite__default` | close-up of the front of a metal smelting furnace filling the entire frame edge to edge, a riveted metal casing with a dark rectangular firebox opening in the lower middle and a small vent slot above it, no outline, no border, no background, grayscale, even lighting | `1ede63ac-94c6-433f-bd0a-d2a679c68162` | 98% |
 
 ## Drawn by script
 
-`glass.png`, `water.png`, `lava.png` and `tuft.png` were drawn
-procedurally by `scripts/draw-layers.py` (no Retro Diffusion), 2026-11-25.
-Re-run the script to redraw them.
+`glass.png`, `water.png`, `lava.png`, `tuft.png` and `items/ingot.png` were
+drawn procedurally by `scripts/draw-layers.py` (no Retro Diffusion),
+2026-11-25 (the ingot 2026-11-26). Re-run the script to redraw them.
 
 - `glass.png`: a solid one-pixel frame, lit from the top left, two short
   highlight streaks, and a nearly clear middle (alpha 40). Partly
@@ -38,6 +39,10 @@ Re-run the script to redraw them.
 - `tuft.png`: nine blades of grass rising from the bottom edge and bending
   outward toward their tips, thicker near the ground, transparent around
   them.
+- `items/ingot.png`: a bar seen from above and in front, its top face lit
+  (levels 6–7) over a darker front (5 to 3) with a glint, outlined in
+  level 1, transparent around it. The ingot item's icon, colored by its
+  metal.
 
 ## Networks and machines
 
@@ -80,6 +85,13 @@ feature drawn into the panel.
 - `generator_front.png`: the casing with a flywheel behind a round opening:
   a rim, four spokes and a hub. Idea from the Retro Diffusion generator
   in the table above.
+- `furnace_front.png`: the casing with a vent slot over a framed dark
+  firebox with grate bars. Layout from the Retro Diffusion furnace in the
+  table above.
+- `furnace_fire.png`: just the fire in the firebox (levels 5–7) and the
+  vent's glow, transparent elsewhere, stacked over `furnace_front.png`
+  with lava's palette while a furnace or generator works. (The script's
+  `furnace_front_lit.png`, the two in one image, isn't used.)
 - `tank_side.png`: the casing with a vertical sight glass and three gauge
   marks beside it.
 - `crate_side.png`: the casing's frame around a dark panel with crossed

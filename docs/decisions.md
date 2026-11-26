@@ -3,6 +3,64 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Recipes take their inputs when they start, and stop rather than slow down (2026-11-26)
+
+**Context.** Recipe machines (#115) turn what's in their slots and tanks
+into other things over time, using energy, and generators turn fuel into
+energy. Whatever fills them (a player through a screen, #119; tubes,
+#120; pipes, #113; scripts, #118) must work the same, and their state
+must save with the chunk.
+
+**Decision.** Recipes are data (`recipes/<name>.json5`), each with a
+plain `type` that machines name in `machine.recipes`: types aren't
+namespaced, so any mod's recipes run in any machine of the type. A
+recipe with `materials` is baked once per combination, and combinations
+naming something that isn't there are skipped (so coal, an ore with no
+ingot, makes no smelting recipe). A machine tries its type's recipes in
+load order on each network tick (20 Hz) and starts the first whose
+inputs it holds, whose outputs would fit right now, and whose first tick
+it can pay for; it **takes the inputs when it starts**, so a running
+recipe can't be starved by something taking its input away, and the
+progress part (`RecipeProgress`: recipe id and ticks done) is all that
+needs saving. Energy is drawn (or, for a generator, made) a tick's exact
+share at a time from the machine's own buffer, so a recipe uses exactly
+its energy; without it, or without room, the machine **waits** where it
+is rather than running slower. It stays active (lit) while it holds a
+recipe, waiting or not, so short power doesn't make it blink; this is
+provisional, for the user to confirm (going dark after a second or so of
+waiting would show a stalled machine, but a full generator feeding a
+small load runs one tick in fifty and would still blink). Outputs go in
+when every tick has run, or it waits until they fit. Generators are
+recipe machines with an `{ energy }` output, so energy enters the world
+at them; the base game's combustion generator burns logs, planks, coal
+ore (rock and all, as breaking ore gives the stone item) and lava. The
+headless `put` command fills slots and tanks, a fluid going to a tank
+and anything else to a slot group when a machine has both by one name.
+
+**What's wrong with it.** Taken inputs are lost if the machine is
+broken mid-recipe (as everything in a machine is, for now) or the recipe
+disappears from the mods. A machine waiting for power or room looks the
+same as one working, and a furnace whose output is full stays lit until
+it's emptied. Outputs are checked against
+the slots at the start and again at the end, so something filling the
+output meanwhile leaves the finished recipe waiting. The first recipe
+that fits wins, so two recipes with overlapping inputs depend on load
+order. Progress changes every tick, so a running machine's chunk is
+saved again every frame it's marked edited. Coal ore burning as a block
+of stone is a stand-in for a coal item. Recipes have no chances, tools
+that aren't used up, or by-products that are optional.
+
+**What should replace it.** Recipe machines that run at a fraction of
+their speed on a fraction of their power (with the screen showing it),
+dropping their held inputs when broken, a coal item from coal ore, and a
+priority or explicit selection (a recipe picked on the machine's screen)
+where inputs overlap. Save progress less often than every tick if it
+shows up in saving.
+
+**When to revisit.** With machine screens (#119), with item networks
+(#120) feeding machines faster than they run, and when mods add
+overlapping recipes.
+
 ## Power is one pool per network, capped by its weakest wire, in joules and watts (2026-11-26)
 
 **Context.** Before the energy solver (#112), the spike (#110) had to

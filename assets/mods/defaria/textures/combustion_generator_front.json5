@@ -1,0 +1,5 @@
+// The combustion generator's front, cold: a copper casing around its
+// firebox, so it isn't taken for the furnace.
+{
+  layers: [{ image: "furnace_front", material: "copper" }],
+}

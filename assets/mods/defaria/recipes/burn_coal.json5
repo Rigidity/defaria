@@ -1,0 +1,7 @@
+// Coal ore burns, rock and all, for 40 seconds at 1 kW.
+{
+  type: "combustion",
+  inputs: [{ item: "stone", when: { ore: "coal" } }],
+  outputs: [{ energy: 40000 }],
+  time: 40,
+}

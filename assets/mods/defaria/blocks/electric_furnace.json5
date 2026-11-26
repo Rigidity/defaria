@@ -1,0 +1,45 @@
+// Smelts with electricity: ore into ingots, sand into glass (`smelting`
+// recipes). Its front faces you as you place it; wires join
+// its back, and tubes put items in through its top and take them out of
+// its bottom. It glows while it works.
+{
+  name: "Electric Furnace",
+  properties: {
+    lit: ["false", "true"],
+    // Facing you: the opposite of the way you look.
+    facing: {
+      values: ["north", "south", "east", "west"],
+      place: { from: "look", values: { north: "south", south: "north", east: "west", west: "east" } },
+    },
+  },
+  model: "cube",
+  // The cube's north face is the front; it turns to face `facing`.
+  textures: {
+    side: "machine_side",
+    up: "item_port",
+    down: "item_port",
+    north: "electric_furnace_front",
+    south: "energy_port",
+  },
+  variants: [
+    { when: { lit: "true" }, textures: { north: "electric_furnace_front_lit" }, light: [14, 9, 4] },
+    { when: { facing: "south" }, rotate: [0, 180, 0] },
+    { when: { facing: "east" }, rotate: [0, 270, 0] },
+    { when: { facing: "west" }, rotate: [0, 90, 0] },
+  ],
+  hardness: 2,
+  weight: 2500,
+  category: "machines",
+  machine: {
+    ports: [
+      { faces: ["back"], network: "electric", role: "consume" },
+      { faces: ["up"], network: "item", role: "input", slots: "input" },
+      { faces: ["down"], network: "item", role: "output", slots: "output" },
+    ],
+    // Joules, and watts: a recipe at 500 W runs on half a copper wire.
+    energy: { capacity: 10000, max_in: 1000 },
+    slots: { input: 1, output: 1 },
+    recipes: "smelting",
+    active_state: { lit: "true" },
+  },
+}
