@@ -1,0 +1,10 @@
+// The plain iron casing every machine is built in: a block on its own,
+// with no ports.
+{
+  name: "Machine Casing",
+  model: "cube",
+  textures: { side: "machine_side", end: "machine_top" },
+  hardness: 2,
+  weight: 2000,
+  category: "machines",
+}

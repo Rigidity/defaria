@@ -124,17 +124,23 @@ pub trait BlockEntityPart: Component + Sized {
     /// Its saved form's version, passed back to [`BlockEntityPart::load`].
     /// Bump it when the form changes.
     const VERSION: u32 = 1;
+    /// Whether it's saved. A part that's worked out from the voxel's state
+    /// (a machine's ports) isn't: it's made with [`BlockEntityPart::new`]
+    /// every time its block entity is, and never written to the save.
+    const SAVED: bool = true;
 
     /// What a new block entity in a voxel of `state` starts with: `None`
     /// if that block's block entities don't have this part.
     fn new(state: BlockState, content: &Content) -> Option<Self>;
 
-    /// Its saved form.
-    fn save(&self) -> Value;
+    /// Its saved form. `content` names what needs naming (items, say),
+    /// since indices into it aren't kept between runs.
+    fn save(&self, content: &Content) -> Value;
 
-    /// Reads back what [`BlockEntityPart::save`] saved, at `version`.
-    /// `None` if it can't, and the block entity gets a new part instead.
-    fn load(value: &Value, version: u32) -> Option<Self>;
+    /// Reads back what [`BlockEntityPart::save`] saved, at `version`, for a
+    /// voxel of `state`. `None` if it can't, and the block entity gets a
+    /// new part instead.
+    fn load(value: &Value, version: u32, state: BlockState, content: &Content) -> Option<Self>;
 }
 
 /// The parts block entities can have.
@@ -171,7 +177,10 @@ impl RegisterBlockEntityPart for App {
             key: P::KEY,
             add: add_part::<P>,
         });
-        self.add_systems(Update, save_changes::<P>.in_set(NoteChanges))
+        if P::SAVED {
+            self.add_systems(Update, save_changes::<P>.in_set(NoteChanges));
+        }
+        self
     }
 }
 
@@ -181,8 +190,8 @@ fn add_part<P: BlockEntityPart>(
     state: BlockState,
     content: &Content,
 ) {
-    let loaded = saved.and_then(|saved| {
-        let part = P::load(&saved.value, saved.version);
+    let loaded = saved.filter(|_| P::SAVED).and_then(|saved| {
+        let part = P::load(&saved.value, saved.version, state, content);
         if part.is_none() {
             warn!(
                 "a block entity's `{}` (version {}) couldn't be read",
@@ -224,11 +233,11 @@ impl BlockEntityPart for BlockData {
         block.data.clone().map(Self)
     }
 
-    fn save(&self) -> Value {
+    fn save(&self, _: &Content) -> Value {
         Value::Table(self.0.clone())
     }
 
-    fn load(value: &Value, version: u32) -> Option<Self> {
+    fn load(value: &Value, version: u32, _: BlockState, _: &Content) -> Option<Self> {
         (version == 1).then(|| value.as_table().cloned().map(Self))?
     }
 }
@@ -247,6 +256,7 @@ fn save_changes<P: BlockEntityPart>(
     mut removed: RemovedComponents<P>,
     mut without: Query<(&BlockEntity, &mut SavedParts), Without<P>>,
     mut changes: MessageWriter<BlockEntityChanged>,
+    content: Res<Content>,
 ) {
     for (entity, part, mut saved) in &mut parts {
         if !part.is_changed() {
@@ -254,7 +264,7 @@ fn save_changes<P: BlockEntityPart>(
         }
         let value = SavedPart {
             version: P::VERSION,
-            value: part.save(),
+            value: part.save(&content),
         };
         // Decided by the value rather than by change ticks: a block entity
         // loaded from its chunk starts with its saved parts, so reading

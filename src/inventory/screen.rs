@@ -808,7 +808,10 @@ mod tests {
                 .map(|(name, _)| name.as_str())
                 .collect()
         };
-        assert_eq!(names(true), ["Natural", "Building", "Lighting", "Tools"]);
+        assert_eq!(
+            names(true),
+            ["Natural", "Building", "Lighting", "Machines", "Tools"]
+        );
         // The new player's hotbar items: natural blocks, building blocks
         // and lamps.
         assert_eq!(names(false), ["Natural", "Building", "Lighting"]);

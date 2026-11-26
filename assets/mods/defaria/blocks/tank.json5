@@ -1,0 +1,14 @@
+// Holds 16 blocks of water or lava. Pipes join it on its top and bottom
+// only: the iron sockets.
+{
+  name: "Tank",
+  model: "cube",
+  textures: { side: "tank_side", end: "fluid_port" },
+  hardness: 2,
+  weight: 2000,
+  category: "machines",
+  machine: {
+    ports: [{ faces: ["up", "down"], network: "fluid", role: "store" }],
+    tanks: { fluid: { capacity: 16, accepts: ["water", "lava"] } },
+  },
+}

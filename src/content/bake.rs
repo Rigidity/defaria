@@ -19,7 +19,13 @@ use super::{
     AIR, BakedFace, Block, BlockBox, BlockState, Category, Conduit, Connections, Content,
     Direction, FULL_FLUID, Fluid, Item, ItemStateInfo, MAX_LIGHT, Material, ModInfo, Model,
     ModelFace, NONE, NetworkKind, Placement, Property, Rule, State, StatePart, Texture,
-    TextureLayer, Vertex, connect::side_properties, index_of, load::LoadedMod, qualify, schema::*,
+    TextureLayer, Vertex,
+    connect::side_properties,
+    index_of,
+    load::LoadedMod,
+    machine::{MachineMix, check_tank_fluids},
+    qualify,
+    schema::*,
     state_count,
 };
 use crate::{block_texture::Palette, fluid::flow::MIN_RIPPLE};
@@ -201,6 +207,16 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
     }
     for def in &defs.blocks {
         report(&def.file, add_block(def, &mut content, &textures));
+    }
+    for def in &defs.blocks {
+        if let Some(machine) = &def.def.machine
+            && content.block(&def.id).is_some()
+        {
+            report(
+                &def.file,
+                check_tank_fluids(machine, &def.namespace, &content),
+            );
+        }
     }
     add_items(&defs, &mut content, &textures, &mut report);
     content
@@ -467,7 +483,7 @@ fn check_stat_name(name: &str) -> Result<(), String> {
 /// or a base times a weighted average of one stat of material properties'
 /// materials. Any number a block or item works out per state from its
 /// materials uses this, so each field reads stats the same way.
-struct Mix {
+pub(super) struct Mix {
     base: f32,
     /// The materials' stat it averages.
     stat: String,
@@ -486,7 +502,7 @@ impl Mix {
     /// `base` alone is a multiplier (a volume, a fraction of a block), not
     /// a value of its own. Every material a counted property can be must
     /// have the stat, unless the attribute gives a `default`.
-    fn new(
+    pub(super) fn new(
         field: &str,
         stat: &str,
         def: &Attribute,
@@ -598,7 +614,7 @@ impl Mix {
     /// materials' stat, skipping properties at `none` (`new` checked that
     /// not every one is, and that each material has the stat or there's a
     /// default).
-    fn value(&self, properties: &[Property], index: &[usize], content: &Content) -> f32 {
+    pub(super) fn value(&self, properties: &[Property], index: &[usize], content: &Content) -> f32 {
         if self.shares.is_empty() {
             // A fixed value.
             return self.base;
@@ -1515,6 +1531,11 @@ fn add_block(
         .as_ref()
         .map(|conduit| ConduitMix::new(conduit, &def.namespace, &properties, content))
         .transpose()?;
+    let machine = block
+        .machine
+        .as_ref()
+        .map(|machine| MachineMix::new(machine, &def.namespace, &properties, content))
+        .transpose()?;
     let count = check_count(&properties)?;
     if content.states.len() + count > u16::MAX as usize + 1 {
         return Err("out of block states: there are too many blocks".into());
@@ -1603,6 +1624,7 @@ fn add_block(
         return Err(format!("no model this block uses has a slot `{slot}`"));
     }
     let index = content.blocks.len();
+    let first_state = content.states.len() as u16;
     let mut states = Vec::with_capacity(count);
     for (value_index, values, look, parts) in &looks {
         let name = match look.name.or(block.name.as_deref()) {
@@ -1632,6 +1654,13 @@ fn add_block(
                     .as_ref()
                     .map(|conduit| conduit.value(&properties, value_index, values, content))
                     .transpose()?;
+                state.machine = machine
+                    .as_ref()
+                    .map(|machine| {
+                        machine.value(&properties, value_index, look.rotate, first_state, content)
+                    })
+                    .transpose()?
+                    .map(Box::new);
                 Ok(state)
             })
             .map_err(|error| in_state(values, error))?;
@@ -1641,10 +1670,14 @@ fn add_block(
     content.blocks.push(Block {
         id: def.id.clone(),
         properties,
-        first_state: content.states.len() as u16,
+        first_state,
         state_count: count as u16,
         connections,
-        block_entity: block.block_entity.clone(),
+        // A machine keeps what it holds in its block entity.
+        block_entity: block
+            .block_entity
+            .clone()
+            .or_else(|| block.machine.as_ref().map(|_| default())),
     });
     content.block_index.insert(def.id.clone(), index);
     for state in states.iter().filter(|s| s.render == Render::Cutout) {
@@ -2023,7 +2056,7 @@ fn fill_name(
 /// A rotation of `degrees` about X, then Y, then Z, each a multiple of 90.
 /// Built from exact quarter turns, so whole and half coordinates stay
 /// exact.
-fn rotation(degrees: [i32; 3]) -> Result<Mat3, String> {
+pub(super) fn rotation(degrees: [i32; 3]) -> Result<Mat3, String> {
     let quarter_turns = [
         // About X: Y goes to Z, Z to -Y.
         Mat3::from_cols(Vec3::X, Vec3::Z, Vec3::NEG_Y),

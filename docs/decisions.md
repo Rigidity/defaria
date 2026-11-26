@@ -3,6 +3,68 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Machines hold items in slots, not by weight (2026-11-26)
+
+**Context.** The player's inventory has no slots or stack sizes, only a
+weight limit (#87). Machines (#114) need somewhere to keep items too, and
+#87 asked whether they should work the same way.
+
+**Decision.** Machines have named groups of slots (`slots: { input: 1,
+output: 1 }`), each slot holding up to `SLOT_SIZE` (64) of one kind of
+item (an `ItemStack`, the inventory's own type), or one of a `unique`
+item. A recipe machine's input and output are then fixed places that
+recipes (#115), item networks (#120) and machine screens (#119) can name,
+and a full output stops a machine in an obvious way. Weight plays no
+part in a machine.
+
+**What's wrong with it.** Two ways of holding items: a crate holds 9×64
+of anything, so 576 gold blocks (11,000 tonnes) as easily as 576 pebbles,
+while the player is limited by weight. One slot size for every machine
+and item.
+
+**What should replace it.** Once #87 settles the weight scale: a slot
+size per machine (or per group) in the `machine` definition, and
+possibly a weight limit on storage blocks (crates) as well as slots.
+
+## Machine ports are worked out from the state, and indexed whole (2026-11-26)
+
+**Context.** Machine definitions (#114) give each block state ports
+(faces, network kind, role), an energy buffer, tanks and slot groups.
+Solvers (#112, #113, #120) need, for each network, its machine ports and
+their roles, cheaply, every tick.
+
+**Decision.** Ports are baked per block state (`Content::machine`), faces
+turned by the state's `rotate` and the relative ones resolved from its
+`facing` property. `Content::has_port` reads them, so `Content::accepts`
+(and so connection properties and networks) join conduits to port faces
+only. The `Ports` and `MachineActive` block entity parts aren't saved:
+they're made from the voxel's state when the block entity is (parts can
+now say `SAVED = false`), and follow the state when it changes. Stored
+energy, tanks and slots are saved; their sizes come from the state. The
+index of each network's machine ports (`MachinePorts`) is rebuilt whole,
+in `Update`, on frames when the networks or block entities change,
+reading each network's port faces and the block there. Energy is counted
+in whole integer units, rates per second, with no physical meaning yet
+(#110 decides the units). A machine with a `facing` faces whoever
+places it (`place: { from: "look", values: { north: "south", ... } }`),
+so you see its front as you place it, as in Minecraft. *Provisional, for
+the user to confirm*: the other way, facing the way you look, aims a
+pump or an outlet at what you're looking at, but shows you every
+machine's back.
+
+**What's wrong with it.** Rebuilding the index costs time in proportion
+to every port in the loaded world on any frame a conduit or block
+entity changes (mining a block anywhere counts). It's small (a lookup per
+port) at the scale of a few thousand ports. Ports must be the same in a
+machine's active and idle states for conduits to follow, as the
+connection properties don't re-evaluate on a property update (only on
+edits). A machine facing up or down takes west as its left.
+
+**What should replace it.** Update the index per network from
+`NetworkChanged` and the voxels that changed, once worlds have many
+machines. Re-evaluate neighbours' connections on property updates if
+ports ever change with state.
+
 ## Networks follow connection properties, live only in loaded chunks, and split by search (2026-11-26)
 
 **Context.** Conduits (wires, pipes, tubes) form networks (#111) that
@@ -15,7 +77,7 @@ merges and splits.
 optional group, capacity and throughput as attributes). Its connection
 rule is derived from it (`connections: true`): two conduits join when
 they're on the same kind and group, decided in `Content::accepts`, with
-`Content::has_port` as the empty hook machine ports (#114) fill in. The
+`Content::has_port` deciding machine ports (filled in by #114). The
 `network` module doesn't decide joins itself: a conduit's six edges are
 read from its connection properties (joined to a conduit joined back is
 a link; joined into an unloaded chunk is open; joined to anything else is

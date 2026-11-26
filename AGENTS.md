@@ -96,7 +96,8 @@ changes.
    has the keyboard, such as a text field), `pour` (put an amount of a
    fluid in a voxel) and `fluids` (each fluid's total in the loaded world
    and how much of it is active), `network` (the network the conduit at a
-   voxel is part of: kind, size, frozen or running, its ports), `camera` (put the
+   voxel is part of: kind, size, frozen or running, its ports and their
+   roles), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
    there, flying) and `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons) and
@@ -312,6 +313,12 @@ documented in `docs/modding.md`; keep that file, the serde types in
   data a voxel keeps beyond its state (`BlockEntity`, under the chunk's
   entity while it's loaded). Features add parts with
   `register_block_entity_part`; `BlockEntities` finds the one at a voxel.
+- `src/machine.rs` (and `src/machine/`): machines (blocks with a
+  `machine`; baked per state in `src/content/machine.rs`). Their block
+  entities get `Ports`, `EnergyBuffer`, `Tanks`, `Slots` and
+  `MachineActive` (which puts the voxel in its `active_state`), and
+  `MachinePorts` lists each network's machine ports and their roles for
+  the solvers.
 - `src/save.rs` (and `src/save/`): the world's folder on disk and its region
   and chunk formats, documented in `docs/world-format.md`. Keep the two in
   step, and bump a format's version when it changes.

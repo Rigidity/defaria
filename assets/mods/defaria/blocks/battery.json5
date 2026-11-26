@@ -1,0 +1,38 @@
+// Stores energy. It faces you as you place it, and wires
+// join it on its front and back only: the copper sockets.
+{
+  name: "Battery",
+  properties: {
+    // Facing you: the opposite of the way you look.
+    facing: {
+      values: ["north", "south", "east", "west"],
+      place: { from: "look", values: { north: "south", south: "north", east: "west", west: "east" } },
+    },
+  },
+  model: "cube",
+  textures: {
+    side: "battery_side",
+    end: "machine_top",
+    north: "energy_port",
+    south: "energy_port",
+  },
+  variants: [
+    {
+      when: { facing: ["east", "west"] },
+      textures: {
+        north: "battery_side",
+        south: "battery_side",
+        east: "energy_port",
+        west: "energy_port",
+      },
+    },
+  ],
+  hardness: 2,
+  weight: 2500,
+  category: "machines",
+  machine: {
+    ports: [{ faces: ["front", "back"], network: "electric", role: "store" }],
+    // Energy units; see docs/decisions.md.
+    energy: { capacity: 100000, max_in: 1000, max_out: 1000 },
+  },
+}

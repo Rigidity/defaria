@@ -20,6 +20,7 @@ pub mod headless;
 mod hotbar;
 pub mod inventory;
 mod light;
+pub mod machine;
 mod mining;
 pub mod network;
 mod perlin;
@@ -73,6 +74,7 @@ impl Plugin for GamePlugin {
             connections::ConnectionsPlugin,
             network::NetworkPlugin,
             block_entity::BlockEntityPlugin,
+            machine::MachinePlugin,
             script::ScriptPlugin,
         ));
     }

@@ -645,7 +645,10 @@ properties: {
 - **`"face"`** uses the side of the block you click: placing on top of a
   block is `up`, against its east side `east`.
 - **`"look"`** uses the way you look, along its strongest axis: looking
-  down is `down`, looking mostly west is `west`.
+  down is `down`, looking mostly west is `west`. If the property has no
+  value for `up` or `down` and you look more up or down than across, it
+  uses the way you face across the ground instead, so a machine placed
+  on the floor in front of you faces the way you look.
 - Either one gives each direction the value named after its axis (`x`,
   `y` or `z`), or else after itself (`up`, `down`, `north`, `south`,
   `east`, `west`). A property whose values are neither needs `values`.
@@ -748,7 +751,8 @@ joined side facing any other block is a port on the network (a machine's
 face). A network with a joined side facing a chunk that isn't loaded is
 frozen, as it may go on out there: its solver skips it until the chunk
 loads. Networks are worked out from the world as chunks load; nothing
-about them is saved.
+about them is saved. A conduit joins a block that isn't a conduit only
+on a face where that block has a [port](#machines) of its kind.
 
 ### Conditions
 
@@ -798,6 +802,81 @@ removes it.
 `block_entity: {}` gives the block one with no data of its own. Features
 of the game (machines, conduits, scripts) add their own parts to the
 block entities of the blocks they apply to.
+
+### Machines
+
+A block with `machine` takes part in networks: conduits join it on its
+*ports*, and it holds energy, fluid and items in its block entity (it
+gets one without saying `block_entity`). The solvers of each network
+move things between machines' ports; recipes and scripts decide what a
+machine does with what it holds.
+
+```json5
+// blocks/oven.json5
+{
+  properties: {
+    lit: ["false", "true"],
+    facing: { values: ["north", "south", "east", "west"], place: "look" },
+  },
+  // ...model and textures as for any block
+  machine: {
+    ports: [
+      { faces: ["back"], network: "electric", role: "consume" },
+      { faces: ["up"], network: "item", role: "input", slots: "input" },
+      { faces: ["down"], network: "item", role: "output", slots: "output" },
+      { faces: ["left", "right"], network: "fluid", role: "input" },
+    ],
+    // Energy units; rates are per second.
+    energy: { capacity: 20000, max_in: 400, max_out: 0 },
+    // In blocks of fluid; `accepts` left out takes any fluid.
+    tanks: { water: { capacity: 4, accepts: ["water"] } },
+    // How many slots in each group.
+    slots: { input: 1, output: 1 },
+    // Its state while it works; the defaults when it stops.
+    active_state: { lit: "true" },
+  },
+}
+```
+
+Every field is optional; `machine: {}` is a machine with nothing.
+
+- **`ports`**: each is one or more **`faces`** on one **`network`** kind
+  (a [network kind](#networks) reference), with a **`role`**. Faces are
+  sides (`up`, `down`, `north`, `south`, `east`, `west`), which turn with
+  the state's `rotate`, or sides relative to the block's `facing`
+  property (`front`, `back`, `left`, `right`): `front` is the side
+  `facing` names, and `left` and `right` are the machine's own, looking
+  out of its front (a machine facing up or down has west on its left).
+  A port with relative faces needs a `facing` property whose values are
+  all sides. A face has at most one port of each network kind, and
+  conduits of that kind join the machine on it, and only there.
+- **Roles** say what a port does, and each solver takes its own:
+  - energy networks: `produce` (gives energy from the buffer: a
+    generator), `consume` (takes energy into it: a lamp) and `store`
+    (both, as the network has too much or too little: a battery). An
+    energy port needs `energy`;
+  - fluid and item networks: `input` (takes from the network), `output`
+    (gives to it) and `store` (both: a tank, a crate). A fluid port fills
+    or drains a **`tank`**, and an item port a slot group, named with
+    **`slots`**; either can be left out when the machine has only one.
+- **`energy`**: `capacity` (the most it holds), `max_in` and `max_out`
+  (the most it takes and gives in a second, 0 if left out), in energy
+  units.
+- **`tanks`**: each by name, with a **`capacity`** in blocks of fluid and
+  the fluids it **`accepts`** (blocks with `fluid`); left out, any. A tank
+  holds one fluid at a time.
+- **`slots`**: each group by name, with how many slots (1 to 256). A slot
+  holds up to 64 of one item, or one of a `unique` item.
+- **`active_state`**: property values, other than their defaults, the
+  machine has while working, set by the engine and undone when it stops. Its
+  other properties (`facing`) stay as they are.
+
+Every number (capacities and rates) is an
+[attribute](#hardness-weight-and-stats), so a machine of better metal
+can hold more. Names of tanks and slot groups are lowercase letters,
+digits and `_`. A port naming a network kind, tank or slot group that
+doesn't exist, a role the network's solver doesn't take, or two ports on
+one face and network kind, is an error.
 
 ## Items
 
@@ -868,7 +947,8 @@ other (`"building"`, or `"othermod:machines"`):
 
 A block's item is in the block's category, unless an item file for it
 says otherwise. Items in no category come last, under "Other". The base
-game's are Natural (10), Building (20), Lighting (30) and Tools (40);
+game's are Natural (10), Building (20), Lighting (30), Machines (35) and
+Tools (40);
 leave gaps in `order` so other mods can slot theirs between.
 
 ## Networks
@@ -906,9 +986,8 @@ only each other. The base game's kinds are `electric`, `fluid` and
   voxel, such as slabs and plants.
 - See-through blocks let all light through: leaves and water don't dim it.
 - Models are block-only so far: no bones or animation for entities.
-- No block has ports yet, so conduits join only other conduits; machine
-  ports, which accept a network kind on some faces only, come with
-  machines.
-- Networks don't carry anything yet: the solvers come next.
+- Networks don't carry anything yet: the solvers come next, so a
+  machine's buffer, tanks and slots stay as they are.
+- A slot's size (64) is the same for every machine.
 - A mod can only add definitions in its own namespace, not replace another
   mod's.

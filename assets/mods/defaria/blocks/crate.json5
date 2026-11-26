@@ -1,0 +1,17 @@
+// Nine slots of items. Tubes put items in through its top and take them
+// out of its bottom: the gold sockets.
+{
+  name: "Crate",
+  model: "cube",
+  textures: { side: "crate_side", end: "item_port" },
+  hardness: 1.5,
+  weight: 1500,
+  category: "machines",
+  machine: {
+    ports: [
+      { faces: ["up"], network: "item", role: "input" },
+      { faces: ["down"], network: "item", role: "output" },
+    ],
+    slots: { items: 9 },
+  },
+}

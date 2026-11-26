@@ -103,13 +103,6 @@ impl Content {
         }
     }
 
-    /// Whether `state` has a port on network kind `kind` on its `side`, so
-    /// conduits of that kind join it there and it's on their network. No
-    /// block has ports yet: machine definitions (#114) add them here.
-    pub fn has_port(&self, _state: BlockState, _kind: usize, _side: Direction) -> bool {
-        false
-    }
-
     /// Whether the engine sets some of `state`'s properties from its
     /// neighbours.
     pub fn connects(&self, state: BlockState) -> bool {

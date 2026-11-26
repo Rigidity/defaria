@@ -163,7 +163,13 @@ fn update_networks(
 }
 
 /// The `network` line headless scripts print for the conduit at `pos`.
-pub fn describe(networks: &Networks, content: &Content, pos: IVec3) -> String {
+/// `role` names what a port does on its network, if it's a machine's.
+pub fn describe(
+    networks: &Networks,
+    content: &Content,
+    pos: IVec3,
+    role: impl Fn(NetworkId, Port) -> Option<crate::content::PortRole>,
+) -> String {
     let at = format!("{} {} {}", pos.x, pos.y, pos.z);
     let Some(id) = networks.at(pos) else {
         return format!("network at {at}: none");
@@ -203,13 +209,17 @@ pub fn describe(networks: &Networks, content: &Content, pos: IVec3) -> String {
         let names: Vec<String> = ports
             .iter()
             .map(|port| {
-                format!(
+                let mut name = format!(
                     "{} {} {} {}",
                     port.pos.x,
                     port.pos.y,
                     port.pos.z,
                     port.face.name()
-                )
+                );
+                if let Some(role) = role(id, **port) {
+                    name += &format!(" ({})", role.name());
+                }
+                name
             })
             .collect();
         line += &format!(", ports: {}", names.join(", "));

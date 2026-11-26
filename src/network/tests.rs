@@ -510,7 +510,11 @@ fn describe_says_what_the_network_is() {
     app.update();
     set(&mut app, &line(v(14, 4, 4), v(17, 4, 4), pipe()));
     let content = base();
-    let line = |app: &App, pos| describe(app.world().resource::<Networks>(), content, pos);
+    let line = |app: &App, pos| {
+        describe(app.world().resource::<Networks>(), content, pos, |_, _| {
+            None
+        })
+    };
     let text = line(&app, v(14, 4, 4));
     assert!(text.starts_with("network at 14 4 4: #"), "{text}");
     assert!(
@@ -555,6 +559,43 @@ fn partition(networks: &Networks) -> Vec<(Vec<[i32; 3]>, u32, Vec<([i32; 3], u8)
     out
 }
 
+/// A wire joined to a machine across a chunk border is frozen when the
+/// machine's chunk unloads, as one rebuilt without that chunk would be,
+/// and joined to it again when it loads.
+#[test]
+fn a_port_across_a_chunk_border_opens_when_its_chunk_unloads() {
+    let mut app = app();
+    spawn(&mut app, IVec3::X, Chunk::default());
+    app.update();
+    let battery = base()
+        .block_state("defaria:battery", &[("facing", "east")])
+        .unwrap();
+    set(
+        &mut app,
+        &[(v(15, 4, 4), block("wire")), (v(16, 4, 4), battery)],
+    );
+    let wire = network(&app, v(15, 4, 4));
+    assert_eq!(wire.ports().len(), 1);
+    assert!(!wire.is_frozen());
+
+    let entity = app
+        .world()
+        .resource::<ChunkMap>()
+        .get(ChunkCoord(IVec3::X))
+        .unwrap();
+    let saved = app.world().get::<Chunk>(entity).cloned().unwrap();
+    unload(&mut app, IVec3::X);
+    let wire = network(&app, v(15, 4, 4));
+    assert!(wire.ports().is_empty());
+    assert!(wire.is_frozen());
+
+    spawn(&mut app, IVec3::X, saved);
+    app.update();
+    let wire = network(&app, v(15, 4, 4));
+    assert_eq!(wire.ports().len(), 1);
+    assert!(!wire.is_frozen());
+}
+
 /// After any series of edits, loads and unloads, the networks kept up to
 /// date one change at a time are the ones built from scratch, and nothing
 /// a network held was made or lost.
@@ -587,6 +628,9 @@ fn incremental_networks_match_a_rebuild() {
         copper,
         block("wire"),
         block("stone"),
+        // Machines, joined by ports, across the chunk border too.
+        block("tank"),
+        block("battery"),
         BlockState::AIR,
         BlockState::AIR,
     ];
@@ -601,7 +645,7 @@ fn incremental_networks_match_a_rebuild() {
     let mut saved = None;
     let mut given = 0;
     for step in 0..400 {
-        if step % 50 == 49 {
+        if step % 10 == 9 {
             if x_loaded {
                 let entity = app
                     .world()

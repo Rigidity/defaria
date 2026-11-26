@@ -1,0 +1,8 @@
+// A machine face with a port onto the electric network: the casing with a
+// copper socket over it, so the network it takes shows.
+{
+  layers: [
+    { image: "machine_side", material: "iron" },
+    { image: "port", material: "copper" },
+  ],
+}

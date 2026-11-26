@@ -56,12 +56,19 @@ impl Placement {
 
     /// The value index placing against `face` (the side of the block
     /// clicked, pointing back at you) while looking along `look` gives.
+    /// Looking steeply up or down at a property that has no value for
+    /// that falls back to the way you face across the ground, so a
+    /// machine placed at your feet still faces along your look.
     pub fn value(&self, face: Direction, look: Vec3) -> Option<usize> {
-        let side = match self.from {
-            PlaceFrom::Face => face,
-            PlaceFrom::Look => Direction::along(look),
-        };
-        self.values[side as usize]
+        match self.from {
+            PlaceFrom::Face => self.values[face as usize],
+            PlaceFrom::Look => self.values[Direction::along(look) as usize].or_else(|| {
+                let flat = Vec3::new(look.x, 0.0, look.z);
+                (flat.length_squared() > 1e-6)
+                    .then(|| self.values[Direction::along(flat) as usize])
+                    .flatten()
+            }),
+        }
     }
 }
 
@@ -169,6 +176,49 @@ mod tests {
         let west = facing.state(&[("facing", "west")]).unwrap();
         assert_eq!(content.placed(s, Direction::Up, Vec3::NEG_X), west);
         assert_eq!(content.placed(west, Direction::Up, Vec3::NEG_Y), west);
+    }
+
+    /// Looking steeply down (placing a machine on the floor in front of
+    /// you) or up, a `facing` with only the four sides takes the way you
+    /// face across the ground, whichever side of the block you click.
+    #[test]
+    fn looking_steeply_falls_back_to_the_horizontal() {
+        let content = test_mod(&[
+            ("models/m.json5", "{ faces: [] }"),
+            (
+                "blocks/facing.json5",
+                r#"{ model: "m", properties: { facing: {
+                    values: ["north", "south", "east", "west"], place: "look",
+                } } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let facing = content.block("test:facing").unwrap();
+        let s = facing.default_state();
+        for (horizontal, name) in [
+            (Vec3::NEG_Z, "north"),
+            (Vec3::Z, "south"),
+            (Vec3::X, "east"),
+            (Vec3::NEG_X, "west"),
+        ] {
+            let want = facing.state(&[("facing", name)]).unwrap();
+            // About 60° down, and nearly straight down or up.
+            for vertical in [-1.7, -50.0, 50.0] {
+                let look = (horizontal + Vec3::Y * vertical).normalize();
+                for face in [Direction::Up, Direction::South, Direction::West] {
+                    assert_eq!(content.placed(s, face, look), want, "{name} {vertical}");
+                }
+            }
+        }
+        // The base game's battery, placed on the floor ahead looking north,
+        // faces back south at you.
+        let content = base();
+        let battery = content.block("defaria:battery").unwrap();
+        let look = Vec3::new(0.0, -1.7, -1.0).normalize();
+        assert_eq!(
+            content.placed(battery.default_state(), Direction::Up, look),
+            battery.state(&[("facing", "south")]).unwrap()
+        );
     }
 
     #[test]
