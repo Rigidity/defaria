@@ -1471,8 +1471,8 @@ item state, and every combination of materials a texture is used with is
 baked on the CPU into its own layer of the block texture array.
 
 **Decision.** Keep expanding combinations up front, and keep baking each
-texture's combinations into finished tiles. The base game has 724 block
-states, 223 item states and 230 tiles. Baking stays even when tiles run
+texture's combinations into finished tiles. The base game has 733 block
+states, 232 item states and 239 tiles. Baking stays even when tiles run
 short: coloring in the shader instead (gray layers plus a palette per
 face) doesn't fit layered textures. Each face would need a variable-length
 list of layers to color and blend per pixel, and filtering breaks: mips
@@ -1784,3 +1784,28 @@ mips), drawn by the voxel material's shader over the block's own layers.
 
 **When to revisit.** When mods add mining effects, or if the shimmer shows
 in play.
+
+## Plants say what they stand on in data; losing support drops nothing, and loading checks nothing (2026-11-26)
+
+**Decision.** A block's `support` (in its JSON5) lists what it can stand
+on, and the engine enforces it (`src/support.rs`, with the placement check
+in `block_edit` and the harvest in `mining`), rather than plant scripts
+(`on_placed`, `on_neighbour_changed`). A script can't refuse a placement:
+the item would be used up and the plant vanish a tick later. A plant that
+loses its support gives its item only to a player mining the block under
+it in survival; broken any other way (a script, a `fill`, an inventory
+too full) it gives nothing. Nothing is checked when chunks load.
+
+**What's wrong with it.** There are no dropped items, so a plant knocked
+off by a script or a machine is lost. A plant whose support was edited
+while the plant's chunk wasn't loaded (only possible at the edge of the
+loaded area) keeps standing when it loads. Support is only ever the block
+below: nothing hangs from a ceiling or clings to a wall.
+
+**What should replace it.** Dropped item entities, so every break drops
+what it gives, wherever it comes from; a support check on chunks as they
+load, next to the connection check; and `support` naming a side, for
+hanging and climbing plants.
+
+**When to revisit.** With dropped items, or with the first plant that
+hangs or climbs.

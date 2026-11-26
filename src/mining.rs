@@ -580,4 +580,28 @@ mod tests {
         assert_eq!(inventory.count(grass), 1);
         assert_eq!(inventory.count(daisy), 0);
     }
+
+    /// A block on the one mined that doesn't need support (a log on the
+    /// grass) stays, and isn't harvested.
+    #[test]
+    fn mining_leaves_blocks_that_need_no_support() {
+        let mut app = app();
+        let ground = IVec3::new(5, 1, 7);
+        let log = ground + IVec3::Y;
+        set(&mut app, ground, crate::content::grass());
+        set(&mut app, log, block("log"));
+        let player = crate::player::tests::local(&mut app);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((Inventory::new(), GameMode::Survival));
+        look_at(&mut app, ground.as_vec3() + Vec3::new(0.5, 0.9, 0.5));
+        frame(&mut app, true);
+        for _ in 0..frames_to_break(crate::content::grass()) {
+            frame(&mut app, false);
+        }
+        assert_eq!(at(&mut app, ground), BlockState::AIR);
+        assert_eq!(at(&mut app, log), block("log"));
+        let inventory = app.world().get::<Inventory>(player).unwrap();
+        assert_eq!(inventory.entries().len(), 1, "only the grass");
+    }
 }
