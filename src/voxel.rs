@@ -1291,13 +1291,13 @@ mod tests {
     const A: IVec3 = IVec3::new(5, 5, 5);
     const B: IVec3 = IVec3::new(6, 5, 5);
 
-    /// Each block's faces go in the mesh for how it's drawn. Glass and
-    /// water are double-sided: each face twice, front and back.
+    /// Each block's faces go in the mesh for how it's drawn. Water is
+    /// double-sided: each face twice, front and back; glass isn't.
     #[test]
     fn faces_go_in_the_mesh_for_their_render() {
         assert_eq!(split(&[(A, "stone")]), [6, 0, 0]);
         assert_eq!(split(&[(A, "leaves")]), [0, 6, 0]);
-        assert_eq!(split(&[(A, "glass")]), [0, 0, 12]);
+        assert_eq!(split(&[(A, "glass")]), [0, 0, 6]);
         assert_eq!(split(&[(A, "water")]), [0, 0, 12]);
         // Lava glows, but it's opaque; double-sided like water.
         assert_eq!(split(&[(A, "lava")]), [12, 0, 0]);
@@ -1318,7 +1318,7 @@ mod tests {
         assert_eq!(split(&[(A, "stone"), (B, "water")]), [6, 0, 10]);
         // Water, glass and leaves lose their face against lava.
         assert_eq!(split(&[(A, "water"), (B, "lava")]), [12, 0, 10]);
-        assert_eq!(split(&[(A, "glass"), (B, "lava")]), [12, 0, 10]);
+        assert_eq!(split(&[(A, "glass"), (B, "lava")]), [12, 0, 5]);
         assert_eq!(split(&[(A, "leaves"), (B, "lava")]), [12, 5, 0]);
     }
 
@@ -1336,12 +1336,12 @@ mod tests {
     /// both faces show.
     #[test]
     fn faces_between_the_same_translucent_block_are_culled() {
-        // Double-sided, so two faces each.
-        assert_eq!(split(&[(A, "glass"), (B, "glass")]), [0, 0, 20]);
+        // Water is double-sided, so two faces each.
+        assert_eq!(split(&[(A, "glass"), (B, "glass")]), [0, 0, 10]);
         assert_eq!(split(&[(A, "water"), (B, "water")]), [0, 0, 20]);
-        assert_eq!(split(&[(A, "glass"), (B, "water")]), [0, 0, 24]);
-        assert_eq!(split(&[(A, "stone"), (B, "glass")]), [6, 0, 10]);
-        assert_eq!(split(&[(A, "leaves"), (B, "glass")]), [0, 6, 12]);
+        assert_eq!(split(&[(A, "glass"), (B, "water")]), [0, 0, 6 + 12]);
+        assert_eq!(split(&[(A, "stone"), (B, "glass")]), [6, 0, 5]);
+        assert_eq!(split(&[(A, "leaves"), (B, "glass")]), [0, 6, 6]);
     }
 
     /// See-through blocks cast no ambient occlusion and don't hide light
@@ -1491,10 +1491,17 @@ mod tests {
     }
 
     /// Back faces are flagged for the shader to draw a hair farther away;
-    /// front faces aren't, and the flag leaves the layer as it was.
+    /// front faces aren't, and the flag leaves the layer as it was. Glass,
+    /// not double-sided, has no backs.
     #[test]
     fn back_faces_are_flagged() {
-        for name in ["water", "lava", "glass"] {
+        let glass = neighborhood(&[(A, block("glass"))], |_| OPEN_SKY).meshes(base());
+        assert!(
+            faces_of(&glass.translucent)
+                .iter()
+                .all(|f| f[0] & BACK_FACE == 0)
+        );
+        for name in ["water", "lava"] {
             let meshes = neighborhood(&[(A, block(name))], |_| OPEN_SKY).meshes(base());
             let mesh = if name == "lava" {
                 meshes.opaque
@@ -1555,7 +1562,7 @@ mod tests {
             Vec3::splat(6.0),
         ] {
             let indices = meshes.translucent_faces.indices_from(eye);
-            assert_eq!(indices.len(), 2 * 12 * 6);
+            assert_eq!(indices.len(), 12 * 6);
             let distances: Vec<f32> = indices
                 .chunks(6)
                 .map(|quad| {

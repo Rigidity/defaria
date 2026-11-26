@@ -44,8 +44,7 @@ along the border, since a whole chunk's faces draw before or after the
 next chunk's. Each re-sort uploads the chunk's mesh again. To keep that
 cheap, a mesh whose faces all lie in one plane (open water) is never
 sorted, and far chunks re-sort at staggered places (`sort_position`).
-Glass and water are double-sided, so a glass wall tints what's behind it
-twice (its near and far faces), and there's no tint or fog underwater.
+There's no tint or fog underwater.
 
 Double-sided faces' backs are flagged, and the shader draws them a hair
 farther away than they are (a depth bias of 2e-5 of their distance), so

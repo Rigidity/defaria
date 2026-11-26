@@ -283,9 +283,8 @@ passes through every side of a cut-out or translucent block, and they
 cast no ambient occlusion.
 
 `double_sided: true` draws each face from behind as well, lit as its front
-is: the far side of a glass block shows through the near side, and
-water's surface shows from underneath. It's set on the block, not in
-variants.
+is, for blocks you can be inside: water's surface shows from underneath,
+and lava's from inside it. It's set on the block, not in variants.
 
 ### Fluids
 
