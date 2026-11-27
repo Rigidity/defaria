@@ -1746,26 +1746,43 @@ that ignores connection properties, beside the texture rule.
 **When to revisit.** Connected glass, or translucent blocks whose sides
 mix textures.
 
-## Translucent faces are sorted per chunk, on the CPU (2026-11-25)
+## Translucent faces are sorted on the CPU: near the eyes together, farther out per chunk (2026-11-27)
 
 **Context.** Translucent faces (glass, water) blend with what's behind
-them, so they must be drawn back to front.
+them, so they must be drawn back to front. Bevy draws each blended mesh
+whole, ordered by its centre, so sorting faces only within each chunk
+left a chunk's faces all drawn before or after its neighbour's: water and
+glass across a chunk border, seen at an angle, showed a hard-edged band
+of a different shade along the border (#81).
 
 **Decision.** Each chunk's translucent faces are one mesh on a child
-entity, which Bevy sorts against other meshes by its centre. Inside it,
-`sort_translucent_faces` (`src/meshing.rs`) orders the faces farthest
-first from the camera by their centres, rewriting the index buffer when
-the camera has moved a block (near chunks) or a chunk (far ones).
+entity, sorted farthest first from the eyes by the faces' centres
+(`sort_translucent_faces`, `src/meshing.rs`), rewriting the index buffer
+when the eyes have moved a block (near chunks) or a chunk (far ones). But
+the chunks within two of the eyes' chunk (`NearRadius`, a cube five
+chunks a side) are drawn in one mesh instead, made of all their
+translucent faces and sorted as a whole (`src/meshing/near.rs`), and their
+own parts are hidden. The eyes are always inside that cube, so it's
+drawn after every other blended mesh (its material's `draws_last`, a big
+`depth_bias`). It's merged again when the eyes leave the cube's middle
+chunk by more than 4 blocks, or a mesh in it changes, and sorted again
+each block the eyes move. A mesh whose faces all lie in one plane (open
+water, even across the cube) is never sorted.
 
-**What's wrong with it.** Sorting by face centres and by chunk centres is
-an approximation: big faces at grazing angles, and translucent faces in
-neighbouring chunks that overlap on screen, can blend in the wrong order.
-The second shows plainly in anything built of water and glass across a
-chunk border, seen at an angle: a hard-edged band of a different shade
-along the border, since a whole chunk's faces draw before or after the
-next chunk's. Each re-sort uploads the chunk's mesh again. To keep that
-cheap, a mesh whose faces all lie in one plane (open water) is never
-sorted, and far chunks re-sort at staggered places (`sort_position`).
+Order-independent transparency was the other way out, and is what should
+eventually replace this. Bevy 0.20's OIT (a per-pixel linked list) panics
+with MSAA on, which the cut-out leaves' alpha to coverage relies on, and
+holds about 50 bytes a pixel (hundreds of MB full screen on a
+high-resolution display), dropping fragments past that.
+
+**What's wrong with it.** Sorting by face centres is still an
+approximation: big faces at grazing angles can blend in the wrong order.
+Beyond the merged cube, chunks still sort one by one, so the band can
+show at a chunk border farther away, smaller. Every re-sort uploads the
+whole mesh again, the merged one included, and merging copies the
+cube's translucent vertices whenever one of its chunks remeshes (flowing
+water nearby does that often). Far chunks re-sort at staggered places
+(`sort_position`) so crossing a chunk doesn't sort them all at once.
 There's no tint or fog underwater.
 
 Double-sided faces' backs are flagged, and the shader draws them a hair
@@ -1776,9 +1793,14 @@ flickering. Moving the backs themselves left hairline gaps or overlaps
 at block edges. A back sorts as if a little inside its block, so water
 blends over the glass it touches.
 
-**What should replace it.** Order-independent transparency (Bevy has an
-OIT pass), or sorting only the index buffer on the GPU. For water, add an
-underwater view when fluids get physics (#63).
+**What should replace it.** Order-independent transparency once it works
+with antialiasing (or with the leaves cut out another way), or sorting
+only the index buffer on the GPU. For water, add an underwater view when
+fluids get physics (#63).
+
+**When to revisit.** If merging shows up in frame times (big translucent
+builds, or lots of flowing water near the eyes), or a band at the cube's
+edge is noticeable.
 
 ## Every material combination is its own tile and state (2026-11-25)
 

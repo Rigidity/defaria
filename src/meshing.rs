@@ -14,7 +14,8 @@
 //! A mesh is built from a [`Neighborhood`] (see [`build`]). Opaque faces
 //! are drawn on the chunk's own entity, cut-out and translucent ones on
 //! child entities ([`ChunkParts`]), with the translucent faces sorted back
-//! to front ([`sort_translucent_faces`]).
+//! to front ([`sort_translucent_faces`]); near the eyes, several chunks'
+//! translucent faces are merged and sorted together (see [`near`]).
 
 use std::sync::Arc;
 
@@ -35,25 +36,30 @@ use crate::{
 };
 
 mod build;
+mod near;
 
 pub use build::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_FLOW, ATTRIBUTE_LIGHT};
 pub use build::{BACK_FACE, MARGIN};
 use build::{ChunkMeshes, Neighborhood, TranslucentFaces};
+pub use near::{Merged, NearRadius};
 
 pub struct MeshingPlugin;
 
 impl Plugin for MeshingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, set_sky_color).add_systems(
-            Update,
-            (
-                remesh_changed_chunks,
-                apply_finished_meshes,
-                sort_translucent_faces,
-            )
-                .chain()
-                .in_set(RemeshChunks),
-        );
+        app.init_resource::<NearRadius>()
+            .add_systems(Startup, (set_sky_color, near::spawn_near_faces))
+            .add_systems(
+                Update,
+                (
+                    remesh_changed_chunks,
+                    apply_finished_meshes,
+                    near::merge_near_faces,
+                    (sort_translucent_faces, near::sort_near_faces),
+                )
+                    .chain()
+                    .in_set(RemeshChunks),
+            );
     }
 }
 
@@ -313,14 +319,15 @@ fn sort_position(eye: Vec3, coord: ChunkCoord) -> IVec3 {
 /// Puts each translucent mesh's faces in order, farthest from the local
 /// player's eyes first, when it's new or the eyes have moved far enough
 /// (see [`sort_position`]). Only the indices change. A mesh whose faces all
-/// lie in one plane (open water) never needs it.
+/// lie in one plane (open water) never needs it, nor one [`Merged`] into
+/// the near faces' mesh.
 ///
 /// From the eyes, which are where they are this frame by `Update`, rather
 /// than the drawn view, whose transform is a frame old here and sways with
 /// each step: swaying across a sort boundary would sort again every step.
 fn sort_translucent_faces(
     eyes: Query<Eyes, With<LocalPlayer>>,
-    mut parts: Query<(&TranslucentFaces, &Mesh3d, &ChildOf, &mut SortedFrom)>,
+    mut parts: Query<(&TranslucentFaces, &Mesh3d, &ChildOf, &mut SortedFrom), Without<Merged>>,
     coords: Query<&ChunkCoord>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
