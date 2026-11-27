@@ -16,10 +16,11 @@ enum Kind {
     Blocks,
     Items,
     Recipes,
+    Reactions,
 }
 
 impl Kind {
-    const ALL: [Kind; 8] = [
+    const ALL: [Kind; 9] = [
         Kind::Categories,
         Kind::Networks,
         Kind::Materials,
@@ -28,6 +29,7 @@ impl Kind {
         Kind::Blocks,
         Kind::Items,
         Kind::Recipes,
+        Kind::Reactions,
     ];
 
     fn folder(self) -> &'static str {
@@ -40,6 +42,7 @@ impl Kind {
             Kind::Blocks => "blocks",
             Kind::Items => "items",
             Kind::Recipes => "recipes",
+            Kind::Reactions => "reactions",
         }
     }
 }
@@ -88,6 +91,7 @@ pub(super) fn parse_file(
         Kind::Blocks => defs.blocks.push(def(id, namespace, file, text)?),
         Kind::Items => defs.items.push(def(id, namespace, file, text)?),
         Kind::Recipes => defs.recipes.push(def(id, namespace, file, text)?),
+        Kind::Reactions => defs.reactions.push(def(id, namespace, file, text)?),
     }
     Ok(())
 }

@@ -502,6 +502,33 @@ fn the_fluids_window_compares_across_a_trip() {
     }
 }
 
+/// The `fluids` report says what reactions used up, and only that when
+/// nothing was displaced: water poured beside a pocket of lava turns it
+/// to stone, and the water left and what reacted add up to the two blocks
+/// there were.
+#[test]
+fn the_fluids_report_counts_what_reacted() {
+    let (mut app, exit) = run_game(
+        "camera 5000.5 -1000.5 5000.5 0 0\n\
+         settle\n\
+         fill 4996 -1004 4996 5004 -999 5004 stone\n\
+         fill 4999 -1001 5000 5001 -1001 5000 air\n\
+         fill 5000 -1002 5000 5000 -1002 5000 lava\n\
+         pour 4999 -1001 5000 water 1\n\
+         wait 120\n",
+    );
+    assert_eq!(exit, AppExit::Success);
+    let report = fluid_report(app.world_mut(), FluidRegion::Window);
+    let (fluids, lost) = report.split_once("; lost: reacted ").expect(&report);
+    let reacted: u64 = lost.parse().expect(&report);
+    let water: u64 = fluids
+        .rsplit_once("defaria:water ")
+        .and_then(|(_, n)| n.parse().ok())
+        .expect(&report);
+    assert!(!fluids.contains("defaria:lava"), "{report}");
+    assert_eq!(water + reacted, 2000, "{report}");
+}
+
 /// The `fluids` report counts what's in machines' tanks too, and says
 /// where it is: a pump has drawn the poured water into a tank. The
 /// `network` report gives the pump and tank's roles.

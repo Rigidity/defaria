@@ -259,6 +259,54 @@ chunk storage now.
 - mixed (dense) chunks pass about 100 MiB (a much larger radius, or a
   server keeping several players' areas): the palette;
 - the meshes' main-world copy is already due, and tracked in #161.
+## Fluids react from a table, once, where flow finds them touching (2026-11-26)
+
+**Context.** Different fluids that touched just stopped, as at a wall
+(#85). Lava running into water should make stone.
+
+**Decision.** Reactions are data, `reactions/<name>.json5` in a mod, one
+per pair of fluids, the same whichever flows onto which: one fluid's
+voxel is used up whole, turning into a block (`makes`) if it holds at
+least `at_least` and otherwise cooling away to air, and `uses` is taken
+from the other's voxel for each block of the first. The base game has
+lava and water making stone, at half a block of lava, using a quarter of
+the lava's amount of water. Flow already
+noted where a step's fluid touched another (`meetings`); once the step's
+moves are made, `flow::meet` reacts each pair that's still there,
+through the `Cells` trait (`reaction`, `place`), and wakes around both
+voxels. Fluid that touches a fluid it reacts with counts as fluid that
+might move (`flow::might_move`), so pools that already touch when a chunk
+loads, generated or left by a chunk that unloaded under them, react then
+too. What reactions use up is counted (`FluidStats::reacted`, shown
+by the headless `fluids` report beside what displacement deleted), so
+totals plus counted losses stay constant. The block goes in as the
+voxel's block, a waterlogged slab's too, once flow has cleared the
+voxel's fluid, so it pushes none aside (#175) and isn't counted twice.
+Fluid in a block's room (a slab's half) reacts like any other. A boundary turns to stone once and then stops, since
+stone doesn't react, and nothing stays active for it. For that to hold,
+the fluid a reaction uses up whole (lava) doesn't spread sideways onto a
+voxel resting on the fluid it reacts with: otherwise a lava pool whose
+surface is above a water channel's creeps out over the water an eighth
+of a block at a time, each eighth too thin for stone and cooling away,
+and drains the pool without ever making a wall. It still runs off edges
+onto it, and water still spreads over lava, crusting it to stone.
+
+**What's wrong with it.** Lava stands at the edge of water below it, a
+step of lava beside air, rather than flowing on and crusting over. Lava
+that runs off a ledge into water lands in slivers too thin for stone, so a
+lava fall into a lake boils away (using a quarter of its amount of water)
+for as long as it pours, and never builds stone up. A lava voxel next to
+two water voxels reacts with only one of them. Lava in a slab's room
+turns the slab itself to stone. Fluids that don't react can't float on each other (#158), and the
+water used up vanishes with nothing to show for it (#159, steam). A
+reaction always makes the same block, whatever the amounts, and can't
+make fluid (obsidian from still lava, cobble from flowing, steam as a
+gas).
+
+**What should replace it.** Density, so lighter fluids spread over
+heavier ones (#158), and a cosmetic steam effect named in the
+reaction (#159). If mods need it, let a reaction pick its block by how
+much of each fluid there was, or make a fluid.
 
 ## Shale and loam don't generate in the terrain yet (2026-11-26)
 

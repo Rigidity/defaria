@@ -721,6 +721,25 @@ pub struct FluidDef {
     pub view: FluidViewDef,
 }
 
+/// `reactions/<name>.json5`: what two fluids do where they meet.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReactionDef {
+    /// The fluid whose voxel is used up whole where they meet.
+    pub fluid: String,
+    /// The fluid it meets.
+    pub with: String,
+    /// The block `fluid`'s voxel turns into, if it holds at least
+    /// `at_least`. With less, it's used up and leaves nothing.
+    pub makes: String,
+    /// In blocks, from 0 to 1.
+    pub at_least: f32,
+    /// How much of `with`'s voxel it uses up for each block of `fluid`, in
+    /// blocks, from 0 to 1: in proportion to how much of `fluid` there
+    /// was, and all of it, if the voxel holds less.
+    pub uses: f32,
+}
+
 /// The view from inside a fluid.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]

@@ -24,6 +24,7 @@ assets/mods/<folder>/
   categories/        headings items are listed under in the inventory
   networks/          kinds of network conduits form
   recipes/           what recipe machines take, make and need
+  reactions/         what fluids do where they meet
   scripts/           Luau scripts, see scripting.md
 ```
 
@@ -395,7 +396,8 @@ itself over any edge it can run off, straight into the voxel below the
 edge. Levels only ever move toward each
 other, so a draining pond goes down smoothly. Fluid only flows into the
 room blocks leave (all of air's voxel, half a slab's) and into the same
-fluid: two different fluids that touch stop there.
+fluid: two different fluids that touch stop there, unless they react
+(see [Reactions](#reactions)).
 A fluid has no `model` (nor `rotate`): the engine draws it as a box as
 high as it's full, its sides cut to fit with their texture cut off rather
 than squashed. Give it textures as for a full block: `all`, or `side` and
@@ -1419,6 +1421,43 @@ recipe, running or waiting for energy or room, so it doesn't blink while
 power is short. Whatever put the inputs in its slots
 and tanks (a player, a tube, a pipe, a script), it runs on them the same.
 
+## Reactions
+
+`reactions/<name>.json5`: what two fluids do where they meet. Fluids
+without one just stop where they touch, as at a wall.
+
+```json5
+// reactions/lava_water.json5
+{
+  fluid: "lava",    // the fluid whose voxel is used up whole
+  with: "water",    // the fluid it meets
+  makes: "stone",   // what that voxel turns into...
+  at_least: 0.5,    // ...if it holds at least this much, in blocks
+  uses: 0.25,       // how much of the other fluid it uses up, per block
+}
+```
+
+Where flowing fluid touches the other one, beside, above or below it,
+the two voxels react once: `fluid`'s voxel turns into `makes` if it holds
+at least `at_least` of a block (a whole block of it: a slab whose room
+held lava turns to stone too), and otherwise its fluid cools away, and
+`uses` of a block of `with` for each block of `fluid` there was is taken
+from `with`'s voxel (all of it, if it holds less): lava turning a full
+block to stone uses a quarter of a block of water, and a sliver cooling
+away uses a quarter of the sliver. It's the same whichever fluid flows
+onto which. Fluids react where they flow into each other, and where they
+already touch when a chunk loads. `makes` is a solid block, so a
+boundary reacts once and then it's a wall. `fluid` doesn't spread
+sideways onto a voxel resting on `with` (it would only creep out an
+eighth at a time, each too thin to make anything), though it still runs
+off edges onto it; `with` spreads onto `fluid` as usual, reacting as it
+goes. Two fluids can only react one way: a second reaction naming the
+same pair, either way round, is an error.
+
+What a reaction uses up is the only fluid flow ever loses, besides what
+blocks placed into fluid delete, having nowhere to push it; the headless
+`fluids` report counts both (`displaced` and `reacted`).
+
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
@@ -1434,6 +1473,8 @@ and tanks (a player, a tube, a pipe, a script), it runs on them the same.
 - A block's room for fluid is one amount, not a shape: fluid in a slab's
   voxel falls through its solid bottom, and stands on the slab whichever
   half the slab is.
+- Fluids that don't react don't float on each other (a lighter one
+  spreading over a heavier one), and reactions show no steam.
 - Models are block-only so far: no bones or animation for entities.
 - A wire carrying more than it can doesn't burn out; it caps what the
   network moves. Wires lose nothing over distance, and there are no

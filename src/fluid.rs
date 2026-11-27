@@ -4,11 +4,13 @@
 //! holds an amount of one, up to [`FULL_FLUID`], beside its block (see
 //! [`Chunk`](crate::world::Chunk)): all of its cell for air, some for a
 //! block that leaves room for it (`fluid_room`, a slab's half), none for a
-//! full block. Flow only moves those amounts between voxels, never
-//! touching blocks: fluid is never made, and only destroyed when a block
+//! full block. Flow only moves those amounts between voxels, and
+//! fluid is never made, and only destroyed when a block
 //! is placed into it and nothing around has room for what no longer fits
-//! (see [`fluid_displaced`]). How it moves, and which voxels step when, is
-//! in [`flow`]; this plugin runs that on the loaded chunks, in
+//! (see [`fluid_displaced`]), or when two fluids react where they meet
+//! (`reactions/` in a mod: lava meeting water turns to stone, which is the
+//! one way flow sets a block). How it moves, and which voxels step when,
+//! is in [`flow`]; this plugin runs that on the loaded chunks, in
 //! [`FixedUpdate`].
 //!
 //! Fluid is woken (made active, so it steps) where it might move:
@@ -109,6 +111,9 @@ pub struct FluidStats {
     /// deleted since the start, where nothing around had room for it, in
     /// thousandths of a block.
     pub deleted: u64,
+    /// Fluid used up by reactions since the start, in thousandths of a
+    /// block.
+    pub reacted: u64,
 }
 
 /// The flow simulation over the loaded world.
@@ -132,6 +137,10 @@ impl CellView for WorldCells<'_, '_> {
         let (state, fluid) = self.voxels.get_with_fluid(pos)?;
         Some(cell_of(&self.content, state, fluid))
     }
+
+    fn reaction(&self, a: BlockState, b: BlockState) -> Option<flow::Reaction> {
+        reaction_of(&self.content, a, b)
+    }
 }
 
 /// The fluid in the loaded world, to look at: as cells for flow, and where
@@ -152,6 +161,10 @@ impl CellView for FluidView<'_, '_> {
             chunk.at(local),
             chunk.fluid_at(local),
         ))
+    }
+
+    fn reaction(&self, a: BlockState, b: BlockState) -> Option<flow::Reaction> {
+        reaction_of(&self.content, a, b)
     }
 }
 
@@ -221,6 +234,29 @@ impl Cells for WorldCells<'_, '_> {
         };
         self.voxels.flow_fluid(pos, fluid);
     }
+
+    /// The block replaces the voxel's, a waterlogged slab's too. Flow has
+    /// already cleared the voxel's fluid, the reaction using it up, so the
+    /// block pushes none aside and nothing counts it as displaced.
+    fn place(&mut self, pos: IVec3, block: BlockState) {
+        self.voxels.set(pos, block);
+    }
+}
+
+/// What fluids `a` and `b` do where they meet, as flow sees it, from the
+/// mods' `reactions/`.
+fn reaction_of(content: &Content, a: BlockState, b: BlockState) -> Option<flow::Reaction> {
+    let reaction = content.reaction(a, b)?;
+    Some(flow::Reaction {
+        fluid: if content.state(a).block == reaction.fluid {
+            a
+        } else {
+            b
+        },
+        makes: reaction.makes,
+        at_least: reaction.at_least,
+        uses: reaction.uses,
+    })
 }
 
 /// What a voxel of block `state` holding `fluid` is to flow: its room is
@@ -256,6 +292,7 @@ pub(crate) fn run_flow(
         time.delta_secs(),
         settings.cells_per_tick,
     );
+    stats.reacted += report.reacted;
     if report.stepped > 0 || stats.active != report.active {
         let millis = start.elapsed().as_secs_f64() * 1000.0;
         stats.stepped += report.stepped as u64;
@@ -439,6 +476,116 @@ mod tests {
         for _ in 0..(seconds / 0.05) as usize {
             app.update();
         }
+    }
+
+    /// Water running along a tunnel over a pocket of lava in its floor
+    /// turns the lava to stone, as the base game's reaction says: the water
+    /// left and what the reaction used up add up to what there was.
+    #[test]
+    fn water_running_into_lava_makes_stone() {
+        let mut app = app();
+        // Stone made by a reaction isn't counted as displacing fluid.
+        app.add_systems(Update, note_displaced_fluid);
+        let mut chunk = Chunk::filled(block("stone"));
+        for x in 0..16 {
+            chunk.set(x, 1, 8, BlockState::AIR);
+        }
+        chunk.set_to_fluid(IVec3::new(1, 1, 8), block("water"));
+        chunk.set_to_fluid(IVec3::new(2, 1, 8), block("water"));
+        chunk.set_to_fluid(IVec3::new(10, 0, 8), block("lava"));
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 40.0);
+        let (coord, local) = ChunkCoord::split(IVec3::new(10, 0, 8));
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        assert_eq!(chunk.at(local), block("stone"));
+        let water: u64 = (0..16)
+            .map(|x| amount(&app, IVec3::new(x, 1, 8)) as u64)
+            .sum();
+        let stats = app.world().resource::<FluidStats>();
+        // All of the lava, and up to a quarter of a block of water.
+        let lava = FULL_FLUID as u64;
+        assert!(
+            (lava + 1..=lava + 250).contains(&stats.reacted),
+            "{stats:?}"
+        );
+        assert_eq!(water + stats.reacted, 3 * FULL_FLUID as u64, "{stats:?}");
+        assert_eq!((stats.pushed_aside, stats.deleted), (0, 0));
+    }
+
+    /// Lava in a waterlogged slab's half of its voxel reacts like any
+    /// other: water running along a tunnel over a slab sunk in its floor
+    /// turns the slab's voxel to stone, its fluid gone, and the totals
+    /// still add up.
+    #[test]
+    fn lava_in_a_slab_reacts() {
+        let mut app = app();
+        app.add_systems(Update, note_displaced_fluid);
+        let mut chunk = Chunk::filled(block("stone"));
+        for x in 0..16 {
+            chunk.set(x, 1, 8, BlockState::AIR);
+        }
+        chunk.set_to_fluid(IVec3::new(1, 1, 8), block("water"));
+        chunk.set_to_fluid(IVec3::new(2, 1, 8), block("water"));
+        let slab = IVec3::new(10, 0, 8);
+        let room = base().state(block("stone_slab")).fluid_room;
+        assert_eq!(room, FULL_FLUID / 2);
+        chunk.set_at(slab, block("stone_slab"));
+        let lava = VoxelFluid {
+            kind: block("lava"),
+            amount: room,
+        };
+        chunk.start_fluid_at(slab, Some(lava), room);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 20.0);
+        let entity = app
+            .world()
+            .resource::<ChunkMap>()
+            .get(ChunkCoord(IVec3::ZERO))
+            .unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        assert_eq!(chunk.at(slab), block("stone"));
+        assert_eq!(chunk.fluid_at(slab), None);
+        let water: u64 = (0..16)
+            .map(|x| amount(&app, IVec3::new(x, 1, 8)) as u64)
+            .sum();
+        let stats = app.world().resource::<FluidStats>();
+        // Half a block of lava, and up to a quarter of that of water (the
+        // water's voxel gives what it holds).
+        assert!(
+            (room as u64 + 1..=(room + room / 4) as u64).contains(&stats.reacted),
+            "{stats:?}"
+        );
+        assert_eq!(water + stats.reacted, (2 * FULL_FLUID + room) as u64);
+        assert_eq!((stats.pushed_aside, stats.deleted), (0, 0));
+    }
+
+    /// Lava stopped at the face of a chunk that wasn't loaded, which loads
+    /// with water against it: the two touch without flowing, and react
+    /// once it loads, rather than staying side by side.
+    #[test]
+    fn fluids_touching_across_a_loaded_face_react() {
+        let mut app = app();
+        let mut chunk = Chunk::filled(block("stone"));
+        chunk.set_to_fluid(IVec3::new(15, 1, 8), block("lava"));
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 1.0);
+        assert_eq!(app.world().resource::<FluidStats>().active, 0, "settled");
+        let mut next = Chunk::filled(block("stone"));
+        next.set_to_fluid(IVec3::new(0, 1, 8), block("water"));
+        insert_chunk(&mut app, IVec3::X, next);
+        run(&mut app, 2.0);
+        let entity = app
+            .world()
+            .resource::<ChunkMap>()
+            .get(ChunkCoord(IVec3::ZERO))
+            .unwrap();
+        let chunk = app.world().get::<Chunk>(entity).unwrap();
+        assert_eq!(chunk.at(IVec3::new(15, 1, 8)), block("stone"));
+        assert_eq!(
+            amount(&app, IVec3::new(16, 1, 8)),
+            FULL_FLUID - FULL_FLUID / 4
+        );
     }
 
     /// Fluid against the face of a chunk that isn't loaded waits there,

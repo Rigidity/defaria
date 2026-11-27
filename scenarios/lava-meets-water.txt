@@ -1,0 +1,38 @@
+# Lava and water reacting where they meet (`reactions/lava_water.json5`).
+# In a block of stone: a lava pool, with water poured down a channel into
+# it, where the front of the pool turns to stone; and a pool of water with
+# less than half a block of lava poured onto it, which cools away. The `fluids`
+# reports show what's gone was all used up by reactions: the totals plus
+# `reacted` stay the same. Once it's all stone, nothing stays active.
+# Run: cargo headless scenarios/lava-meets-water.txt
+camera 31 66 44 0 -50
+settle
+fill 20 30 20 44 50 34 stone
+# A lava pool, two deep, and a channel from the west running into it.
+fill 30 47 22 38 50 27 air
+fill 30 47 22 38 48 27 lava
+fill 22 47 24 29 50 25 air
+fill 22 49 23 29 50 26 air
+# A pool of water, with room above it, and less than half a block of lava
+# poured onto it.
+fill 30 47 30 38 50 32 air
+fill 30 47 30 38 48 32 water
+pour 34 49 31 lava 0.4
+wait 1
+fluids
+screenshot target/scenarios/lava-meets-water/0-pools.png
+# Twenty blocks of water down the channel, and one dropped onto the lava
+# pool, which crusts over with stone where the water spreads on it.
+fill 22 47 24 26 48 25 water
+fill 35 50 25 35 50 25 water
+wait 60
+fluids
+screenshot target/scenarios/lava-meets-water/1-meeting.png
+wait 600
+fluids
+inspect FluidStats
+screenshot target/scenarios/lava-meets-water/2-stone.png
+wait 1
+camera 31 60 27 0 -89
+wait 2
+screenshot target/scenarios/lava-meets-water/3-above.png
