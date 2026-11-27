@@ -178,7 +178,7 @@ they stayed on dry ground for good. #98 chose evaporation over letting
 them creep toward a drop (#97).
 
 **Decision.** A fluid's `evaporation` (blocks a second, 0 by default;
-water 0.001, lava none) dries up its films under open sky
+water 0.00025, lava none) dries up its films under open sky
 (`src/fluid/evaporation.rs`). Open sky is full sky light in the voxel
 above the film, which the light already works out. Films are queued as
 fluid changes and as chunks load (`Films`), and each fixed tick visits

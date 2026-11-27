@@ -538,12 +538,12 @@ fn the_fluids_report_counts_what_evaporated() {
         "camera 5000.5 302.5 5000.5 0 -89\n\
          settle\n\
          fill 4995 299 4995 5005 299 5005 stone\n\
-         pour 5000 300 5000 water 0.01\n\
+         pour 5000 300 5000 water 0.002\n\
          wait 900\n",
     );
     assert_eq!(exit, AppExit::Success);
     let report = fluid_report(app.world_mut(), FluidRegion::Window);
-    assert!(report.ends_with("; lost: evaporated 10"), "{report}");
+    assert!(report.ends_with("; lost: evaporated 2"), "{report}");
     assert!(!report.contains("defaria:water"), "all gone: {report}");
 }
 

@@ -419,7 +419,7 @@ blocks (1 is a full block):
     ripple: 0.002,     // the smallest difference that flows sideways
     move_speed: 0.5,   // how fast you move in it, as a fraction of walking
     view: { color: "#1d3f73", distance: 14 }, // the fog with your eyes in it
-    evaporation: 0.001, // how fast a film of it dries up under open sky
+    evaporation: 0.00025, // how fast a film of it dries up under open sky
   },
   textures: { all: "water" },
 }

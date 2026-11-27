@@ -326,7 +326,7 @@ mod tests {
                 voxels.pour(pos, block("water"), FULL_FLUID);
             })
             .unwrap();
-        run(&mut app, 120.0);
+        run(&mut app, 480.0);
         let total: u64 = (0..16)
             .flat_map(|x| (0..16).map(move |z| IVec3::new(x, 1, z)))
             .map(|pos| amount(&app, pos) as u64)
@@ -369,7 +369,7 @@ mod tests {
         };
         chunk.start_fluid_at(pos, Some(film), room);
         insert_chunk(&mut app, IVec3::ZERO, (chunk, light));
-        run(&mut app, VISIT_SECONDS * 14.0);
+        run(&mut app, VISIT_SECONDS * 48.0);
         let entity = app
             .world()
             .resource::<ChunkMap>()
