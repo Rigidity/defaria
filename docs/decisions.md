@@ -1401,15 +1401,15 @@ which runs exactly the old flow; on the sea it matched a build of
 
 | sea-breach | in the cut at 1 s / 5 s / 20 s | active at 20 s | flow in all, worst tick | frames in the first 5 s, mean and worst | frames over 20 s |
 |---|---|---|---|---|---|
-| `main` | 361 / 717 / 1,364 blocks | 6,431 | 2.1 s, 6 ms | 4.5 ms, 12 ms | 5.2 ms, 13 ms |
-| reservoirs | 4,313 / 20,174 / 23,335 blocks: full, level with the sea | 0, settled 6.6 s after the breach | 1.9 s, 24 ms | 9.6 ms, 39 ms | 4.9 ms, 39 ms |
+| `main` | 361 / 717 / 1,364 blocks | 6,431 | 2.1 s, 6 ms | 4.3 ms, 12 ms | 5.1 ms, 13 ms |
+| reservoirs | 4,268 / 22,839 / 23,337 blocks: full, level with the sea | 0, settled 6.6 s after the breach | 1.3 s, 13 ms | 7.8 ms, 22 ms | 4.3 ms, 22 ms |
 
 | pond-channel | in the channel at 1 s / 40 s | settled | flow in all, worst tick |
 |---|---|---|---|
-| `main` | 6 / 66 blocks | no: 380 active at 40 s | 308 ms, 0.4 ms |
-| reservoirs | 114 / 204 blocks: full, level | 3.2 s after the gate opens | 8 ms, 0.2 ms |
+| `main` | 6 / 66 blocks | no: 380 active at 40 s | 302 ms, 0.6 ms |
+| reservoirs | 114 / 204 blocks: full, level | 3.2 s after the gate opens | 10 ms, 0.2 ms |
 
-On `fluid-flow.txt` flow took 9 ms with reservoirs against 55 ms, and
+On `fluid-flow.txt` flow took 10 ms with reservoirs against 56 ms, and
 settled at the same time: what's left trickling there is the lava and the
 films, which no reservoir takes. Frame means with nothing moving differed
 by up to 2 ms between identical runs, so they don't tell the two apart.
@@ -1418,9 +1418,11 @@ takes in some of the shore's water.)
 
 So reservoirs do the same work for less in all, and finish it: the sea's
 cut fills in 5 seconds rather than not at all, and then nothing's left
-moving. What they cost is concentrated: while the sea pours in, the
-frames are twice as long on average (10 ms against 5), and a tick that levels or merges
-reservoirs of tens of thousands of columns takes up to 24 ms (#197).
+moving. What they cost is concentrated while the sea pours in: frames
+are longer on average (7.8 ms against 4.3), and the worst one 22 ms
+against 12. Before levelling was given a budget a tick (see below), a
+dozen reservoirs each levelling after every step made ticks of 24 ms and
+frames of 39.
 
 The ideas weighed: **a higher `rate`** buys little (water's `rate` at 40
 rather than 20, measured earlier against the same `main` on a busier
@@ -1461,10 +1463,20 @@ the body in two; it forms again, as one or two, when its fluid next
 moves. So does its level dropping below where parts of it joined,
 as over a sill: when levelling empties a column, it checks the columns
 still holding fluid are joined, and if they aren't it's dropped, and
-each part forms again on its own. Levelling the whole of one waits until its balance comes to a
-quarter of a drawn step a column (`LAZY`), and then writes only the
-columns that far off the level, so a big lake is written over every so
-often; joined and changed columns are filled to the level straight away.
+each part forms again on its own. Levelling the whole of one waits until
+its balance comes to a quarter of a drawn step a column (`LAZY`), and
+then writes only the columns that far off the level, so a big lake is
+written over every so often; joined and changed columns are filled to
+the level straight away. **Levelling has a budget a tick**
+(`FluidSettings::reservoir_work`, 12,288): a column written counts one,
+and a pass over a reservoir's columns an eighth a column. Past it, the
+columns a levelling didn't reach are filled to the level in the next
+ticks from the balance, which keeps their share till then, and the
+reservoirs not reached are levelled next tick, those put off first. So a
+big flood's levelling is spread over frames rather than landing on one;
+paying out before a save isn't limited. (Half the budget halved the worst
+frame's flow but more than doubled how long the breach took to settle;
+twice it settled no sooner.)
 Falling fluid (with room under its run) and bodies of fewer than 16
 columns, or thinner than two films, are never reservoirs, and one spread
 thinner than a film is dropped: the last of it flows as before. **Pumps**
@@ -1484,9 +1496,14 @@ levels through any opening at once:
 a lake joined to a basin by a one-voxel gap evens out as fast as by a
 wide one, as communicating vessels would at rest but not on the way (#196).
 A sea bigger than one reservoir becomes a patchwork of them, levelled
-against each other a pair at a time as they're found touching; evening
-out the sea after a big breach costs ticks of up to 24 ms, against 6 ms
-for `main`'s flow there (#197). Reservoirs aren't saved: one forms
+against each other as they're found touching. While a sea pours into a
+breach, the worst frame is still 22 ms against `main`'s 12, over the
+16.7 ms of a 60 Hz frame: what's left there isn't levelling, which the
+budget caps at about 2 ms a tick, but flow's own stepping of its 4,096
+voxels a tick (about 5 ms, and two fixed ticks fall in one frame now and
+then) and remeshing the many chunks levelling writes into, and making
+room for their meshes (4 to 7 ms between them). Spreading those out is
+#197. Reservoirs aren't saved: one forms
 again the first time its fluid moves after loading. Its columns are
 looked up by `(x, z)`, so two bodies stacked in one column (a pond above a
 flooded cave) can't both have it (#198). An edit made where a reservoir won't hear of it
