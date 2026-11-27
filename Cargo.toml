@@ -19,7 +19,9 @@ publish = false
 
 # Every crate takes these from here, so they're one version, built once.
 [workspace.dependencies]
-bevy = "0.20.1"
+# `serialize`: the messages between client and server carry Bevy types
+# (`Transform`, vectors). Dev builds have it through `bevy_remote` already.
+bevy = { version = "0.20.1", features = ["serialize"] }
 defaria_core = { path = "crates/defaria_core", default-features = false }
 defaria_client = { path = "crates/defaria_client", default-features = false }
 json5 = "1.3.8"
@@ -29,6 +31,8 @@ miniz_oxide = "0.8.9"
 # statically, so shipping builds stay one binary (see docs/decisions.md).
 mlua = { version = "0.12.3", features = ["luau", "send"] }
 serde = { version = "1.0.229", features = ["derive"] }
+# The messages between server and client, encoded for the network.
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 # Compile out verbose log calls (including Bevy's own) at build time.
 # Debug builds keep up to `debug`; release builds keep only `warn` and `error`.
 tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_warn"] }
@@ -49,6 +53,16 @@ tracing = { workspace = true }
 
 # The headless runner's per-system CPU clock (`systems`): the version, and
 # the features, Bevy already builds.
+# The network: QUIC on async-io (which Bevy's assets already build), with
+# rustls on ring, and the server's self-signed certificate from rcgen.
+quinn = { version = "0.11", default-features = false, features = ["runtime-smol", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+smol = "2"
+bytes = "1"
+miniz_oxide = { workspace = true }
+serde = { workspace = true }
+
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { version = "1.1.6", default-features = false, features = ["time"] }
 

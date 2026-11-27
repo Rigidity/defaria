@@ -11,14 +11,14 @@
 //! already loaded) is copied over when the server starts, as play starts
 //! (`GameState::Playing`), so settings given after the plugins count. When
 //! play ends (back to the main menu), the server saves the world and goes.
+//!
+//! With a [`RemoteServer`] (`--connect`), play is on that server instead,
+//! over the network (`quic`), and no server starts here.
 
 use std::time::Duration;
 
 use bevy::{
-    app::{MainScheduleOrder, PluginsState},
-    ecs::schedule::ScheduleLabel,
-    prelude::*,
-    time::TimeUpdateStrategy,
+    app::MainScheduleOrder, ecs::schedule::ScheduleLabel, prelude::*, time::TimeUpdateStrategy,
 };
 use defaria_client::{net::ServerConnection, pause::Paused, session::GameState};
 use defaria_core::{
@@ -31,8 +31,6 @@ use defaria_core::{
     streaming::StreamingSettings,
     worldgen::TerrainSettings,
 };
-
-use crate::ServerPlugin;
 
 pub struct IntegratedServerPlugin;
 
@@ -60,8 +58,30 @@ pub struct IntegratedServer {
     pub app: App,
 }
 
-/// Builds the server, connects to it, and lets its first frame run.
+/// The server to play on, over the network, instead of one in the game's
+/// own process: a host and port (`--connect`).
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct RemoteServer(pub String);
+
+/// Builds the server, connects to it, and lets its first frame run; or,
+/// with a [`RemoteServer`], connects to that.
 fn start_server(world: &mut World) {
+    if let Some(RemoteServer(address)) = world.get_resource::<RemoteServer>().cloned() {
+        let content = world.resource::<Content>().fingerprint();
+        match crate::quic::connect(&address, content) {
+            Ok(link) => {
+                info!("playing on {address}");
+                world.insert_resource(ServerConnection(link));
+            }
+            Err(error) => {
+                error!("{error}");
+                world
+                    .resource_mut::<NextState<GameState>>()
+                    .set(GameState::Menu);
+            }
+        }
+        return;
+    }
     let mut app = App::new();
     forward::<Content>(world, &mut app);
     forward::<WorldFolder>(world, &mut app);
@@ -71,18 +91,8 @@ fn start_server(world: &mut World) {
     forward::<HookSettings>(world, &mut app);
     forward::<RandomTicks>(world, &mut app);
     forward::<FluidSettings>(world, &mut app);
-    app.add_plugins((
-        MinimalPlugins,
-        TransformPlugin,
-        AssetPlugin::default(),
-        ServerPlugin,
-    ))
-    .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
-    while app.plugins_state() == PluginsState::Adding {
-        bevy::tasks::tick_global_task_pools_on_main_thread();
-    }
-    app.finish();
-    app.cleanup();
+    crate::server::build_server(&mut app);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
     // In single player, pausing pauses the game.
     app.insert_resource(PauseWithPlayers(true));
     let (client, server) = link();

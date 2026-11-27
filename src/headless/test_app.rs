@@ -117,3 +117,117 @@ pub fn server_world(app: &App) -> &World {
         .app
         .world()
 }
+
+/// A server and clients in one process, connected by links in memory, and
+/// stepped together a frame at a time (the clients, then the server, as
+/// the server in the game's own process is): multiplayer, for tests.
+pub struct Multiplayer {
+    pub server: App,
+    pub clients: Vec<App>,
+}
+
+/// A client with no server of its own and no script yet, loading a small
+/// world: give it a `ServerConnection` to play.
+pub fn test_client() -> App {
+    let mut client = App::new();
+    client
+        .add_plugins((
+            default_plugins(false).disable::<bevy::log::LogPlugin>(),
+            crate::ClientPlugin,
+            HeadlessPlugin {
+                script: Script::default(),
+                rendering: false,
+            },
+        ))
+        .insert_resource(defaria_core::streaming::StreamingSettings {
+            radius: 4,
+            ..default()
+        });
+    client.finish();
+    client.cleanup();
+    client
+}
+
+/// A [`Multiplayer`] with `clients` clients, each with no script of its
+/// own yet (see [`Multiplayer::run`]), loading a small world.
+pub fn test_multiplayer(clients: usize) -> Multiplayer {
+    let mut server = App::new();
+    server
+        .insert_resource(defaria_core::script::ScriptSettings::untimed())
+        .insert_resource(defaria_core::script::hooks::HookSettings::untimed())
+        .insert_resource(defaria_core::streaming::StreamingSettings {
+            radius: 4,
+            ..default()
+        });
+    crate::server::build_server(&mut server);
+    server.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+        super::FRAME_TIME,
+    ));
+    let clients = (0..clients)
+        .map(|_| {
+            let mut client = test_client();
+            let (to_server, at_server) = defaria_core::net::link();
+            client.insert_resource(defaria_client::net::ServerConnection(to_server));
+            server
+                .world_mut()
+                .resource_mut::<defaria_core::server::Incoming>()
+                .0
+                .push(at_server);
+            client
+        })
+        .collect();
+    Multiplayer { server, clients }
+}
+
+impl Multiplayer {
+    /// One frame: each client's, then the server's.
+    pub fn update(&mut self) {
+        for client in &mut self.clients {
+            client.update();
+        }
+        self.server.update();
+    }
+
+    /// Updates until every client has loaded what's around its player.
+    pub fn settle(&mut self) {
+        for _ in 0..SETTLE_TIMEOUT_FRAMES {
+            self.update();
+            let settled = self.clients.iter().all(|client| {
+                client
+                    .world()
+                    .resource::<defaria_core::streaming::StreamingStatus>()
+                    .settled
+            });
+            if settled {
+                // A few more, for the meshes and what's sent last.
+                for _ in 0..5 {
+                    self.update();
+                }
+                return;
+            }
+        }
+        panic!("the clients never settled");
+    }
+
+    /// Runs `script` on client `client`, updating everything until it's
+    /// done.
+    pub fn run(&mut self, client: usize, script: &str) {
+        let script = Script::parse(script).unwrap();
+        self.clients[client]
+            .world_mut()
+            .resource_mut::<ScriptRunner>()
+            .commands
+            .extend(script.commands);
+        for _ in 0..SETTLE_TIMEOUT_FRAMES {
+            self.update();
+            if self.clients[client]
+                .world()
+                .resource::<ScriptRunner>()
+                .finished()
+            {
+                return;
+            }
+        }
+        panic!("the script never finished");
+    }
+}

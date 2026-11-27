@@ -41,7 +41,9 @@ impl Plugin for ClientNetPlugin {
             .add_systems(OnExit(GameState::Playing), forget_the_server)
             .add_systems(
                 PreUpdate,
-                (receive, update_awaiting).chain().in_set(ReceiveSystems),
+                (receive, update_awaiting, leave_when_the_server_goes)
+                    .chain()
+                    .in_set(ReceiveSystems),
             )
             .add_systems(
                 PostUpdate,
@@ -91,6 +93,22 @@ struct ServerSettled(bool);
 fn forget_the_server(mut joined: ResMut<Joined>, mut settled: ResMut<ServerSettled>) {
     *joined = Joined::default();
     *settled = ServerSettled::default();
+}
+
+/// A server that went (it stopped, or the network failed) leaves the
+/// world for the menu.
+fn leave_when_the_server_goes(
+    connection: Option<Res<ServerConnection>>,
+    state: Option<Res<State<GameState>>>,
+    next: Option<ResMut<NextState<GameState>>>,
+) {
+    let (Some(connection), Some(state), Some(mut next)) = (connection, state, next) else {
+        return;
+    };
+    if connection.0.is_closed() && *state.get() == GameState::Playing {
+        warn!("the server went");
+        next.set(GameState::Menu);
+    }
 }
 
 /// The local player mines with the button it holds; the server says how
@@ -248,11 +266,18 @@ fn update_awaiting(mut commands: Commands, map: Res<ChunkMap>, touched: Option<R
     commands.remove_resource::<Touched>();
 }
 
-/// Sends where the local player is when it's moved or turned.
+/// How long a pose that hasn't changed goes before it's sent again: poses
+/// cross the network unreliably, so the last of a movement may be lost.
+const POSE_AGAIN: f32 = 0.5;
+
+/// Sends where the local player is when it's moved or turned, and every
+/// [`POSE_AGAIN`] seconds while it hasn't.
 fn send_pose(
     mut connection: Option<ResMut<ServerConnection>>,
     player: Query<(&Body, &Look, &Player), With<LocalPlayer>>,
+    time: Res<Time<Real>>,
     mut last: Local<Option<Pose>>,
+    mut since: Local<f32>,
 ) {
     let (Some(connection), Ok((body, look, player))) = (&mut connection, player.single()) else {
         return;
@@ -264,7 +289,9 @@ fn send_pose(
         look: *look,
         player: player.clone(),
     };
-    if last.as_ref() != Some(&pose) {
+    *since += time.delta_secs();
+    if last.as_ref() != Some(&pose) || *since >= POSE_AGAIN {
+        *since = 0.0;
         *last = Some(pose.clone());
         connection.0.send(ClientMessage::Pose(pose));
     }
@@ -459,6 +486,22 @@ mod tests {
                 ClientMessage::ActiveSlot(_) | ClientMessage::Hotbar(_)
             )),
             "{echoes:?}"
+        );
+    }
+
+    /// A server that goes takes the client back to the menu.
+    #[test]
+    fn the_menu_when_the_server_goes() {
+        let (mut app, server) = client();
+        app.add_plugins(bevy::state::app::StatesPlugin)
+            .init_state::<GameState>();
+        app.update();
+        drop(server);
+        app.update();
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<GameState>>().get(),
+            GameState::Menu
         );
     }
 

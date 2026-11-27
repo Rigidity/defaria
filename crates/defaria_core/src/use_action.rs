@@ -87,7 +87,7 @@ impl UseAction {
 }
 
 /// One use: a right click, as it was made.
-#[derive(Reflect, Debug, Clone, Copy, PartialEq)]
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Use {
     /// The player's eyes: where it aims from.
     pub eyes: Transform,

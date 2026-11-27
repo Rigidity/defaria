@@ -6,9 +6,12 @@
 //! and `defaria_client` (how it's shown and played). Each feature is its
 //! own plugin in its own module there, registered in [`GamePlugin`].
 
+pub mod dedicated;
 mod devtools;
 pub mod headless;
 pub mod integrated;
+pub mod quic;
+pub mod server;
 
 pub use devtools::{Cli, DevToolsPlugin, ScreenshotMode};
 pub use integrated::{IntegratedServer, IntegratedServerPlugin};
@@ -62,6 +65,7 @@ impl Plugin for ClientPlugin {
             defaria_client::net::ClientNetPlugin,
             menu::MenuPlugin,
             pause::PausePlugin,
+            others::OthersPlugin,
         ));
     }
 }
@@ -100,7 +104,7 @@ impl Plugin for ServerPlugin {
                 fluid_container::FluidContainerPlugin,
                 support::SupportPlugin,
                 use_action::UseActionPlugin,
-                server::ServerNetPlugin,
+                defaria_core::server::ServerNetPlugin,
             ));
     }
 }

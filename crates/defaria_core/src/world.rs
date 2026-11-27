@@ -63,7 +63,18 @@ pub struct ChunkCompaction;
 
 /// Which chunk of the world grid this is. Chunk `c` covers voxels
 /// `c * CHUNK_SIZE` up to (not including) `(c + 1) * CHUNK_SIZE`.
-#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(
+    Component,
+    Reflect,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct ChunkCoord(pub IVec3);
 

@@ -103,7 +103,9 @@ impl Default for SkyLight {
 
 /// The light levels at one voxel: four channels of 4 bits, the sky's in the
 /// lowest bits, then red, green and blue.
-#[derive(Reflect, Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Reflect, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Light(pub u16);
 
 impl Light {
@@ -138,7 +140,7 @@ impl Light {
 
 /// The light at every voxel of a [`Chunk`], in the same order. Every chunk
 /// has one; it starts dark and [`propagate_light`] fills it in.
-#[derive(Component, Reflect, Debug, Clone, PartialEq)]
+#[derive(Component, Reflect, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[reflect(Component)]
 pub struct ChunkLight {
     levels: ChunkArray<Light>,

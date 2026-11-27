@@ -84,6 +84,14 @@ pub struct Cli {
     /// `--size <width>x<height>`: render headless frames this many pixels
     /// big instead of 1280×720.
     pub size: Option<UVec2>,
+    /// `server` (first): run a dedicated server, with no window, for
+    /// clients to connect to over the network.
+    pub server: bool,
+    /// `--port <port>` (with `server`): the port to listen on.
+    pub port: Option<u16>,
+    /// `--connect <host:port>`: play on that server rather than one in the
+    /// game's own process (headless too).
+    pub connect: Option<String>,
 }
 
 impl Cli {
@@ -97,7 +105,10 @@ impl Cli {
         let mut no_vsync = false;
         let mut radius = None;
         let mut size = None;
-        let mut args = args.into_iter();
+        let mut port = None;
+        let mut connect = None;
+        let mut args = args.into_iter().peekable();
+        let server = args.next_if(|arg| arg == "server").is_some();
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--screenshot" => {
@@ -140,9 +151,28 @@ impl Cli {
                             .expect("--size needs a size like 2560x1440"),
                     );
                 }
+                "--port" => {
+                    port = Some(
+                        args.next()
+                            .and_then(|n| n.parse().ok())
+                            .expect("--port needs a port number"),
+                    );
+                }
+                "--connect" => {
+                    connect = Some(args.next().expect("--connect needs a host:port"));
+                }
                 other => panic!("unknown argument: {other}"),
             }
         }
+        assert!(
+            !server || (path.is_none() && headless.is_none() && connect.is_none()),
+            "server runs on its own: no --screenshot, --headless or --connect"
+        );
+        assert!(port.is_none() || server, "--port only works with server");
+        assert!(
+            connect.is_none() || world.is_none(),
+            "--connect plays the server's world; don't combine it with --world"
+        );
         assert!(
             path.is_none() || headless.is_none(),
             "--headless takes screenshots from its script; don't combine it with --screenshot"
@@ -167,6 +197,9 @@ impl Cli {
             no_vsync,
             radius,
             size,
+            server,
+            port,
+            connect,
         }
     }
 }

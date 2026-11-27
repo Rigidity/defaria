@@ -147,6 +147,40 @@ incremental builds stay cheap.
 - Everything that isn't drawing, UI or input is still in `defaria_core`;
   carving out `defaria_server` is #222.
 
+*As built in #51*, the network:
+
+- QUIC through `quinn` on async-io (which Bevy already builds), with
+  rustls on ring. Each connection's control stream carries the handshake
+  (the protocol's version and the content's fingerprint, refused on a
+  mismatch) and then the messages in order; chunks, their changes and
+  drops, and the settled flag go on a stream of their own from the
+  server; a client's pose goes as a datagram. Frames are a length, a
+  flag and `postcard` bytes, deflated past 512 bytes.
+- A background thread at each end moves messages between the network and
+  the game's link in memory, checking the link every millisecond: simple,
+  at up to a millisecond of latency each way.
+- The server's certificate is made afresh at each start, and clients
+  accept any (#216 remembers servers and gives players keys).
+- Other players are drawn as boxes where the server's latest positions
+  put them, with no smoothing between updates (#214).
+- A client that quits without saying so (its process ends) leaves when
+  QUIC's idle timeout runs out (30 seconds; each end keeps a quiet
+  connection alive every 5). A client whose server goes returns to the
+  menu.
+- Poses go as datagrams, and are sent again every half second while they
+  don't change, in case the last was lost; #214 numbers them.
+- One loop writes both of a server's streams, so a client slow to take
+  its chunks also slows its control messages, and what waits for it
+  isn't bounded. A writer per stream, with bounded queues, and dropping a
+  client that falls too far behind, should replace it (#225).
+- `--connect` connects on the main thread before the world starts, which
+  can block a few seconds; the connect screen (#52) should connect in the
+  background.
+- A player's inventory is saved only with one player in the world
+  (`inventory::player` saves the single `Player`), so a dedicated
+  server with several doesn't save theirs; per-player saves come with
+  players' keys (#216).
+
 **What's wrong with it.** Single player keeps two copies of the loaded
 chunks' blocks, fluid and light (about 21 MiB at the default radius
 today; keeping meshes only in the render world, #161, saves more than

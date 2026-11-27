@@ -24,7 +24,10 @@ use crate::{
         has_screen,
     },
     mining::Mining,
-    net::{ClientMessage, MachineContents, PlayerState, Pose, ServerLink, ServerMessage, Transfer},
+    net::{
+        ClientMessage, MachineContents, OtherPlayer, PlayerState, Pose, ServerLink, ServerMessage,
+        Transfer,
+    },
     physics::Body,
     player::{Look, Player, START_POSITION, START_TARGET, feet_below, player},
     recipe::RecipeProgress,
@@ -58,6 +61,7 @@ impl Plugin for ServerNetPlugin {
                     send_chunks,
                     send_player_state,
                     send_mining,
+                    send_players,
                     send_machine_contents,
                     send_status,
                 )
@@ -100,6 +104,8 @@ pub struct Connection {
     center: Option<IVec3>,
     /// Whether the player is paused.
     paused: bool,
+    /// The other players as last sent.
+    others: Option<Vec<OtherPlayer>>,
 }
 
 impl Connection {
@@ -114,6 +120,7 @@ impl Connection {
             settled: None,
             center: None,
             paused: false,
+            others: None,
         }
     }
 
@@ -549,6 +556,36 @@ fn send_mining(mut players: Query<(&mut Connection, &Mining)>) {
                 target: now.0,
                 progress: now.1,
             });
+        }
+    }
+}
+
+/// Sends each client where the other players are, when that changes.
+fn send_players(
+    players: Query<(Entity, &Body, &Look, &Player)>,
+    mut connections: Query<(Entity, &mut Connection)>,
+) {
+    let all: Vec<(Entity, OtherPlayer)> = players
+        .iter()
+        .map(|(entity, body, look, player)| {
+            let other = OtherPlayer {
+                id: entity.to_bits(),
+                feet: body.position,
+                look: *look,
+                sneaking: player.sneaking,
+            };
+            (entity, other)
+        })
+        .collect();
+    for (me, mut connection) in &mut connections {
+        let others: Vec<OtherPlayer> = all
+            .iter()
+            .filter(|(entity, _)| *entity != me)
+            .map(|(_, other)| other.clone())
+            .collect();
+        if connection.others.as_ref() != Some(&others) {
+            connection.others = Some(others.clone());
+            connection.send(ServerMessage::Players(others));
         }
     }
 }

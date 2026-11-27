@@ -31,7 +31,7 @@ use crate::{
 };
 
 /// What a client sends its server.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ClientMessage {
     /// Where its player is and which way it looks; the client moves it.
     Pose(Pose),
@@ -56,7 +56,7 @@ pub enum ClientMessage {
 }
 
 /// A player's place, what it's doing and which way it looks.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pose {
     /// Its feet.
     pub feet: DVec3,
@@ -67,7 +67,7 @@ pub struct Pose {
 }
 
 /// A move of items the player asks for, from a screen.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Transfer {
     /// Up to `count` of `kind` from the creative catalog to the player
     /// (`to_player`) or back.
@@ -94,7 +94,7 @@ pub enum Transfer {
 }
 
 /// What a server sends a client.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ServerMessage {
     /// A chunk in the client's range, whole: its blocks, fluid and light.
     /// Also sent again when it changes.
@@ -129,10 +129,23 @@ pub enum ServerMessage {
     MachineContents(MachineContents),
     /// The machine screen closed (the machine went).
     CloseScreen,
+    /// The other players, where they are and which way they look, when
+    /// any of that changes.
+    Players(Vec<OtherPlayer>),
+}
+
+/// Another player, as a client sees it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OtherPlayer {
+    /// Which player it is, for as long as it's connected.
+    pub id: u64,
+    pub feet: DVec3,
+    pub look: Look,
+    pub sneaking: bool,
 }
 
 /// The parts of a player the server owns and its client shows.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlayerState {
     pub inventory: Inventory,
     pub hotbar: Hotbar,
@@ -141,13 +154,23 @@ pub struct PlayerState {
 }
 
 /// What a machine holds, for its screen: each part it has.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct MachineContents {
     pub slots: Option<Slots>,
     pub tanks: Option<Tanks>,
     pub energy: Option<EnergyBuffer>,
     pub progress: Option<RecipeProgress>,
     pub active: Option<MachineActive>,
+}
+
+/// A message as bytes, for the network.
+pub fn encode<T: serde::Serialize>(message: &T) -> Vec<u8> {
+    postcard::to_allocvec(message).expect("messages always encode")
+}
+
+/// A message from its bytes, if they're one.
+pub fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    postcard::from_bytes(bytes).map_err(|error| error.to_string())
 }
 
 /// One end of a connection: messages of `Out` go one way, `In` the other.
@@ -240,5 +263,81 @@ mod tests {
         assert!(client.is_closed());
         client.send(ClientMessage::CloseScreen(IVec3::ZERO));
         assert!(client.is_closed());
+    }
+
+    /// Every kind of message comes back from its bytes as it went, and a
+    /// chunk of one block (most chunks: air or rock) is a few bytes.
+    #[test]
+    fn messages_round_trip_through_bytes() {
+        use crate::{
+            content::{base, block},
+            inventory::ItemStack,
+            world::{Chunk, ChunkCoord},
+        };
+        let mut chunk = Chunk::default();
+        chunk.set(1, 2, 3, block("stone"));
+        chunk.set_fluid_at(
+            IVec3::new(4, 4, 4),
+            crate::world::VoxelFluid::of(block("water"), 500),
+            crate::content::FULL_FLUID,
+        );
+        let stone = base().default_item("defaria:stone").unwrap();
+        let mut inventory = Inventory::new();
+        inventory.add(base(), ItemStack::new(stone, 12));
+        let server = [
+            ServerMessage::Chunk {
+                coord: ChunkCoord(IVec3::new(-3, 2, 7)),
+                chunk: chunk.clone(),
+                light: ChunkLight::default(),
+            },
+            ServerMessage::ChunkChanged {
+                coord: ChunkCoord(IVec3::ZERO),
+                chunk,
+            },
+            ServerMessage::Unload(ChunkCoord(IVec3::ONE)),
+            ServerMessage::PlayerState(PlayerState {
+                inventory,
+                hotbar: Hotbar::default(),
+                active: ActiveSlot(4),
+                game_mode: GameMode::Survival,
+            }),
+            ServerMessage::Mining {
+                target: Some((IVec3::new(1, 2, 3), block("stone"))),
+                progress: 0.5,
+            },
+            ServerMessage::Settled(true),
+            ServerMessage::OpenScreen {
+                pos: IVec3::new(9, 8, 7),
+                state: block("stone"),
+            },
+            ServerMessage::MachineContents(MachineContents::default()),
+            ServerMessage::CloseScreen,
+        ];
+        for message in server {
+            let back: ServerMessage = decode(&encode(&message)).unwrap();
+            assert_eq!(back, message);
+        }
+        let client = [
+            ClientMessage::Mining(true),
+            ClientMessage::ToggleGameMode,
+            ClientMessage::Paused(true),
+            ClientMessage::CloseScreen(IVec3::new(1, -2, 3)),
+            ClientMessage::Transfer(Transfer::Catalog {
+                kind: ItemStack::new(stone, 1),
+                count: 10,
+                to_player: true,
+            }),
+        ];
+        for message in client {
+            let back: ClientMessage = decode(&encode(&message)).unwrap();
+            assert_eq!(back, message);
+        }
+        let air = ServerMessage::Chunk {
+            coord: ChunkCoord(IVec3::ZERO),
+            chunk: Chunk::default(),
+            light: ChunkLight::default(),
+        };
+        assert!(encode(&air).len() < 32, "{} bytes", encode(&air).len());
+        assert!(decode::<ServerMessage>(&[255, 255, 255]).is_err());
     }
 }

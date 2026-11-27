@@ -16,6 +16,7 @@ pub mod machine_screen;
 pub mod menu;
 pub mod meshing;
 pub mod net;
+pub mod others;
 pub mod pause;
 pub mod session;
 pub mod ui;
