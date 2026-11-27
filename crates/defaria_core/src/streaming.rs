@@ -74,6 +74,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingStatus>()
             .init_resource::<ChunksSaving>()
             .add_message::<BlockEntityChanged>()
+            .add_message::<ChunkUnloaded>()
             .add_observer(load_around_the_player)
             .add_systems(Startup, open_world)
             .add_systems(
@@ -236,6 +237,10 @@ pub fn loader_chunk(transform: &GlobalTransform) -> IVec3 {
         .0
         .0
 }
+
+/// A chunk was unloaded (saved first, if it needed to be).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkUnloaded(pub ChunkCoord);
 
 /// Loads the world around itself, using its [`GlobalTransform`].
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
@@ -496,6 +501,7 @@ fn plan_saves(
 /// Saves and despawns the chunks that have gone out of reach.
 fn unload_chunks(
     mut commands: Commands,
+    mut unloaded: MessageWriter<ChunkUnloaded>,
     source: Res<WorldSource>,
     saving: Res<ChunksSaving>,
     mut chunks: ResMut<Chunks>,
@@ -513,6 +519,7 @@ fn unload_chunks(
         loaded.save(coord, &source.store, &data, false);
         map.remove(ChunkCoord(coord));
         commands.entity(loaded.entity).despawn();
+        unloaded.write(ChunkUnloaded(ChunkCoord(coord)));
     }
     let around: HashSet<IVec3> = gone.iter().flat_map(|&c| around(c)).collect();
     update_completeness(&mut commands, &mut chunks, around);

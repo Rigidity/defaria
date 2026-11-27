@@ -9,10 +9,7 @@
 //! client only asks (to use, to break, to move items). Only movement is
 //! the client's own for now; #214 makes the server check it.
 
-use bevy::{
-    platform::collections::{HashMap, HashSet},
-    prelude::*,
-};
+use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::{
     block_entity::BlockEntities,
@@ -31,7 +28,7 @@ use crate::{
     physics::Body,
     player::{Look, Player, START_POSITION, START_TARGET, feet_below, player},
     recipe::RecipeProgress,
-    streaming::{ChunkLoader, StreamingSettings, StreamingStatus, loader_chunk},
+    streaming::{ChunkLoader, ChunkUnloaded, StreamingSettings, StreamingStatus, loader_chunk},
     use_action::{UseAction, UseStep},
     world::{Chunk, ChunkCoord, ChunkMap, Voxels},
 };
@@ -89,6 +86,8 @@ pub struct Connection {
     machine: Option<(IVec3, MachineContents)>,
     /// Whether the client was last told everything is loaded.
     settled: Option<bool>,
+    /// The chunk the player's range was last worked out around.
+    center: Option<IVec3>,
 }
 
 impl Connection {
@@ -100,6 +99,7 @@ impl Connection {
             state: None,
             machine: None,
             settled: None,
+            center: None,
         }
     }
 
@@ -338,77 +338,108 @@ fn open_machine_screens(
 
 /// Sends each client the loaded chunks in its player's range it doesn't
 /// have, those it has that changed (their blocks or fluid visibly, or
-/// their light), and which ones it should drop.
+/// their light), and which ones it should drop. Only what changed is
+/// looked at: chunks that loaded, unloaded or changed this frame, and the
+/// whole range only when the player crosses into another chunk.
 fn send_chunks(
     settings: Res<StreamingSettings>,
     map: Res<ChunkMap>,
-    chunks: Query<(&ChunkCoord, Ref<Chunk>, Ref<ChunkLight>)>,
+    chunks: Query<(&Chunk, &ChunkLight)>,
+    changed: Query<
+        (&ChunkCoord, Ref<Chunk>, Ref<ChunkLight>),
+        Or<(Changed<Chunk>, Changed<ChunkLight>)>,
+    >,
+    added: Query<&ChunkCoord, Added<Chunk>>,
+    mut unloaded: MessageReader<ChunkUnloaded>,
     loaders: Query<(&GlobalTransform, &ChildOf), With<ChunkLoader>>,
     mut connections: Query<&mut Connection>,
 ) {
-    let mut centers = HashMap::new();
+    let unloaded: Vec<IVec3> = unloaded.read().map(|unloaded| unloaded.0.0).collect();
+    let added: Vec<IVec3> = added.iter().map(|coord| coord.0).collect();
     for (transform, parent) in &loaders {
-        centers.insert(parent.parent(), loader_chunk(transform));
-    }
-    for (player, center) in centers {
-        let Ok(mut connection) = connections.get_mut(player) else {
+        let Ok(mut connection) = connections.get_mut(parent.parent()) else {
             continue;
         };
         let connection = &mut *connection;
-        // Out of range (past the margin) or unloaded: dropped.
-        let dropped: Vec<IVec3> = connection
-            .sent
+        let center = loader_chunk(transform);
+        let moved = connection.center != Some(center);
+        connection.center = Some(center);
+        let send = |connection: &mut Connection, message| connection.link.send(message);
+        // Gone, or (once it's moved) out of range past the margin: dropped.
+        let mut dropped: Vec<IVec3> = unloaded
             .iter()
             .copied()
-            .filter(|&coord| {
-                map.get(ChunkCoord(coord)).is_none()
-                    || !settings.reaches(coord - center, settings.unload_margin)
-            })
+            .filter(|coord| connection.sent.contains(coord))
             .collect();
+        if moved {
+            dropped.extend(
+                connection
+                    .sent
+                    .iter()
+                    .copied()
+                    .filter(|&coord| !settings.reaches(coord - center, settings.unload_margin)),
+            );
+        }
         for coord in dropped {
-            connection.sent.remove(&coord);
-            connection
-                .link
-                .send(ServerMessage::Unload(ChunkCoord(coord)));
-        }
-        // Changed since they were sent.
-        for &coord in &connection.sent {
-            let Some(entity) = map.get(ChunkCoord(coord)) else {
-                continue;
-            };
-            let Ok((_, chunk, light)) = chunks.get(entity) else {
-                continue;
-            };
-            if chunk.is_changed() {
-                connection.link.send(ServerMessage::ChunkChanged {
-                    coord: ChunkCoord(coord),
-                    chunk: (*chunk).clone(),
-                });
-            }
-            if light.is_changed() {
-                connection.link.send(ServerMessage::LightChanged {
-                    coord: ChunkCoord(coord),
-                    light: (*light).clone(),
-                });
+            if connection.sent.remove(&coord) {
+                send(connection, ServerMessage::Unload(ChunkCoord(coord)));
             }
         }
-        // New in range.
-        for coord in settings.window(center) {
+        // New in range: the whole range when it's moved, else what loaded.
+        let mut fresh = HashSet::new();
+        let candidates: Vec<IVec3> = if moved {
+            settings.window(center).collect()
+        } else {
+            added
+                .iter()
+                .copied()
+                .filter(|&coord| settings.reaches(coord - center, 0))
+                .collect()
+        };
+        for coord in candidates {
             if connection.sent.contains(&coord) {
                 continue;
             }
-            let Some(entity) = map.get(ChunkCoord(coord)) else {
-                continue;
-            };
-            let Ok((_, chunk, light)) = chunks.get(entity) else {
+            let Some((chunk, light)) = map
+                .get(ChunkCoord(coord))
+                .and_then(|entity| chunks.get(entity).ok())
+            else {
                 continue;
             };
             connection.sent.insert(coord);
-            connection.link.send(ServerMessage::Chunk {
-                coord: ChunkCoord(coord),
-                chunk: (*chunk).clone(),
-                light: (*light).clone(),
-            });
+            fresh.insert(coord);
+            send(
+                connection,
+                ServerMessage::Chunk {
+                    coord: ChunkCoord(coord),
+                    chunk: chunk.clone(),
+                    light: light.clone(),
+                },
+            );
+        }
+        // Changed since they were sent.
+        for (coord, chunk, light) in &changed {
+            if !connection.sent.contains(&coord.0) || fresh.contains(&coord.0) {
+                continue;
+            }
+            if chunk.is_changed() {
+                send(
+                    connection,
+                    ServerMessage::ChunkChanged {
+                        coord: *coord,
+                        chunk: (*chunk).clone(),
+                    },
+                );
+            }
+            if light.is_changed() {
+                send(
+                    connection,
+                    ServerMessage::LightChanged {
+                        coord: *coord,
+                        light: (*light).clone(),
+                    },
+                );
+            }
         }
     }
 }
@@ -481,27 +512,14 @@ fn send_machine_contents(
     }
 }
 
-/// Tells each client whether everything around its player is loaded and
-/// sent, when that changes.
-fn send_status(
-    settings: Res<StreamingSettings>,
-    status: Res<StreamingStatus>,
-    map: Res<ChunkMap>,
-    loaders: Query<(&GlobalTransform, &ChildOf), With<ChunkLoader>>,
-    mut connections: Query<&mut Connection>,
-) {
-    for (transform, parent) in &loaders {
-        let Ok(mut connection) = connections.get_mut(parent.parent()) else {
-            continue;
-        };
-        let center = loader_chunk(transform);
-        let settled = status.settled
-            && settings.window(center).all(|coord| {
-                map.get(ChunkCoord(coord)).is_none() || connection.sent.contains(&coord)
-            });
-        if connection.settled != Some(settled) {
-            connection.settled = Some(settled);
-            connection.send(ServerMessage::Settled(settled));
+/// Tells each client whether everything around its player is loaded,
+/// when that changes. Whatever's loaded in its range has been sent by now
+/// (see [`send_chunks`]).
+fn send_status(status: Res<StreamingStatus>, mut connections: Query<&mut Connection>) {
+    for mut connection in &mut connections {
+        if connection.settled != Some(status.settled) {
+            connection.settled = Some(status.settled);
+            connection.send(ServerMessage::Settled(status.settled));
         }
     }
 }
@@ -640,14 +658,16 @@ mod tests {
                 voxels.set(pos, block("stone"));
             })
             .unwrap();
-        let sent = until(&mut app, &mut client, |message| {
-            matches!(message, ServerMessage::ChunkChanged { .. })
-        });
-        let Some(ServerMessage::ChunkChanged { coord, chunk }) = sent.last() else {
+        // (The chunks next to it are sent again too, as they're redrawn.)
+        let (expected, local) = ChunkCoord::split(pos);
+        let sent = until(
+            &mut app,
+            &mut client,
+            |message| matches!(message, ServerMessage::ChunkChanged { coord, .. } if *coord == expected),
+        );
+        let Some(ServerMessage::ChunkChanged { chunk, .. }) = sent.last() else {
             unreachable!();
         };
-        let (expected, local) = ChunkCoord::split(pos);
-        assert_eq!(*coord, expected);
         assert_eq!(chunk.at(local), block("stone"));
     }
 
