@@ -33,6 +33,7 @@ fn pond_and_channel() -> Grid {
 fn sim(reservoirs: bool) -> Simulation {
     let mut sim = Simulation::default();
     sim.reservoirs.max_columns = if reservoirs { 4096 } else { 0 };
+    sim.reservoirs.work = usize::MAX;
     sim
 }
 
@@ -773,4 +774,123 @@ fn a_drawn_reservoir_evens_out_with_all_its_neighbours() {
         worst <= 8 * LAZY,
         "the far ponds stood {worst} above the middle"
     );
+}
+
+/// A tick levels reservoirs up to its work, and the rest wait for the next
+/// tick, starting with the one put off: two ponds drawn from, with work for
+/// one, level one a tick, in turn, and nothing is made or lost.
+#[test]
+fn levelling_past_a_ticks_work_waits_for_the_next() {
+    let (left, right) = (IVec3::new(5, 1, 5), IVec3::new(25, 1, 5));
+    // Two ponds 12 square and 2 deep, apart, with `work` columns of
+    // levelling a tick; how the two change over four ticks after enough
+    // is drawn from each that both are due.
+    let run_with = |work: usize| {
+        let mut grid = pond(12, 2);
+        for x in 20..32 {
+            for z in 0..12 {
+                for y in 0..2 {
+                    grid.cells.insert(
+                        IVec3::new(x, y, z),
+                        Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID),
+                    );
+                }
+                grid.cells.insert(IVec3::new(x, 2, z), Cell::OPEN);
+            }
+        }
+        let mut sim = sim(true);
+        sim.reservoirs.work = work;
+        let start = held(&grid, &sim);
+        let mut drawn = 0;
+        for at in [left, right] {
+            drawn += sim.reservoirs.draw(&grid, &water(), at, 0).unwrap() as i64;
+        }
+        for at in [left, right] {
+            drawn += sim.reservoirs.draw(&grid, &water(), at, 144 * 100).unwrap() as i64;
+        }
+        let amounts = |grid: &Grid| (grid.amount(left), grid.amount(right));
+        let mut changed = Vec::new();
+        for _ in 0..4 {
+            let before = amounts(&grid);
+            sim.tick(&mut grid, fluids, 0.02, usize::MAX);
+            assert_eq!(held(&grid, &sim), start - drawn);
+            let after = amounts(&grid);
+            changed.push((before.0 != after.0, before.1 != after.1));
+        }
+        assert_eq!(amounts(&grid), (FULL_FLUID - 100, FULL_FLUID - 100));
+        changed
+    };
+    // Work for one pond's 144 columns: one a tick, then the other.
+    let one = run_with(144);
+    assert_eq!(one[0], (true, false), "{one:?}");
+    assert_eq!(one[1], (false, true), "{one:?}");
+    // Work for both: both in the first tick.
+    let both = run_with(288);
+    assert_eq!(both[0], (true, true), "{both:?}");
+}
+
+/// A levelling with more columns to write than a tick's work writes what
+/// it can and carries the rest over to the next ticks, keeping their share
+/// in the balance till then.
+#[test]
+fn a_levelling_is_written_over_several_ticks() {
+    let mut grid = pond(12, 2);
+    let mut sim = sim(true);
+    // Work for a third of the pond's 144 columns a tick, and the pass.
+    sim.reservoirs.work = 66;
+    let start = held(&grid, &sim);
+    let at = IVec3::new(5, 1, 5);
+    sim.reservoirs.draw(&grid, &water(), at, 0).unwrap();
+    let drawn = sim.reservoirs.draw(&grid, &water(), at, 144 * 100).unwrap() as i64;
+    let lowered = |grid: &Grid| {
+        (0..12)
+            .flat_map(|x| (0..12).map(move |z| IVec3::new(x, 1, z)))
+            .filter(|&pos| grid.amount(pos) == FULL_FLUID - 100)
+            .count()
+    };
+    let mut counts = Vec::new();
+    for _ in 0..6 {
+        sim.tick(&mut grid, fluids, 0.02, usize::MAX);
+        assert_eq!(held(&grid, &sim), start - drawn);
+        counts.push(lowered(&grid));
+    }
+    // A part at a time, all of it in the end, and nothing pooled.
+    assert!(counts[0] > 0 && counts[0] < 144, "{counts:?}");
+    assert!(counts[1] > counts[0], "{counts:?}");
+    assert_eq!(*counts.last().unwrap(), 144, "{counts:?}");
+    assert_eq!(sim.reservoirs.pooled_total(), 0);
+}
+
+/// Members a few units apart (as levelling leaves those it doesn't write)
+/// pass fluid between themselves, pooled both ways. One that gives as much
+/// as it gets ends as it was, and doesn't wake those around it again, so
+/// the pond comes to rest rather than passing the same fluid for good.
+#[test]
+fn members_passing_fluid_among_themselves_come_to_rest() {
+    let mut grid = pond(12, 2);
+    let mut sim = sim(true);
+    sim.reservoirs
+        .draw(&grid, &water(), IVec3::new(5, 0, 5), 0)
+        .unwrap();
+    sim.tick(&mut grid, fluids, 0.02, usize::MAX);
+    // The top layer sloping evenly along x, ten units a voxel, unheard
+    // of: each voxel in the middle gets from its higher side what it gives
+    // its lower one.
+    for x in 0..12 {
+        for z in 0..12 {
+            let amount = FULL_FLUID - 10 * x as u16;
+            let pos = IVec3::new(x, 1, z);
+            grid.cells
+                .insert(pos, Cell::Fluid(WATER, amount, FULL_FLUID));
+            sim.wake(&grid, pos);
+        }
+    }
+    let start = held(&grid, &sim);
+    let mut active = Vec::new();
+    for _ in 0..100 {
+        sim.tick(&mut grid, fluids, 0.02, usize::MAX);
+        assert_eq!(held(&grid, &sim), start);
+        active.push(sim.active());
+    }
+    assert_eq!(*active.last().unwrap(), 0, "{active:?}");
 }

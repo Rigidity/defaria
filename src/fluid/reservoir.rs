@@ -228,6 +228,14 @@ pub struct Reservoirs {
     /// looked at again.
     tried: HashMap<IVec2, f32>,
     clock: f32,
+    /// How many columns reservoirs may level in a tick (see
+    /// [`Reservoirs::settle`]); `usize::MAX` for no limit.
+    pub work: usize,
+    /// How many they've levelled this tick.
+    spent: usize,
+    /// The reservoir to level first next time: the first one put off when
+    /// the work ran out, so none waits for good.
+    resume: u32,
     /// Fluid reservoirs couldn't put back when they were dropped, by fluid
     /// block, which should never happen; counted in [`Self::pooled`] so the
     /// totals show it if it does.
@@ -586,24 +594,49 @@ impl Reservoirs {
     ) {
         self.join(&*cells, kind);
         self.merge_touching();
-        let ids: Vec<u32> = self
+        let mut ids: Vec<u32> = self
             .list
             .iter()
             .filter(|(_, r)| r.kind == kind)
             .map(|(&id, _)| id)
             .collect();
+        // Those put off last time first.
+        let first = ids.partition_point(|&id| id < self.resume);
+        ids.rotate_left(first);
+        let mut put_off = None;
         for id in ids {
             let reservoir = self.list.get_mut(&id).expect("listed");
             if reservoir.dropped || self.max_columns == 0 {
                 self.drop_reservoir(cells, id, wake);
                 continue;
             }
-            refresh(cells, reservoir, wake);
+            // A tick's work is counted in columns written, and an eighth a
+            // column for a pass over them; past it, writing waits for the
+            // next tick, pooling meanwhile, so a big flood's levelling is
+            // spread over frames rather than landing on one.
+            let mut left = self.work.saturating_sub(self.spent);
+            let before = left;
+            refresh(cells, reservoir, &mut left, wake);
+            self.spent += before - left;
+            if !reservoir.dirty.is_empty() {
+                // Still writing out its last level.
+                put_off.get_or_insert(id);
+                continue;
+            }
             let due = reservoir.balance.abs() >= LAZY * reservoir.columns.len() as i64;
             if reservoir.level.is_none() || due || (flush && reservoir.balance != 0) {
+                let pass = reservoir.columns.len() / 8;
+                if self.spent > 0 && self.spent.saturating_add(pass) > self.work {
+                    put_off.get_or_insert(id);
+                    continue;
+                }
+                self.spent = self.spent.saturating_add(pass);
                 self.mark_seams(id);
                 let reservoir = self.list.get_mut(&id).expect("listed");
-                level(cells, reservoir, flush, wake);
+                let mut left = self.work.saturating_sub(self.spent);
+                let before = left;
+                level(cells, reservoir, flush, &mut left, wake);
+                self.spent += before - left;
                 self.grow_from_rim(&*cells, id);
             }
             // The level dropping below where parts of it joined, such as
@@ -622,6 +655,7 @@ impl Reservoirs {
                 self.drop_reservoir(cells, id, wake);
             }
         }
+        self.resume = put_off.unwrap_or(0);
     }
 
     /// Joins each cell that took fluid this step to a reservoir of its kind
@@ -749,11 +783,11 @@ impl Reservoirs {
         // A column found changed when it's written is read again and
         // written the next time round.
         for _ in 0..3 {
-            refresh(cells, &mut reservoir, wake);
+            refresh(cells, &mut reservoir, &mut usize::MAX.clone(), wake);
             if reservoir.balance == 0 {
                 break;
             }
-            level(cells, &mut reservoir, true, wake);
+            level(cells, &mut reservoir, true, &mut usize::MAX.clone(), wake);
         }
         if reservoir.balance != 0 {
             *self.stranded.entry(reservoir.kind).or_default() += reservoir.balance;
@@ -820,6 +854,7 @@ impl Reservoirs {
     /// Advances the clock that retries go by.
     pub fn advance(&mut self, seconds: f32) {
         self.clock += seconds;
+        self.spent = 0;
     }
 
     /// Finds the reservoir the cell at `seed` is in, if it makes one, and
@@ -917,12 +952,22 @@ fn mark_rims(reservoir: &mut Reservoir, at: IVec2) {
 /// Reads the columns that changed again, and fills them to the
 /// reservoir's level from its balance. Pushes the cells along its rim that
 /// changed onto `wake`.
-fn refresh(cells: &mut impl Cells, reservoir: &mut Reservoir, wake: &mut Vec<IVec3>) {
+fn refresh(
+    cells: &mut impl Cells,
+    reservoir: &mut Reservoir,
+    left: &mut usize,
+    wake: &mut Vec<IVec3>,
+) {
     let kind = reservoir.kind;
     let mut dirty = std::mem::take(&mut reservoir.dirty);
     dirty.sort_unstable();
     dirty.dedup();
-    for (x, z) in dirty {
+    let mut dirty = dirty.into_iter();
+    while *left > 0 {
+        let Some((x, z)) = dirty.next() else {
+            break;
+        };
+        *left -= 1;
         let Some(column) = reservoir.columns.get_mut(&(x, z)) else {
             continue;
         };
@@ -950,6 +995,8 @@ fn refresh(cells: &mut impl Cells, reservoir: &mut Reservoir, wake: &mut Vec<IVe
             wake.extend(column.rim_cells(x, z));
         }
     }
+    // What the work didn't reach waits for the next tick.
+    reservoir.dirty.extend(dirty);
 }
 
 /// Shares everything a reservoir holds, with its balance, over its
@@ -959,7 +1006,13 @@ fn refresh(cells: &mut impl Cells, reservoir: &mut Reservoir, wake: &mut Vec<IVe
 /// every column, and the units that don't divide evenly go one a column,
 /// so only what the columns have no room for stays in the balance. Pushes
 /// the cells along its rim that changed onto `wake`.
-fn level(cells: &mut impl Cells, reservoir: &mut Reservoir, flush: bool, wake: &mut Vec<IVec3>) {
+fn level(
+    cells: &mut impl Cells,
+    reservoir: &mut Reservoir,
+    flush: bool,
+    work: &mut usize,
+    wake: &mut Vec<IVec3>,
+) {
     let kind = reservoir.kind;
     let total = reservoir.total();
     if total < 0 {
@@ -1046,6 +1099,13 @@ fn level(cells: &mut impl Cells, reservoir: &mut Reservoir, flush: bool, wake: &
         if off == 0 || !(flush || column.seam || off >= LAZY || want == 0 || column.amount == 0) {
             continue;
         }
+        // Past the tick's work, it's filled to the level in a later tick,
+        // from the balance, which keeps its share till then.
+        if *work == 0 {
+            reservoir.dirty.push((x, z));
+            continue;
+        }
+        *work -= 1;
         let before = column.amount;
         if !write(cells, kind, (x, z), column, want) {
             column.stale = true;

@@ -608,6 +608,8 @@ impl Simulation {
     /// saving, and drops those marked to be dropped.
     pub fn flush_reservoirs(&mut self, cells: &mut impl Cells) {
         let mut wake = Vec::new();
+        // All of it, before a save, whatever the tick's work.
+        let work = std::mem::replace(&mut self.reservoirs.work, usize::MAX);
         // A column found changed when it's written is read again and
         // written the next time round.
         for _ in 0..3 {
@@ -618,6 +620,7 @@ impl Simulation {
                 break;
             }
         }
+        self.reservoirs.work = work;
         self.wake_all(cells, wake);
     }
 
@@ -789,6 +792,14 @@ fn finish_step(
                 continue;
             }
             cells.set(pos, now);
+        } else if let Cell::Fluid(kind, _, _) = now
+            && reservoirs.member(pos, kind).is_some()
+        {
+            // A reservoir's member that gave as much as it got only passed
+            // fluid between other members; it rests on something, so it
+            // didn't fall and refill either. Waking around it would only
+            // have it pass the same again.
+            continue;
         }
         // Even fluid that ended as it began moved: it fell and was refilled,
         // say, and will again.

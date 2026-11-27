@@ -97,6 +97,11 @@ pub struct FluidSettings {
     /// The most columns one reservoir (a body of fluid kept at one level,
     /// see [`reservoir`]) has. 0 turns reservoirs off.
     pub reservoir_columns: usize,
+    /// How many columns reservoirs may level in one fixed tick, all told:
+    /// past it, the rest wait for the next tick, so a big flood's
+    /// levelling is spread over frames. At least one reservoir is levelled
+    /// a tick, however big.
+    pub reservoir_work: usize,
 }
 
 impl Default for FluidSettings {
@@ -104,6 +109,7 @@ impl Default for FluidSettings {
         Self {
             cells_per_tick: 4096,
             reservoir_columns: 16384,
+            reservoir_work: 12288,
         }
     }
 }
@@ -293,6 +299,7 @@ pub(crate) fn run_flow(
         stats.deleted += deleted as u64;
     }
     sim.sim.reservoirs.max_columns = settings.reservoir_columns;
+    sim.sim.reservoirs.work = settings.reservoir_work;
     let start = std::time::Instant::now();
     let report = sim.sim.tick(
         &mut cells,
