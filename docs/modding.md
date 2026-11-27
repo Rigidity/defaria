@@ -784,8 +784,11 @@ properties: {
   north side, is `south` wherever on that side you click, and placed on
   a floor is the side of its voxel the click is toward. One with only
   `up` and `down`, placed on a block's side, is `up` on its upper half.
-  A click in the very middle of a side picks the side later in the list
-  `up`, `down`, `north`, `south`, `east`, `west`.
+  Sides equally near (a click in the very middle of a face) go to the
+  way you look, or across the ground, if that's one of them, and else
+  to the later one in the list `up`, `down`, `north`, `south`, `east`,
+  `west`: a slab clicked in the middle of a block's side is a bottom
+  slab.
 - **`"look"`** uses the way you look, along its strongest axis: looking
   down is `down`, looking mostly west is `west`. If the property has no
   value for `up` or `down` and you look more up or down than across, it

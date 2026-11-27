@@ -1307,6 +1307,36 @@ mod tests {
         );
     }
 
+    /// A vertical slab placed into a plant from above stands at the side of
+    /// its voxel you look toward, as there's no side of it you click.
+    #[test]
+    fn a_vertical_slab_on_a_plant_faces_the_view() {
+        let (mut app, left, _) = app();
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 2, 5, block("tuft"));
+        hold(&mut app, "defaria:stone_vertical_slab");
+        for (from, half) in [
+            (Vec3::new(13.5, 4.5, 6.6), "north"),
+            (Vec3::new(13.5, 4.5, 4.4), "south"),
+            (Vec3::new(14.6, 4.5, 5.5), "west"),
+        ] {
+            let dir = (Vec3::new(13.5, 2.4, 5.5) - from).normalize();
+            look_at(&mut app, from, dir);
+            click(&mut app, MouseButton::Right);
+            assert_eq!(
+                voxel(&app, left, 13, 2, 5),
+                slab("stone_vertical_slab", half),
+                "from {from}"
+            );
+            app.world_mut()
+                .get_mut::<Chunk>(left)
+                .unwrap()
+                .set(13, 2, 5, block("tuft"));
+        }
+    }
+
     /// Aiming over a slab's open half at a plant beyond it builds over the
     /// plant, as without the slab, rather than filling the slab.
     #[test]

@@ -211,7 +211,8 @@ pub enum PlaceFrom {
     /// side that touches the block clicked, unless the property has no
     /// value for it, when it's the nearest of the others. A slab placed
     /// on the upper half of a block's side is `up`; a vertical slab on a
-    /// floor, the side of its voxel the click is toward.
+    /// floor, the side of its voxel the click is toward. Sides equally
+    /// near go to the way you look.
     Nearest,
 }
 

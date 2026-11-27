@@ -73,14 +73,31 @@ impl Placement {
         match self.from {
             PlaceFrom::Face => self.values[face as usize],
             PlaceFrom::Look => looked(),
-            // Ties (a click in the very middle) go to the later side in
-            // `Direction::ALL`: down rather than up.
-            PlaceFrom::Nearest => Direction::ALL
-                .into_iter()
-                .rev()
-                .filter_map(|side| Some((self.values[side as usize]?, distance(at, side))))
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map(|(value, _)| value),
+            PlaceFrom::Nearest => {
+                let sides: Vec<_> = Direction::ALL
+                    .into_iter()
+                    .filter_map(|side| {
+                        Some((side, self.values[side as usize]?, distance(at, side)))
+                    })
+                    .collect();
+                let nearest = sides.iter().map(|s| s.2).fold(f32::INFINITY, f32::min);
+                let tied = |side: Direction| {
+                    sides
+                        .iter()
+                        .find(|s| s.0 == side && s.2 <= nearest + 1e-4)
+                        .map(|s| s.1)
+                };
+                // Sides equally near (a click in the very middle of a face)
+                // go to the way you look, then across the ground, then to
+                // the later side in `Direction::ALL`: down rather than up.
+                let flat = Vec3::new(look.x, 0.0, look.z);
+                let viewed = [Some(look), (flat.length_squared() > 1e-6).then_some(flat)];
+                viewed
+                    .into_iter()
+                    .flatten()
+                    .find_map(|dir| tied(Direction::along(dir)))
+                    .or_else(|| Direction::ALL.into_iter().rev().find_map(tied))
+            }
         }
     }
 }
@@ -228,7 +245,8 @@ mod tests {
     /// on a floor or under a ceiling takes the half of its voxel the click
     /// is in. A slab on a block's side takes the half clicked; on top of
     /// a block it's a bottom slab, under one a top slab, and a click in
-    /// the very middle of a side gives a bottom slab.
+    /// the very middle of a side, looking across it, a bottom slab; in the
+    /// very middle of a floor, the way you look picks.
     #[test]
     fn nearest_takes_the_side_nearest_the_click() {
         let content = base();
@@ -267,6 +285,12 @@ mod tests {
         // Without a click point, the middle of the face.
         assert_eq!(content.placed(s, Direction::East, along), h("bottom"));
         assert_eq!(content.placed(s, Direction::Down, along), h("top"));
+        // In the very middle of a floor every side of a vertical slab is
+        // as near: the way you look across the ground picks.
+        let down_north = Vec3::new(0.1, -0.9, -0.3).normalize();
+        let s = vertical.default_state();
+        assert_eq!(content.placed(s, Direction::Up, down_north), v("north"));
+        assert_eq!(content.placed(s, Direction::Up, along), v("east"));
     }
 
     /// Looking steeply down (placing a machine on the floor in front of
