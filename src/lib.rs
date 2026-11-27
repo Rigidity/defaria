@@ -9,6 +9,7 @@
 mod devtools;
 pub mod headless;
 pub mod integrated;
+pub mod quic;
 pub mod server;
 
 pub use devtools::{Cli, DevToolsPlugin, ScreenshotMode};

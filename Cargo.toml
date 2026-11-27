@@ -51,6 +51,16 @@ tracing = { workspace = true }
 
 # The headless runner's per-system CPU clock (`systems`): the version, and
 # the features, Bevy already builds.
+# The network: QUIC on async-io (which Bevy's assets already build), with
+# rustls on ring, and the server's self-signed certificate from rcgen.
+quinn = { version = "0.11", default-features = false, features = ["runtime-smol", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+smol = "2"
+bytes = "1"
+miniz_oxide = { workspace = true }
+serde = { workspace = true }
+
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { version = "1.1.6", default-features = false, features = ["time"] }
 

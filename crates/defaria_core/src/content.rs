@@ -859,6 +859,32 @@ impl FromWorld for Content {
 }
 
 impl Content {
+    /// A hash of every block state's and item state's name, in index
+    /// order: two sides with the same fingerprint number states the same,
+    /// so a state sent between them means the same thing. (FNV-1a, so the
+    /// same on every build and platform.)
+    pub fn fingerprint(&self) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut add = |text: &str| {
+            for byte in text.bytes().chain([0]) {
+                hash = (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for state in &self.states {
+            add(
+                &StateName::new(&self.blocks[state.block].id, state.values.iter().cloned())
+                    .to_string(),
+            );
+        }
+        for state in &self.item_states {
+            add(
+                &StateName::new(&self.items[state.item].id, state.values.iter().cloned())
+                    .to_string(),
+            );
+        }
+        hash
+    }
+
     /// Loads every mod in `root`, the `assets/mods` folder.
     pub fn load(root: &Path) -> Self {
         let (mods, mut errors) = load::read_mods(root, MODS_DIR);
