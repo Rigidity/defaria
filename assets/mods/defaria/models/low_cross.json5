@@ -1,0 +1,47 @@
+// `cross` for short plants (the mushroom, 11/16 high): the same crossed
+// quads, with a target box only as high as the plant, so aiming just over
+// it picks what's behind.
+{
+  slots: { all: null },
+  occludes: [],
+  collision: [],
+  target: [{ from: [0.125, 0, 0.125], to: [0.875, 0.6875, 0.875] }],
+  faces: [
+    {
+      texture: "all",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [1, 0, 1], uv: [1, 1] },
+        { pos: [1, 1, 1], uv: [1, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "all",
+      vertices: [
+        { pos: [1, 0, 1], uv: [0, 1] },
+        { pos: [0, 0, 0], uv: [1, 1] },
+        { pos: [0, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 1], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "all",
+      vertices: [
+        { pos: [1, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 1], uv: [1, 1] },
+        { pos: [0, 1, 1], uv: [1, 0] },
+        { pos: [1, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "all",
+      vertices: [
+        { pos: [0, 0, 1], uv: [0, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [0, 1, 1], uv: [0, 0] },
+      ],
+    },
+  ],
+}

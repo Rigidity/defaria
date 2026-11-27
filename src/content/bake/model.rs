@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 
 use super::Def;
-use crate::content::{BlockBox, Model, ModelFace, Vertex, schema::ModelDef};
+use crate::content::{
+    BlockBox, Model, ModelFace, Vertex,
+    schema::{BoxDef, ModelDef},
+};
 
 pub(super) fn model(def: &Def<ModelDef>) -> Result<Model, String> {
     let model = &def.def;
@@ -52,31 +55,15 @@ pub(super) fn model(def: &Def<ModelDef>) -> Result<Model, String> {
         })
         .collect::<Result<Vec<ModelFace>, String>>()?;
     let collision = match &model.collision {
-        Some(boxes) => boxes
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                block_box(Vec3::from(b.from), Vec3::from(b.to))
-                    .map_err(|error| format!("collision box {}: {error}", i + 1))
-            })
-            .collect::<Result<_, String>>()?,
+        Some(boxes) => block_boxes(boxes, "collision")?,
         None => around_faces(&faces).into_iter().collect(),
     };
     let target = match &model.target {
         Some(boxes) if boxes.is_empty() => {
             return Err("`target` is empty; leave it out to pick the collision boxes".into());
         }
-        Some(boxes) => Some(
-            boxes
-                .iter()
-                .enumerate()
-                .map(|(i, b)| {
-                    block_box(Vec3::from(b.from), Vec3::from(b.to))
-                        .map_err(|error| format!("target box {}: {error}", i + 1))
-                })
-                .collect::<Result<_, String>>()?,
-        ),
-        None => None,
+        Some(boxes) => block_boxes(boxes, "target")?,
+        None => collision.clone(),
     };
     Ok(Model {
         id: def.id.clone(),
@@ -86,6 +73,18 @@ pub(super) fn model(def: &Def<ModelDef>) -> Result<Model, String> {
         target,
         faces,
     })
+}
+
+/// A model's `collision` or `target` boxes, checked.
+fn block_boxes(boxes: &[BoxDef], what: &str) -> Result<Vec<BlockBox>, String> {
+    boxes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            block_box(Vec3::from(b.from), Vec3::from(b.to))
+                .map_err(|error| format!("{what} box {}: {error}", i + 1))
+        })
+        .collect()
 }
 
 /// The box between two opposite corners, which must be inside the block
@@ -297,10 +296,14 @@ mod tests {
                 max: Vec3::splat(0.875),
             }]
         );
+        // The mushroom's is as low as it is.
+        let mushroom = base.state(base.default_state("defaria:mushroom").unwrap());
+        assert_eq!(mushroom.target[0].max.y, 0.6875);
     }
 
-    /// Air, fluids and blocks marked `replaceable` (the base game's
-    /// plants) are replaced by placing; other blocks aren't.
+    /// Air and blocks marked `replaceable` (the base game's plants) are
+    /// replaced by placing; other blocks aren't. (Fluids sit beside a
+    /// voxel's block, which is air where there's only fluid.)
     #[test]
     fn replaceable_blocks_are_air_fluids_and_those_marked() {
         let base = crate::content::base();
@@ -314,12 +317,10 @@ mod tests {
             "fern",
             "dead_bush",
             "mushroom",
-            "water",
-            "lava",
         ] {
             assert!(replaceable(&format!("defaria:{id}")), "{id}");
         }
-        for id in ["stone", "stone_slab", "soil", "glass", "pipe"] {
+        for id in ["stone", "stone_slab", "soil", "glass", "pipe", "water"] {
             assert!(!replaceable(&format!("defaria:{id}")), "{id}");
         }
     }

@@ -229,9 +229,8 @@ pub struct Model {
     pub occludes: Vec<Direction>,
     /// What things bump into, in the block's own coordinates.
     pub collision: Vec<BlockBox>,
-    /// What the crosshair picks, if the model gives it; otherwise its
-    /// `collision` does.
-    pub target: Option<Vec<BlockBox>>,
+    /// What the crosshair picks: its `target`, or else its collision.
+    pub target: Vec<BlockBox>,
     pub faces: Vec<ModelFace>,
 }
 
@@ -477,8 +476,8 @@ pub struct State {
     /// that doesn't fill its voxel, such as a slab (see `fluid_room` in
     /// `docs/modding.md`).
     pub fluid_room: u16,
-    /// Whether placing a block replaces it, as it does air and fluids
-    /// (which always are): a plant's `replaceable`.
+    /// Whether placing a block replaces it: air's (which may hold
+    /// fluid) and a plant's, from its `replaceable`.
     pub replaceable: bool,
     /// Whether its faces show from behind too: from inside a glass block
     /// or under water.

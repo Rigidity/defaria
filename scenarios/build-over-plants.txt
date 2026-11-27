@@ -180,6 +180,17 @@ camera 22.5 47.6 30.5 -90 -12                             # a little higher: pas
 wait 2
 screenshot target/scenarios/build-over-plants/2-past-it.png
 wait 1
+# A mushroom is shorter, and so is its box: aimed just over its cap at the
+# same height, the crosshair picks the stone.
+fill 25 46 30 25 46 30 mushroom
+camera 22.5 47.2 30.5 -90 -12
+wait 2
+screenshot target/scenarios/build-over-plants/3-mushroom.png
+wait 1
+camera 22.5 47.45 30.5 -90 -12
+wait 2
+screenshot target/scenarios/build-over-plants/4-past-the-mushroom.png
+wait 1
 fill 23 46 30 27 46 30 tuft
 # A wall three high along z = 30, from x = 22 to 42, built from above:
 # the first block of each column goes where the plant stands.
@@ -332,8 +343,8 @@ hold MouseRight 1
 wait 1
 camera 32 51 46 0 -25                                     # south of it
 wait 2
-screenshot target/scenarios/build-over-plants/3-wall.png
+screenshot target/scenarios/build-over-plants/5-wall.png
 wait 1
 camera 32 47.2 35 0 -5                                    # down among the flowers
 wait 2
-screenshot target/scenarios/build-over-plants/4-foot-of-the-wall.png
+screenshot target/scenarios/build-over-plants/6-foot-of-the-wall.png

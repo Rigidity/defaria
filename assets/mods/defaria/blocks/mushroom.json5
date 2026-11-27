@@ -2,7 +2,7 @@
 // or not), stone and mossy stone.
 {
   name: "Mushroom",
-  model: "cross",
+  model: "low_cross",
   render: "cutout",
   textures: { all: "mushroom" },
   hardness: 0.05,

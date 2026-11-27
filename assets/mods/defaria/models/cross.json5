@@ -3,8 +3,9 @@
 // block, so they're never hidden, and they're lit by the block's own voxel.
 // It covers no side, so light passes through and its neighbours' faces
 // show, and there's nothing to bump into. The crosshair picks a box
-// around the middle of the quads, as high as the plants on it grow, so you
-// can aim past one at what's behind it.
+// around the middle of the quads, as high as the plants on it grow (14/16),
+// so you can aim past one at what's behind it. `low_cross` is the same for
+// shorter plants.
 {
   slots: { all: null },
   occludes: [],

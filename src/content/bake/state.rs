@@ -61,7 +61,7 @@ pub(super) fn bake_state(
         weight: numbers.weight,
         stats: numbers.stats,
         fluid_room,
-        replaceable: def.replaceable || fluid.is_some(),
+        replaceable: def.replaceable,
         ..default()
     };
     for part in parts {
@@ -165,8 +165,7 @@ fn bake_part(
     let first_box = state.collision.len();
     if def.fluid.is_none() {
         state.collision.extend(model.collision.iter().map(turn_box));
-        let target = model.target.as_ref().unwrap_or(&model.collision);
-        state.target.extend(target.iter().map(turn_box));
+        state.target.extend(model.target.iter().map(turn_box));
     }
     state.parts.push(StatePart {
         model: model.id.clone(),
