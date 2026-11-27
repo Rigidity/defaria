@@ -15,10 +15,7 @@
 use std::time::Duration;
 
 use bevy::{
-    app::{MainScheduleOrder, PluginsState},
-    ecs::schedule::ScheduleLabel,
-    prelude::*,
-    time::TimeUpdateStrategy,
+    app::MainScheduleOrder, ecs::schedule::ScheduleLabel, prelude::*, time::TimeUpdateStrategy,
 };
 use defaria_client::{net::ServerConnection, pause::Paused, session::GameState};
 use defaria_core::{
@@ -31,8 +28,6 @@ use defaria_core::{
     streaming::StreamingSettings,
     worldgen::TerrainSettings,
 };
-
-use crate::ServerPlugin;
 
 pub struct IntegratedServerPlugin;
 
@@ -71,18 +66,8 @@ fn start_server(world: &mut World) {
     forward::<HookSettings>(world, &mut app);
     forward::<RandomTicks>(world, &mut app);
     forward::<FluidSettings>(world, &mut app);
-    app.add_plugins((
-        MinimalPlugins,
-        TransformPlugin,
-        AssetPlugin::default(),
-        ServerPlugin,
-    ))
-    .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
-    while app.plugins_state() == PluginsState::Adding {
-        bevy::tasks::tick_global_task_pools_on_main_thread();
-    }
-    app.finish();
-    app.cleanup();
+    crate::server::build_server(&mut app);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
     // In single player, pausing pauses the game.
     app.insert_resource(PauseWithPlayers(true));
     let (client, server) = link();

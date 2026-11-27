@@ -111,7 +111,18 @@ impl BlockEntityPart for Ports {
 /// and back to the defaults when it's false (see
 /// [`Machine::active`](crate::content::Machine)). Not saved: it's read
 /// from the voxel's state when the block entity is made.
-#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component,
+    Reflect,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct MachineActive(pub bool);
 
@@ -138,7 +149,18 @@ impl BlockEntityPart for MachineActive {
 /// The energy a machine holds, in joules, and how fast (in watts) it may take
 /// and give it, make it and use it. Only `stored` is saved; the rest comes
 /// from the block.
-#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component,
+    Reflect,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct EnergyBuffer {
     pub stored: u64,
@@ -224,7 +246,9 @@ impl BlockEntityPart for EnergyBuffer {
 }
 
 /// A machine's fluid tanks, in order of name.
-#[derive(Component, Reflect, Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component, Reflect, Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct Tanks(pub Vec<Tank>);
 
@@ -378,7 +402,9 @@ impl BlockEntityPart for Tanks {
 }
 
 /// A machine's item slots, in groups, in order of name.
-#[derive(Component, Reflect, Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component, Reflect, Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct Slots(pub Vec<SlotGroup>);
 

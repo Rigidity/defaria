@@ -79,7 +79,20 @@ impl Plugin for ContentPlugin {
 
 /// A block in one particular state: an index into [`Content::states`].
 /// State 0 is always air.
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Reflect,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct BlockState(pub u16);
 
 impl BlockState {
@@ -682,7 +695,19 @@ impl BakedFace {
 /// An item in one particular state: an index into
 /// [`Content::item_states`]. Items carry their property values this way, as
 /// blocks do, so a birch log and an iron-headed pickaxe are each one value.
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Reflect,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ItemState(pub u32);
 
 /// An item and the range of [`ItemState`]s it owns.

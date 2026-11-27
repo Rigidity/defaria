@@ -129,6 +129,19 @@ pub enum ServerMessage {
     MachineContents(MachineContents),
     /// The machine screen closed (the machine went).
     CloseScreen,
+    /// The other players, where they are and which way they look, when
+    /// any of that changes.
+    Players(Vec<OtherPlayer>),
+}
+
+/// Another player, as a client sees it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OtherPlayer {
+    /// Which player it is, for as long as it's connected.
+    pub id: u64,
+    pub feet: DVec3,
+    pub look: Look,
+    pub sneaking: bool,
 }
 
 /// The parts of a player the server owns and its client shows.
@@ -263,7 +276,11 @@ mod tests {
         };
         let mut chunk = Chunk::default();
         chunk.set(1, 2, 3, block("stone"));
-        chunk.set_fluid_at(IVec3::new(4, 4, 4), crate::world::VoxelFluid::of(block("water"), 500), crate::content::FULL_FLUID);
+        chunk.set_fluid_at(
+            IVec3::new(4, 4, 4),
+            crate::world::VoxelFluid::of(block("water"), 500),
+            crate::content::FULL_FLUID,
+        );
         let stone = base().default_item("defaria:stone").unwrap();
         let mut inventory = Inventory::new();
         inventory.add(base(), ItemStack::new(stone, 12));
@@ -273,7 +290,10 @@ mod tests {
                 chunk: chunk.clone(),
                 light: ChunkLight::default(),
             },
-            ServerMessage::ChunkChanged { coord: ChunkCoord(IVec3::ZERO), chunk },
+            ServerMessage::ChunkChanged {
+                coord: ChunkCoord(IVec3::ZERO),
+                chunk,
+            },
             ServerMessage::Unload(ChunkCoord(IVec3::ONE)),
             ServerMessage::PlayerState(PlayerState {
                 inventory,

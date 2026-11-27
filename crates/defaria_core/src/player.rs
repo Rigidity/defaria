@@ -237,7 +237,9 @@ pub fn put_eyes(eyes: DVec3, eye_height: f64, body: &mut Body, transform: &mut T
 
 /// Which way a body looks: its yaw turns the whole body (and its
 /// [`Transform`]), its pitch only the head.
-#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component, Reflect, Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct Look {
     /// Rotation around the world Y axis, in radians.

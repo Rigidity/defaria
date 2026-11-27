@@ -77,7 +77,9 @@ pub struct RecipeFinished {
 /// A recipe machine's progress: the recipe it's running, whose inputs it
 /// has taken, and how many of its ticks have run. Saved with the block
 /// entity (but not [`RecipeProgress::status`]).
-#[derive(Component, Reflect, Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component, Reflect, Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize,
+)]
 #[reflect(Component)]
 #[require(EnergyNeed)]
 pub struct RecipeProgress {
@@ -101,7 +103,9 @@ pub struct RecipeProgress {
 }
 
 /// What a recipe machine is doing.
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Reflect, Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum RecipeStatus {
     /// Nothing to do: no recipe's inputs are there.
     #[default]

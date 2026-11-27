@@ -103,7 +103,9 @@ impl Default for SkyLight {
 
 /// The light levels at one voxel: four channels of 4 bits, the sky's in the
 /// lowest bits, then red, green and blue.
-#[derive(Reflect, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Reflect, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Light(pub u16);
 
 impl Light {

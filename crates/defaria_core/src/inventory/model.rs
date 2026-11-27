@@ -32,7 +32,9 @@ use crate::{
 /// the fluid a container holds (see `fluid_container`). Wear, names and
 /// contents (a bag's) will go here too. Stacks only merge when their data
 /// is equal.
-#[derive(Reflect, Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Reflect, Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ItemData {
     /// What a fluid container holds; `None` empty (never an amount of 0).
     pub fluid: Option<FluidAmount>,
@@ -112,7 +114,9 @@ pub fn is_unique(content: &Content, item: ItemState) -> bool {
 }
 
 /// Items and how many of each, optionally capped by weight.
-#[derive(Component, Reflect, Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component, Reflect, Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct Inventory {
     entries: Vec<ItemStack>,
