@@ -199,7 +199,7 @@ fn content() -> &'static Content {
 fn runtime() -> ScriptRuntime {
     let sources = ScriptSources::from_mods(&order(mods(), &mut Vec::new()));
     assert!(sources.errors.is_empty(), "{:?}", sources.errors);
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::default());
+    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
     assert!(
         runtime.load_errors().is_empty(),
         "{:?}",
@@ -217,6 +217,8 @@ fn block(id: &str) -> BlockState {
 fn app() -> App {
     let mut app = chunk_app(content().clone(), Duration::from_millis(10));
     app.add_plugins(AssetPlugin::default())
+        .insert_resource(ScriptSettings::untimed())
+        .insert_resource(HookSettings::untimed())
         .insert_resource(runtime())
         .add_plugins((
             ConnectionsPlugin,

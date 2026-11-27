@@ -1055,7 +1055,7 @@ mod tests {
         let ids: Vec<String> = base().mods.iter().map(|m| m.id.clone()).collect();
         let runtime = crate::script::ScriptRuntime::new(
             crate::script::ScriptSources::read(std::path::Path::new("assets/mods"), &ids),
-            default(),
+            crate::script::ScriptSettings::untimed(),
         );
         app.insert_resource(ScriptIndex::new(base(), &runtime))
             .add_systems(

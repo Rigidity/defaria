@@ -13,6 +13,10 @@ use crate::{
 /// than the game does so tests are quick.
 pub fn test_game(script: Script) -> App {
     let mut app = App::new();
+    // Before the game's plugins, so its scripts load with them: what a
+    // script may do then doesn't depend on how busy the machine is.
+    app.insert_resource(crate::script::ScriptSettings::untimed())
+        .insert_resource(crate::script::hooks::HookSettings::untimed());
     app.add_plugins((
         default_plugins(false).disable::<bevy::log::LogPlugin>(),
         crate::GamePlugin,

@@ -141,6 +141,19 @@ impl Default for HookSettings {
     }
 }
 
+#[cfg(test)]
+impl HookSettings {
+    /// The defaults with no time per tick, for tests: hooks wait only
+    /// for the ticks' counts and steps, the same every run however busy
+    /// the machine is.
+    pub fn untimed() -> Self {
+        Self {
+            time_per_tick: Duration::MAX,
+            ..default()
+        }
+    }
+}
+
 /// A block's script and which hooks it defines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockHooks {

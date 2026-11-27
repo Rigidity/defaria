@@ -637,12 +637,12 @@ fn a_scripted_machine_is_used_rather_than_opened() {
     use crate::{
         block_entity::{BlockData, Value},
         content::load::order,
-        script::{ScriptIndex, ScriptRuntime, ScriptSources},
+        script::{ScriptIndex, ScriptRuntime, ScriptSettings, ScriptSources},
     };
     let content = Content::from_mods(scripted_machine_mods());
     assert!(content.errors.is_empty(), "{:?}", content.errors);
     let sources = ScriptSources::from_mods(&order(scripted_machine_mods(), &mut Vec::new()));
-    let runtime = ScriptRuntime::new(sources, default());
+    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
     app.insert_resource(ScriptIndex::new(&content, &runtime))
         .insert_resource(runtime)

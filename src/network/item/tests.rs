@@ -408,14 +408,21 @@ fn fill(app: &mut App, pos: IVec3, stack: ItemStack) {
     assert!(slots.0[0].insert(content(), stack).is_none());
 }
 
-/// Runs frames until `n` more network ticks have run.
+/// Runs frames until `n` more network ticks have run. Each frame is one
+/// fixed step, so none runs more than one tick and it stops on the `n`th
+/// whatever phase the clock was in.
 fn run_ticks(app: &mut App, n: u64) {
     let clock = |app: &App| app.world().resource::<crate::network::NetworkClock>().ticks;
+    let step = app.world().resource::<Time<Fixed>>().timestep();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
     let until = clock(app) + n;
     while clock(app) < until {
         app.update();
     }
     assert_eq!(clock(app), until);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+        50,
+    )));
 }
 
 /// How many of `item` the crates at `at` hold, in all.
@@ -460,6 +467,20 @@ fn fills_two_crates(frame: &str, rate: u64) {
         app.world().resource::<ItemRates>().0.get(&id),
         Some(&(rate as f32))
     );
+    // Start counting after a tick with both crates on the network. Until
+    // then the network saves up the credit it can't spend (up to a tick
+    // and an item's worth), and how much is left over depends on how the
+    // setup's frames fell on ticks, which `build`'s wall-clock settling
+    // leaves to chance. After a tick that could move, less than an item's
+    // worth is left, the same at the end as at the start.
+    run_ticks(&mut app, 1);
+    let credit = app
+        .world()
+        .resource::<NetworkMap<ItemRouting>>()
+        .get(id)
+        .unwrap()
+        .credit;
+    assert!(credit < 1000, "{frame}: {credit}");
     let start = held(&app, &[a, b], planks());
     run_ticks(&mut app, 60);
     // Three seconds: three seconds' worth exactly, half to each.
