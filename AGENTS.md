@@ -173,7 +173,11 @@ changes.
    tests through the whole game go in `src/headless/tests/`, the only
    crate with `GamePlugin`); `headless::test_game`
    builds that app (loading a smaller world) and `headless::settle` steps it
-   until the world has loaded. CI has no GPU, so tests must use
+   until the world has loaded. The app is the client;
+   `headless::server(&mut app)` and `server_world(&app)` are the server's
+   world, which is where to read (or change) block entities, networks,
+   fluid flow, scripts and the player's inventory (the client's copy of
+   the inventory is replaced by the server's). CI has no GPU, so tests must use
    `rendering: false`.
 4. **Live state:** if the user has the game running and asks you to inspect
    it, the Bevy Remote Protocol listens on `127.0.0.1:15702` (or `BRP_PORT`).
@@ -308,6 +312,27 @@ The code is a Cargo workspace of three crates:
 - **`defaria`** (the root: `src/`): the one binary. `GamePlugin`, headless
   mode, dev tools, and the end-to-end tests that need the whole game.
 
+The game runs as a server and a client, even in single player: two Bevy
+apps in one process (see "Multiplayer" in `docs/decisions.md`).
+`ServerPlugin` (in `src/lib.rs`) is the server app: the world, its
+simulation, scripts, saving, and every player's connection
+(`defaria_core::server`). `ClientPlugin` is the client app: drawing the
+chunks the server sends (copies, in its own `ChunkMap`), the UI, and the
+local player, which the client moves and whose intents it sends
+(`defaria_client::net`). `IntegratedServerPlugin` (`src/integrated.rs`)
+starts the server app, holds it and steps it at the end of each client
+frame; the messages between them are `defaria_core::net`. So:
+
+- Game state changes on the server. A client feature that changes
+  anything (moving items, the game mode) sends a request: write a
+  `net::ToServer` message, and read what the server says back from
+  `net::FromServer` (as the machine screen does).
+- Gameplay systems act on any `Player`, not the `LocalPlayer`, which is
+  the client's own.
+- What happens on a click shows the next frame: the server acts on it at
+  the end of the frame, the client sees the result at the start of the
+  next.
+
 Each crate's `dev` feature turns on the same Bevy features, so building
 or testing any crate on its own (`cargo test -p defaria_core`) shares
 the one compiled Bevy; keep them identical. Tests in one crate use
@@ -320,7 +345,17 @@ crate's folder, so find `assets/` with `content::assets_dir()` or
 relative path.
 
 - `src/main.rs`: CLI flags and `App` setup only.
-- `src/lib.rs`: `GamePlugin`, which registers one plugin per feature.
+- `src/lib.rs`: `GamePlugin`, `ClientPlugin` and `ServerPlugin`, which
+  register one plugin per feature on each side.
+- `src/integrated.rs`: the server in the game's own process.
+- `crates/defaria_core/src/net.rs`: the messages between server and
+  client, and the link in memory that carries them.
+  `crates/defaria_core/src/server.rs`: the server's side: each client a
+  player with a `Connection`, its pose and intents applied, and the chunks
+  in its range, its state and its open machine sent.
+  `crates/defaria_client/src/net.rs`: the client's side: the chunks
+  spawned, changed and dropped, the player's state applied, and its
+  pose, uses, mining and hotbar sent.
 - `crates/<crate>/src/<feature>.rs` (or a folder): one plugin per
   gameplay feature, with its components, systems and tests, in the crate
   it belongs to (game logic in core; drawing, UI and input in the

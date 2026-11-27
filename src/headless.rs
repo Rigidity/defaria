@@ -12,6 +12,13 @@
 //! a smaller world than the default, so the script starts sooner. CI runs
 //! every scenario with both (`--no-render --radius 4`).
 //!
+//! The game is a client and a server (see `crate::integrated`); the script
+//! drives the client. Commands that set up the world (`fill`, `pour`,
+//! `put`, `hotbar`, `give`, `random-ticks`, `evaporation`, `lookups`) and
+//! the `fluids` and `network` reports act on the server's world; `camera`
+//! moves the client's player, as the mouse and keys do; `inspect` looks in
+//! the client's world, then the server's.
+//!
 //! # Script format
 //!
 //! One command per line. Blank lines and `#` comments are ignored.

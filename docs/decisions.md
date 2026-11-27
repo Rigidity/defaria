@@ -126,6 +126,27 @@ incremental builds stay cheap.
   server console reuses. `defaria server` and `cargo headless --connect
   <address>` run real processes, for agents as well as people.
 
+*As built in #50*, the first step:
+
+- The integrated server is stepped on the client's thread, at the end of
+  each client frame (after the client sends), with the client frame's
+  time, so headless runs stay deterministic. Its own thread comes later.
+- Messages are Rust values over a link in memory (`net::link`); encoding,
+  QUIC and a dedicated server are #51.
+- A changed chunk is sent whole: on a visible change to its blocks or
+  fluid (what redraws it), and on a change to its light. Deltas come with
+  encoding, when bandwidth matters.
+- The client moves its player and sends its pose; the server takes it
+  (#214 makes the server check it). The hotbar and slot in hand are the
+  client's too once it has joined: the server's are taken only when the
+  server changed them (a command), so a state crossing the client's own
+  change doesn't undo it.
+- A click shows its result the next frame. A machine's screen opens when
+  the server says so, so the mouse can still turn the view on the click's
+  own frame; predicting it is #214's.
+- Everything that isn't drawing, UI or input is still in `defaria_core`;
+  carving out `defaria_server` is #222.
+
 **What's wrong with it.** Single player keeps two copies of the loaded
 chunks' blocks, fluid and light (about 21 MiB at the default radius
 today; keeping meshes only in the render world, #161, saves more than
