@@ -1,7 +1,16 @@
 {
   name: "{wood} Slab",
-  properties: { wood: { materials: "#wood", default: "oak" } },
-  model: "slab",
+  properties: {
+    // Which half of its voxel it fills: on top of a block it sits low,
+    // under one it sits high, and against a block's side in the half you
+    // click. Vertical slabs are blocks of their own (`*_vertical_slab`).
+    half: {
+      values: ["bottom", "top"],
+      place: { from: "nearest", values: { down: "bottom", up: "top" } },
+    },
+    wood: { materials: "#wood", default: "oak" },
+  },
+  model: "slab_{half}",
   textures: { all: { texture: "planks", materials: { wood: "{wood}" } } },
   hardness: { materials: { wood: 1 } },
   weight: { base: 0.5, materials: { wood: 1 } },

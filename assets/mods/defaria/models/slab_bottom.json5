@@ -1,8 +1,10 @@
-// The bottom half of a block. Its sides show the bottom half of their
-// texture, so they line up with the blocks around it. Its top is inside
-// the block's space, so it's never hidden, and it's lit by the slab's own
-// voxel. Only the bottom is covered completely, so light passes through
-// every other side and stops at the bottom.
+// The bottom half of a block.
+// One of six, one per half (`slab_{half}`),
+// written by scripts/slab-models.py. Its faces show the part of their
+// texture a full block's would there, so halves side by side, or two in
+// one voxel, look like one block. The face inside the block has no
+// `cull` and is lit by the slab's own voxel. Only the down side is
+// covered completely, so light passes through every other side.
 {
   slots: {
     all: null,

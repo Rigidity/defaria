@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    content::{Direction, FULL_FLUID, Render, base, block, block_with, grass, sand, test_mod},
+    content::{
+        Direction, FULL_FLUID, Render, base, block, block_with, grass, sand, slab, test_mod,
+    },
     world::split_fluid,
 };
 use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
@@ -81,6 +83,70 @@ fn slabs_hide_only_what_they_cover() {
         .chunks(4)
         .find(|quad| quad.iter().all(|p| p.y == 6.5));
     assert!(top.is_some(), "the slab's top is at half height");
+}
+
+/// A stone bottom under a planks top, as one voxel.
+fn double_slab() -> BlockState {
+    base()
+        .combine(slab("stone_slab", "bottom"), slab("planks_slab", "top"))
+        .unwrap()
+}
+
+/// Two halves in a voxel draw as one block: each side is the two halves'
+/// sides with no face between them, a neighbour's face against any side is
+/// hidden, and so are the halves' sides against a full neighbour.
+#[test]
+fn two_halves_in_a_voxel_draw_as_one_block() {
+    let mut chunk = Chunk::default();
+    chunk.set(5, 5, 5, double_slab());
+    // Four sides of two half faces each, a top and a bottom.
+    assert_eq!(faces(&mesh(&chunk, air)), 4 * 2 + 2);
+    let positions = vec3s(&mesh(&chunk, air), Mesh::ATTRIBUTE_POSITION);
+    assert!(
+        !positions
+            .chunks(4)
+            .any(|quad| quad.iter().all(|p| p.y == 5.5)),
+        "no face between the halves"
+    );
+    // Stone east of it loses its west face, and it loses both halves of
+    // its east side.
+    chunk.set(6, 5, 5, block("stone"));
+    assert_eq!(faces(&mesh(&chunk, air)), 4 * 2 + 2 - 2 + 5);
+    // Between two double slabs, nothing.
+    chunk.set(6, 5, 5, double_slab());
+    assert_eq!(faces(&mesh(&chunk, air)), 2 * (4 * 2 + 2 - 2));
+    // Two vertical halves the same, against stone to the south.
+    let pair = base()
+        .combine(
+            slab("stone_vertical_slab", "north"),
+            slab("thatch_vertical_slab", "south"),
+        )
+        .unwrap();
+    let mut chunk = Chunk::default();
+    chunk.set(5, 5, 5, pair);
+    chunk.set(5, 5, 6, block("stone"));
+    // Each half's east, west, top and bottom halves, and the north half's
+    // north face; the south half's south face is hidden, as is the
+    // stone's north face.
+    assert_eq!(faces(&mesh(&chunk, air)), 2 * 2 + 1 + 2 * 2 + 5);
+}
+
+/// A double slab shades the corners of faces next to it as a full block
+/// does.
+#[test]
+fn two_halves_in_a_voxel_shade_corners_like_a_block() {
+    let pos = IVec3::new(5, 5, 5);
+    let beside = |other: BlockState| {
+        let blocks = [(pos, block("stone")), (pos + IVec3::new(1, 1, 0), other)];
+        shading(
+            &neighborhood(&blocks, |_| OPEN_SKY).mesh(base()),
+            pos,
+            IVec3::Y,
+        )
+        .occlusion
+    };
+    assert_eq!(beside(double_slab()), beside(block("stone")));
+    assert_ne!(beside(slab("stone_slab", "bottom")), beside(block("stone")));
 }
 
 #[test]

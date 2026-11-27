@@ -86,7 +86,7 @@ pub(super) fn bake_state(
 }
 
 /// The textures of the faces culled against `side`.
-pub(super) fn side_texture(faces: &[BakedFace], side: Direction) -> SideTexture {
+pub(in crate::content) fn side_texture(faces: &[BakedFace], side: Direction) -> SideTexture {
     let mut layers = faces
         .iter()
         .filter(|face| face.cull == Some(side))

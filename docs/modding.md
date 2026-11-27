@@ -294,7 +294,7 @@ fills.
 - **`collision`** is a list of boxes, each from one corner to the
   opposite one, in the same block coordinates. They must be inside the
   block and not flat. Left out, it's the one box around all the faces
-  (`models/slab.json5` gets `[0, 0, 0]` to `[1, 0.5, 1]` that way), or
+  (`models/slab_bottom.json5` gets `[0, 0, 0]` to `[1, 0.5, 1]` that way), or
   nothing if the faces are all in one plane. `collision: []` makes a block
   you walk through; the crosshair still picks it, as a whole block. Boxes
   turn with the block's `rotate` (or the part's: see [Parts](#parts)).
@@ -516,7 +516,7 @@ behind. Any fluid works, not just water.
 ```json5
 // blocks/stone_slab.json5
 {
-  model: "slab",
+  model: "slab_{half}",
   fluid_room: 0.5,   // half its voxel: a slab in a pond stays under water
   // ...
 }
@@ -777,25 +777,46 @@ properties: {
 
 - **`"face"`** uses the side of the block you click: placing on top of a
   block is `up`, against its east side `east`.
+- **`"nearest"`** uses the side of the placed block's voxel nearest
+  where you click: the side that touches the block clicked, unless the
+  property has no value for that side, when it's the nearest of those
+  it has. So a property with only the four sides, placed on a block's
+  north side, is `south` wherever on that side you click, and placed on
+  a floor is the side of its voxel the click is toward. One with only
+  `up` and `down`, placed on a block's side, is `up` on its upper half.
+  Sides equally near (a click in the very middle of a face) go to the
+  way you look, or across the ground, if that's one of them, and else
+  to the later one in the list `up`, `down`, `north`, `south`, `east`,
+  `west`: a slab clicked in the middle of a block's side is a bottom
+  slab.
 - **`"look"`** uses the way you look, along its strongest axis: looking
   down is `down`, looking mostly west is `west`. If the property has no
   value for `up` or `down` and you look more up or down than across, it
   uses the way you face across the ground instead, so a machine placed
   on the floor in front of you faces the way you look.
-- Either one gives each direction the value named after its axis (`x`,
+- Each gives each direction the value named after its axis (`x`,
   `y` or `z`), or else after itself (`up`, `down`, `north`, `south`,
   `east`, `west`). A property whose values are neither needs `values`.
 - **`{ from, values }`** says which value each direction gives; `from` is
-  `"face"` or `"look"`. A direction it leaves out keeps the value the
+  `"face"`, `"nearest"` or `"look"`. A direction it leaves out keeps the value the
   block would have had (from its item, or the default), but it must name
   at least one:
 
   ```json5
-  // A slab half: on top of a block it sits low, under one it sits high.
+  // A slab half: on top of a block it sits low, under one it sits high,
+  // and on a block's side in the half you click.
   half: {
     values: ["bottom", "top"],
-    place: { from: "face", values: { up: "bottom", down: "top" } },
+    place: { from: "nearest", values: { down: "bottom", up: "top" } },
   },
+  ```
+
+  A vertical slab is a block of its own, standing against the block
+  whose side you click, and on a floor or under a ceiling in the half
+  of its voxel you click:
+
+  ```json5
+  half: { values: ["north", "south", "east", "west"], place: "nearest" },
   ```
 
 `place` is for blocks' plain properties only, and not with `item: true`:
@@ -821,6 +842,49 @@ replaceable: true,
 - A block isn't placed over another state of the same block: a tuft
   placed against a tuft goes beside it, as against any other block, so
   a row of them can be planted.
+
+### Halves
+
+A state that fills exactly one half of its voxel, such as a slab, can
+share the voxel with another half that fills the other side: a stone
+bottom under a planks top, or two vertical slabs back to back. The game
+sees that from the state itself; there's nothing to declare. A state is a
+**half** when:
+
+- its only collision box is one half of the voxel: `[0, 0, 0]` to
+  `[1, 0.5, 1]` for the bottom, `[0, 0.5, 0]` to `[1, 1, 1]` for the top,
+  or the same split along X or Z;
+- its model `occludes` the side of the voxel that half is against;
+- the crosshair picks it by that same box (no smaller `target`);
+- it's drawn `opaque`;
+- and it's a plain block: not a fluid, a conduit or a machine, not
+  `replaceable`, and with no `block_entity`, `script`, connections or
+  `support`.
+
+Any two halves on opposite sides of the same axis fit together, whatever
+their blocks: a slab with a slab, a vertical slab with a vertical slab.
+Placing a block whose item places a half into a voxel holding the other
+half fills it: clicking the open side of a half (the
+top of a bottom slab), or placing against a face with a half just in
+front of it. The new half is the state of the placed block that fills
+the open side, with the item's values (its rock, say) and the values
+its `place` properties pick from the face and view, all but its half.
+
+The voxel is then one block made of both: it covers every side, so it
+hides its neighbours' faces, stops light and shades corners like a full
+block, and has no room for fluid. Each half's faces are drawn, but not
+the two between them, so their models should show the part of the
+texture a full block's face would there (the base game's `slab_{half}`
+models do), to leave no seam where the halves meet. The crosshair picks
+the half it's on, and mining breaks that half alone, giving its item and
+leaving the other. It glows as brightly as the brighter half, and dims
+light coming in by the larger `light_filter`.
+
+The game bakes a state for every pair when it loads, in an engine block
+called `combined` (scripts see that id, with no state values). Their
+number is the product of the halves on each side, so a mod with many
+slab materials adds many; if they don't all fit in the 65536 states
+there's room for, the game reports an error and no halves combine.
 
 ### Connections
 
@@ -1544,9 +1608,12 @@ blocks placed into fluid delete, having nowhere to push it; the headless
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
-- Placement can't read where on a face you click yet, so a slab placed
-  against the side of a block can't pick its half from the upper or lower
-  part of that side.
+- Vertical slabs are blocks of their own rather than a slab placed
+  another way, since a click on a block's side can't tell a top or
+  bottom slab from a vertical one.
+- A voxel holds at most two halves, both whole halves of one axis: no
+  quarter blocks, stairs or small pieces yet, and a half that's
+  see-through (a glass slab) or a plant doesn't share its voxel.
 - Item data that isn't a fixed list of values, such as durability.
 - Variants can't change hardness, weight, stats or `light_filter`.
 - A light filter dims every colour alike, so water doesn't tint what's

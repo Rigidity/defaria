@@ -266,13 +266,13 @@ mod tests {
     fn a_use_has_the_target_and_shift() {
         let mut app = app(None);
         let using = frame(&mut app, true, false)[5].1.unwrap();
+        let target = using.target.unwrap();
         assert_eq!(
-            using.target,
-            Some(Hit {
-                block: IVec3::new(8, 4, 5),
-                normal: IVec3::Z,
-            })
+            (target.block, target.normal, target.shape_box),
+            (IVec3::new(8, 4, 5), IVec3::Z, 0)
         );
+        // On the face it entered, the south one.
+        assert!((target.at.z - 1.0).abs() < 1e-4, "{}", target.at);
         assert!(!using.sneak);
         assert!(frame(&mut app, true, true)[5].1.unwrap().sneak);
         assert!(frame(&mut app, false, false).is_empty(), "no steps run");

@@ -236,9 +236,13 @@ fn plain_property(name: &str, values: &[String], item: bool) -> Result<Property,
 }
 
 /// Checks that a property's name or value can be written in a state's
-/// name (`id[name=value,…]`, see `StateName`) and read back.
+/// name (`id[name=value,…]`, see `StateName`, or two of them joined by
+/// a `+` for a voxel of two halves) and read back.
 fn check_state_text(what: &str, text: &str) -> Result<(), String> {
-    match text.chars().find(|c| matches!(c, '[' | ']' | '=' | ',')) {
+    match text
+        .chars()
+        .find(|c| matches!(c, '[' | ']' | '=' | ',' | '+'))
+    {
         Some(c) => Err(format!("{what} has a `{c}`, which state names use")),
         None if text.is_empty() => Err(format!("{what} is empty")),
         None => Ok(()),

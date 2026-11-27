@@ -3,6 +3,61 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
+
+**Context.** Placing a slab on a slab made two slabs in two voxels, and
+there was no double slab (#80). Slabs also only came as bottom halves;
+they now have a top half too, and each slab has a vertical slab beside it, a block of its own whose
+half (north, south, east or west) is the side of its voxel nearest the
+click (`place: "nearest"`): against the block whose side you click, or
+on a floor the half you click. Slabs take their half the same way, so
+one placed on the upper half of a block's side is a top slab. Vertical
+halves are separate blocks so that clicking a block's side still places
+a slab rather than standing one up.
+
+**Decision.** A voxel still holds one block state. A state whose only box
+is half its voxel, that covers that side and is a plain opaque block, is
+a *half* (`State::half`), worked out from its shape, so a mod's
+half-height blocks combine without declaring anything. At load the game
+bakes a *combined* state (`State::combined`) for every pair of halves on
+opposite sides of an axis, whatever their blocks (a stone bottom under a
+planks top), in an engine block, `combined`, after every mod's blocks.
+Its faces are both halves' but the two between them, its boxes both
+halves' (the low one first), and it covers every side. So meshing,
+culling, light, physics and fluid flow read it as any full block and
+needed no change; only placing (filling the open half), the crosshair
+(which half: `Hit::shape_box`), mining (breaking one half, leaving the
+other) and saves know the parts. Saves name a combined state by its two
+halves, `a+b`, so they stay valid when mods change; a half that's gone
+leaves the other. Chunk format 5, for that name. This is the first of
+the two ways #80 offered: a state per pair, rather than a voxel that
+stores parts.
+
+**What's wrong with it.** States multiply: the pairs are the product of
+the halves on each side of each axis, about 1,700 for the base game's
+24 slab materials, and a mod with a hundred slab materials would need
+30,000 of the 65,536 states there are; past that nothing combines, with
+an error. Every pair's faces are stored, used or not. Only whole halves
+of one axis combine: no quarters, stairs or small pieces, nor three
+parts, and see-through halves (glass slabs) and anything with a block
+entity, script or connections don't share a voxel. Scripts see a
+combined voxel as the `combined` block with no values, not its halves.
+Fluid can't stay in a voxel of two halves, which is fine while they fill
+it but won't be for shapes that don't.
+
+**What should replace it.** A voxel that stores its parts (per-voxel
+data beside the block state, as the fluid layer is, or a block entity),
+meshed, culled, lit and collided part by part, which the Chisel &
+Bits-style small pieces need anyway; `State::combined`, `Content::half_at`
+and `Content::without` are where placing, mining and saves would read
+the parts from instead. Multipart states (`State::parts`, see
+"Multipart states are flattened at load") should move to the same
+storage.
+
+**When to revisit.** When the state count nears the limit, when stairs,
+quarter blocks or small pieces come, when a see-through or scripted half
+should share a voxel, or when scripts need to read a voxel's halves.
+
 ## Chunks that fluid changes are remeshed at once, uncapped (2026-11-26)
 
 **Context.** Moving fluid remeshes the chunks that show it on the frame

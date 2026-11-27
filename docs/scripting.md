@@ -90,7 +90,7 @@ A hook's `block` is a handle on a block by position:
 | | |
 |---|---|
 | `block.pos` | Its position, a `vector`. |
-| `block.id` | Its block's id: `"defaria:stone"`, or `"air"`. A voxel's fluid isn't its block: under water, it's `"air"`, or a slab's. |
+| `block.id` | Its block's id: `"defaria:stone"`, or `"air"`. A voxel's fluid isn't its block: under water, it's `"air"`, or a slab's. A voxel holding two halves (a double slab) is `"combined"`, with no state values. |
 | `block.name` | Its state's name: `"Granite Iron Ore"`. |
 | `block.state` | Its property values, a table: `true`/`false` for the properties whose values are `"true"`/`"false"`, text otherwise (`block.state.rock == "defaria:granite"`). |
 | `block.data` | Its block entity's data, a table, or nil for a block with no `block_entity` (see [Data](#data)). |

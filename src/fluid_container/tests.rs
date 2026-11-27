@@ -463,6 +463,8 @@ fn click(app: &mut App, inventory: &mut Inventory, pos: IVec3, pour_only: bool) 
     let hit = Hit {
         block: pos,
         normal: IVec3::Y,
+        shape_box: 0,
+        at: Vec3::new(0.5, 1.0, 0.5),
     };
     let (taken, held) = app
         .world_mut()

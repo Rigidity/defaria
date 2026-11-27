@@ -1,0 +1,71 @@
+# Double and vertical slabs, on a flat stone platform built in the air.
+# Front row, west to east: a bottom slab, a top slab, then double slabs
+# of one block (stone on stone) and of two (stone under planks, planks
+# under thatch, granite bricks under birch). Back row: vertical slabs
+# standing alone, facing each way, then pairs of them back to back, of
+# one block and of two. A double slab next to a full block shows no
+# seam where they meet, and a wall of them shades like a full wall.
+# A slab in a pool keeps the water in its other half; a double slab
+# beside it pushes the water out.
+# The last views place and mine: a planks slab dropped onto the open top
+# of a cobblestone one fills it, and mining the top half of a double slab
+# leaves the bottom.
+# Run: cargo headless scenarios/double-slabs.txt
+wait 5
+fill 20 45 20 44 45 44 stone       # the platform
+# Front row, along z = 24.
+fill 22 46 24 22 46 24 stone_slab[half=bottom]
+fill 24 46 24 24 46 24 stone_slab[half=top]
+fill 26 46 24 26 46 24 stone_slab[half=bottom]+stone_slab[half=top]
+fill 28 46 24 28 46 24 stone_slab[half=bottom]+planks_slab[half=top]
+fill 30 46 24 30 46 24 planks_slab[half=bottom]+thatch_slab[half=top]
+fill 32 46 24 32 46 24 stone_brick_slab[half=bottom,rock=defaria:granite]+planks_slab[half=top,wood=defaria:birch]
+fill 33 46 24 33 46 24 stone       # a full block against the last one
+# Back row, along z = 28: single vertical slabs, one of each facing.
+fill 22 46 28 22 46 28 stone_vertical_slab[half=north]
+fill 24 46 28 24 46 28 stone_vertical_slab[half=south]
+fill 26 46 28 26 46 28 planks_vertical_slab[half=east]
+fill 28 46 28 28 46 28 planks_vertical_slab[half=west]
+# Pairs back to back: north and south, west and east, mixed.
+fill 30 46 28 30 46 28 stone_vertical_slab[half=north]+stone_vertical_slab[half=south]
+fill 32 46 28 32 46 28 cobblestone_vertical_slab[half=north]+planks_vertical_slab[half=south]
+fill 34 46 28 34 46 28 thatch_vertical_slab[half=west]+smooth_stone_vertical_slab[half=east]
+# A two-high wall of double slabs, its far end against stone.
+fill 22 46 32 28 47 32 stone_slab[half=bottom]+planks_slab[half=top]
+fill 29 46 32 29 47 32 stone
+# A pool walled in stone: a slab in it, a double slab beside it.
+fill 35 46 30 41 46 36 stone
+fill 36 46 31 40 46 35 air
+fill 38 46 33 38 46 33 stone_slab[half=bottom]
+fill 39 46 33 39 46 33 stone_slab[half=bottom]+stone_slab[half=top]
+fill 36 46 31 40 46 35 water       # fills the room the blocks leave
+wait 1
+camera 30 54 42 0 -38              # south of it, looking down at it all
+settle
+wait 2
+screenshot target/scenarios/double-slabs/0-overview.png
+wait 1
+camera 28 48.2 21.5 180 -22        # close on the front row, from the north
+wait 2
+screenshot target/scenarios/double-slabs/1-front-row.png
+wait 1
+camera 28 48.5 31.5 0 -30          # close on the vertical slabs, from the south
+wait 2
+screenshot target/scenarios/double-slabs/2-vertical.png
+wait 1
+# Placing: a cobblestone slab on the floor, then a planks slab into its top half.
+hold MouseLeft 1                   # lock the cursor
+camera 38.5 49.5 28 0 -55          # down at the floor at (38, 46, 25)
+hotbar 1 cobblestone_slab
+wait 2
+hold MouseRight 1                  # a cobblestone slab on the floor
+wait 20
+hotbar 1 planks_slab
+wait 2
+hold MouseRight 1                  # and a planks one into its top half
+wait 20
+screenshot target/scenarios/double-slabs/3-placed.png
+wait 1
+hold MouseLeft 90                  # mine the top half, the planks, and
+wait 2                             # not long enough for the stone
+screenshot target/scenarios/double-slabs/4-mined.png
