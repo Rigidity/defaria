@@ -388,13 +388,14 @@ mod tests {
             (BlockState::AIR, FULL_FLUID, 1)
         );
         assert_eq!(changes[0].displaced(), None);
+        // A plant takes up no room: it keeps all of the water.
         let (_, amount, changes, _) = set(&mut app, block("tuft"));
-        assert_eq!(amount, 900);
-        assert_eq!(changes[0].displaced(), water(100));
+        assert_eq!(amount, FULL_FLUID);
+        assert_eq!(changes[0].displaced(), None);
         let (_, amount, changes, _) = set(&mut app, BlockState::AIR);
         assert_eq!(
             (amount, changes[0].displaced()),
-            (900, None),
+            (FULL_FLUID, None),
             "breaking keeps it"
         );
     }

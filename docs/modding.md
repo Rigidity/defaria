@@ -468,7 +468,7 @@ behind. Any fluid works, not just water.
 }
 ```
 
-The base game gives slabs half their voxel and a tuft of grass 0.9. The
+The base game gives slabs half their voxel, and plants all of it. The
 fluid is drawn in the part of the voxel the block doesn't cover: a slab's
 half full of water reaches the top of its voxel, so the pond's surface
 runs on unbroken over it, and less stands that much higher than the

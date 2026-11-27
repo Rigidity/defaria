@@ -705,7 +705,7 @@ mod tests {
         assert!(amount(&app, IVec3::new(3, 1, 1)) > 0, "it spread");
     }
 
-    /// Water flows into the room a slab and a tuft leave in their voxels,
+    /// Water flows into the room a slab and a plant leave in their voxels,
     /// beside it and below it, never more than that room, and keeps all of
     /// itself. The blocks stay as they are.
     #[test]
@@ -714,29 +714,72 @@ mod tests {
         // A sealed trench along X at y 1: water, a slab, a tuft, and a
         // slab under the water's end.
         let mut chunk = Chunk::filled(block("stone"));
-        for x in 1..=4 {
+        for x in 1..=5 {
             chunk.set(x, 1, 1, BlockState::AIR);
         }
-        chunk.set_to_fluid(IVec3::new(1, 1, 1), block("water"));
-        chunk.set_to_fluid(IVec3::new(2, 1, 1), block("water"));
-        chunk.set(3, 1, 1, block("stone_slab"));
-        chunk.set(4, 1, 1, block("tuft"));
+        for x in 1..=3 {
+            chunk.set_to_fluid(IVec3::new(x as i32, 1, 1), block("water"));
+        }
+        chunk.set(4, 1, 1, block("stone_slab"));
+        chunk.set(5, 1, 1, block("tuft"));
         chunk.set(1, 0, 1, block("stone_slab"));
         insert_chunk(&mut app, IVec3::ZERO, chunk);
         run(&mut app, 6.0);
         let at = |x, y| amount(&app, IVec3::new(x, y, 1));
         assert_eq!(at(1, 0), 500, "the slab below fills");
-        assert!(at(3, 1) > 0 && at(3, 1) <= 500, "{}", at(3, 1));
-        assert!(at(4, 1) > 0 && at(4, 1) <= 900, "{}", at(4, 1));
-        let total: u16 = (1..=4).map(|x| at(x, 1)).sum::<u16>() + at(1, 0);
-        assert_eq!(total, 2 * FULL_FLUID);
+        assert!(at(4, 1) > 0 && at(4, 1) <= 500, "{}", at(4, 1));
+        assert!(at(5, 1) > 0 && at(5, 1) <= FULL_FLUID, "{}", at(5, 1));
+        let total: u16 = (1..=5).map(|x| at(x, 1)).sum::<u16>() + at(1, 0);
+        assert_eq!(total, 3 * FULL_FLUID);
         let entity = app
             .world()
             .resource::<ChunkMap>()
             .get(ChunkCoord(IVec3::ZERO));
         let chunk = app.world().get::<Chunk>(entity.unwrap()).unwrap();
-        assert_eq!(chunk.at(IVec3::new(3, 1, 1)), block("stone_slab"));
-        assert_eq!(chunk.at(IVec3::new(4, 1, 1)), block("tuft"));
+        assert_eq!(chunk.at(IVec3::new(4, 1, 1)), block("stone_slab"));
+        assert_eq!(chunk.at(IVec3::new(5, 1, 1)), block("tuft"));
+    }
+
+    /// Plants take up no room, so water flows into them as it would into
+    /// air, however shallow: a tenth of a block beside each plant spreads
+    /// into its voxel, and the plant stays.
+    #[test]
+    fn shallow_water_flows_into_plants() {
+        let mut app = app();
+        let plants = [
+            "tuft",
+            "daisy",
+            "tulip",
+            "bluebell",
+            "fern",
+            "mushroom",
+            "dead_bush",
+        ];
+        // A sealed trench along X at y 1 for each plant, two voxels long:
+        // the water, then the plant.
+        let mut chunk = Chunk::filled(block("stone"));
+        for (i, plant) in plants.iter().enumerate() {
+            let z = 1 + 2 * i;
+            chunk.set(1, 1, z, BlockState::AIR);
+            chunk.set(2, 1, z, block(plant));
+            chunk.start_fluid_at(
+                IVec3::new(1, 1, z as i32),
+                VoxelFluid::of(block("water"), FULL_FLUID / 10),
+                FULL_FLUID,
+            );
+        }
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 4.0);
+        let entity = app
+            .world()
+            .resource::<ChunkMap>()
+            .get(ChunkCoord(IVec3::ZERO));
+        let chunk = app.world().get::<Chunk>(entity.unwrap()).unwrap();
+        for (i, plant) in plants.iter().enumerate() {
+            let at = IVec3::new(2, 1, 1 + 2 * i as i32);
+            assert!(chunk.fluid_amount_at(at) > 0, "{plant} took no water");
+            assert_eq!(chunk.at(at), block(plant), "{plant} stays");
+        }
     }
 
     /// A sealed pond of water, `size` wide and `depth` deep, full, in a

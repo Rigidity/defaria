@@ -7,6 +7,8 @@
   textures: { all: "mushroom" },
   hardness: 0.05,
   weight: 0.05,
+  // It takes up no room: water and lava fill its cell as they would air.
+  fluid_room: 1,
   category: "natural",
   support: [
     { block: "soil", when: { soil: ["dirt", "loam"] } },

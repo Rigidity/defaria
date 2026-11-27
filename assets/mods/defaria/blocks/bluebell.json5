@@ -7,6 +7,8 @@
   textures: { all: "bluebell" },
   hardness: 0.05,
   weight: 0.05,
+  // It takes up no room: water and lava fill its cell as they would air.
+  fluid_room: 1,
   category: "natural",
   // Dirt or loam, grassy or bare, and any soil under grass.
   support: [

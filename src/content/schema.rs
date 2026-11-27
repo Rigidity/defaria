@@ -298,7 +298,7 @@ pub struct BlockDef {
     #[serde(default)]
     pub fluid: Option<FluidDef>,
     /// How much fluid can share a voxel with the block, in blocks, from 0
-    /// to 1: half for a slab, nearly all for a tuft of grass. A block
+    /// to 1: half for a slab, all of it for a plant. A block
     /// placed into fluid keeps that much of it, and fluid flows into the
     /// room it leaves. Left out, 0: it fills its voxel.
     #[serde(default)]
