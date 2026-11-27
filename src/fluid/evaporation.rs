@@ -33,6 +33,19 @@ use crate::{
 /// About how often each film is visited, in seconds.
 pub const VISIT_SECONDS: f32 = 2.0;
 
+/// How many times faster than their fluid's `evaporation` rate films dry
+/// up: 1 in the game. Headless scripts raise it (`evaporation <speed>`) to
+/// watch puddles dry in seconds rather than minutes.
+#[derive(Resource, Reflect, Debug, Clone, Copy, PartialEq)]
+#[reflect(Resource)]
+pub struct EvaporationSpeed(pub f32);
+
+impl Default for EvaporationSpeed {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
 /// The films that might evaporate, in the order they're visited.
 #[derive(Resource, Debug, Default)]
 pub struct Films {
@@ -73,11 +86,12 @@ impl Films {
         due
     }
 
-    /// How many whole units a visit to a film of `kind` takes, carrying
-    /// what's short of a unit over to the next visit to one.
-    fn lose(&mut self, kind: BlockState, fluid: &Fluid) -> u16 {
+    /// How many whole units a visit to a film of `kind` takes, `speed`
+    /// times its fluid's rate, carrying what's short of a unit over to the
+    /// next visit to one.
+    fn lose(&mut self, kind: BlockState, fluid: &Fluid, speed: f32) -> u16 {
         let owed = self.owed.entry(kind).or_default();
-        *owed += per_visit(fluid);
+        *owed += per_visit(fluid) * speed;
         let whole = owed.floor();
         *owed -= whole;
         whole as u16
@@ -142,6 +156,7 @@ pub(super) fn note_films(
 /// what evaporated since its last visit, and is gone once it's all gone.
 pub(super) fn evaporate(
     time: Res<Time>,
+    speed: Res<EvaporationSpeed>,
     mut films: ResMut<Films>,
     mut stats: ResMut<FluidStats>,
     mut cells: WorldCells,
@@ -159,7 +174,7 @@ pub(super) fn evaporate(
             continue;
         };
         if open_sky(pos) {
-            let lost = films.lose(kind, fluid).min(amount);
+            let lost = films.lose(kind, fluid, speed.0).min(amount);
             stats.evaporated += lost as u64;
             if lost == amount {
                 // Gone, leaving the voxel's block as it was (a slab's room
@@ -203,6 +218,7 @@ mod tests {
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .init_resource::<Films>()
+            .init_resource::<EvaporationSpeed>()
             .add_systems(
                 Update,
                 (wake_around_edits, wake_loaded_chunks, note_films).chain(),
@@ -313,10 +329,12 @@ mod tests {
 
     /// A block of water poured on open ground spreads into films and dries
     /// up entirely, the voxel it was poured in too: that one becomes a film
-    /// by draining, which only changes its amount.
+    /// by draining, which only changes its amount. Sped up, as a script's
+    /// `evaporation` does, so it takes seconds rather than minutes.
     #[test]
     fn a_poured_puddle_dries_up() {
         let mut app = app();
+        app.insert_resource(EvaporationSpeed(20.0));
         let (chunk, light) = floor(&[], &[]);
         insert_chunk(&mut app, IVec3::ZERO, (chunk, light));
         run(&mut app, 0.5);
@@ -326,7 +344,7 @@ mod tests {
                 voxels.pour(pos, block("water"), FULL_FLUID);
             })
             .unwrap();
-        run(&mut app, 480.0);
+        run(&mut app, 24.0);
         let total: u64 = (0..16)
             .flat_map(|x| (0..16).map(move |z| IVec3::new(x, 1, z)))
             .map(|pos| amount(&app, pos) as u64)
@@ -349,9 +367,21 @@ mod tests {
             ..base().state(block("water")).fluid.clone().unwrap()
         };
         let lost: Vec<u16> = (0..10)
-            .map(|_| films.lose(block("water"), &fluid))
+            .map(|_| films.lose(block("water"), &fluid, 1.0))
             .collect();
         assert_eq!(lost.iter().sum::<u16>(), 2, "{lost:?}");
+    }
+
+    /// A faster speed loses that many times as much a visit.
+    #[test]
+    fn speed_multiplies_what_a_visit_loses() {
+        let fluid = Fluid {
+            evaporation: 2.0 / (FULL_FLUID as f32 * VISIT_SECONDS),
+            ..base().state(block("water")).fluid.clone().unwrap()
+        };
+        let mut films = Films::default();
+        assert_eq!(films.lose(block("water"), &fluid, 1.0), 2);
+        assert_eq!(films.lose(block("water"), &fluid, 15.0), 30);
     }
 
     /// A film in a slab's room dries like any other, and the slab stays.

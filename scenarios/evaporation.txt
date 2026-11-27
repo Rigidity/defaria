@@ -1,8 +1,10 @@
 # Puddles drying up (#98). On a stone platform high in the open air, a
 # block of water poured on each half spreads into a thin puddle of films.
 # The one under open sky dries up within about six minutes; the one
-# under a roof stays. The `fluids` reports show what's gone was counted as
-# evaporated: what's left and `evaporated` add up to the two blocks poured.
+# under a roof stays. Once they've spread, evaporation runs 30 times as
+# fast, so that takes 12 seconds rather than six minutes. The `fluids`
+# reports show what's gone was counted as evaporated: what's left and
+# `evaporated` add up to the two blocks poured.
 # Run: cargo headless scenarios/evaporation.txt
 camera 32 92 48 0 -45
 settle
@@ -18,7 +20,8 @@ screenshot target/scenarios/evaporation/0-poured.png
 wait 600
 fluids
 screenshot target/scenarios/evaporation/1-puddles.png
-wait 21600
+evaporation 30
+wait 720
 fluids
 inspect FluidStats
 screenshot target/scenarios/evaporation/2-dried.png

@@ -1,5 +1,6 @@
 //! World commands, which set up a scene without steering there (`fill`,
-//! `pour`, `put`, `hotbar`, `give`, `camera`, `random-ticks`, `lookups`), and the
+//! `pour`, `put`, `hotbar`, `give`, `camera`, `random-ticks`, `evaporation`,
+//! `lookups`), and the
 //! `fluids` and `network` reports.
 
 use std::{collections::HashSet, time::Instant};
@@ -10,7 +11,7 @@ use super::{memory, runner::ScriptRunner, script::Command};
 use crate::{
     block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content, FULL_FLUID, ItemState, StateName},
-    fluid::FluidStats,
+    fluid::{FluidStats, evaporation::EvaporationSpeed},
     fluid_container,
     hotbar::{ActiveSlot, Hotbar},
     inventory::{Inventory, ItemStack},
@@ -81,6 +82,10 @@ pub(super) fn apply_world_commands(world: &mut World) {
                 .and_then(|result| result),
             Command::RandomTicks(per_chunk) => {
                 world.resource_mut::<RandomTicks>().per_chunk = per_chunk;
+                Ok(())
+            }
+            Command::Evaporation(speed) => {
+                world.resource_mut::<EvaporationSpeed>().0 = speed;
                 Ok(())
             }
             _ => Ok(()),

@@ -59,15 +59,17 @@ debug = "line-tables-only"
 opt-level = 3
 debug = false
 
-# CI only (`--profile ci`): CI compiles Bevy from scratch whenever its cache
-# misses, and its tests don't need a fast Bevy, so skip optimizing and debug
-# info. Builds into target/ci/, so it never invalidates local dev builds.
+# CI only (`--profile ci`): no debug info, and Bevy optimized just enough
+# (opt-level 1). Tests and scenarios run the whole engine for thousands of
+# frames, and with an unoptimized Bevy they took most of CI's time. Builds
+# into target/ci/, so it never invalidates local dev builds. CI's cache keys
+# name this opt-level: change them together.
 [profile.ci]
 inherits = "dev"
 debug = false
 
 [profile.ci.package."*"]
-opt-level = 0
+opt-level = 1
 
 [profile.release]
 codegen-units = 1

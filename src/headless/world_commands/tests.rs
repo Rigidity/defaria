@@ -531,15 +531,17 @@ fn the_fluids_report_counts_what_reacted() {
 
 /// A film of water on a platform high in the open air evaporates, and
 /// the `fluids` report counts it: what's left and what evaporated add up
-/// to what was poured.
+/// to what was poured. `evaporation` speeds it up: at the game's rate it
+/// would take about 8 seconds, four visits.
 #[test]
 fn the_fluids_report_counts_what_evaporated() {
     let (mut app, exit) = run_game(
         "camera 5000.5 302.5 5000.5 0 -89\n\
          settle\n\
+         evaporation 10\n\
          fill 4995 299 4995 5005 299 5005 stone\n\
          pour 5000 300 5000 water 0.002\n\
-         wait 900\n",
+         wait 180\n",
     );
     assert_eq!(exit, AppExit::Success);
     let report = fluid_report(app.world_mut(), FluidRegion::Window);
