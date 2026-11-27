@@ -143,6 +143,20 @@ fn fill_names_a_block_and_some_of_its_properties() {
     for bad in ["log[axis=w]", "log[axis]", "log[axis=x", "nonsense"] {
         assert!(fill_state(content, bad).is_err(), "{bad}");
     }
+    // Two halves, as saves name them; two that don't fit are an error.
+    let both = fill_state(content, "stone_slab[half=bottom]+planks_slab[half=top]").unwrap();
+    assert_eq!(
+        content.halves(both),
+        Some([
+            content
+                .block_state("defaria:stone_slab", &[("half", "bottom")])
+                .unwrap(),
+            content
+                .block_state("defaria:planks_slab", &[("half", "top")])
+                .unwrap(),
+        ])
+    );
+    assert!(fill_state(content, "stone_slab[half=bottom]+planks_slab[half=bottom]").is_err());
 }
 
 /// Every scenario in `scenarios/` parses, and every block it fills

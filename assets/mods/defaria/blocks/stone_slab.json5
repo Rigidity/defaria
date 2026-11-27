@@ -1,7 +1,16 @@
 {
   name: "{rock} Slab",
-  properties: { rock: { materials: "#rock", default: "stone" } },
-  model: "slab",
+  properties: {
+    // Which half of its voxel it fills: on top of a block it sits low,
+    // under one it sits high, and against a block's side it sits low too.
+    // Vertical slabs are blocks of their own (`*_vertical_slab`).
+    half: {
+      values: ["bottom", "top"],
+      place: { from: "face", values: { up: "bottom", down: "top" } },
+    },
+    rock: { materials: "#rock", default: "stone" },
+  },
+  model: "slab_{half}",
   textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
   hardness: { materials: { rock: 1 } },
   weight: { base: 0.5, materials: { rock: 1 } },

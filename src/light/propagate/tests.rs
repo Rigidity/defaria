@@ -395,6 +395,80 @@ fn slabs_stop_light_only_at_their_bottom() {
     world.assert_matches_reference();
 }
 
+/// Two halves in a voxel stop light like a full block: a roof of double
+/// slabs (a stone bottom under a planks top) is dark inside and shades
+/// what's under it as a stone roof does, and a wall of vertical slab pairs
+/// stops a lamp's light from crossing it, which one slab alone doesn't.
+#[test]
+fn two_halves_in_a_voxel_stop_light_like_a_block() {
+    let content = base();
+    let half = |id: &str, half: &str| content.block_state(id, &[("half", half)]).unwrap();
+    let double = content
+        .combine(
+            half("defaria:stone_slab", "bottom"),
+            half("defaria:planks_slab", "top"),
+        )
+        .unwrap();
+    let roofed = |roof: BlockState| {
+        move |pos: IVec3| {
+            if pos.y <= 3 {
+                block("stone")
+            } else if pos.y == 10 && pos.x < 8 {
+                roof
+            } else {
+                BlockState::AIR
+            }
+        }
+    };
+    let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, roofed(double));
+    world.run(&mut queue);
+    let (mut stone, mut stone_queue) = (TestWorld::new(0), LightQueue::default());
+    stone.load(&mut stone_queue, IVec3::ZERO, roofed(block("stone")));
+    stone.run(&mut stone_queue);
+    assert_eq!(world.light(IVec3::new(3, 10, 4)).sky(), 0);
+    for x in 0..16 {
+        for y in 4..16 {
+            let pos = IVec3::new(x, y, 4);
+            assert_eq!(world.light(pos), stone.light(pos), "{pos}");
+        }
+    }
+    world.assert_matches_reference();
+
+    // A lamp west of a wall at x = 8: an east slab alone lets its light
+    // in through its open west side and on east across the voxel, but a
+    // west slab put in front of it closes the wall.
+    let (mut world, mut queue) = (TestWorld::new(0), LightQueue::default());
+    world.load(&mut queue, IVec3::ZERO, |pos| {
+        if pos.x == 8 {
+            half("defaria:stone_vertical_slab", "east")
+        } else if pos.y == 0 || pos.y == 15 || pos.z == 0 || pos.z == 15 {
+            block("stone")
+        } else {
+            BlockState::AIR
+        }
+    });
+    world.set(&mut queue, IVec3::new(5, 7, 7), block("lamp"));
+    world.run(&mut queue);
+    // Into the slab's voxel through its open side, but not out east.
+    assert!(world.light(IVec3::new(8, 7, 7)).block()[0] > 0);
+    assert_eq!(world.light(IVec3::new(9, 7, 7)).block()[0], 0);
+    world.assert_matches_reference();
+    world.set(
+        &mut queue,
+        IVec3::new(8, 7, 7),
+        content
+            .combine(
+                half("defaria:stone_vertical_slab", "west"),
+                half("defaria:stone_vertical_slab", "east"),
+            )
+            .unwrap(),
+    );
+    world.run(&mut queue);
+    assert_eq!(world.light(IVec3::new(8, 7, 7)).block()[0], 0);
+    world.assert_matches_reference();
+}
+
 /// See-through blocks with no light filter (glass, plants) let light
 /// through as if they were air, though they cover their sides: a roof of
 /// them shades nothing, and a lamp shines through them.

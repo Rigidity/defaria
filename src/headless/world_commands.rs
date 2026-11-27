@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use super::{memory, runner::ScriptRunner, script::Command};
 use crate::{
     block_entity::{BlockEntities, BlockEntity},
-    content::{BlockState, Content, FULL_FLUID, ItemState, StateName},
+    content::{BlockState, Content, FULL_FLUID, ItemState, PART_SEPARATOR, StateName},
     fluid::{FluidStats, evaporation::EvaporationSpeed},
     fluid_container,
     hotbar::{ActiveSlot, Hotbar},
@@ -159,8 +159,16 @@ fn give_items(
 }
 
 /// The state `name` means: a block id (the base game's without
-/// `defaria:`), with `[property=value,…]` setting some of its properties.
+/// `defaria:`), with `[property=value,…]` setting some of its properties;
+/// or two halves joined by a `+`, for the voxel of both
+/// (`stone_slab[half=bottom]+planks_slab[half=top]`).
 fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
+    if let Some((low, high)) = name.split_once(PART_SEPARATOR) {
+        let (low, high) = (fill_state(content, low)?, fill_state(content, high)?);
+        return content
+            .combine(low, high)
+            .ok_or_else(|| format!("`{name}`: those two halves don't fit in one voxel"));
+    }
     let parsed = split_name(name)?;
     let id = &parsed.id;
     let block = content

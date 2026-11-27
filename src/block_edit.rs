@@ -97,6 +97,9 @@ pub struct Hit {
     /// The face the ray entered through, pointing back toward the ray's
     /// origin. Zero if the ray started inside the block.
     pub normal: IVec3,
+    /// Which of the block's boxes it hit, in the order its shape lists
+    /// them: in a combined state, which half (see [`Content::half_at`]).
+    pub shape_box: usize,
 }
 
 impl Hit {
@@ -123,10 +126,15 @@ pub fn raycast<'a>(ray: Ray3d, reach: f32, shape: impl Fn(IVec3) -> &'a [BlockBo
         let local = origin - block.as_vec3();
         shape(block)
             .iter()
-            .filter_map(|b| ray_box(local, dir, b))
-            .filter(|&(t, _)| t <= reach)
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, normal)| Hit { block, normal })
+            .enumerate()
+            .filter_map(|(i, b)| Some((ray_box(local, dir, b)?, i)))
+            .filter(|&((t, _), _)| t <= reach)
+            .min_by(|a, b| a.0.0.total_cmp(&b.0.0))
+            .map(|((_, normal), shape_box)| Hit {
+                block,
+                normal,
+                shape_box,
+            })
     };
     if let Some(hit) = hit_in(block) {
         return Some(hit);
@@ -300,29 +308,28 @@ fn edit_blocks(
         let Some(block) = hotbar.block(*active, &content) else {
             continue;
         };
-        let Some((pos, face)) = placement(&content, &voxels, hit, block) else {
+        let Some(Placing {
+            pos,
+            block,
+            added,
+            replaced,
+        }) = placing(&content, &voxels, hit, block, &camera)
+        else {
             continue;
         };
-        // Properties such as a log's axis follow the face clicked or the
-        // view.
-        let block = content.placed(block, face, *camera.forward());
         // Not into the camera, outside the world, over another block (but
         // over one placing replaces: air, which may hold fluid, or a
-        // plant), or where it would overlap someone.
-        let overlaps = content.state(block).collision.iter().any(|b| {
+        // plant), or where what it adds would overlap someone.
+        let overlaps = content.state(added).collision.iter().any(|b| {
             let b = Aabb::of_block(pos, b);
             bodies.iter().any(|body| body.aabb().intersects(&b))
         });
-        let Some(replaced) = voxels.get(pos) else {
-            continue;
-        };
-        let replaceable = replaces(&content, replaced, block);
         // Nor where it can't stand (a flower off the grass).
         let supported = !content.needs_support(block)
             || voxels
                 .get(pos - IVec3::Y)
                 .is_some_and(|below| content.supports(block, below));
-        if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps || !supported {
+        if pos == camera.translation.floor().as_ivec3() || overlaps || !supported {
             continue;
         }
         // In survival, only what you have, and placing uses it up. A fluid
@@ -377,6 +384,68 @@ fn placement(
     Some((hit.block, face))
 }
 
+/// Where a right click places a block, and what it puts there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Placing {
+    pos: IVec3,
+    /// The voxel's new state.
+    block: BlockState,
+    /// What's new in it: `block`, or the half it adds to a combined one.
+    added: BlockState,
+    /// What it replaces, which a survival player gets: a plant, or air
+    /// (which may hold fluid). Air too when it fills a half.
+    replaced: BlockState,
+}
+
+/// What placing `item_block` (the state the item places) at `hit` from a
+/// camera at `camera` does, if anything. It goes where [`placement`] says,
+/// with properties such as a log's axis from the face clicked or the view,
+/// and then:
+///
+/// - placed against a face (not into a plant), it fills the other half of
+///   a half: the one clicked, if the click is on its open side (the top
+///   of a bottom slab), or else one in the voxel it goes into, if the
+///   item's block has a half that fits;
+/// - otherwise it goes over what's there if placing replaces it (air, or
+///   a plant).
+fn placing(
+    content: &Content,
+    voxels: &Voxels,
+    hit: Hit,
+    item_block: BlockState,
+    camera: &Transform,
+) -> Option<Placing> {
+    let (pos, face) = placement(content, voxels, hit, item_block)?;
+    let placed = content.placed(item_block, face, *camera.forward());
+    if pos != hit.block {
+        let fill = |pos: IVec3| {
+            let (block, added) = content.fill_half(voxels.get(pos)?, placed)?;
+            Some(Placing {
+                pos,
+                block,
+                added,
+                replaced: BlockState::AIR,
+            })
+        };
+        let clicked = voxels.get(hit.block).unwrap_or(BlockState::AIR);
+        let open_side = content.half(clicked) == Some(face.opposite());
+        if let Some(filled) = open_side
+            .then(|| fill(hit.block))
+            .flatten()
+            .or_else(|| fill(pos))
+        {
+            return Some(filled);
+        }
+    }
+    let replaced = voxels.get(pos)?;
+    replaces(content, replaced, placed).then_some(Placing {
+        pos,
+        block: placed,
+        added: placed,
+        replaced,
+    })
+}
+
 /// Outlines the block under the crosshair while the cursor is locked: or,
 /// with a fluid container in hand, the fluid or block it aims at.
 fn outline_target(
@@ -408,6 +477,10 @@ fn outline_target(
         .unwrap_or((BlockState::AIR, None));
     let shape = if at_fluid {
         fluid_shape(&content, state, partial)
+    } else if content.halves(state).is_some() {
+        // Just the half under the crosshair.
+        let boxes = target_shape(&content, state);
+        boxes.get(hit.shape_box).map_or(boxes, std::slice::from_ref)
     } else {
         target_shape(&content, state)
     };
@@ -518,6 +591,7 @@ mod tests {
             Some(Hit {
                 block: IVec3::new(3, 0, 0),
                 normal: IVec3::NEG_X,
+                shape_box: 0,
             })
         );
         assert_eq!(
@@ -1002,13 +1076,266 @@ mod tests {
             .id();
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
-        // Raised half a block, a slab fits under it, but a block doesn't.
+        // Raised half a block, a slab fits under it, but a block doesn't:
+        // placed on the floor, from above.
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 0, 5, block("stone"));
         app.world_mut().get_mut::<Body>(body).unwrap().position.y = 1.5;
+        let from = Vec3::new(13.5, 3.4, 5.5);
+        look_at(&mut app, from, Vec3::new(0.01, -1.0, 0.02).normalize());
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
         press_key(&mut app, KeyCode::Digit5);
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), block("stone_slab"));
+        // Nor does its top half: that would go into the body too.
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("stone_slab"));
+    }
+
+    use crate::content::slab;
+
+    /// Puts the item `id` in the first hotbar slot and in hand.
+    fn hold(app: &mut App, id: &str) {
+        let mut hotbar = player(app).0;
+        hotbar.assign(0, base().default_item(id));
+        set_hotbar(app, hotbar);
+        press_key(app, KeyCode::Digit1);
+    }
+
+    /// Holds left click until the voxel at `pos` changes.
+    fn mine_until_changed(app: &mut App, pos: IVec3) {
+        let before = world_voxel(app, pos);
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.release_all();
+        mouse.clear();
+        mouse.press(MouseButton::Left);
+        for _ in 0..200 {
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear();
+            if world_voxel(app, pos) != before {
+                break;
+            }
+        }
+        assert_ne!(world_voxel(app, pos), before, "{pos} didn't change");
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+    }
+
+    /// A slab placed on top of a block is a bottom half and one under a
+    /// block a top half; against a block's side it's a bottom half too. A
+    /// vertical slab stands against the side of its voxel you look toward:
+    /// against the block whose side you click, and on a floor or a ceiling
+    /// at the far side of its voxel.
+    #[test]
+    fn slabs_take_their_half_from_the_face_and_vertical_slabs_from_the_view() {
+        let (mut app, left, _) = app();
+        let target = IVec3::new(7, 7, 10);
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(7, 7, 10, block("stone"));
+        let place = |app: &mut App, item: &str, face: Direction| {
+            hold(app, item);
+            let normal = face.normal();
+            // Three blocks out from the face, looking back at it, a little
+            // off center so the view isn't straight along the axis.
+            let from = (target + normal * 3).as_vec3() + Vec3::splat(0.5);
+            let dir = (target.as_vec3() + Vec3::new(0.6, 0.55, 0.45) - from).normalize();
+            let up = if normal.y == 0 { Vec3::Y } else { Vec3::Z };
+            crate::player::tests::put_local_eyes(
+                app,
+                Transform::from_translation(from).looking_to(dir, up),
+            );
+            click(app, MouseButton::Right);
+            let pos = (target + normal).as_uvec3();
+            let placed = voxel(app, left, pos.x as usize, pos.y as usize, pos.z as usize);
+            // Cleared for the next.
+            app.world_mut().get_mut::<Chunk>(left).unwrap().set(
+                pos.x as usize,
+                pos.y as usize,
+                pos.z as usize,
+                BlockState::AIR,
+            );
+            placed
+        };
+        for (face, half, vertical) in [
+            (Direction::Up, "bottom", None),
+            (Direction::Down, "top", None),
+            (Direction::North, "bottom", Some("south")),
+            (Direction::South, "bottom", Some("north")),
+            (Direction::East, "bottom", Some("west")),
+            (Direction::West, "bottom", Some("east")),
+        ] {
+            let placed = place(&mut app, "defaria:stone_slab", face);
+            assert_eq!(placed, slab("stone_slab", half), "{face:?}");
+            if let Some(vertical) = vertical {
+                let placed = place(&mut app, "defaria:stone_vertical_slab", face);
+                assert_eq!(placed, slab("stone_vertical_slab", vertical), "{face:?}");
+            }
+        }
+        // From above, looking down and a little north: at the voxel's
+        // north side.
+        hold(&mut app, "defaria:stone_vertical_slab");
+        let from = Vec3::new(7.5, 10.5, 10.9);
+        look_at(
+            &mut app,
+            from,
+            (Vec3::new(7.5, 8.0, 10.2) - from).normalize(),
+        );
+        click(&mut app, MouseButton::Right);
+        assert_eq!(
+            voxel(&app, left, 7, 8, 10),
+            slab("stone_vertical_slab", "north")
+        );
+    }
+
+    /// Clicking the open side of a slab with another slab in hand fills
+    /// its other half, with the slab in hand, making one voxel of two
+    /// halves of different blocks. Mining it breaks the half under the
+    /// crosshair, leaving the other.
+    #[test]
+    fn a_slab_placed_on_a_slabs_open_side_fills_its_other_half() {
+        let (mut app, left, _) = app();
+        let content = base();
+        let pos = IVec3::new(13, 1, 5);
+        // From the west, against the dirt's west face: a vertical slab
+        // standing against it.
+        hold(&mut app, "defaria:stone_vertical_slab");
+        click(&mut app, MouseButton::Right);
+        let stone = slab("stone_vertical_slab", "east");
+        assert_eq!(voxel(&app, left, 13, 1, 5), stone);
+        // A slab doesn't fit its open side: it goes in front, as against
+        // any block.
+        hold(&mut app, "defaria:planks_slab");
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), stone);
+        assert_eq!(voxel(&app, left, 12, 1, 5), block("planks_slab"));
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(12, 1, 5, BlockState::AIR);
+        // A vertical planks slab does.
+        hold(&mut app, "defaria:planks_vertical_slab");
+        click(&mut app, MouseButton::Right);
+        let both = content
+            .combine(slab("planks_vertical_slab", "west"), stone)
+            .unwrap();
+        assert_eq!(voxel(&app, left, 13, 1, 5), both);
+        assert_eq!(voxel(&app, left, 12, 1, 5), BlockState::AIR);
+        // The planks half is the one in front.
+        mine_until_changed(&mut app, pos);
+        assert_eq!(voxel(&app, left, 13, 1, 5), stone);
+        mine_until_changed(&mut app, pos);
+        assert_eq!(voxel(&app, left, 13, 1, 5), BlockState::AIR);
+
+        // A bottom slab on the floor, filled from above.
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 0, 5, block("stone"));
+        let from = Vec3::new(13.5, 3.5, 5.5);
+        look_at(&mut app, from, Vec3::new(0.01, -1.0, 0.02).normalize());
+        hold(&mut app, "defaria:stone_slab");
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), slab("stone_slab", "bottom"));
+        hold(&mut app, "defaria:thatch_slab");
+        click(&mut app, MouseButton::Right);
+        let both = content
+            .combine(slab("stone_slab", "bottom"), slab("thatch_slab", "top"))
+            .unwrap();
+        assert_eq!(voxel(&app, left, 13, 1, 5), both);
+        // Full now, so the next goes on top, as on any block.
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), both);
+        assert_eq!(voxel(&app, left, 13, 2, 5), slab("thatch_slab", "bottom"));
+    }
+
+    /// Clicking a side of a half that it covers places beside it, as
+    /// against any block: a slab clicked on its side gets a slab next to
+    /// it, and a vertical slab clicked on its top gets one on top.
+    #[test]
+    fn clicking_a_halfs_covered_side_places_beside_it() {
+        let (mut app, left, _) = app();
+        let bottom = slab("stone_slab", "bottom");
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 1, 5, bottom);
+        look_at(&mut app, Vec3::new(11.5, 1.25, 5.5), Vec3::X);
+        hold(&mut app, "defaria:stone_slab");
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), bottom);
+        assert_eq!(voxel(&app, left, 12, 1, 5), bottom);
+
+        let east = slab("stone_vertical_slab", "east");
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 1, 5, east);
+        look_at(
+            &mut app,
+            Vec3::new(13.75, 3.5, 5.5),
+            Vec3::new(0.01, -1.0, 0.02).normalize(),
+        );
+        hold(&mut app, "defaria:stone_vertical_slab");
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), east);
+        // On its top, a floor: at the far side, along the view.
+        assert_eq!(
+            voxel(&app, left, 13, 2, 5),
+            slab("stone_vertical_slab", "south")
+        );
+    }
+
+    /// Aiming over a slab's open half at a plant beyond it builds over the
+    /// plant, as without the slab, rather than filling the slab.
+    #[test]
+    fn a_plant_past_a_half_is_built_over() {
+        let (mut app, left, _) = app();
+        let bottom = slab("stone_slab", "bottom");
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        chunk.set(13, 2, 5, bottom);
+        chunk.set(14, 2, 5, block("tuft"));
+        look_at(&mut app, Vec3::new(11.5, 2.75, 5.5), Vec3::X);
+        hold(&mut app, "defaria:stone_slab");
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 2, 5), bottom);
+        assert_eq!(voxel(&app, left, 14, 2, 5), bottom);
+    }
+
+    /// Placing against a face with a half just in front of it fills that
+    /// half's other side: aiming under a top slab at the wall behind it
+    /// puts a bottom half under it.
+    #[test]
+    fn placing_into_a_voxel_with_a_half_fills_the_rest() {
+        let (mut app, left, _) = app();
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 1, 5, slab("stone_slab", "top"));
+        let from = Vec3::new(11.5, 1.25, 5.5);
+        look_at(&mut app, from, Vec3::X);
+        hold(&mut app, "defaria:planks_slab");
+        click(&mut app, MouseButton::Right);
+        let both = base()
+            .combine(slab("planks_slab", "bottom"), slab("stone_slab", "top"))
+            .unwrap();
+        assert_eq!(voxel(&app, left, 13, 1, 5), both);
+        // A full block in hand fills nothing.
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 1, 5, slab("stone_slab", "top"));
+        press_key(&mut app, KeyCode::Digit2);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), slab("stone_slab", "top"));
     }
 
     /// A plant is only placed on a block that supports it: a dead bush
@@ -1067,6 +1394,62 @@ mod tests {
     fn count(app: &App, owner: Entity, id: &str) -> u32 {
         let item = base().default_item(id).unwrap();
         app.world().get::<Inventory>(owner).unwrap().count(item)
+    }
+
+    /// In survival, filling a half uses up the slab placed and gives
+    /// nothing back; with no slab, nothing is filled.
+    #[test]
+    fn filling_a_half_in_survival_uses_up_the_slab_and_gives_nothing() {
+        let (mut app, left, _) = app();
+        let bottom = slab("stone_slab", "bottom");
+        let set = |app: &mut App, state| {
+            app.world_mut()
+                .get_mut::<Chunk>(left)
+                .unwrap()
+                .set(13, 1, 5, state);
+        };
+        set(&mut app, bottom);
+        let owner = survival_with(&mut app, &["defaria:thatch_slab"]);
+        look_at(
+            &mut app,
+            Vec3::new(13.5, 3.5, 5.5),
+            Vec3::new(0.01, -1.0, 0.02).normalize(),
+        );
+        click(&mut app, MouseButton::Right);
+        let both = base().combine(bottom, slab("thatch_slab", "top")).unwrap();
+        assert_eq!(voxel(&app, left, 13, 1, 5), both);
+        assert_eq!(count(&app, owner, "defaria:thatch_slab"), 0);
+        assert_eq!(count(&app, owner, "defaria:stone_slab"), 0);
+        // None left: nothing happens.
+        set(&mut app, bottom);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), bottom);
+    }
+
+    /// Filling the open half of a slab in water leaves no room for the
+    /// water, which is pushed out of the voxel.
+    #[test]
+    fn filling_a_slab_in_water_pushes_the_water_out() {
+        let (mut app, left, _) = app();
+        let bottom = slab("stone_slab", "bottom");
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        chunk.set(13, 1, 5, bottom);
+        chunk.set_fluid_at(
+            IVec3::new(13, 1, 5),
+            crate::world::VoxelFluid::of(block("water"), FULL_FLUID / 2),
+            FULL_FLUID / 2,
+        );
+        assert_eq!(fluid(&app, left, 13, 1, 5), FULL_FLUID / 2);
+        look_at(
+            &mut app,
+            Vec3::new(13.5, 3.5, 5.5),
+            Vec3::new(0.01, -1.0, 0.02).normalize(),
+        );
+        hold(&mut app, "defaria:planks_slab");
+        click(&mut app, MouseButton::Right);
+        let both = base().combine(bottom, slab("planks_slab", "top")).unwrap();
+        assert_eq!(voxel(&app, left, 13, 1, 5), both);
+        assert_eq!(fluid(&app, left, 13, 1, 5), 0);
     }
 
     /// A tuft in front of the soil at (14, 1, 5), on a soil floor.

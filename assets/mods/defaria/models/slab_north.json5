@@ -1,0 +1,78 @@
+// The north half of a block, against its north side.
+// One of six, one per half (`slab_{half}`),
+// written by scripts/slab-models.py. Its faces show the part of their
+// texture a full block's would there, so halves side by side, or two in
+// one voxel, look like one block. The face inside the block has no
+// `cull` and is lit by the slab's own voxel. Only the north side is
+// covered completely, so light passes through every other side.
+{
+  slots: {
+    all: null,
+    side: "all",
+    end: "all",
+    up: "end",
+    down: "end",
+    north: "side",
+    south: "side",
+    east: "side",
+    west: "side",
+  },
+  occludes: ["north"],
+  // The box around the faces: [0, 0, 0] to [1, 1, 0.5].
+  faces: [
+    {
+      texture: "east", cull: "east",
+      vertices: [
+        { pos: [1, 0, 0.5], uv: [0.5, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 0.5], uv: [0.5, 0] },
+      ],
+    },
+    {
+      texture: "west", cull: "west",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 0.5], uv: [0.5, 1] },
+        { pos: [0, 1, 0.5], uv: [0.5, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "up", cull: "up",
+      vertices: [
+        { pos: [0, 1, 0.5], uv: [0, 0.5] },
+        { pos: [1, 1, 0.5], uv: [1, 0.5] },
+        { pos: [1, 1, 0], uv: [1, 0] },
+        { pos: [0, 1, 0], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "down", cull: "down",
+      vertices: [
+        { pos: [0, 0, 0], uv: [0, 1] },
+        { pos: [1, 0, 0], uv: [1, 1] },
+        { pos: [1, 0, 0.5], uv: [1, 0.5] },
+        { pos: [0, 0, 0.5], uv: [0, 0.5] },
+      ],
+    },
+    {
+      texture: "south",
+      vertices: [
+        { pos: [0, 0, 0.5], uv: [0, 1] },
+        { pos: [1, 0, 0.5], uv: [1, 1] },
+        { pos: [1, 1, 0.5], uv: [1, 0] },
+        { pos: [0, 1, 0.5], uv: [0, 0] },
+      ],
+    },
+    {
+      texture: "north", cull: "north",
+      vertices: [
+        { pos: [1, 0, 0], uv: [0, 1] },
+        { pos: [0, 0, 0], uv: [1, 1] },
+        { pos: [0, 1, 0], uv: [1, 0] },
+        { pos: [1, 1, 0], uv: [0, 0] },
+      ],
+    },
+  ],
+}

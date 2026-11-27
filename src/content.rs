@@ -26,6 +26,7 @@
 
 mod bake;
 pub(crate) use bake::title_case;
+mod combine;
 mod connect;
 pub mod load;
 mod machine;
@@ -42,6 +43,7 @@ use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, pre
 
 use crate::block_texture::Palette;
 pub use bake::MAX_TILES;
+pub use combine::{COMBINED, PART_SEPARATOR};
 pub use connect::{Connections, Joins, Rule, SIDE_VALUES};
 pub use machine::{
     Emits, EnergySpec, FACING, ItemFilter, MAX_SLOTS, Machine, MachinePort, MachineRecipes,
@@ -493,6 +495,14 @@ pub struct State {
     pub conduit: Option<Conduit>,
     /// Set for a machine: its ports, buffer, tanks and slots.
     pub machine: Option<Box<Machine>>,
+    /// Set for a half: the side of its voxel it fills half of. Another
+    /// half filling the other side can share its voxel (see
+    /// [`Content::combine`]).
+    pub half: Option<Direction>,
+    /// Set for a combined state: the two halves it's made of, the one on
+    /// the low side (down, north or west) first. Its boxes are theirs, in
+    /// that order, and it has no `parts` or `values` of its own.
+    pub combined: Option<[BlockState; 2]>,
 }
 
 /// A block state that's part of a network: a wire, pipe or tube.
@@ -783,6 +793,8 @@ pub struct Content {
     /// Each pair of fluid blocks that react, both ways round, as an index
     /// into `reactions`.
     reaction_index: HashMap<(usize, usize), usize>,
+    /// Each combined state, by its two halves, the low one first.
+    combinations: HashMap<(BlockState, BlockState), BlockState>,
 }
 
 impl FromWorld for Content {
@@ -1068,6 +1080,14 @@ pub fn block_with(name: &str, values: &[(&str, &str)]) -> BlockState {
     base()
         .block_state(&format!("defaria:{name}"), values)
         .unwrap_or_else(|| panic!("no block defaria:{name} with {values:?}"))
+}
+
+/// Base game slab `defaria:<name>` (`stone_slab`, `planks_vertical_slab`,
+/// ...) filling `half` of its voxel, its other properties at their
+/// defaults.
+#[cfg(test)]
+pub fn slab(name: &str, half: &str) -> BlockState {
+    block_with(name, &[("half", half)])
 }
 
 /// Base game dirt with grass on it, the terrain's top.
@@ -1522,6 +1542,16 @@ mod tests {
             ("smooth_stone_slab", "Smooth {} Slab", "smooth_stone", 0.5),
         ];
         let shape = |id: &str| &content.state(content.default_state(id).unwrap()).collision;
+        // Slabs come in each of their halves too.
+        let halves = |id: &str| {
+            content
+                .block(id)
+                .unwrap()
+                .properties
+                .iter()
+                .find(|p| p.name == "half")
+                .map_or(1, |p| p.values.len())
+        };
         for (name, label, texture_name, share) in blocks {
             // A slab is the shape of a stone slab, the rest a whole block.
             let model = if name.ends_with("_slab") {
@@ -1531,7 +1561,11 @@ mod tests {
             };
             let id = format!("defaria:{name}");
             let block = content.block(&id).unwrap();
-            assert_eq!(block.state_count as usize, rocks.len(), "{id}");
+            assert_eq!(
+                block.state_count as usize,
+                rocks.len() * halves(&id),
+                "{id}"
+            );
             for rock in &rocks {
                 let state = block.state(&[("rock", &rock.id)]).unwrap();
                 let info = content.state(state);

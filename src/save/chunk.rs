@@ -17,12 +17,12 @@ use bevy::{platform::collections::HashMap, prelude::*};
 
 use crate::{
     block_entity::{BlockEntityData, SavedPart, read_text, read_value, write_text, write_value},
-    content::{BlockState, Content, FULL_FLUID, StateName},
+    content::{BlockState, COMBINED, Content, FULL_FLUID, PART_SEPARATOR, State, StateName},
     world::{CHUNK_VOLUME, Chunk, VoxelFluid},
 };
 
 /// The chunk format this build writes.
-pub const CHUNK_FORMAT: u8 = 4;
+pub const CHUNK_FORMAT: u8 = 5;
 /// How hard zlib tries: 0 (store) to 10. 6 is its usual default; it's
 /// nearly as small as the slowest levels on voxel data and much faster.
 const COMPRESSION_LEVEL: u8 = 6;
@@ -40,19 +40,30 @@ pub struct StateNames {
     fluids: Vec<bool>,
     /// Each state's `fluid_room`, by state index.
     rooms: Vec<u16>,
+    /// Each combined state, by its two halves, the low one first.
+    combinations: HashMap<(BlockState, BlockState), BlockState>,
 }
 
 impl StateNames {
     pub fn new(content: &Content) -> Self {
+        let name = |state: &State| {
+            StateName::new(
+                &content.blocks[state.block].id,
+                state.values.iter().cloned(),
+            )
+            .to_string()
+        };
+        // A combined state is named by its halves.
         let names: Vec<String> = content
             .states
             .iter()
-            .map(|state| {
-                StateName::new(
-                    &content.blocks[state.block].id,
-                    state.values.iter().cloned(),
-                )
-                .to_string()
+            .map(|state| match state.combined {
+                Some([low, high]) => format!(
+                    "{}{PART_SEPARATOR}{}",
+                    name(content.state(low)),
+                    name(content.state(high))
+                ),
+                None => name(state),
             })
             .collect();
         let by_name = names
@@ -63,6 +74,7 @@ impl StateNames {
         let by_block = content
             .blocks
             .iter()
+            .filter(|block| block.id != COMBINED)
             .map(|block| (block.id.clone(), block.default_state()))
             .collect();
         Self {
@@ -79,6 +91,7 @@ impl StateNames {
                 .iter()
                 .map(|state| state.fluid_room)
                 .collect(),
+            combinations: content.combinations().clone(),
         }
     }
 
@@ -108,10 +121,19 @@ impl StateNames {
 
     /// The state saved as `name`. A block that's gone (its mod was removed)
     /// comes back as air; a state whose properties changed comes back as its
-    /// block's default state.
+    /// block's default state. Of a voxel of two halves, a half that's gone
+    /// leaves the other, as do two that don't fit together any more.
     pub fn state(&self, name: &str) -> BlockState {
         if let Some(&state) = self.by_name.get(name) {
             return state;
+        }
+        if let Some((low, high)) = name.split_once(PART_SEPARATOR) {
+            let (low, high) = (self.state(low), self.state(high));
+            return self
+                .combinations
+                .get(&(low, high))
+                .copied()
+                .unwrap_or(if low.is_air() { high } else { low });
         }
         self.by_block
             .get(StateName::id_of(name))
@@ -482,6 +504,56 @@ mod tests {
         ] {
             assert_eq!(decode(&encode(&chunk, &names), &names).unwrap(), chunk);
         }
+    }
+
+    /// A voxel of two halves is saved by their names and comes back as
+    /// the same two; a half that's gone leaves the other, and two that
+    /// don't fit together any more leave the first.
+    #[test]
+    fn double_slabs_are_saved_as_their_halves() {
+        let names = names();
+        let content = base();
+        let slab = |id: &str, values: &[(&str, &str)]| content.block_state(id, values).unwrap();
+        let bottom = slab(
+            "defaria:stone_slab",
+            &[("half", "bottom"), ("rock", "defaria:granite")],
+        );
+        let top = slab(
+            "defaria:planks_slab",
+            &[("half", "top"), ("wood", "defaria:birch")],
+        );
+        let both = content.combine(bottom, top).unwrap();
+        assert_eq!(
+            names.name(both),
+            "defaria:stone_slab[half=bottom,rock=defaria:granite]\
+             +defaria:planks_slab[half=top,wood=defaria:birch]"
+        );
+        let mut chunk = Chunk::default();
+        chunk.set(1, 2, 3, both);
+        chunk.set(2, 2, 3, bottom);
+        chunk.set(3, 2, 3, top);
+        assert_eq!(decode(&encode(&chunk, &names), &names).unwrap(), chunk);
+
+        assert_eq!(
+            names.state(
+                "defaria:gone[half=bottom]+defaria:planks_slab[half=top,wood=defaria:birch]"
+            ),
+            top
+        );
+        assert_eq!(
+            names.state("defaria:stone_slab[half=bottom,rock=defaria:granite]+defaria:gone"),
+            bottom
+        );
+        // Both bottoms: they don't fit, so the first stays.
+        assert_eq!(
+            names.state(
+                "defaria:stone_slab[half=bottom,rock=defaria:granite]\
+                 +defaria:planks_slab[half=bottom,wood=defaria:birch]"
+            ),
+            bottom
+        );
+        // The engine's block isn't a name of its own.
+        assert_eq!(names.state(crate::content::COMBINED), BlockState::AIR);
     }
 
     /// A chunk of one block costs a few bytes, and terrain-like chunks

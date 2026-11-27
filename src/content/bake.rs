@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy::{platform::collections::HashMap, prelude::*};
 
 use super::{
-    AIR, Block, Content, FULL_FLUID, ModInfo, State,
+    AIR, Block, Content, FULL_FLUID, ModInfo, State, combine,
     load::LoadedMod,
     machine::{check_machine_items, check_tank_fluids},
     reaction::bake_reaction,
@@ -58,6 +58,7 @@ use texture::{Textures, template};
 pub(crate) use fill::title_case;
 pub(super) use mix::Mix;
 pub(super) use model::rotation;
+pub(super) use state::side_texture;
 pub(super) use when::{When, pattern_matches};
 
 /// A parsed definition and where it came from.
@@ -152,6 +153,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         recipe_types: HashMap::new(),
         recipe_items: HashMap::new(),
         reaction_index: HashMap::new(),
+        combinations: HashMap::new(),
     };
     content.block_index.insert(AIR.into(), 0);
 
@@ -231,6 +233,11 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
                 support::bake(index, rules, &def.namespace, &mut content),
             );
         }
+    }
+    let mut problems = Vec::new();
+    combine::add_combinations(&mut content, &mut problems);
+    for problem in problems {
+        report("halves", Err(problem));
     }
     add_items(&defs, &mut content, &textures, &mut report);
     for def in &defs.recipes {

@@ -89,7 +89,8 @@ pub struct MiningSystems;
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
 #[reflect(Component)]
 pub struct Mining {
-    /// The block being mined, and its state now.
+    /// The block being mined, and its state now: in a voxel of two
+    /// halves, the half being mined.
     pub target: Option<(IVec3, BlockState)>,
     /// From 0 when mining starts to 1 when the block breaks.
     pub progress: f32,
@@ -158,12 +159,17 @@ fn mine(
         mining.elapsed = Duration::ZERO;
         return;
     };
-    let target = (hit.block, voxels.get(hit.block).unwrap_or(BlockState::AIR));
+    let whole = voxels.get(hit.block).unwrap_or(BlockState::AIR);
+    // In a voxel of two halves, the half under the crosshair.
+    let target = (hit.block, content.half_at(whole, hit.shape_box));
     let seconds = break_time(content.state(target.1).hardness);
     // The engine updating its properties (a pipe joining one placed next
-    // to it) doesn't make it another target.
+    // to it) doesn't make it another target, but the other half of the
+    // voxel is.
     let same = mining.target.is_some_and(|(pos, state)| {
-        pos == target.0 && content.state(state).block == content.state(target.1).block
+        pos == target.0
+            && content.state(state).block == content.state(target.1).block
+            && content.half(state) == content.half(target.1)
     });
     if same {
         mining.target = Some(target);
@@ -184,7 +190,8 @@ fn mine(
             mining.progress = 1.0;
             return;
         }
-        voxels.set(hit.block, BlockState::AIR);
+        // The other half stays.
+        voxels.set(hit.block, content.without(whole, target.1));
         // What stood on it and needed it (a flower on grass) breaks with
         // it, into the same inventory if it fits. (Otherwise `support`
         // breaks it, giving nothing.)
@@ -603,5 +610,71 @@ mod tests {
         assert_eq!(at(&mut app, log), block("log"));
         let inventory = app.world().get::<Inventory>(player).unwrap();
         assert_eq!(inventory.entries().len(), 1, "only the grass");
+    }
+    /// Mining a voxel of two halves breaks the half under the crosshair,
+    /// taking that half's time and giving its item in survival, and
+    /// leaves the other. Turning to the other half starts over.
+    #[test]
+    fn mining_a_double_slab_breaks_the_half_under_the_crosshair() {
+        let content = base();
+        let half = |id: &str, values: &[(&str, &str)]| content.block_state(id, values).unwrap();
+        let bottom = half("defaria:stone_slab", &[("half", "bottom")]);
+        let top = half("defaria:thatch_slab", &[("half", "top")]);
+        let both = content.combine(bottom, top).unwrap();
+        let mut app = app();
+        let pos = IVec3::new(5, 1, 7);
+        set(&mut app, pos, both);
+        let player = crate::player::tests::local(&mut app);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((Inventory::new(), GameMode::Survival));
+        // The bottom half, then a frame on the top half: that's a new
+        // target, its progress from nothing.
+        look_at(&mut app, pos.as_vec3() + Vec3::new(0.5, 0.25, 0.0));
+        frame(&mut app, true);
+        frame(&mut app, false);
+        assert_eq!(mining(&mut app).target, Some((pos, bottom)));
+        assert!(mining(&mut app).progress > 0.0);
+        look_at(&mut app, pos.as_vec3() + Vec3::new(0.5, 0.75, 0.0));
+        frame(&mut app, false);
+        assert_eq!(mining(&mut app).target, Some((pos, top)));
+        assert_eq!(mining(&mut app).progress, 0.0);
+        // The thatch takes its own time, and leaves the stone.
+        for _ in 0..frames_to_break(top) {
+            frame(&mut app, false);
+        }
+        assert_eq!(at(&mut app, pos), bottom);
+        let item = |state| crate::game_mode::item_for_block(base(), state).unwrap();
+        let inventory = app.world().get::<Inventory>(player).unwrap();
+        assert_eq!(inventory.count(item(top)), 1);
+        assert_eq!(inventory.count(item(bottom)), 0);
+    }
+
+    /// Two halves of the same block are still two targets: turning from
+    /// one to the other starts over, so the second can't break early.
+    #[test]
+    fn halves_of_one_block_are_mined_separately() {
+        let content = base();
+        let half = |h: &str| {
+            content
+                .block_state("defaria:stone_slab", &[("half", h)])
+                .unwrap()
+        };
+        let (bottom, top) = (half("bottom"), half("top"));
+        let mut app = app();
+        let pos = IVec3::new(5, 1, 7);
+        set(&mut app, pos, content.combine(bottom, top).unwrap());
+        look_at(&mut app, pos.as_vec3() + Vec3::new(0.5, 0.25, 0.0));
+        frame(&mut app, true);
+        for _ in 0..frames_to_break(bottom) - 1 {
+            frame(&mut app, false);
+        }
+        assert!(mining(&mut app).progress > 0.5);
+        look_at(&mut app, pos.as_vec3() + Vec3::new(0.5, 0.75, 0.0));
+        frame(&mut app, false);
+        assert_eq!(mining(&mut app).target, Some((pos, top)));
+        assert_eq!(mining(&mut app).progress, 0.0);
+        frame(&mut app, false);
+        assert_eq!(at(&mut app, pos), content.combine(bottom, top).unwrap());
     }
 }

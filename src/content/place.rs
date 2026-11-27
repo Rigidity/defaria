@@ -60,14 +60,18 @@ impl Placement {
     /// that falls back to the way you face across the ground, so a
     /// machine placed at your feet still faces along your look.
     pub fn value(&self, face: Direction, look: Vec3) -> Option<usize> {
-        match self.from {
-            PlaceFrom::Face => self.values[face as usize],
-            PlaceFrom::Look => self.values[Direction::along(look) as usize].or_else(|| {
+        let looked = || {
+            self.values[Direction::along(look) as usize].or_else(|| {
                 let flat = Vec3::new(look.x, 0.0, look.z);
                 (flat.length_squared() > 1e-6)
                     .then(|| self.values[Direction::along(flat) as usize])
                     .flatten()
-            }),
+            })
+        };
+        match self.from {
+            PlaceFrom::Face => self.values[face as usize],
+            PlaceFrom::Look => looked(),
+            PlaceFrom::Against => self.values[face.opposite() as usize].or_else(looked),
         }
     }
 }
@@ -176,6 +180,32 @@ mod tests {
         let west = facing.state(&[("facing", "west")]).unwrap();
         assert_eq!(content.placed(s, Direction::Up, Vec3::NEG_X), west);
         assert_eq!(content.placed(west, Direction::Up, Vec3::NEG_Y), west);
+    }
+
+    /// `against` takes the side of the placed block that touches the block
+    /// clicked, whichever way you look: placed on a block's north side,
+    /// it's `south`, even looking along the wall. With no value for that
+    /// side (placed on a floor), it's the way you look.
+    #[test]
+    fn against_takes_the_side_touching_the_block_clicked() {
+        let content = base();
+        let slab = content.block("defaria:stone_vertical_slab").unwrap();
+        let half = |h| slab.state(&[("half", h)]).unwrap();
+        let s = slab.default_state();
+        // Looking mostly east along a wall's north side.
+        let along = Vec3::new(0.9, -0.1, 0.3).normalize();
+        for (face, expected) in [
+            (Direction::North, "south"),
+            (Direction::South, "north"),
+            (Direction::East, "west"),
+            (Direction::West, "east"),
+        ] {
+            assert_eq!(content.placed(s, face, along), half(expected), "{face:?}");
+        }
+        // On a floor or under a ceiling: the far side, along the view.
+        assert_eq!(content.placed(s, Direction::Up, along), half("east"));
+        let down_west = Vec3::new(-0.3, -0.9, 0.1).normalize();
+        assert_eq!(content.placed(s, Direction::Down, down_west), half("west"));
     }
 
     /// Looking steeply down (placing a machine on the floor in front of

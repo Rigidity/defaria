@@ -1,0 +1,15 @@
+// A slab standing on its side, against one side of its voxel.
+{
+  name: "Thatch Vertical Slab",
+  properties: {
+    // Which half of its voxel it fills: against a block's side it
+    // stands against that block, and on a floor or under a ceiling at
+    // the side of its voxel you look toward.
+    half: { values: ["north", "south", "east", "west"], place: "against" },
+  },
+  model: "slab_{half}",
+  textures: { all: "thatch" },
+  hardness: 0.4,
+  weight: 125,
+  category: "building",
+}

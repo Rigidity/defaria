@@ -1,0 +1,18 @@
+// A slab standing on its side, against one side of its voxel.
+{
+  name: "{rock} Vertical Slab",
+  properties: {
+    // Which half of its voxel it fills: against a block's side it
+    // stands against that block, and on a floor or under a ceiling at
+    // the side of its voxel you look toward.
+    half: { values: ["north", "south", "east", "west"], place: "against" },
+    rock: { materials: "#rock", default: "stone" },
+  },
+  model: "slab_{half}",
+  textures: { all: { texture: "stone", materials: { rock: "{rock}" } } },
+  hardness: { materials: { rock: 1 } },
+  weight: { base: 0.5, materials: { rock: 1 } },
+  // Water fills the half of its cell it leaves.
+  fluid_room: 0.5,
+  category: "building",
+}

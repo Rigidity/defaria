@@ -207,6 +207,11 @@ pub enum PlaceFrom {
     Face,
     /// The way you look, along its strongest axis: looking down is `down`.
     Look,
+    /// The side of the placed block that touches the block you click:
+    /// placing against a block's north side is `south`. Where the property
+    /// has no value for that side (a vertical slab placed on a floor), the
+    /// way you look, as for `Look`.
+    Against,
 }
 
 /// What a variant's `when` asks of one property: a value, any of several,

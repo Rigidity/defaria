@@ -271,6 +271,7 @@ mod tests {
             Some(Hit {
                 block: IVec3::new(8, 4, 5),
                 normal: IVec3::Z,
+                shape_box: 0,
             })
         );
         assert!(!using.sneak);

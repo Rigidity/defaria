@@ -118,11 +118,11 @@ Chunks that aren't in the table have never been saved, and are generated when
 they're loaded. A region file that's damaged is renamed to `<name>.broken`
 (and logged), and the region starts over.
 
-### Chunk blob, format 4
+### Chunk blob, format 5
 
 | Bytes | Field |
 |---|---|
-| 1 | Format: `4` |
+| 1 | Format: `5` |
 | rest | The payload below, zlib-compressed |
 
 The payload uses unsigned LEB128 varints (seven bits a byte, lowest first, the
@@ -222,6 +222,14 @@ property's value is the material's id, or `none`. Air is `air`. Names, rather th
 state numbers, keep saves valid when mods are added, removed or reordered. When
 loading, a block that no longer exists becomes air, and a state whose
 properties changed becomes its block's default state.
+
+A voxel holding two halves (a double slab, see "Halves" in
+`docs/modding.md`) is named by its two halves joined by a `+`, the one
+on the low side (down, north or west) first:
+`defaria:stone_slab[half=bottom,rock=defaria:stone]+defaria:planks_slab[half=top,wood=defaria:oak]`.
+When loading, each half is read as above; if one is gone (it became
+air) the voxel keeps the other, and if the two don't fit together any
+more it keeps the first.
 
 An all-air or all-dirt chunk takes about 15 bytes and a chunk of hillside a
 few hundred, against 8 KiB in memory; a freshly explored area averages about

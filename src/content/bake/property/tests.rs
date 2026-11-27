@@ -166,6 +166,7 @@ fn names_and_values_that_break_state_names_are_errors() {
         (r#"{ p: ["a,b", "c"] }"#, "value `a,b` has a `,`"),
         (r#"{ p: ["a", "b=c"] }"#, "value `b=c` has a `=`"),
         (r#"{ p: ["", "c"] }"#, "value `` is empty"),
+        (r#"{ p: ["a+b", "c"] }"#, "value `a+b` has a `+`"),
         (
             r#"{ "x=y": ["a", "b"] }"#,
             "property `x=y`: its name has a `=`",
