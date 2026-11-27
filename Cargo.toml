@@ -19,7 +19,9 @@ publish = false
 
 # Every crate takes these from here, so they're one version, built once.
 [workspace.dependencies]
-bevy = "0.20.1"
+# `serialize`: the messages between client and server carry Bevy types
+# (`Transform`, vectors). Dev builds have it through `bevy_remote` already.
+bevy = { version = "0.20.1", features = ["serialize"] }
 defaria_core = { path = "crates/defaria_core", default-features = false }
 defaria_client = { path = "crates/defaria_client", default-features = false }
 json5 = "1.3.8"
