@@ -663,12 +663,20 @@ fn a_scripted_machine_is_used_rather_than_opened() {
     };
     let content = Content::from_mods(scripted_machine_mods());
     assert!(content.errors.is_empty(), "{:?}", content.errors);
-    let sources = ScriptSources::from_mods(&order(scripted_machine_mods(), &mut Vec::new()));
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let runtime = || {
+        let sources = ScriptSources::from_mods(&order(scripted_machine_mods(), &mut Vec::new()));
+        ScriptRuntime::new(sources, ScriptSettings::untimed())
+    };
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
-    app.insert_resource(ScriptIndex::new(&content, &runtime))
-        .insert_resource(runtime)
-        .insert_resource(content);
+    // The server runs the scripts (it starts on the first frame); both
+    // sides have the content.
+    app.update();
+    let server = crate::headless::server(&mut app);
+    let runtime = runtime();
+    server.insert_resource(ScriptIndex::new(&content, &runtime));
+    server.insert_resource(runtime);
+    server.insert_resource(content.clone());
+    app.insert_resource(content);
     settle(&mut app);
     let used = |app: &mut App| {
         let entity = crate::headless::server_world(&app)
@@ -750,12 +758,20 @@ fn a_scripted_item_comes_after_the_block_it_is_used_on() {
     let state = |id: &str| content.default_state(id).unwrap();
     let [stone, crate_, scripted, marker] =
         ["defaria:stone", "test:crate", "test:box", "test:marker"].map(state);
-    let sources = ScriptSources::from_mods(&order(scripted_item_mods(), &mut Vec::new()));
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let runtime = || {
+        let sources = ScriptSources::from_mods(&order(scripted_item_mods(), &mut Vec::new()));
+        ScriptRuntime::new(sources, ScriptSettings::untimed())
+    };
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
-    app.insert_resource(ScriptIndex::new(&content, &runtime))
-        .insert_resource(runtime)
-        .insert_resource(content);
+    // The server runs the scripts (it starts on the first frame); both
+    // sides have the content.
+    app.update();
+    let server = crate::headless::server(&mut app);
+    let runtime = runtime();
+    server.insert_resource(ScriptIndex::new(&content, &runtime));
+    server.insert_resource(runtime);
+    server.insert_resource(content.clone());
+    app.insert_resource(content);
     settle(&mut app);
     let front = FURNACE + IVec3::Z;
     run_more(

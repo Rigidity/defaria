@@ -272,7 +272,7 @@ fn the_network_report_describes_the_conduits_network() {
          network 52 22 50\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let world = app.world_mut();
+    let world = crate::headless::server_world(&app);
     let pipes = network_report(world, IVec3::new(50, 20, 50));
     assert!(pipes.starts_with("network at 50 20 50: #"), "{pipes}");
     assert!(

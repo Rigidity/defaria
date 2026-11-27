@@ -8,7 +8,8 @@
 //!
 //! What the client app was set up with that the server needs (the world's
 //! folder, the render distance, terrain and script settings, the content
-//! already loaded) is copied over when the server starts, at `Startup`.
+//! already loaded) is copied over when the server starts, at `PreStartup`,
+//! so settings given after the plugins count.
 
 use std::time::Duration;
 
