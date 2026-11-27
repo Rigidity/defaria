@@ -11,7 +11,7 @@ use std::{
 use bevy::prelude::*;
 
 use crate::{
-    content::BlockState,
+    content::{BlockState, FULL_FLUID},
     light::ChunkLight,
     world::{CHUNK_SIZE, Chunk},
     world::{ChunkCoord, ChunkMap, Voxels},
@@ -94,10 +94,15 @@ impl ChunkMemory {
         if voxels.uniform().is_some() {
             uniform_dense += voxels.heap_bytes();
         }
-        let partial = chunk.partial_fluid().count();
-        self.partial_fluid += partial;
-        // A hashbrown entry: the key, the value and a control byte.
-        self.fluid += partial * (2 * size_of::<u16>() + 1);
+        let fluid = chunk.fluid_layer();
+        self.partial_fluid += chunk
+            .fluids()
+            .filter(|(_, fluid)| fluid.amount < FULL_FLUID)
+            .count();
+        self.fluid += fluid.heap_bytes();
+        if fluid.uniform().is_some() {
+            uniform_dense += fluid.heap_bytes();
+        }
         if let Some(light) = light {
             let levels = light.levels();
             self.light += levels.heap_bytes();
@@ -256,6 +261,7 @@ mod tests {
     fn world_with(chunks: Vec<(IVec3, Chunk)>) -> World {
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
+        world.insert_resource(crate::content::base().clone());
         world.init_resource::<ChunkMap>();
         world.init_resource::<Messages<crate::world::VoxelChanged>>();
         world.init_resource::<Messages<crate::world::FluidChanged>>();

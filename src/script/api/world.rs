@@ -57,6 +57,7 @@ pub(super) enum Op {
     ItemDef,
     MaterialDef,
     Light,
+    Fluid,
     // A machine's own handle's, in its own hooks: see `machine.rs`.
     Active,
     SetActive,
@@ -77,7 +78,7 @@ pub(super) enum Op {
 }
 
 impl Op {
-    const ALL: [Op; 28] = [
+    const ALL: [Op; 29] = [
         Op::Loaded,
         Op::Id,
         Op::Name,
@@ -90,6 +91,7 @@ impl Op {
         Op::ItemDef,
         Op::MaterialDef,
         Op::Light,
+        Op::Fluid,
         Op::Active,
         Op::SetActive,
         Op::Ports,
@@ -396,7 +398,11 @@ impl Call<'_, '_, '_> {
                     Some(values) => with_values(content, base, values)?,
                     None => base,
                 };
-                if info.is_fluid() || content.state(after).is_fluid() {
+                // Fluid the new block leaves no room for would be lost.
+                let fluid = self.voxels.get_with_fluid(pos).and_then(|(_, fluid)| fluid);
+                let spills =
+                    fluid.is_some_and(|fluid| fluid.amount > content.state(after).fluid_room);
+                if spills || content.state(after).is_fluid() {
                     // Fluid is only ever moved, so none is made or lost.
                     return Err(mlua::Error::runtime(
                         "`set` can't put fluid in a voxel or replace it: a machine's tanks \
@@ -429,6 +435,15 @@ impl Call<'_, '_, '_> {
             }
             Op::Data => self.data_table(lua, pos)?.map_or(Value::Nil, Value::Table),
             Op::Light => self.light(lua, pos)?,
+            Op::Fluid => match self.voxels.get_with_fluid(pos).and_then(|(_, fluid)| fluid) {
+                Some(fluid) => {
+                    let table = lua.create_table_with_capacity(0, 2)?;
+                    table.raw_set("id", content.block_of(fluid.kind).id.as_str())?;
+                    table.raw_set("amount", fluid.amount)?;
+                    Value::Table(table)
+                }
+                None => Value::Nil,
+            },
             _ => unreachable!(),
         })
     }

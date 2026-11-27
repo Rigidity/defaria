@@ -93,12 +93,16 @@ impl LightTable {
         }
     }
 
-    /// Whether light can't leave `state` through its side toward
-    /// `DIRECTIONS[direction]` (or come in through it).
-    fn closed(&self, state: BlockState, direction: usize) -> bool {
-        self.closed
-            .get(state.0 as usize)
-            .is_some_and(|&bits| bits & 1 << direction != 0)
+    /// The sides `state` closes, as [`LightTable::closed`] bits.
+    fn closed_bits(&self, state: BlockState) -> u8 {
+        self.closed.get(state.0 as usize).copied().unwrap_or(0)
+    }
+
+    /// Whether light can't leave `voxel` through its side toward
+    /// `DIRECTIONS[direction]` (or come in through it): its block or its
+    /// fluid covers it.
+    fn closed(&self, voxel: Lit, direction: usize) -> bool {
+        (self.closed_bits(voxel.block) | self.closed_bits(voxel.fluid)) & 1 << direction != 0
     }
 
     /// Whether light treats the two states the same: they close the same
@@ -109,16 +113,19 @@ impl LightTable {
             && self.filter.get(a.0 as usize) == self.filter.get(b.0 as usize)
     }
 
-    /// The level light offered at `level` to a voxel of `state` from
-    /// outside it gets in with: less the levels `state` filters out.
-    fn entering(&self, state: BlockState, level: u8) -> u8 {
-        let filter = self.filter.get(state.0 as usize).copied().unwrap_or(0);
-        level.saturating_sub(filter)
+    /// The level light offered at `level` to `voxel` from outside it gets
+    /// in with: less the levels its block and its fluid filter out (water
+    /// in with a slab dims light as water alone does).
+    fn entering(&self, voxel: Lit, level: u8) -> u8 {
+        let filter = |state: BlockState| self.filter.get(state.0 as usize).copied().unwrap_or(0);
+        level
+            .saturating_sub(filter(voxel.block))
+            .saturating_sub(filter(voxel.fluid))
     }
 
-    /// Whether light can't come into `state` through all of its sides.
-    fn closed_all(&self, state: BlockState) -> bool {
-        self.closed.get(state.0 as usize) == Some(&ALL_DIRECTIONS)
+    /// Whether light can't come into `voxel` through all of its sides.
+    fn closed_all(&self, voxel: Lit) -> bool {
+        self.closed_bits(voxel.block) | self.closed_bits(voxel.fluid) == ALL_DIRECTIONS
     }
 
     /// The level `channel`'s light leaves a voxel of `state` with toward
@@ -126,7 +133,7 @@ impl LightTable {
     /// side. Through a covered side only the block's own light gets out (a
     /// light source shines out of every side), so 0 for a block that gives
     /// off none of that colour.
-    fn leaving(&self, state: BlockState, direction: usize, channel: usize, next: u8) -> u8 {
+    fn leaving(&self, state: Lit, direction: usize, channel: usize, next: u8) -> u8 {
         if self.closed(state, direction) {
             next.min(self.emits(state, channel).saturating_sub(1))
         } else {
@@ -138,14 +145,7 @@ impl LightTable {
     /// in from its neighbour of `from` toward `DIRECTIONS[direction]`,
     /// where it would be `next` with nothing in the way: 0 through a side
     /// either covers, and less what `to` filters out.
-    fn passing(
-        &self,
-        from: BlockState,
-        to: BlockState,
-        direction: usize,
-        channel: usize,
-        next: u8,
-    ) -> u8 {
+    fn passing(&self, from: Lit, to: Lit, direction: usize, channel: usize, next: u8) -> u8 {
         if self.closed(to, opposite(direction)) {
             0
         } else {
@@ -153,10 +153,46 @@ impl LightTable {
         }
     }
 
-    fn emits(&self, state: BlockState, channel: usize) -> u8 {
-        self.emits
-            .get(state.0 as usize)
-            .map_or(0, |light| light.get(channel))
+    /// The `channel` light `voxel` gives off: its block's or its fluid's,
+    /// whichever is brighter.
+    fn emits(&self, voxel: Lit, channel: usize) -> u8 {
+        let emits = |state: BlockState| {
+            self.emits
+                .get(state.0 as usize)
+                .map_or(0, |light| light.get(channel))
+        };
+        emits(voxel.block).max(emits(voxel.fluid))
+    }
+}
+
+/// What light sees in a voxel: its block and its fluid's block (air for
+/// none). It treats the voxel as both: light stops at a side either
+/// covers, it's dimmed by both their filters, and the voxel gives off the
+/// brighter light of the two.
+#[derive(Debug, Clone, Copy)]
+struct Lit {
+    block: BlockState,
+    fluid: BlockState,
+}
+
+#[cfg(test)]
+impl From<BlockState> for Lit {
+    /// A voxel of `block` alone, with no fluid.
+    fn from(block: BlockState) -> Self {
+        Self {
+            block,
+            fluid: BlockState::AIR,
+        }
+    }
+}
+
+impl Lit {
+    /// The voxel at `index` in `chunk`.
+    fn at(chunk: &Chunk, index: usize) -> Self {
+        Self {
+            block: chunk.get_index(index),
+            fluid: chunk.fluid_kind_at_index(index),
+        }
     }
 }
 
@@ -380,7 +416,7 @@ impl LightQueue {
     /// Queues a chunk's light sources.
     fn sources(&mut self, coord: IVec3, chunk: &Chunk, table: &LightTable) {
         for index in 0..CHUNK_VOLUME {
-            let state = chunk.get_index(index);
+            let state = Lit::at(chunk, index);
             for channel in 1..CHANNELS {
                 let level = table.emits(state, channel);
                 if level > 0 {
@@ -422,7 +458,8 @@ impl LightQueue {
             }
             let passes = above.is_some_and(|(blocks, light)| {
                 let bottom = IVec3::new(x, 0, z);
-                light.at(bottom).get(SKY) == MAX_LIGHT && !table.closed(blocks.at(bottom), DOWN)
+                let voxel = Lit::at(blocks, Chunk::index_of(bottom));
+                light.at(bottom).get(SKY) == MAX_LIGHT && !table.closed(voxel, DOWN)
             });
             if !passes {
                 let index = Chunk::index_of(IVec3::new(x, last, z));
@@ -595,7 +632,7 @@ impl<'a> Fill<'a> {
                 }
                 continue;
             }
-            let emitted = self.table.emits(chunk.get_index(index), self.channel);
+            let emitted = self.table.emits(Lit::at(chunk, index), self.channel);
             if emitted != level {
                 self.set(light, index, emitted);
             }
@@ -640,7 +677,7 @@ impl<'a> Fill<'a> {
                 // loses what this voxel filters out.
                 node.level = self
                     .table
-                    .entering(chunk.get_index(node.index as usize), node.level);
+                    .entering(Lit::at(chunk, node.index as usize), node.level);
             }
             buckets[node.level as usize].push(node);
         }
@@ -652,7 +689,7 @@ impl<'a> Fill<'a> {
                     // Something brighter got here first and spreads itself.
                     continue;
                 }
-                let state = chunk.get_index(index);
+                let state = Lit::at(chunk, index);
                 if current < level {
                     // Light from outside the voxel stops at a side it
                     // covers; a source shines even from inside a solid one.
@@ -687,7 +724,7 @@ impl<'a> Fill<'a> {
                     let n = neighbour as usize;
                     let next = self
                         .table
-                        .passing(state, chunk.get_index(n), i, self.channel, next);
+                        .passing(state, Lit::at(chunk, n), i, self.channel, next);
                     if next > 0 && light.get(n).get(self.channel) < next {
                         self.set(light, n, next);
                         buckets[next as usize].push(Node {

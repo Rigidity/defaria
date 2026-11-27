@@ -47,7 +47,7 @@ use bevy::{
 use crate::{
     block_edit::{BlockUseSystems, Hit, fluid_target},
     block_entity::BlockEntities,
-    content::{BlockState, Content, FULL_FLUID, ItemState},
+    content::{BlockState, Content, ItemState},
     fluid_network::{
         FluidAmount,
         world::{pour, take},
@@ -338,8 +338,9 @@ fn take_from_world(
     pos: IVec3,
 ) -> u64 {
     let room = voxels
-        .get(pos)
-        .map(|state| weight_room(content, inventory, &content.block_of(state).id))
+        .get_with_fluid(pos)
+        .and_then(|(_, fluid)| fluid)
+        .map(|fluid| weight_room(content, inventory, &content.block_of(fluid.kind).id))
         .unwrap_or(0);
     with_container(content, inventory, kind, capacity, |bucket| {
         take(voxels, content, pos, room, bucket)
@@ -359,13 +360,13 @@ fn pour_into_world(
     places: &[IVec3],
     only: Option<&str>,
 ) -> bool {
-    // Into air, or onto the same fluid with room.
+    // Into the room a voxel's block leaves (all of air's, a slab's
+    // half), empty or holding the same fluid.
     let fits_at = |voxels: &Voxels, pos: IVec3, held: &FluidAmount| {
-        voxels.get_with_fluid(pos).is_some_and(|(here, partial)| {
-            here.is_air()
-                || (content.block_of(here).id == held.fluid
-                    && partial.is_some_and(|amount| amount < FULL_FLUID))
-        })
+        content
+            .default_state(&held.fluid)
+            .and_then(|kind| voxels.room_for(pos, kind))
+            .is_some_and(|room| room > 0)
     };
     let fits = |held: &FluidAmount| {
         only.is_none_or(|only| held.fluid == only)
@@ -395,14 +396,12 @@ fn use_on_world(
     pour_only: bool,
     usable: impl Fn(BlockState) -> bool,
 ) -> bool {
-    let Some(state) = voxels.get(hit.block) else {
+    let Some((state, here)) = voxels.get_with_fluid(hit.block) else {
         return false;
     };
     let in_front = hit.place_at().map(|(pos, _)| pos);
-    let fluid = content
-        .state(state)
-        .is_fluid()
-        .then(|| content.block_of(state).id.clone());
+    // A voxel's fluid, beside its block (a slab in a pond has water too).
+    let fluid = here.map(|here| content.block_of(here.kind).id.clone());
     if let Some(fluid) = &fluid
         && !pour_only
         && let Some(kind) = taker(inventory, item, capacity, fluid)

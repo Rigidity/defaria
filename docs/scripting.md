@@ -90,15 +90,16 @@ A hook's `block` is a handle on a block by position:
 | | |
 |---|---|
 | `block.pos` | Its position, a `vector`. |
-| `block.id` | Its block's id: `"defaria:stone"`, or `"air"`. |
+| `block.id` | Its block's id: `"defaria:stone"`, or `"air"`. A voxel's fluid isn't its block: under water, it's `"air"`, or a slab's. |
 | `block.name` | Its state's name: `"Granite Iron Ore"`. |
 | `block.state` | Its property values, a table: `true`/`false` for the properties whose values are `"true"`/`"false"`, text otherwise (`block.state.rock == "defaria:granite"`). |
 | `block.data` | Its block entity's data, a table, or nil for a block with no `block_entity` (see [Data](#data)). |
 | `block.light` | The light in its voxel, `{ sky, red, green, blue }`, each 0 to 15, or nil where none is worked out yet. A solid block's own voxel is dark: read the light of the voxel next to it (`block:neighbour("up").light`). |
+| `block.fluid` | The fluid in its voxel, `{ id, amount }` (`{ id = "defaria:water", amount = 1000 }`, in thousandths of a block), or nil for none. Flow moving fluid around a block doesn't count as a neighbour changing. |
 | `block:stat(name)` | A stat of its state (`hardness`, `weight` or one of the block's `stats`), or nil. |
 | `block:neighbour(face)` | The block next to it on that face, or nil if that isn't loaded. |
 | `block:set_state(values)` | Sets some of its properties: `block:set_state({ lit = true })`. Returns whether it changed. A property or value the block doesn't have is an error. |
-| `block:set(id, values?)` | Makes it another block, in its default state or with some properties set: `block:set("defaria:stone", { ore = "defaria:iron" })`. Returns whether it changed. `block:set("air")` breaks it, dropping nothing (and breaks what stood on it and needed it, a plant with a `support`; a plant set where it can't stand breaks too). It's an error to put fluid in a voxel or replace fluid (a machine's tanks pour and draw it), or to replace a block that has a block entity (a machine, a pipe, a block with `data`), which would lose what it holds, or to make one from another block, which only placing it does. Plain blocks it may make from air or turn into others (moss spreading over stone), so a script can make or remove what mining a block gives. |
+| `block:set(id, values?)` | Makes it another block, in its default state or with some properties set: `block:set("defaria:stone", { ore = "defaria:iron" })`. Returns whether it changed. `block:set("air")` breaks it, dropping nothing (and breaks what stood on it and needed it, a plant with a `support`; a plant set where it can't stand breaks too). It's an error to put fluid in a voxel or replace fluid (a machine's tanks pour and draw it): to make a block where there's more fluid than it leaves room for (`fluid_room`; a voxel's fluid isn't its block, so a voxel of water is air with water in it), or to replace a block that has a block entity (a machine, a pipe, a block with `data`), which would lose what it holds, or to make one from another block, which only placing it does. Plain blocks it may make from air or turn into others (moss spreading over stone), so a script can make or remove what mining a block gives. |
 
 A hook can change only its own block and the six next to it
 (`block:neighbour(face):set(...)`); changing anything further is an

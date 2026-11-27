@@ -440,9 +440,16 @@ pub struct State {
     /// How its faces are drawn, which also decides whether it stops light
     /// and hides the faces next to it.
     pub render: Render,
-    /// Set for a fluid: it has no collision, the crosshair passes through
-    /// it, and placing a block replaces it. It flows as this says.
+    /// Set for a fluid: it has no collision, and the crosshair passes
+    /// through it. It's kept in a voxel beside its block, not as its
+    /// block, and a block placed into it keeps as much as its
+    /// `fluid_room`. It flows as this says.
     pub fluid: Option<Fluid>,
+    /// How much fluid can share its voxel with it, in [`FULL_FLUID`]
+    /// units: all of it for air, none for a full block, some for a block
+    /// that doesn't fill its voxel, such as a slab (see `fluid_room` in
+    /// `docs/modding.md`).
+    pub fluid_room: u16,
     /// Whether its faces show from behind too: from inside a glass block
     /// or under water.
     pub double_sided: bool,

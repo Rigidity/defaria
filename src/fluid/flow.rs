@@ -29,6 +29,12 @@
 //! flowing once they're less than a ripple apart, or so close that a unit
 //! trickling between them could overshoot (a few units at most).
 //!
+//! A cell has room for a whole block of fluid if it's air, and for some
+//! if its block leaves room (a slab, see `fluid_room`). Levels are
+//! compared by how high the fluid stands: its amount on top of the part of
+//! the cell the block takes, so a pond around a slab is level when the
+//! slab's half of its cell is full.
+//!
 //! Different fluids that touch don't flow into each other: they stop, like
 //! fluid against a wall, through [`Cells::meet`].
 
@@ -50,12 +56,27 @@ pub const MIN_RIPPLE: u16 = 2;
 /// What a cell holds, as flow sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cell {
-    /// Room for a full block of fluid: air.
-    Open,
-    /// Fluid, by its block, and how much, from 1 to [`FULL_FLUID`].
-    Fluid(BlockState, u16),
+    /// No fluid, and room for this much, from 1 to [`FULL_FLUID`]: all of
+    /// it for air, some for a block that leaves room.
+    Open(u16),
+    /// Fluid, by its block; how much, from 1; and the room the cell has
+    /// for it, as for [`Cell::Open`].
+    Fluid(BlockState, u16, u16),
     /// No room for fluid: a block.
     Closed,
+}
+
+#[cfg(test)]
+impl Cell {
+    /// Air: room for a whole block of fluid.
+    pub const OPEN: Self = Self::Open(FULL_FLUID);
+}
+
+/// How high `amount` of fluid stands in a cell with `room` for it, in
+/// [`FULL_FLUID`] units from the cell's bottom: on top of the part of the
+/// cell its block takes.
+fn level(amount: u16, room: u16) -> u16 {
+    amount + FULL_FLUID.saturating_sub(room)
 }
 
 /// A grid of cells, to look at.
@@ -114,46 +135,45 @@ pub fn affected_by(pos: IVec3) -> impl Iterator<Item = IVec3> {
         .chain(NEAR_SIDES.map(|offset| pos + offset))
 }
 
-/// How much more of `kind` a cell has room for, if any: everything if it's
-/// open, what's left if it's `kind` and not full.
+/// How much more of `kind` a cell has room for, if any: all its room if
+/// it's open, what's left if it's `kind` and not full.
 fn room(kind: BlockState, cell: Option<Cell>) -> Option<u16> {
     match cell {
-        Some(Cell::Open) => Some(FULL_FLUID),
-        Some(Cell::Fluid(k, amount)) if k == kind && amount < FULL_FLUID => {
-            Some(FULL_FLUID - amount)
-        }
+        Some(Cell::Open(room)) => Some(room),
+        Some(Cell::Fluid(k, amount, room)) if k == kind && amount < room => Some(room - amount),
         _ => None,
     }
 }
 
-/// A cell holding `amount` of `kind`: open if that's none.
-fn fill(kind: BlockState, amount: u16) -> Cell {
+/// A cell with `room` holding `amount` of `kind`: open if that's none.
+fn fill(kind: BlockState, amount: u16, room: u16) -> Cell {
     if amount == 0 {
-        Cell::Open
+        Cell::Open(room)
     } else {
-        Cell::Fluid(kind, amount)
+        Cell::Fluid(kind, amount, room)
     }
 }
 
-/// How many sides of the cell at `at`, holding `level` of `kind`, hold
-/// `kind` at least a ripple `higher` or lower: the cells it takes from, or
-/// gives to.
+/// How many sides of the cell at `at`, with `kind` standing at `here`
+/// (see [`level`]), hold `kind` at least a ripple `higher` or lower: the
+/// cells it takes from, or gives to.
 fn differing(
     cells: &impl CellView,
     kind: BlockState,
     fluid: &Fluid,
     at: IVec3,
-    level: u16,
+    here: u16,
     higher: bool,
 ) -> u16 {
     SIDES
         .iter()
         .filter(|&&side| match cells.cell(at + side) {
-            Some(Cell::Fluid(k, there)) if k == kind => {
+            Some(Cell::Fluid(k, amount, room)) if k == kind => {
+                let there = level(amount, room);
                 if higher {
-                    there >= level.saturating_add(fluid.ripple)
+                    there >= here.saturating_add(fluid.ripple)
                 } else {
-                    level >= there.saturating_add(fluid.ripple)
+                    here >= there.saturating_add(fluid.ripple)
                 }
             }
             _ => false,
@@ -180,12 +200,12 @@ fn fall(
     pos: IVec3,
     meetings: &mut Vec<(IVec3, IVec3)>,
 ) -> Option<Transfer> {
-    let Some(Cell::Fluid(kind, amount)) = cells.cell(pos) else {
+    let Some(Cell::Fluid(kind, amount, _)) = cells.cell(pos) else {
         return None;
     };
     let below = pos - IVec3::Y;
     let under = cells.cell(below);
-    if let Some(Cell::Fluid(other, _)) = under
+    if let Some(Cell::Fluid(other, ..)) = under
         && other != kind
     {
         meetings.push((pos, below));
@@ -209,9 +229,10 @@ fn plan_spread(
     transfers: &mut Vec<Transfer>,
     meetings: &mut Vec<(IVec3, IVec3)>,
 ) {
-    let Some(Cell::Fluid(kind, amount)) = cells.cell(pos) else {
+    let Some(Cell::Fluid(kind, amount, own_room)) = cells.cell(pos) else {
         return;
     };
+    let here = level(amount, own_room);
     // Still falling.
     if room(kind, cells.cell(pos - IVec3::Y)).is_some() {
         return;
@@ -230,25 +251,28 @@ fn plan_spread(
         let gives = match cells.cell(next) {
             // Half of it goes over its edges in a step, however thin: what
             // goes over falls away, so it can't come back.
-            Some(Cell::Open) if falling => (amount / (2 * edges)).max(1),
-            Some(Cell::Fluid(k, there)) if k == kind && falling => {
-                amount.saturating_sub(there) / (2 * edges)
+            Some(Cell::Open(_)) if falling => (amount / (2 * edges)).max(1),
+            Some(Cell::Fluid(k, there, room)) if k == kind && falling => {
+                here.saturating_sub(level(there, room)) / (2 * edges)
             }
-            Some(Cell::Open) => {
-                if amount >= fluid.film {
-                    amount / SHARE
+            // Onto the floor of an open cell, if it's below the fluid.
+            Some(Cell::Open(room)) => {
+                let floor = level(0, room);
+                if amount >= fluid.film && here > floor {
+                    (here - floor) / SHARE
                 } else {
                     0
                 }
             }
-            Some(Cell::Fluid(k, there)) if k == kind => {
-                let difference = amount.saturating_sub(there);
+            Some(Cell::Fluid(k, there, room)) if k == kind => {
+                let there = level(there, room);
+                let difference = here.saturating_sub(there);
                 if difference < fluid.ripple {
                     0
                 } else if difference >= SHARE {
                     difference / SHARE
                 } else if difference
-                    >= *lower.get_or_init(|| differing(cells, kind, fluid, pos, amount, false))
+                    >= *lower.get_or_init(|| differing(cells, kind, fluid, pos, here, false))
                         + differing(cells, kind, fluid, next, there, true)
                 {
                     // Too close for an eighth to be anything: a unit
@@ -286,7 +310,7 @@ fn plan_spread(
 /// flow's own rule, so waking only the fluid this says might move loses
 /// nothing.
 pub fn might_move(cells: &impl CellView, fluid: &Fluid, pos: IVec3) -> bool {
-    let Some(Cell::Fluid(kind, _)) = cells.cell(pos) else {
+    let Some(Cell::Fluid(kind, ..)) = cells.cell(pos) else {
         return false;
     };
     if room(kind, cells.cell(pos - IVec3::Y)).is_some() {
@@ -390,7 +414,8 @@ fn apply(world: &impl CellView, changes: &mut Changes, transfer: Transfer) {
         over,
     } = transfer;
     let layer = Layer { world, changes };
-    let (Some(Cell::Fluid(kind, has)), there) = (layer.cell(from), layer.cell(to)) else {
+    let (Some(Cell::Fluid(kind, has, from_room)), there) = (layer.cell(from), layer.cell(to))
+    else {
         return;
     };
     // Something filled the edge since this was planned.
@@ -401,13 +426,14 @@ fn apply(world: &impl CellView, changes: &mut Changes, transfer: Transfer) {
     if amount == 0 {
         return;
     }
-    let there = match there {
-        Some(Cell::Fluid(_, there)) => there,
-        _ => 0,
+    let (there, to_room) = match there {
+        Some(Cell::Fluid(_, there, room)) => (there, room),
+        Some(Cell::Open(room)) => (0, room),
+        _ => return,
     };
     for (pos, cell) in [
-        (to, Cell::Fluid(kind, there + amount)),
-        (from, fill(kind, has - amount)),
+        (to, Cell::Fluid(kind, there + amount, to_room)),
+        (from, fill(kind, has - amount, from_room)),
     ] {
         let was = world.cell(pos);
         changes
@@ -427,7 +453,7 @@ pub struct TickReport {
 impl Simulation {
     /// Makes the fluid at `pos` active, if there is any.
     pub fn wake(&mut self, cells: &impl CellView, pos: IVec3) {
-        if let Some(Cell::Fluid(kind, _)) = cells.cell(pos) {
+        if let Some(Cell::Fluid(kind, ..)) = cells.cell(pos) {
             self.queues.entry(kind).or_default().next.insert(pos);
         }
     }
@@ -649,8 +675,8 @@ pub(crate) mod tests {
                 Some(Cell::Closed),
                 "set {pos}, which is closed"
             );
-            if let Cell::Fluid(_, amount) = cell {
-                assert!((1..=FULL_FLUID).contains(&amount), "{amount} at {pos}");
+            if let Cell::Fluid(_, amount, room) = cell {
+                assert!((1..=room).contains(&amount), "{amount} at {pos}");
             }
             self.cells.insert(pos, cell);
         }
@@ -666,7 +692,7 @@ pub(crate) mod tests {
             for x in min.x..=max.x {
                 for y in min.y..=max.y {
                     for z in min.z..=max.z {
-                        self.cells.insert(IVec3::new(x, y, z), Cell::Open);
+                        self.cells.insert(IVec3::new(x, y, z), Cell::OPEN);
                     }
                 }
             }
@@ -676,7 +702,7 @@ pub(crate) mod tests {
             self.cells
                 .values()
                 .map(|cell| match cell {
-                    Cell::Fluid(k, amount) if *k == kind => *amount as u64,
+                    Cell::Fluid(k, amount, _) if *k == kind => *amount as u64,
                     _ => 0,
                 })
                 .sum()
@@ -684,7 +710,7 @@ pub(crate) mod tests {
 
         fn amount(&self, pos: IVec3) -> u16 {
             match self.cells.get(&pos) {
-                Some(Cell::Fluid(_, amount)) => *amount,
+                Some(Cell::Fluid(_, amount, _)) => *amount,
                 _ => 0,
             }
         }
@@ -702,7 +728,7 @@ pub(crate) mod tests {
 
     /// Pours `amount` at `pos` and wakes it.
     fn pour(grid: &mut Grid, sim: &mut Simulation, pos: IVec3, kind: BlockState, amount: u16) {
-        grid.set(pos, Cell::Fluid(kind, amount));
+        grid.set(pos, Cell::Fluid(kind, amount, FULL_FLUID));
         sim.wake_around(grid, pos);
     }
 
@@ -730,7 +756,7 @@ pub(crate) mod tests {
         pour(&mut grid, &mut sim, IVec3::new(0, 5, 0), WATER, 700);
         sim.tick(&mut grid, fluids, 0.1, usize::MAX);
         assert_eq!(grid.amount(IVec3::new(0, 4, 0)), 700, "one cell in a step");
-        assert_eq!(grid.cell(IVec3::new(0, 5, 0)), Some(Cell::Open));
+        assert_eq!(grid.cell(IVec3::new(0, 5, 0)), Some(Cell::OPEN));
         settle(&mut grid, &mut sim, 100);
         assert_eq!(grid.amount(IVec3::ZERO), 700);
         assert_eq!(grid.total(WATER), 700);
@@ -761,7 +787,7 @@ pub(crate) mod tests {
             .cells
             .values()
             .filter_map(|cell| match cell {
-                Cell::Fluid(_, amount) => Some(*amount),
+                Cell::Fluid(_, amount, _) => Some(*amount),
                 _ => None,
             })
             .collect();
@@ -783,7 +809,7 @@ pub(crate) mod tests {
 
         // Open a drop beside it.
         grid.open(IVec3::new(3, -1, 0), IVec3::new(3, 0, 0));
-        grid.cells.insert(IVec3::new(2, -1, 0), Cell::Open);
+        grid.cells.insert(IVec3::new(2, -1, 0), Cell::OPEN);
         sim.wake_around(&grid, IVec3::new(1, 0, 0));
         settle(&mut grid, &mut sim, 50);
         assert_eq!(grid.amount(IVec3::new(1, 0, 0)), 0, "it ran off the edge");
@@ -802,7 +828,7 @@ pub(crate) mod tests {
         assert_eq!(grid.amount(IVec3::ZERO), 200, "too thin to spread");
 
         let hole = IVec3::new(1, -1, 0);
-        grid.cells.insert(hole, Cell::Open);
+        grid.cells.insert(hole, Cell::OPEN);
         sim.wake_around(&grid, hole);
         settle(&mut grid, &mut sim, 500);
         assert_eq!(grid.amount(hole), 200, "it all ran into the hole");
@@ -851,11 +877,11 @@ pub(crate) mod tests {
         let mut grid = Grid::default();
         grid.open(IVec3::ZERO, IVec3::X);
         let below = IVec3::new(1, -1, 0);
-        grid.cells.insert(below, Cell::Open);
+        grid.cells.insert(below, Cell::OPEN);
         let mut sim = Simulation::default();
         pour(&mut grid, &mut sim, IVec3::ZERO, WATER, 400);
         // A second cell, on its own, that steps after it.
-        grid.cells.insert(IVec3::new(5, 0, 0), Cell::Open);
+        grid.cells.insert(IVec3::new(5, 0, 0), Cell::OPEN);
         pour(&mut grid, &mut sim, IVec3::new(5, 0, 0), WATER, 400);
         // A visit a tick: both fall, then the first plans running off its
         // edge. The step isn't done until the second has planned too.
@@ -888,7 +914,7 @@ pub(crate) mod tests {
             IVec3::new(-1, 1, 0),
         );
         for pos in [a, b, c, d, IVec3::X, IVec3::new(1, 1, 0)] {
-            grid.cells.insert(pos, Cell::Open);
+            grid.cells.insert(pos, Cell::OPEN);
         }
         let mut sim = Simulation::default();
         for (pos, amount) in [(a, 1000), (b, 400), (c, 1000), (d, 1000)] {
@@ -911,7 +937,7 @@ pub(crate) mod tests {
         for edges in [1, 2] {
             let mut grid = Grid::default();
             grid.open(IVec3::ZERO, IVec3::X);
-            grid.cells.insert(IVec3::new(1, -1, 0), Cell::Open);
+            grid.cells.insert(IVec3::new(1, -1, 0), Cell::OPEN);
             if edges == 2 {
                 grid.open(IVec3::new(-1, -1, 0), IVec3::NEG_X);
             }
@@ -936,7 +962,7 @@ pub(crate) mod tests {
         settle(&mut grid, &mut sim, 10);
         assert_eq!(grid.amount(IVec3::ZERO), 501);
 
-        grid.set(IVec3::ZERO, Cell::Fluid(WATER, 530));
+        grid.set(IVec3::ZERO, Cell::Fluid(WATER, 530, FULL_FLUID));
         sim.wake_around(&grid, IVec3::ZERO);
         settle(&mut grid, &mut sim, 100);
         let (a, b) = (grid.amount(IVec3::ZERO), grid.amount(IVec3::X));
@@ -975,9 +1001,15 @@ pub(crate) mod tests {
             for x in 0..8 {
                 for y in 0..6 {
                     for z in 0..8 {
-                        if random(4) > 0 {
-                            grid.cells.insert(IVec3::new(x, y, z), Cell::Open);
-                        }
+                        // Some cells with room for only part of a
+                        // block, as a slab or a tuft leaves.
+                        let cell = match random(12) {
+                            0..3 => continue,
+                            3 => Cell::Open(500),
+                            4 => Cell::Open(900),
+                            _ => Cell::OPEN,
+                        };
+                        grid.cells.insert(IVec3::new(x, y, z), cell);
                     }
                 }
             }
@@ -987,7 +1019,7 @@ pub(crate) mod tests {
             for _ in 0..random(12) + 1 {
                 let pos = open[random(open.len() as u32) as usize];
                 let kind = if random(3) == 0 { LAVA } else { WATER };
-                if grid.cell(pos) == Some(Cell::Open) {
+                if grid.cell(pos) == Some(Cell::OPEN) {
                     let amount = random(FULL_FLUID as u32) as u16 + 1;
                     pour(&mut grid, &mut sim, pos, kind, amount);
                 }
@@ -1011,6 +1043,58 @@ pub(crate) mod tests {
             }
             assert!(grid.cells == before, "settled, but moved when woken");
         }
+    }
+
+    /// A cell with room for half a block (a slab) between full ones fills
+    /// from them, and the row levels off with the water in it standing as
+    /// high as beside it: its amount on top of the slab's half.
+    #[test]
+    fn part_cells_fill_and_level_with_the_water_beside_them() {
+        let mut grid = Grid::default();
+        grid.open(IVec3::ZERO, IVec3::new(4, 0, 0));
+        let slab = IVec3::new(2, 0, 0);
+        grid.cells.insert(slab, Cell::Open(500));
+        let mut sim = Simulation::default();
+        for x in [0, 1, 3, 4] {
+            pour(&mut grid, &mut sim, IVec3::new(x, 0, 0), WATER, FULL_FLUID);
+        }
+        settle(&mut grid, &mut sim, 10_000);
+        // 4000 over room for 4500: each stands 900 high, the slab's 400
+        // on top of its 500.
+        let levels: Vec<u16> = (0..5)
+            .map(|x| {
+                let pos = IVec3::new(x, 0, 0);
+                grid.amount(pos) + if pos == slab { 500 } else { 0 }
+            })
+            .collect();
+        let (low, high) = (levels.iter().min().unwrap(), levels.iter().max().unwrap());
+        assert!(high - low < FULL_FLUID / 16, "{levels:?}");
+        assert!(grid.amount(slab) > 300, "{levels:?}");
+    }
+
+    /// A pond full to the brim around a slab whose half is full is
+    /// settled: nothing moves when it's all woken.
+    #[test]
+    fn a_full_pond_around_a_full_slab_is_settled() {
+        let mut grid = Grid::default();
+        let mut sim = Simulation::default();
+        for x in 0..5 {
+            let pos = IVec3::new(x, 0, 0);
+            let cell = if x == 2 {
+                Cell::Fluid(WATER, 500, 500)
+            } else {
+                Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID)
+            };
+            grid.cells.insert(pos, cell);
+            sim.wake(&grid, pos);
+        }
+        let before = grid.cells.clone();
+        assert_eq!(
+            settle(&mut grid, &mut sim, 10),
+            1,
+            "one step, moving nothing"
+        );
+        assert!(grid.cells == before);
     }
 
     /// Water poured on a slope runs down into the pit at its foot and
@@ -1084,7 +1168,7 @@ pub(crate) mod tests {
         for x in 0..10 {
             for y in 0..2 {
                 let pos = IVec3::new(x, y, 0);
-                assert!(matches!(grid.cell(pos), Some(Cell::Open | Cell::Fluid(..))));
+                assert!(matches!(grid.cell(pos), Some(Cell::OPEN | Cell::Fluid(..))));
             }
         }
         assert_eq!(grid.total(WATER), FULL_FLUID as u64);

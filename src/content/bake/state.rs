@@ -5,7 +5,12 @@ use std::collections::BTreeMap;
 use bevy::{platform::collections::HashMap, prelude::*};
 
 use super::{
-    fluid::bake_fluid, look::Look, mix::Numbers, model::rotation, parts::Part, texture::Textures,
+    fluid::{bake_fluid, fluid_room},
+    look::Look,
+    mix::Numbers,
+    model::rotation,
+    parts::Part,
+    texture::Textures,
 };
 use crate::content::{
     BakedFace, BlockBox, Content, Direction, MAX_LIGHT, Model, SideTexture, State, StatePart,
@@ -42,6 +47,7 @@ pub(super) fn bake_state(
         ));
     }
     let fluid = def.fluid.as_ref().map(bake_fluid).transpose()?;
+    let fluid_room = fluid_room(def)?;
     let mut state = State {
         block,
         name,
@@ -53,6 +59,7 @@ pub(super) fn bake_state(
         hardness: numbers.hardness,
         weight: numbers.weight,
         stats: numbers.stats,
+        fluid_room,
         ..default()
     };
     for part in parts {

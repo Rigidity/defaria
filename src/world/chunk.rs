@@ -6,7 +6,7 @@ use bevy::{platform::collections::HashMap, prelude::*};
 
 use crate::{
     block_entity::BlockEntityData,
-    content::{BlockState, Content, FULL_FLUID},
+    content::{BlockState, FULL_FLUID},
     light::ChunkLight,
     world::ChunkArray,
 };
@@ -18,14 +18,16 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 /// A cube of voxels. Voxel `(x, y, z)` occupies the unit cube from
 /// `(x, y, z)` to `(x + 1, y + 1, z + 1)` in the chunk's local space.
 ///
-/// A fluid voxel (a block with `fluid` set) also holds an amount of its
-/// fluid, from 1 to [`FULL_FLUID`]. Most fluid is full, so only the amounts
-/// of the voxels that aren't are kept, in `partial`; a fluid voxel that
-/// isn't there is full. Setting a voxel to another block forgets its
-/// amount.
+/// A voxel holds a block and, in a layer of its own, a fluid: which one
+/// (a block with `fluid` set) and how much, from 1 to [`FULL_FLUID`] (see
+/// [`VoxelFluid`]). The block is air in a voxel of nothing but water; a
+/// slab in a pond shares its voxel with the water around it, up to the
+/// slab's `fluid_room`. Setting a voxel's block leaves its fluid alone;
+/// what fits is [`Voxels`](super::Voxels)' business.
 ///
-/// The blocks are kept in a [`ChunkArray`], so a chunk of one block
-/// throughout holds just that block.
+/// The blocks and the fluid are each kept in a [`ChunkArray`], so a chunk
+/// of one block throughout, or with no fluid, or full of one fluid (the
+/// sea), holds just that one value.
 ///
 /// A chunk that isn't spawned also holds its voxels' block entities (see
 /// `block_entity`), by voxel index. Once it's spawned they're entities
@@ -36,19 +38,45 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 #[require(ChunkLight)]
 pub struct Chunk {
     voxels: ChunkArray<BlockState>,
-    /// Each fluid voxel that isn't full, by voxel index: its amount in the
-    /// low [`AMOUNT_BITS`] bits, and above them the height it's drawn at
-    /// (see [`sticky_step`]), which fits in the bits left over.
-    partial: HashMap<u16, u16>,
+    /// Each voxel's fluid: the fluid's block (air for none), and its
+    /// amount in the low [`AMOUNT_BITS`] bits with the height it's drawn at
+    /// above them (see [`sticky_step`]).
+    fluid: ChunkArray<(BlockState, u16)>,
     /// Block entities, by voxel index, while the chunk isn't spawned.
     block_entities: HashMap<u16, BlockEntityData>,
 }
 
+/// The fluid in a voxel: which fluid, by its block's state, and how much,
+/// from 1 to [`FULL_FLUID`].
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VoxelFluid {
+    pub kind: BlockState,
+    pub amount: u16,
+}
+
+impl VoxelFluid {
+    /// A full voxel of `kind`.
+    pub const fn full(kind: BlockState) -> Self {
+        Self {
+            kind,
+            amount: FULL_FLUID,
+        }
+    }
+
+    /// `amount` of `kind`, or nothing if that's none.
+    pub fn of(kind: BlockState, amount: u16) -> Option<Self> {
+        (amount > 0).then_some(Self { kind, amount })
+    }
+}
+
 /// The bits of a [`Chunk`]'s kept fluid that hold the amount: enough for
-/// anything under [`FULL_FLUID`].
+/// [`FULL_FLUID`].
 const AMOUNT_BITS: u32 = 10;
 const AMOUNT_MASK: u16 = (1 << AMOUNT_BITS) - 1;
-const _: () = assert!(FULL_FLUID <= AMOUNT_MASK + 1 && FLUID_STEPS < 1 << (16 - AMOUNT_BITS));
+const _: () = assert!(FULL_FLUID <= AMOUNT_MASK && FLUID_STEPS < 1 << (16 - AMOUNT_BITS));
+
+/// No fluid, as a [`Chunk`] keeps it.
+const NO_FLUID: (BlockState, u16) = (BlockState::AIR, 0);
 
 impl Default for Chunk {
     fn default() -> Self {
@@ -57,79 +85,138 @@ impl Default for Chunk {
 }
 
 impl Chunk {
-    /// A chunk with these voxels, in [`Chunk::index_of`] order, any fluid
-    /// in them full. `None` unless there are exactly [`CHUNK_VOLUME`].
+    /// A chunk with these voxels, in [`Chunk::index_of`] order, and no
+    /// fluid. `None` unless there are exactly [`CHUNK_VOLUME`].
     pub fn from_voxels(voxels: Vec<BlockState>) -> Option<Self> {
         (voxels.len() == CHUNK_VOLUME).then(|| Self {
             voxels: ChunkArray::from_vec(voxels),
-            partial: HashMap::new(),
+            fluid: ChunkArray::Uniform(NO_FLUID),
             block_entities: HashMap::new(),
         })
     }
 
-    /// A chunk of one block throughout.
+    /// A chunk of one block throughout, with no fluid.
     pub fn filled(state: BlockState) -> Self {
         Self {
             voxels: ChunkArray::Uniform(state),
-            partial: HashMap::new(),
+            fluid: ChunkArray::Uniform(NO_FLUID),
             block_entities: HashMap::new(),
         }
     }
 
-    /// The amount of fluid kept for the voxel at a chunk-local position:
-    /// `None` when none is kept, which for a fluid voxel means it's full.
-    /// See [`Chunk::fluid_amount_at`] for the amount itself.
-    pub fn partial_at(&self, pos: IVec3) -> Option<u16> {
-        self.partial
-            .get(&(Self::index_of(pos) as u16))
-            .map(|&kept| kept & AMOUNT_MASK)
+    /// The fluid in the voxel at a chunk-local position, if any.
+    pub fn fluid_at(&self, pos: IVec3) -> Option<VoxelFluid> {
+        let (kind, kept) = self.fluid.get(Self::index_of(pos));
+        (!kind.is_air()).then_some(VoxelFluid {
+            kind,
+            amount: kept & AMOUNT_MASK,
+        })
     }
 
-    /// Which of the [`FLUID_STEPS`] heights the fluid voxel at a
-    /// chunk-local position is drawn at (see [`sticky_step`]).
+    /// Which of the [`FLUID_STEPS`] heights the fluid in the voxel at a
+    /// chunk-local position is drawn at, up the room its block leaves it
+    /// (see [`sticky_step`] and [`fluid_surface`]): 0 for none.
     pub fn fluid_step_at(&self, pos: IVec3) -> u16 {
-        self.partial
-            .get(&(Self::index_of(pos) as u16))
-            .map_or(FLUID_STEPS, |&kept| kept >> AMOUNT_BITS)
+        match self.fluid.get(Self::index_of(pos)) {
+            (kind, kept) if !kind.is_air() => kept >> AMOUNT_BITS,
+            _ => 0,
+        }
     }
 
-    /// The amount of fluid in the voxel at a chunk-local position: 0 if it
-    /// isn't a fluid.
-    pub fn fluid_amount_at(&self, pos: IVec3, content: &Content) -> u16 {
-        fluid_amount(content, self.at(pos), self.partial_at(pos))
+    /// The amount of fluid in the voxel at a chunk-local position: 0 if
+    /// there's none.
+    pub fn fluid_amount_at(&self, pos: IVec3) -> u16 {
+        self.fluid_at(pos).map_or(0, |fluid| fluid.amount)
     }
 
-    /// Sets the amount of fluid in the voxel at a chunk-local position,
-    /// which should be a fluid, from 1 to [`FULL_FLUID`], and returns
-    /// whether the height it's drawn at changed (see [`sticky_step`]).
-    pub fn set_fluid_at(&mut self, pos: IVec3, amount: u16) -> bool {
-        self.store_fluid(pos, amount, self.fluid_step_at(pos))
+    /// Sets the fluid in the voxel at a chunk-local position, where its
+    /// block leaves `room` for fluid (see `fluid_room`), and returns
+    /// whether it's drawn differently: another fluid, or another height
+    /// (see [`sticky_step`]). More or less of the fluid it held sticks to
+    /// the height it was drawn at.
+    pub fn set_fluid_at(&mut self, pos: IVec3, fluid: Option<VoxelFluid>, room: u16) -> bool {
+        match (self.fluid_at(pos), fluid) {
+            (Some(before), Some(after)) if before.kind == after.kind => {
+                let step = sticky_step(filled(after.amount, room), self.fluid_step_at(pos));
+                self.store_fluid(pos, fluid, step)
+            }
+            _ => self.start_fluid_at(pos, fluid, room),
+        }
     }
 
     /// [`Chunk::set_fluid_at`] for fluid that's just arrived in the voxel,
-    /// with no height drawn before to stick to: it's drawn at its amount's
-    /// own height (see [`fluid_step`]).
-    pub fn start_fluid_at(&mut self, pos: IVec3, amount: u16) -> bool {
-        self.store_fluid(pos, amount, fluid_step(amount))
+    /// or whose room just changed, with no height drawn before to stick
+    /// to: it's drawn at its amount's own height (see [`fluid_step`]).
+    pub fn start_fluid_at(&mut self, pos: IVec3, fluid: Option<VoxelFluid>, room: u16) -> bool {
+        let step = fluid.map_or(0, |fluid| fluid_step(filled(fluid.amount, room)));
+        self.store_fluid(pos, fluid, step)
     }
 
-    fn store_fluid(&mut self, pos: IVec3, amount: u16, before: u16) -> bool {
-        debug_assert!((1..=FULL_FLUID).contains(&amount), "fluid amount {amount}");
-        let index = Self::index_of(pos) as u16;
-        if amount >= FULL_FLUID {
-            self.partial.remove(&index);
-            return before != FLUID_STEPS;
-        }
-        let step = sticky_step(amount, before);
-        self.partial.insert(index, amount | step << AMOUNT_BITS);
-        step != before
+    /// Fills the voxel at a chunk-local position with `kind`, with room for
+    /// a whole block of it.
+    pub fn fill_fluid_at(&mut self, pos: IVec3, kind: BlockState) {
+        self.start_fluid_at(pos, Some(VoxelFluid::full(kind)), FULL_FLUID);
     }
 
-    /// Every voxel that isn't full of fluid, by index, with its amount.
-    pub fn partial_fluid(&self) -> impl Iterator<Item = (usize, u16)> + '_ {
-        self.partial
+    /// Makes the voxel at a chunk-local position a full voxel of the fluid
+    /// `kind`: air, with the fluid in it.
+    #[cfg(test)]
+    pub fn set_to_fluid(&mut self, pos: IVec3, kind: BlockState) {
+        self.set_at(pos, BlockState::AIR);
+        self.fill_fluid_at(pos, kind);
+    }
+
+    /// Sets the voxel at a chunk-local position to `state` of the base
+    /// game, as tests build voxels from a block each: a full voxel of a
+    /// fluid (see [`split_fluid`]), anything else with no fluid.
+    #[cfg(test)]
+    pub fn put(&mut self, pos: IVec3, state: BlockState) {
+        let (block, fluid) = split_fluid(crate::content::base(), state);
+        self.set_at(pos, block);
+        self.start_fluid_at(pos, fluid, FULL_FLUID);
+    }
+
+    /// Stores `fluid`, drawn at `step`, and returns whether it's drawn
+    /// differently than before.
+    fn store_fluid(&mut self, pos: IVec3, fluid: Option<VoxelFluid>, step: u16) -> bool {
+        let kind = |fluid: Option<VoxelFluid>| fluid.map(|fluid| fluid.kind);
+        let before = (kind(self.fluid_at(pos)), self.fluid_step_at(pos));
+        let kept = match fluid {
+            None => NO_FLUID,
+            Some(fluid) => {
+                debug_assert!(
+                    (1..=FULL_FLUID).contains(&fluid.amount),
+                    "fluid amount {}",
+                    fluid.amount
+                );
+                (fluid.kind, fluid.amount | step << AMOUNT_BITS)
+            }
+        };
+        self.fluid.set(Self::index_of(pos), kept);
+        before != (kind(fluid), step)
+    }
+
+    /// The fluid in the voxel at an index from [`Chunk::index_of`], by
+    /// its block: air for none.
+    pub fn fluid_kind_at_index(&self, index: usize) -> BlockState {
+        self.fluid.get(index).0
+    }
+
+    /// Every voxel with fluid in it, by index.
+    pub fn fluids(&self) -> impl Iterator<Item = (usize, VoxelFluid)> + '_ {
+        self.fluid
             .iter()
-            .map(|(&index, &kept)| (index as usize, kept & AMOUNT_MASK))
+            .enumerate()
+            .filter(|(_, (kind, _))| !kind.is_air())
+            .map(|(index, &(kind, kept))| {
+                let amount = kept & AMOUNT_MASK;
+                (index, VoxelFluid { kind, amount })
+            })
+    }
+
+    /// The voxels' fluid, as kept (see [`ChunkArray`]).
+    pub fn fluid_layer(&self) -> &ChunkArray<(BlockState, u16)> {
+        &self.fluid
     }
 
     /// The block entity kept for the voxel at a chunk-local position, while
@@ -160,9 +247,11 @@ impl Chunk {
         &self.voxels
     }
 
-    /// Drops the voxels if they're all one block (see [`ChunkArray`]).
+    /// Drops the voxels, or their fluid, where they're all one value
+    /// (see [`ChunkArray`]).
     pub fn compact(&mut self) -> bool {
-        self.voxels.compact()
+        let blocks = self.voxels.compact();
+        self.fluid.compact() | blocks
     }
 
     #[cfg(test)]
@@ -170,20 +259,9 @@ impl Chunk {
         self.voxels.get(Self::index(x, y, z))
     }
 
-    /// Sets a voxel's block. A different block than it was forgets its
-    /// amount of fluid: a fluid set this way is full.
+    /// Sets a voxel's block, leaving its fluid alone.
     pub fn set(&mut self, x: usize, y: usize, z: usize, state: BlockState) {
-        let index = Self::index(x, y, z);
-        if self.voxels.get(index) != state {
-            self.voxels.set(index, state);
-            self.partial.remove(&(index as u16));
-        }
-    }
-
-    /// Sets a voxel to another state of the same block, keeping its
-    /// amount of fluid.
-    pub fn update_at(&mut self, pos: IVec3, state: BlockState) {
-        self.voxels.set(Self::index_of(pos), state);
+        self.voxels.set(Self::index(x, y, z), state);
     }
 
     /// [`Chunk::get`] for a chunk-local position given as an `IVec3`.
@@ -260,22 +338,38 @@ fn sticky_step(amount: u16, before: u16) -> u16 {
     }
 }
 
-/// How high one voxel's own fluid is, in blocks above its bottom: the
-/// height it's drawn at, one of the [`FLUID_STEPS`] (see
-/// [`Chunk::fluid_step_at`]). The surface you see, swim at and see the fog
-/// start at blends this with the voxels around it: see
-/// [`FluidTop`](super::FluidTop).
-pub(super) fn fluid_surface(step: u16) -> f32 {
-    step as f32 / FLUID_STEPS as f32
+/// How full `amount` of fluid makes the `room` a voxel's block leaves it
+/// (see `fluid_room`), in [`FULL_FLUID`] units: as much as a voxel of air
+/// would be with that share of a block in it.
+pub fn filled(amount: u16, room: u16) -> u16 {
+    let room = room.clamp(1, FULL_FLUID) as u32;
+    (amount as u32 * FULL_FLUID as u32 / room).min(FULL_FLUID as u32) as u16
 }
 
-/// The amount of fluid in a voxel of block `state`, with `partial` the
-/// amount its chunk keeps for it (see [`Chunk`]): 0 if it isn't a fluid.
-pub fn fluid_amount(content: &Content, state: BlockState, partial: Option<u16>) -> u16 {
+/// How high one voxel's own fluid is, in blocks above its bottom: the
+/// height it's drawn at, one of the [`FLUID_STEPS`] up the `room` its
+/// block leaves it (see `fluid_room` and [`Chunk::fluid_step_at`]), on top
+/// of the part of the voxel the block takes. A slab's half full of water
+/// reaches the top of its voxel, so a pond's surface runs on unbroken over
+/// it. The surface you see, swim at and see the fog start at blends this
+/// with the voxels around it: see [`FluidTop`](super::FluidTop).
+pub fn fluid_surface(step: u16, room: u16) -> f32 {
+    let room = room.min(FULL_FLUID) as f32 / FULL_FLUID as f32;
+    1.0 - room + room * step as f32 / FLUID_STEPS as f32
+}
+
+/// A block of the base game as a voxel's block and fluid, for tests that
+/// build voxels from a block each: a fluid goes in the voxel's fluid,
+/// full, with air for its block.
+#[cfg(test)]
+pub fn split_fluid(
+    content: &crate::content::Content,
+    state: BlockState,
+) -> (BlockState, Option<VoxelFluid>) {
     if content.state(state).is_fluid() {
-        partial.unwrap_or(FULL_FLUID)
+        (BlockState::AIR, Some(VoxelFluid::full(state)))
     } else {
-        0
+        (state, None)
     }
 }
 
@@ -337,16 +431,59 @@ mod tests {
 
         let pos = IVec3::new(1, 2, 3);
         let mut chunk = Chunk::default();
-        chunk.set_at(pos, block("water"));
-        assert!(chunk.set_fluid_at(pos, 500), "from full");
+        let water = |amount| VoxelFluid::of(block("water"), amount);
+        chunk.fill_fluid_at(pos, block("water"));
+        assert!(chunk.set_fluid_at(pos, water(500), FULL_FLUID), "from full");
         assert_eq!(chunk.fluid_step_at(pos), 8);
         for amount in [501, 499, 520, 470, 500] {
-            assert!(!chunk.set_fluid_at(pos, amount), "{amount}");
-            assert_eq!(chunk.partial_at(pos), Some(amount));
+            assert!(
+                !chunk.set_fluid_at(pos, water(amount), FULL_FLUID),
+                "{amount}"
+            );
+            assert_eq!(chunk.fluid_amount_at(pos), amount);
         }
-        assert!(chunk.set_fluid_at(pos, 560));
+        assert!(chunk.set_fluid_at(pos, water(560), FULL_FLUID));
         assert_eq!(chunk.fluid_step_at(pos), 9);
-        assert!(chunk.set_fluid_at(pos, FULL_FLUID));
+        assert!(chunk.set_fluid_at(pos, water(FULL_FLUID), FULL_FLUID));
         assert_eq!(chunk.fluid_step_at(pos), FLUID_STEPS);
+        // Another fluid, or none, is drawn differently.
+        let lava = VoxelFluid::of(block("lava"), FULL_FLUID);
+        assert!(chunk.set_fluid_at(pos, lava, FULL_FLUID));
+        assert!(chunk.set_fluid_at(pos, None, FULL_FLUID));
+        assert_eq!((chunk.fluid_at(pos), chunk.fluid_step_at(pos)), (None, 0));
+    }
+
+    /// Heights are steps up the room a block leaves: water rising in a
+    /// tuft's voxel, as flow fills it, ends drawn at the top of the voxel
+    /// once it's full, or nearly, whatever height it rose from; a slab's
+    /// half full is drawn to its top too.
+    #[test]
+    fn heights_are_steps_up_a_blocks_room() {
+        let pos = IVec3::new(1, 2, 3);
+        let mut chunk = Chunk::default();
+        let water = |amount| VoxelFluid::of(block("water"), amount);
+        chunk.start_fluid_at(pos, water(700), 900);
+        let step = chunk.fluid_step_at(pos);
+        for amount in [760, 813, 860, 894] {
+            chunk.set_fluid_at(pos, water(amount), 900);
+        }
+        assert!(chunk.fluid_step_at(pos) > step);
+        assert_eq!(fluid_surface(chunk.fluid_step_at(pos), 900), 1.0);
+        assert_eq!(fluid_surface(FLUID_STEPS, 500), 1.0);
+        assert_eq!(fluid_surface(FLUID_STEPS / 2, 500), 0.75);
+        assert_eq!(fluid_surface(FLUID_STEPS / 2, FULL_FLUID), 0.5);
+    }
+
+    /// A chunk with no fluid, or full of one fluid, keeps its fluid as one
+    /// value once compacted.
+    #[test]
+    fn uniform_fluid_takes_no_room() {
+        let mut chunk = Chunk::default();
+        assert!(chunk.fluid_layer().uniform().is_some());
+        chunk.fill_fluid_at(IVec3::ONE, block("water"));
+        assert_eq!(chunk.fluid_layer().uniform(), None);
+        chunk.set_fluid_at(IVec3::ONE, None, FULL_FLUID);
+        assert!(chunk.compact());
+        assert_eq!(chunk.fluid_layer().heap_bytes(), 0);
     }
 }

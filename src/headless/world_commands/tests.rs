@@ -218,7 +218,7 @@ fn fluid_at(app: &App, pos: IVec3) -> u16 {
     let (coord, local) = ChunkCoord::split(pos);
     let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
     let chunk = app.world().get::<Chunk>(entity).unwrap();
-    chunk.fluid_amount_at(local, app.world().resource::<Content>())
+    chunk.fluid_amount_at(local)
 }
 
 /// `pour` puts fluid in a voxel through the game's own edit path, and
@@ -354,6 +354,50 @@ fn putting_what_doesnt_fit_fails_the_run() {
         ));
         assert!(exit.is_error(), "{line}");
     }
+}
+
+/// `fill` and `pour` work on a voxel's fluid beside its block: `air`
+/// clears both, a fluid fills the room a block leaves (a slab's half)
+/// or takes the place of one that leaves none, and `pour` holds no more
+/// than the room. Deep underground, each in its own pocket in the
+/// stone, so nothing flows.
+#[test]
+fn fill_and_pour_keep_fluid_to_a_blocks_room() {
+    let (app, exit) = run_game(
+        "camera 5000.5 -1000.5 5000.5 0 0\n\
+         settle\n\
+         fill 5000 -1003 5000 5000 -1003 5000 water\n\
+         fill 5002 -1003 5000 5002 -1003 5000 water\n\
+         fill 5002 -1003 5000 5002 -1003 5000 air\n\
+         fill 5004 -1003 5000 5004 -1003 5000 stone_slab\n\
+         fill 5004 -1003 5000 5004 -1003 5000 water\n\
+         fill 5006 -1003 5000 5006 -1003 5000 stone_slab\n\
+         pour 5006 -1003 5000 water 1\n\
+         pour 5008 -1003 5000 lava 0.25\n\
+         wait 1\n",
+    );
+    assert_eq!(exit, AppExit::Success);
+    let at = |x: i32| IVec3::new(x, -1003, 5000);
+    let block = |x: i32| {
+        let (coord, local) = ChunkCoord::split(at(x));
+        let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+        app.world().get::<Chunk>(entity).unwrap().at(local)
+    };
+    assert_eq!(
+        (block(5000), fluid_at(&app, at(5000))),
+        (BlockState::AIR, 1000)
+    );
+    assert_eq!(
+        (block(5002), fluid_at(&app, at(5002))),
+        (BlockState::AIR, 0)
+    );
+    let slab = crate::content::block("stone_slab");
+    assert_eq!((block(5004), fluid_at(&app, at(5004))), (slab, 500));
+    assert_eq!((block(5006), fluid_at(&app, at(5006))), (slab, 500));
+    assert_eq!(
+        (block(5008), fluid_at(&app, at(5008))),
+        (BlockState::AIR, 250)
+    );
 }
 
 /// The `fluids` report counts each fluid in the camera's window: deep

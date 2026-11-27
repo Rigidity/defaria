@@ -5,11 +5,12 @@ use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
 use super::*;
 use crate::{
     block_entity::BlockEntityPart,
-    content::{base, block, test_mod},
+    content::{FULL_FLUID, base, block, test_mod},
     headless::{Script, run_more, settle, test_game},
     inventory::player::{load, save},
     machine::Slots,
     streaming::StreamingSettings,
+    world::VoxelFluid,
 };
 
 const WATER: &str = "defaria:water";
@@ -205,23 +206,19 @@ fn the_fluid_is_saved() {
 /// sixteenth of a block.
 #[test]
 fn the_crosshair_picks_fluid_by_its_height() {
-    let water = block("water");
-    assert_eq!(
-        crate::block_edit::fluid_shape(base(), water, None)[0].max.y,
-        1.0
-    );
-    assert_eq!(
-        crate::block_edit::fluid_shape(base(), water, Some(500))[0]
+    let water = |amount| VoxelFluid::of(block("water"), amount);
+    let height = |state, fluid| {
+        crate::block_edit::fluid_shape(base(), state, fluid)[0]
             .max
-            .y,
-        0.5
-    );
-    assert_eq!(
-        crate::block_edit::fluid_shape(base(), water, Some(1))[0]
-            .max
-            .y,
-        1.0 / 16.0
-    );
+            .y
+    };
+    let air = BlockState::AIR;
+    assert_eq!(height(air, water(FULL_FLUID)), 1.0);
+    assert_eq!(height(air, water(500)), 0.5);
+    assert_eq!(height(air, water(1)), 1.0 / 16.0);
+    // Up the room a slab leaves: its half full reaches the top.
+    assert_eq!(height(block("stone_slab"), water(500)), 1.0);
+    assert_eq!(height(block("stone_slab"), water(250)), 0.75);
     assert_eq!(
         crate::block_edit::fluid_shape(base(), BlockState::AIR, None),
         &[]
@@ -253,22 +250,41 @@ fn world_app() -> App {
         .build()
 }
 
-/// Sets voxels to `state` with `amount` of fluid (`None` for none or a
-/// full block).
+/// Sets a voxel to `state`: a fluid fills it, with `amount` of it if
+/// that's given (`None` for a full block); anything else leaves no fluid.
 fn put(app: &mut App, pos: IVec3, state: BlockState, amount: Option<u16>) {
     app.world_mut()
-        .run_system_once(move |mut voxels: Voxels| {
+        .run_system_once(move |mut voxels: Voxels, content: Res<Content>| {
             assert!(voxels.set(pos, state));
-            if let Some(amount) = amount {
-                assert!(voxels.set_fluid(pos, amount));
+            if !content.state(state).is_fluid() {
+                assert!(voxels.set_fluid(pos, None));
+            } else if let Some(amount) = amount {
+                assert!(voxels.set_fluid(pos, VoxelFluid::of(state, amount)));
             }
         })
         .unwrap();
 }
 
+/// What's at a voxel as a block per voxel: its fluid where its block is
+/// air, with its amount if it isn't a full block, or else its block.
 fn at(app: &mut App, pos: IVec3) -> (BlockState, Option<u16>) {
     app.world_mut()
-        .run_system_once(move |voxels: Voxels| voxels.get_with_fluid(pos).unwrap())
+        .run_system_once(
+            move |voxels: Voxels| match voxels.get_with_fluid(pos).unwrap() {
+                (BlockState::AIR, Some(fluid)) => (
+                    fluid.kind,
+                    (fluid.amount < FULL_FLUID).then_some(fluid.amount),
+                ),
+                (block, _) => (block, None),
+            },
+        )
+        .unwrap()
+}
+
+/// The block at a voxel and how much fluid it holds.
+fn held_at(app: &mut App, pos: IVec3) -> (BlockState, u16) {
+    app.world_mut()
+        .run_system_once(move |voxels: Voxels| (voxels.get(pos).unwrap(), voxels.fluid_amount(pos)))
         .unwrap()
 }
 
@@ -296,13 +312,10 @@ const B: IVec3 = IVec3::new(4, Y, 2);
 /// Takes the fluid at `pos` into a bucket that can take it, as a click
 /// on it does.
 fn take_at(content: &Content, voxels: &mut Voxels, inventory: &mut Inventory, pos: IVec3) -> bool {
-    let Some(state) = voxels.get(pos) else {
+    let Some((_, Some(here))) = voxels.get_with_fluid(pos) else {
         return false;
     };
-    if !content.state(state).is_fluid() {
-        return false;
-    }
-    let fluid = &content.block_of(state).id;
+    let fluid = &content.block_of(here.kind).id;
     let Some(kind) = taker(inventory, bucket(), FULL, fluid) else {
         return false;
     };
@@ -386,6 +399,24 @@ fn pouring_with_and_without_room() {
     put(&mut app, B, block("stone"), None);
     assert!(!with_world(&mut app, &mut inventory, pour_b));
     assert_eq!(holding(&inventory, WATER, 600), 1);
+}
+
+/// A bucket pours into the room a slab in the world leaves it, no more,
+/// and takes the water back out, the slab staying put: none made or lost.
+#[test]
+fn buckets_fill_and_empty_a_slabs_room() {
+    let mut app = world_app();
+    let slab = block("stone_slab");
+    put(&mut app, A, slab, None);
+    let mut inventory = inventory(&[buckets(1, WATER, FULL)]);
+    assert!(with_world(&mut app, &mut inventory, pour_a));
+    assert_eq!(held_at(&mut app, A), (slab, 500));
+    assert_eq!(holding(&inventory, WATER, 500), 1);
+    // Full: nothing more goes in.
+    assert!(!with_world(&mut app, &mut inventory, pour_a));
+    assert!(with_world(&mut app, &mut inventory, take_a));
+    assert_eq!(held_at(&mut app, A), (slab, 0));
+    assert_eq!(holding(&inventory, WATER, FULL), 1);
 }
 
 /// Taking and pouring back, over and over, keeps every drop: what's in
@@ -684,10 +715,10 @@ fn water_in(app: &mut App, from: IVec3, to: IVec3) -> u64 {
             for x in from.x..=to.x {
                 for y in from.y..=to.y {
                     for z in from.z..=to.z {
-                        if let Some((state, amount)) = voxels.get_with_fluid(IVec3::new(x, y, z))
-                            && content.block_of(state).id == WATER
+                        if let Some((_, Some(fluid))) = voxels.get_with_fluid(IVec3::new(x, y, z))
+                            && content.block_of(fluid.kind).id == WATER
                         {
-                            total += amount.unwrap_or(FULL_FLUID) as u64;
+                            total += fluid.amount as u64;
                         }
                     }
                 }

@@ -5,5 +5,7 @@
   textures: { all: { texture: "planks", materials: { wood: "{wood}" } } },
   hardness: { materials: { wood: 1 } },
   weight: { base: 0.5, materials: { wood: 1 } },
+  // Water fills the half of its cell it leaves.
+  fluid_room: 0.5,
   category: "building",
 }

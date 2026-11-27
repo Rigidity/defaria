@@ -52,10 +52,12 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 pub use crate::content::MAX_LIGHT;
 use crate::{
-    content::Content,
+    content::{BlockState, Content},
     meshing::{RemeshChunks, remesh_changed_chunks},
     world::ChunkArray,
-    world::{Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
+    world::{
+        Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, VoxelFluid,
+    },
 };
 pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
 use sky::Sky;
@@ -220,10 +222,11 @@ fn queue_unloaded_chunk(
 }
 
 /// Queues the light around every voxel that changed, and every one whose
-/// properties were updated in a way light sees.
+/// properties or fluid changed in a way light sees.
 fn queue_changed_voxels(
     mut changes: MessageReader<VoxelChanged>,
     mut updates: MessageReader<PropertiesUpdated>,
+    mut fluid_changes: MessageReader<FluidChanged>,
     table: Res<LightTable>,
     mut queue: ResMut<LightQueue>,
 ) {
@@ -231,7 +234,18 @@ fn queue_changed_voxels(
         .read()
         .filter(|update| !table.same_light(update.before, update.after))
         .map(|update| update.pos);
-    for pos in changes.read().map(|change| change.pos).chain(updated) {
+    // Only another fluid matters to light, not more or less of one.
+    let kind = |fluid: Option<VoxelFluid>| fluid.map_or(BlockState::AIR, |fluid| fluid.kind);
+    let fluids = fluid_changes
+        .read()
+        .filter(|change| !table.same_light(kind(change.before), kind(change.after)))
+        .map(|change| change.pos);
+    for pos in changes
+        .read()
+        .map(|change| change.pos)
+        .chain(updated)
+        .chain(fluids)
+    {
         queue.voxel_changed(pos);
     }
 }
@@ -322,6 +336,73 @@ mod tests {
     fn mesh(app: &App, coord: IVec3) -> Option<AssetId<Mesh>> {
         let entity = app.world().resource::<ChunkMap>().get(ChunkCoord(coord))?;
         app.world().get::<Mesh3d>(entity).map(|mesh| mesh.id())
+    }
+
+    /// Lava arriving in a voxel's fluid, as flow moves it with no block
+    /// changing, lights what's around it, and its light goes when it
+    /// drains away.
+    #[test]
+    fn fluid_coming_and_going_relights() {
+        let mut app = app();
+        // High in the air, where the terrain doesn't reach.
+        let pos = IVec3::new(40, 56, 40);
+        let set_fluid = |app: &mut App, fluid: Option<VoxelFluid>| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| {
+                    assert!(voxels.flow_fluid(pos, fluid));
+                })
+                .unwrap();
+            app.update();
+            let (coord, local) = ChunkCoord::split(pos + IVec3::X);
+            let entity = app.world().resource::<ChunkMap>().get(coord).unwrap();
+            app.world()
+                .get::<ChunkLight>(entity)
+                .unwrap()
+                .at(local)
+                .block()[0]
+        };
+        let lava = base().state(block("lava")).light[0];
+        assert_eq!(
+            set_fluid(&mut app, VoxelFluid::of(block("lava"), 300)),
+            lava - 1
+        );
+        assert_eq!(set_fluid(&mut app, None), 0);
+    }
+
+    /// Only a change of fluid that light sees queues light work: another
+    /// fluid, or water coming or going, since it dims light (its
+    /// `light_filter`), but not more or less of one.
+    #[test]
+    fn fluid_changes_queue_light_only_for_another_fluid() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(LightTable::new(base()))
+            .init_resource::<ChunkMap>()
+            .init_resource::<Sky>()
+            .init_resource::<LightQueue>()
+            .add_message::<VoxelChanged>()
+            .add_message::<PropertiesUpdated>()
+            .add_message::<FluidChanged>()
+            .add_systems(Update, queue_changed_voxels);
+        let mut send = |before: Option<(&str, u16)>, after: Option<(&str, u16)>| {
+            let fluid = |f: Option<(&str, u16)>| f.and_then(|(id, n)| VoxelFluid::of(block(id), n));
+            app.world_mut().write_message(FluidChanged {
+                pos: IVec3::ZERO,
+                by_flow: true,
+                before: fluid(before),
+                after: fluid(after),
+            });
+            app.update();
+            let queued = !app.world().resource::<LightQueue>().is_empty();
+            app.world_mut().insert_resource(LightQueue::default());
+            queued
+        };
+        assert!(send(None, Some(("lava", 300))));
+        assert!(send(Some(("lava", 300)), Some(("water", 300))));
+        assert!(send(Some(("lava", 300)), None));
+        assert!(!send(Some(("lava", 300)), Some(("lava", 900))));
+        assert!(!send(Some(("water", 300)), Some(("water", 900))));
+        assert!(send(None, Some(("water", 1000))), "water dims light");
     }
 
     /// A lamp's light reaching into a chunk its edit didn't touch remeshes
@@ -418,6 +499,9 @@ mod tests {
             .add_plugins(ChunkMapPlugin)
             .init_resource::<Sky>()
             .init_resource::<LightQueue>()
+            .add_message::<VoxelChanged>()
+            .add_message::<PropertiesUpdated>()
+            .add_message::<FluidChanged>()
             .add_systems(Update, queue_changed_voxels);
         let mut send = |before, after| {
             app.world_mut().write_message(PropertiesUpdated {
@@ -443,5 +527,126 @@ mod tests {
         assert_eq!((light.sky(), light.block()), (15, [1, 9, 3]));
         light.set(SKY, 0);
         assert_eq!(light, Light::new(0, [1, 9, 3]));
+    }
+
+    /// Every loaded chunk lit afresh from its blocks and fluid, as if just
+    /// loaded together, with the world's sky; and the voxels whose light
+    /// in the world differs from it, in chunks whose neighbours are all
+    /// loaded (the edge of the loaded world is lit by what's beyond it).
+    fn stale_light(app: &mut App) -> Vec<(IVec3, Light, Light)> {
+        struct Fresh(bevy::platform::collections::HashMap<IVec3, (Chunk, ChunkLight)>);
+        impl ChunkStore for Fresh {
+            fn with_chunk(
+                &mut self,
+                coord: IVec3,
+                f: impl FnOnce(&Chunk, &mut ChunkLight),
+            ) -> bool {
+                match self.0.get_mut(&coord) {
+                    Some((chunk, light)) => {
+                        f(chunk, light);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            fn is_loaded(&self, coord: IVec3) -> bool {
+                self.0.contains_key(&coord)
+            }
+        }
+        let world = app.world_mut();
+        let mut chunks = world.query::<(&ChunkCoord, &Chunk, &ChunkLight)>();
+        let loaded: Vec<(IVec3, Chunk, ChunkLight)> = chunks
+            .iter(world)
+            .map(|(coord, chunk, light)| (coord.0, chunk.clone(), light.clone()))
+            .collect();
+        let table = LightTable::new(world.resource::<Content>());
+        let sky = world.resource::<Sky>().0.clone();
+        let mut fresh = Fresh(default());
+        let mut queue = LightQueue::default();
+        for (coord, chunk, _) in &loaded {
+            queue.chunk_loaded(*coord, chunk, &table, &*sky, |c| {
+                fresh.0.get(&c).map(|(chunk, light)| (chunk, light))
+            });
+            fresh
+                .0
+                .insert(*coord, (chunk.clone(), ChunkLight::default()));
+        }
+        queue.run(&mut fresh, &table, &*sky);
+        let mut stale = Vec::new();
+        for (coord, _, light) in &loaded {
+            let inner = ChunkCoord(*coord)
+                .neighbours()
+                .all(|n| fresh.0.contains_key(&n.0));
+            if !inner {
+                continue;
+            }
+            let expected = &fresh.0[coord].1;
+            for index in 0..crate::world::CHUNK_VOLUME {
+                let local = Chunk::position_of(index);
+                if light.at(local) != expected.at(local) {
+                    stale.push((
+                        *coord * CHUNK_SIZE as i32 + local,
+                        light.at(local),
+                        expected.at(local),
+                    ));
+                }
+            }
+        }
+        stale.sort_by_key(|(pos, _, _)| pos.to_array());
+        stale
+    }
+
+    /// Breaking a block under a pool of water, so it drains into a chamber
+    /// below and its level drops, leaves the light around it as lighting
+    /// the drained world afresh gives it: none stale where the water was.
+    #[test]
+    fn a_pool_draining_into_a_hole_relights() {
+        let mut app = crate::headless::test_game(
+            crate::headless::Script::parse(
+                "camera 6.5 70 24 0 -30\n\
+                 settle\n\
+                 fill -2 52 -2 14 66 14 air\n\
+                 fill -1 53 -1 13 56 13 stone\n\
+                 fill -1 57 -1 13 59 -1 stone\n\
+                 fill -1 57 13 13 59 13 stone\n\
+                 fill -1 57 -1 -1 59 13 stone\n\
+                 fill 13 57 -1 13 59 13 stone\n\
+                 fill 0 53 0 12 55 12 air\n\
+                 fill 0 57 0 12 59 12 water\n\
+                 wait 300\n",
+            )
+            .unwrap(),
+        );
+        crate::headless::settle(&mut app);
+        // Long enough for the water to settle and the light to follow.
+        let settled = |app: &mut App| {
+            for _ in 0..1500 {
+                app.update();
+            }
+            assert!(
+                app.world().resource::<LightQueue>().is_empty(),
+                "light caught up"
+            );
+        };
+        crate::headless::run_more(&mut app, "wait 1\n");
+        settled(&mut app);
+        let before = stale_light(&mut app);
+        assert!(
+            before.is_empty(),
+            "before: {} stale: {:?}",
+            before.len(),
+            &before[..before.len().min(6)]
+        );
+        // Break the floor under the middle of the pool: it drains into the
+        // dark chamber below, and its level drops.
+        crate::headless::run_more(&mut app, "fill 6 56 6 6 56 6 air\nwait 600\n");
+        settled(&mut app);
+        let after = stale_light(&mut app);
+        assert!(
+            after.is_empty(),
+            "after: {} stale: {:?}",
+            after.len(),
+            &after[..after.len().min(6)]
+        );
     }
 }

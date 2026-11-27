@@ -118,11 +118,11 @@ Chunks that aren't in the table have never been saved, and are generated when
 they're loaded. A region file that's damaged is renamed to `<name>.broken`
 (and logged), and the region starts over.
 
-### Chunk blob, format 3
+### Chunk blob, format 4
 
 | Bytes | Field |
 |---|---|
-| 1 | Format: `3` |
+| 1 | Format: `4` |
 | rest | The payload below, zlib-compressed |
 
 The payload uses unsigned LEB128 varints (seven bits a byte, lowest first, the
@@ -133,7 +133,12 @@ varint  palette length P (at least 1)
 P ×     varint name length, then the name in UTF-8
 packed  4096 voxels, B bits each, B = ceil(log2 P)
         (0 bits when P is 1: the chunk is one block)
-varint  F, the number of voxels not full of fluid
+varint  fluid palette length Q (0 for a chunk with no fluid)
+Q ×     string: a fluid's block name
+packed  4096 voxels' fluid, C bits each, C = ceil(log2 (Q + 1)):
+        0 for none, else 1 + its index in the fluid palette
+        (0 bits when Q is 0)
+varint  F, the number of voxels with fluid that isn't a full block
 F ×     varint voxel index, then varint amount (1 to 999)
 varint  E, the number of block entities
 E ×     varint voxel index
@@ -194,10 +199,17 @@ any more is dropped, as are slots past a group's count and items that no
 longer exist. A running recipe that doesn't exist any more is dropped, and
 the inputs it took with it.
 
-A fluid voxel (a block with `fluid` set, such as water) holds an amount of
-its fluid, in thousandths of a block. Most fluid is full, so only the
-voxels that aren't are listed, in increasing index order; a fluid voxel
-that isn't listed is full.
+A voxel holds a fluid (a block with `fluid` set, such as water) in a layer
+of its own, beside its block: a voxel of water alone is air with water in
+it, and a slab in a pond is the slab with half a block of water. The
+fluid's amount is in thousandths of a block. Most fluid is full, so only
+the voxels that aren't are listed, in increasing index order; a voxel
+with fluid that isn't listed holds a full block of it. A listed voxel
+with no fluid is an error. On loading, a fluid that's gone (its mod was
+removed, or it isn't a fluid any more) is dropped from every voxel it
+was in, a voxel's fluid is cut to the room its block leaves now
+(`fluid_room`), and dropped where that's none, and a block that's become
+a fluid is air holding a full voxel of it.
 
 Voxels are in the order `index = (y · 16 + z) · 16 + x`. Each voxel's value is
 its index into the palette, packed least significant bit first into

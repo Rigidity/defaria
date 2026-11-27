@@ -340,14 +340,23 @@ impl Terrain {
         for (i, column) in columns.iter().enumerate() {
             let (x, z) = (i % CHUNK_SIZE, i / CHUNK_SIZE);
             for y in 0..CHUNK_SIZE {
-                chunk.set(x, y, z, column.voxel(origin.y + y as i32, &self.blocks));
+                let voxel = column.voxel(origin.y + y as i32, &self.blocks);
+                // Water goes in the voxel's fluid, with air for its block.
+                if voxel == self.blocks.water && !voxel.is_air() {
+                    let pos = IVec3::new(x as i32, y as i32, z as i32);
+                    chunk.fill_fluid_at(pos, voxel);
+                } else {
+                    chunk.set(x, y, z, voxel);
+                }
             }
         }
         for tree in &trees {
             for &(pos, part) in &tree.parts {
                 let local = pos - origin;
+                // Not into water, which is a voxel's fluid, in air.
                 if inside(pos.x, pos.z)
                     && (0..size).contains(&local.y)
+                    && chunk.fluid_at(local).is_none()
                     && let Some(state) = self.blocks.planted(tree.wood, part, chunk.at(local))
                 {
                     chunk.set_at(local, state);
@@ -445,7 +454,10 @@ mod tests {
     };
     use bevy::platform::collections::{HashMap, HashSet};
 
-    use crate::content::{self, base, block, grass, sand};
+    use crate::{
+        content::{self, base, block, grass, sand},
+        world::split_fluid,
+    };
 
     fn terrain() -> Terrain {
         terrain_with(TerrainSettings::default())
@@ -593,11 +605,10 @@ mod tests {
             let chunk = terrain.chunk(coord);
             for (x, y, z) in Chunk::positions() {
                 let local = IVec3::new(x as i32, y as i32, z as i32);
-                assert_eq!(
-                    chunk.at(local),
-                    terrain.voxel(coord.origin() + local),
-                    "{local} in {coord:?}"
-                );
+                // Water is the voxel's fluid, in air.
+                let voxel = split_fluid(base(), terrain.voxel(coord.origin() + local));
+                let found = (chunk.at(local), chunk.fluid_at(local));
+                assert_eq!(found, voxel, "{local} in {coord:?}");
             }
         }
     }
@@ -801,10 +812,12 @@ mod tests {
         let mut chunks = HashMap::<ChunkCoord, Chunk>::new();
         move |pos| {
             let (coord, local) = ChunkCoord::split(pos);
-            chunks
-                .entry(coord)
-                .or_insert_with(|| terrain.chunk(coord))
-                .at(local)
+            let chunk = chunks.entry(coord).or_insert_with(|| terrain.chunk(coord));
+            // Water is a voxel's fluid, in air: read as the block it was.
+            match (chunk.at(local), chunk.fluid_at(local)) {
+                (BlockState::AIR, Some(fluid)) => fluid.kind,
+                (block, _) => block,
+            }
         }
     }
 

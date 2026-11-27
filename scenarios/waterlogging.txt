@@ -1,0 +1,41 @@
+# Slabs and tufts of grass in a pond of water and a pool of lava share
+# their voxels with the fluid: each fluid's surface runs on unbroken over
+# them, with no hole or walls around the blocks, and the `fluids` reports
+# match before and after, since the blocks keep the fluid they leave room
+# for and nothing flows away.
+# Run: cargo headless scenarios/waterlogging.txt
+camera 32 58 44 0 -40
+settle
+fill 18 30 18 46 48 34 stone
+# Clear sky above it, whatever the terrain made.
+fill 18 49 18 46 70 40 air
+# Two pools two deep, dug out of the stone.
+fill 20 47 20 30 48 32 air
+fill 34 47 20 44 48 32 air
+# Slabs and tufts on the floor and at the surface of each.
+fill 22 47 22 22 47 22 stone_slab
+fill 24 48 22 25 48 22 stone_slab
+fill 27 48 22 27 48 22 tuft
+fill 23 48 26 23 48 26 planks_slab
+fill 28 48 26 28 48 26 tuft
+fill 36 48 22 37 48 22 stone_slab
+fill 39 48 22 39 48 22 tuft
+fill 41 48 26 41 48 26 stone_slab
+# Water in one and lava in the other: each fills the room the blocks
+# leave, keeping them.
+fill 20 47 20 30 48 32 water
+fill 34 47 20 44 48 32 lava
+wait 1
+fluids
+wait 120
+fluids
+inspect FluidStats
+screenshot target/scenarios/waterlogging/0-pools.png
+wait 1
+camera 25 50.5 30 0 -30
+wait 2
+screenshot target/scenarios/waterlogging/1-water-close.png
+wait 1
+camera 38 50.5 30 0 -30
+wait 2
+screenshot target/scenarios/waterlogging/2-lava-close.png

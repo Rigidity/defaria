@@ -294,15 +294,12 @@ fn edit_tank(app: &mut App, pos: IVec3, change: impl FnOnce(&mut Tank)) {
 fn totals(app: &mut App) -> (u64, u64, u64) {
     let world = app
         .world_mut()
-        .run_system_once(|voxels: Voxels, content: Res<Content>| {
+        .run_system_once(|voxels: Voxels| {
             let mut total = 0;
             for x in -12..=12 {
                 for y in 44..=63 {
                     for z in -12..=12 {
-                        let pos = IVec3::new(x, y, z);
-                        if let Some((state, partial)) = voxels.get_with_fluid(pos) {
-                            total += crate::world::fluid_amount(&content, state, partial) as u64;
-                        }
+                        total += voxels.fluid_amount(IVec3::new(x, y, z)) as u64;
                     }
                 }
             }
@@ -447,13 +444,12 @@ fn an_outlet_pours_a_tank_into_a_pit() {
     // All in the pit.
     let pit = app
         .world_mut()
-        .run_system_once(|voxels: Voxels, content: Res<Content>| {
+        .run_system_once(|voxels: Voxels| {
             let mut total = 0;
             for x in 1..=3 {
                 for z in 1..=3 {
                     for y in Y - 1..=Y {
-                        let (state, partial) = voxels.get_with_fluid(IVec3::new(x, y, z)).unwrap();
-                        total += crate::world::fluid_amount(&content, state, partial) as u64;
+                        total += voxels.fluid_amount(IVec3::new(x, y, z)) as u64;
                     }
                 }
             }
@@ -1191,9 +1187,11 @@ fn water_in(app: &mut App, from: IVec3, to: IVec3) -> u64 {
             for x in from.x..=to.x {
                 for y in from.y..=to.y {
                     for z in from.z..=to.z {
-                        let (state, partial) = voxels.get_with_fluid(IVec3::new(x, y, z)).unwrap();
-                        if content.block_of(state).id == WATER {
-                            total += crate::world::fluid_amount(&content, state, partial) as u64;
+                        let (_, fluid) = voxels.get_with_fluid(IVec3::new(x, y, z)).unwrap();
+                        if let Some(fluid) = fluid
+                            && content.block_of(fluid.kind).id == WATER
+                        {
+                            total += fluid.amount as u64;
                         }
                     }
                 }
@@ -1290,11 +1288,13 @@ fn random_edits_unloads_saves_and_restarts_keep_every_drop() {
             }
             1 => {
                 let pos = line(10 + next(12) as i32);
+                // Into dry air: a pipe placed into spilt water would
+                // delete it.
                 let here = app
                     .world_mut()
-                    .run_system_once(move |voxels: Voxels| voxels.get(pos).unwrap())
+                    .run_system_once(move |voxels: Voxels| voxels.get_with_fluid(pos).unwrap())
                     .unwrap();
-                if here == BlockState::AIR {
+                if here == (BlockState::AIR, None) {
                     set(&mut app, &[(pos, block("defaria:pipe"))]);
                 }
                 "place"

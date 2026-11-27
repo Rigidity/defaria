@@ -3,14 +3,15 @@
 
 local moss = {}
 
--- Bare stone (plain stone, no ore) with air on at least one side.
+-- Bare stone (plain stone, no ore) with air on at least one side: open
+-- air, not water.
 function moss.can_grow_on(block): boolean
 	if block.id ~= "defaria:stone" or block.state.rock ~= "defaria:stone" or block.state.ore ~= "none" then
 		return false
 	end
 	for _, face in world.faces do
 		local next = block:neighbour(face)
-		if next and next.id == "air" then
+		if next and next.id == "air" and next.fluid == nil then
 			return true
 		end
 	end

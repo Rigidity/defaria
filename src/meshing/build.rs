@@ -42,7 +42,7 @@ use bevy::{
 use crate::{
     content::{BakedFace, BlockState, Content, Direction, MAX_LIGHT, Render, Vertex},
     light::{ChunkLight, Light},
-    world::{CHUNK_SIZE, Chunk, FLUID_STEPS, FluidTop, axis_of},
+    world::{CHUNK_SIZE, Chunk, FluidTop, VoxelFluid, axis_of, fluid_surface},
 };
 
 /// Where a vertex sits on its face, for blending the corners: `(0, 0)` at
@@ -111,9 +111,9 @@ const PADDED: usize = CHUNK_SIZE + 2;
 pub(super) struct Neighborhood {
     blocks: Vec<BlockState>,
     light: Vec<Light>,
-    /// The height each voxel's fluid is drawn at (see
-    /// [`Chunk::fluid_step_at`]), for the voxels that are fluid.
-    steps: Vec<u16>,
+    /// Each voxel's fluid, and the height it's drawn at (see
+    /// [`Chunk::fluid_step_at`]).
+    fluids: Vec<(Option<VoxelFluid>, u16)>,
 }
 
 impl Neighborhood {
@@ -131,14 +131,15 @@ impl Neighborhood {
             match chunks[(offset.x + offset.y * 3 + offset.z * 9) as usize] {
                 Some((chunk, light)) => {
                     let local = pos.rem_euclid(size);
-                    (chunk.at(local), light.at(local), chunk.fluid_step_at(local))
+                    let fluid = (chunk.fluid_at(local), chunk.fluid_step_at(local));
+                    (chunk.at(local), light.at(local), fluid)
                 }
-                None => (BlockState::AIR, OPEN_SKY, FLUID_STEPS),
+                None => (BlockState::AIR, OPEN_SKY, (None, 0)),
             }
         })
     }
 
-    /// Fills every position from `voxel`, with any fluid full.
+    /// Fills every position from `voxel`, with no fluid.
     #[cfg(test)]
     pub fn from_fn(voxel: impl Fn(IVec3) -> (BlockState, Light)) -> Self {
         Self::with_fluid(|pos| {
@@ -147,42 +148,42 @@ impl Neighborhood {
         })
     }
 
-    /// Fills every position from `voxel`: its block, light and the amount
-    /// of fluid kept for it (see [`Chunk::partial_at`]), drawn at the
-    /// amount's own height.
+    /// Fills every position from `voxel`: its block (of the base game),
+    /// light and fluid, drawn at the amount's own height up the block's
+    /// room.
     #[cfg(test)]
-    pub fn with_fluid(voxel: impl Fn(IVec3) -> (BlockState, Light, Option<u16>)) -> Self {
+    pub fn with_fluid(voxel: impl Fn(IVec3) -> (BlockState, Light, Option<VoxelFluid>)) -> Self {
         Self::with_steps(|pos| {
-            let (block, light, kept) = voxel(pos);
-            (
-                block,
-                light,
-                kept.map_or(FLUID_STEPS, crate::world::fluid_step),
-            )
+            let (block, light, fluid) = voxel(pos);
+            let room = crate::content::base().state(block).fluid_room;
+            let step = fluid.map_or(0, |fluid| {
+                crate::world::fluid_step(crate::world::filled(fluid.amount, room))
+            });
+            (block, light, (fluid, step))
         })
     }
 
-    /// Fills every position from `voxel`: its block, light and the height
-    /// its fluid is drawn at.
-    fn with_steps(voxel: impl Fn(IVec3) -> (BlockState, Light, u16)) -> Self {
+    /// Fills every position from `voxel`: its block, light, and its fluid
+    /// with the height it's drawn at.
+    fn with_steps(voxel: impl Fn(IVec3) -> (BlockState, Light, (Option<VoxelFluid>, u16))) -> Self {
         let mut blocks = Vec::with_capacity(PADDED.pow(3));
         let mut light = Vec::with_capacity(PADDED.pow(3));
-        let mut steps = Vec::with_capacity(PADDED.pow(3));
+        let mut fluids = Vec::with_capacity(PADDED.pow(3));
         let range = -1..=CHUNK_SIZE as i32;
         for y in range.clone() {
             for z in range.clone() {
                 for x in range.clone() {
-                    let (block, level, step) = voxel(IVec3::new(x, y, z));
+                    let (block, level, fluid) = voxel(IVec3::new(x, y, z));
                     blocks.push(block);
                     light.push(level);
-                    steps.push(step);
+                    fluids.push(fluid);
                 }
             }
         }
         Self {
             blocks,
             light,
-            steps,
+            fluids,
         }
     }
 
@@ -203,33 +204,55 @@ impl Neighborhood {
         self.light[Self::index(pos)]
     }
 
+    /// Which fluid is at `pos`, if any.
+    pub fn fluid(&self, pos: IVec3) -> Option<BlockState> {
+        self.fluids[Self::index(pos)].0.map(|fluid| fluid.kind)
+    }
+
+    /// Whether the voxel at `next`, on the `side` of a face of `own`,
+    /// hides it (see [`Content::hides`]): its block does, or its fluid.
+    fn hides(&self, content: &Content, own: BlockState, next: IVec3, side: Direction) -> bool {
+        content.hides(own, self.block(next), side)
+            || self
+                .fluid(next)
+                .is_some_and(|fluid| content.hides(own, fluid, side))
+    }
+
     /// The top of the fluid of block `fluid` at `pos` (see [`FluidTop`]),
     /// from the voxels around it, which are all in the neighbourhood for a
-    /// voxel of the middle chunk.
-    fn fluid_top(&self, fluid: BlockState, pos: IVec3) -> FluidTop {
+    /// voxel of the middle chunk. Each counts by how high its fluid is
+    /// drawn, up the room its block leaves (see [`fluid_surface`]), so a
+    /// slab in a pond slopes and meets the water around it like any voxel.
+    fn fluid_top(&self, content: &Content, fluid: BlockState, pos: IVec3) -> FluidTop {
         FluidTop::of(fluid, pos, |at| {
-            Some((self.block(at), self.steps[Self::index(at)]))
+            let (here, step) = self.fluids[Self::index(at)];
+            let room = content.state(self.block(at)).fluid_room;
+            here.map(|here| (here.kind, fluid_surface(step, room)))
         })
     }
 
-    /// The faces of the fluid voxel at `pos`, and their backs if it's
+    /// The faces of the fluid `fluid` at `pos`, and their backs if it's
     /// double-sided, cut to its surface (see [`FluidTop`]):
     ///
     /// - its top, unless the same fluid is above it; a full block high,
     ///   it's hidden as any face is ([`Content::hides`]);
     /// - each side up to the corners of its top, unless the same fluid is
     ///   next to it, whose top meets this one's at the same corners;
-    ///   anything else hides it as usual;
+    ///   anything else hides it as usual, the block there or its fluid;
     /// - its bottom, unless the same fluid is below it.
+    ///
+    /// A side the voxel's own block covers (a slab's bottom) has no face:
+    /// the block's is there.
     fn fluid_faces(
         &self,
         content: &Content,
+        fluid: BlockState,
         pos: IVec3,
         builder: &mut MeshBuilder,
         opaque: &impl Fn(IVec3) -> bool,
     ) {
-        let voxel = self.block(pos);
-        let state = content.state(voxel);
+        let state = content.state(fluid);
+        let block = content.state(self.block(pos));
         // Built only once a face shows: most of a sea shows none.
         let mut top = None;
         for face in &state.faces {
@@ -237,11 +260,10 @@ impl Neighborhood {
                 continue;
             };
             let next = pos + side.normal();
-            let neighbour = self.block(next);
-            if neighbour == voxel {
+            if block.occludes(side) || self.fluid(next) == Some(fluid) {
                 continue;
             }
-            let top = *top.get_or_insert_with(|| self.fluid_top(voxel, pos));
+            let top = *top.get_or_insert_with(|| self.fluid_top(content, fluid, pos));
             let face = if side == Direction::Up && !top.is_full() {
                 // A lowered top lies inside the voxel, so it's shaded from
                 // the voxel itself, and nothing beside it can hide it.
@@ -250,7 +272,7 @@ impl Neighborhood {
                     ..cut_face(face, &top)
                 }
             } else {
-                if content.hides(voxel, neighbour, side) {
+                if self.hides(content, fluid, next, side) {
                     continue;
                 }
                 cut_face(face, &top)
@@ -264,14 +286,19 @@ impl Neighborhood {
     }
 
     /// Builds the meshes of every voxel's model faces in the middle chunk,
-    /// one per way faces are drawn (see [`Render`]), leaving out each face
-    /// its neighbour on its `cull` side hides (see [`Content::hides`]),
-    /// with ambient occlusion and light at every corner.
+    /// and its fluid's, one per way faces are drawn (see [`Render`]),
+    /// leaving out each face its neighbour on its `cull` side hides (see
+    /// [`Content::hides`]), with ambient occlusion and light at every
+    /// corner.
     pub fn meshes(&self, content: &Content) -> ChunkMeshes {
         let opaque: Vec<bool> = self
             .blocks
             .iter()
-            .map(|&block| content.state(block).is_opaque())
+            .zip(&self.fluids)
+            .map(|(&block, (fluid, _))| {
+                content.state(block).is_opaque()
+                    || fluid.is_some_and(|fluid| content.state(fluid.kind).is_opaque())
+            })
             .collect();
         let opaque_at = |pos: IVec3| opaque[Self::index(pos)];
 
@@ -280,6 +307,10 @@ impl Neighborhood {
         builders[Render::Translucent as usize].sorted = true;
         for (x, y, z) in Chunk::positions() {
             let pos = IVec3::new(x as i32, y as i32, z as i32);
+            if let Some(fluid) = self.fluid(pos) {
+                let builder = &mut builders[content.state(fluid).render as usize];
+                self.fluid_faces(content, fluid, pos, builder, &opaque_at);
+            }
             let voxel = self.block(pos);
             if voxel.is_air() {
                 continue;
@@ -287,14 +318,8 @@ impl Neighborhood {
             let state = content.state(voxel);
             let glows = state.emits_light();
             let builder = &mut builders[state.render as usize];
-            if state.is_fluid() {
-                self.fluid_faces(content, pos, builder, &opaque_at);
-                continue;
-            }
             for face in &state.faces {
-                if face
-                    .hidden_by(|side| content.hides(voxel, self.block(pos + side.normal()), side))
-                {
+                if face.hidden_by(|side| self.hides(content, voxel, pos + side.normal(), side)) {
                     continue;
                 }
                 let shading = self.shade_face(pos, face, glows, &opaque_at);

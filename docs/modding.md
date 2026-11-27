@@ -364,9 +364,12 @@ and lava's from inside it. It's set on the block, not in variants.
 ### Fluids
 
 `fluid` makes a block a fluid: nothing bumps into it, whatever its model's
-`collision`, the crosshair passes through it (so you can't mine it; a
-[fluid container](#items) in hand aims at it), and
-placing a block where it is replaces it, deleting the fluid. Since you can
+`collision`, and the crosshair passes through it (so you can't mine it; a
+[fluid container](#items) in hand aims at it). A fluid isn't a voxel's
+block but sits beside it, in a layer of its own: a voxel of water is air
+with water in it. A block placed where it is keeps as much of it as the
+block leaves room for (its `fluid_room`, below), and deletes the rest;
+breaking the block leaves the fluid. Since you can
 be inside one, even an opaque fluid like lava doesn't hide the faces of
 solid opaque blocks next to it, so the floor and walls of a lava pool show
 from inside; it still hides its own faces, and those of anything else
@@ -384,8 +387,9 @@ below, as much as fits; then, if that's full, it spreads to its four
 sides, giving each lower side an eighth of the difference, and half of
 itself over any edge it can run off, straight into the voxel below the
 edge. Levels only ever move toward each
-other, so a draining pond goes down smoothly. Fluid only flows into air
-and into the same fluid: two different fluids that touch stop there.
+other, so a draining pond goes down smoothly. Fluid only flows into the
+room blocks leave (all of air's voxel, half a slab's) and into the same
+fluid: two different fluids that touch stop there.
 A fluid has no `model` (nor `rotate`): the engine draws it as a box as
 high as it's full, its sides cut to fit with their texture cut off rather
 than squashed. Give it textures as for a full block: `all`, or `side` and
@@ -429,6 +433,33 @@ blocks (1 is a full block):
   1 of walking speed. It also scales swimming up and sinking.
 - **`view`**: the fog's `color` (`#rrggbb`) and how far you can see
   (`distance`, in blocks) with your eyes under its surface.
+
+#### Room for fluid
+
+`fluid_room` says how much of a block's voxel fluid can share with it,
+in blocks, from 0 to 1. Left out, it's 0: the block fills its voxel, and
+placing it into fluid deletes the fluid there. A block that leaves room
+keeps that much of any fluid when it's placed into it, and fluid flows
+into the room it leaves, as into air; breaking the block leaves the fluid
+behind. Any fluid works, not just water.
+
+```json5
+// blocks/stone_slab.json5
+{
+  model: "slab",
+  fluid_room: 0.5,   // half its voxel: a slab in a pond stays under water
+  // ...
+}
+```
+
+The base game gives slabs half their voxel and a tuft of grass 0.9. The
+fluid is drawn in the part of the voxel the block doesn't cover: a slab's
+half full of water reaches the top of its voxel, so the pond's surface
+runs on unbroken over it, and less stands that much higher than the
+slab. Light treats the voxel as the block and the fluid together (a slab
+in lava glows), collision and the crosshair are the block's alone, and
+flow compares levels by how high the fluid stands, the room the block
+takes counting as filled. A fluid can't have a `fluid_room`.
 
 ### Hardness, weight and stats
 
@@ -1089,6 +1120,9 @@ blocks of it (a bucket holds 1). Right click with it in hand:
   face aimed at. On a block that does something when used (a machine
   with a screen, a scripted block) only with Shift held; without, the
   click uses the block.
+- Pouring fills the room a voxel's block leaves for fluid (all of air's,
+  a slab's half: see `fluid_room`), and taking takes the fluid a voxel
+  holds beside its block (a slab in a pond), the block staying put.
 - on a machine with [tanks](#machines), takes from a tank holding a
   fluid a container can take, or else (or with Shift) pours into a tank
   that takes the fluid and has room. With nothing to move, the click
@@ -1391,8 +1425,9 @@ and tanks (a player, a tube, a pipe, a script), it runs on them the same.
   under it, and a fluid's is the same however full it is.
 - Variants can't add or remove parts; a part's `when` does that.
 - Fluids' textures don't move.
-- Fluids only flow into air: not into blocks that don't fill their
-  voxel, such as slabs and plants.
+- A block's room for fluid is one amount, not a shape: fluid in a slab's
+  voxel falls through its solid bottom, and stands on the slab whichever
+  half the slab is.
 - Models are block-only so far: no bones or animation for entities.
 - A wire carrying more than it can doesn't burn out; it caps what the
   network moves. Wires lose nothing over distance, and there are no
