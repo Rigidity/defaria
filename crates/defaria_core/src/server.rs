@@ -11,8 +11,10 @@
 //! client's inputs ([`movement`]).
 
 mod movement;
+mod replication;
 
 pub use movement::PlayerInputs;
+pub use replication::SNAPSHOT_INTERVAL;
 
 use bevy::{platform::collections::HashSet, prelude::*};
 
@@ -29,13 +31,10 @@ use crate::{
         has_screen,
     },
     mining::Mining,
-    net::{
-        ClientMessage, MachineContents, OtherPlayer, PlayerState, ServerLink, ServerMessage,
-        Transfer,
-    },
-    physics::Body,
-    player::{Look, MovedByInputs, Player, START_POSITION, START_TARGET, feet_below, player},
+    net::{ClientMessage, MachineContents, PlayerState, ServerLink, ServerMessage, Transfer},
+    player::{Look, MovedByInputs, START_POSITION, START_TARGET, feet_below, player},
     recipe::RecipeProgress,
+    replication::{Kind, Replicated},
     streaming::{ChunkLoader, ChunkUnloaded, StreamingSettings, StreamingStatus, loader_chunk},
     use_action::{UseAction, UseStep},
     world::{Chunk, ChunkCoord, ChunkMap, Voxels},
@@ -72,7 +71,7 @@ impl Plugin for ServerNetPlugin {
                     movement::send_moves,
                     send_player_state,
                     send_mining,
-                    send_players,
+                    replication::send_entities,
                     send_machine_contents,
                     send_status,
                 )
@@ -115,8 +114,6 @@ pub struct Connection {
     center: Option<IVec3>,
     /// Whether the player is paused.
     paused: bool,
-    /// The other players as last sent.
-    others: Option<Vec<OtherPlayer>>,
 }
 
 impl Connection {
@@ -131,7 +128,6 @@ impl Connection {
             settled: None,
             center: None,
             paused: false,
-            others: None,
         }
     }
 
@@ -151,6 +147,8 @@ fn accept(mut commands: Commands, mut incoming: ResMut<Incoming>) {
             player(feet, Look::from_rotation(eyes.rotation)),
             MovedByInputs,
             PlayerInputs::default(),
+            Replicated(Kind::Player),
+            replication::Interest::default(),
             Connection::new(link),
         ));
     }
@@ -533,36 +531,6 @@ fn send_mining(mut players: Query<(&mut Connection, &Mining)>) {
     }
 }
 
-/// Sends each client where the other players are, when that changes.
-fn send_players(
-    players: Query<(Entity, &Body, &Look, &Player)>,
-    mut connections: Query<(Entity, &mut Connection)>,
-) {
-    let all: Vec<(Entity, OtherPlayer)> = players
-        .iter()
-        .map(|(entity, body, look, player)| {
-            let other = OtherPlayer {
-                id: entity.to_bits(),
-                feet: body.position,
-                look: *look,
-                sneaking: player.sneaking,
-            };
-            (entity, other)
-        })
-        .collect();
-    for (me, mut connection) in &mut connections {
-        let others: Vec<OtherPlayer> = all
-            .iter()
-            .filter(|(entity, _)| *entity != me)
-            .map(|(_, other)| other.clone())
-            .collect();
-        if connection.others.as_ref() != Some(&others) {
-            connection.others = Some(others.clone());
-            connection.send(ServerMessage::Players(others));
-        }
-    }
-}
-
 /// Sends a client with a machine's screen open what the machine holds
 /// when it changes, and closes the screen when the machine goes.
 fn send_machine_contents(
@@ -630,7 +598,8 @@ mod tests {
         inventory::{InventoryPlugin, player::STARTING_COUNT},
         mining::MiningPlugin,
         net::{ClientLink, Input, link},
-        player::{Controls, EYE_HEIGHT, Motion},
+        physics::Body,
+        player::{Controls, EYE_HEIGHT, Motion, Player},
         testing::world_app,
         use_action::UseActionPlugin,
     };

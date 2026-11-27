@@ -321,6 +321,16 @@ impl Multiplayer {
     /// Runs `script` on client `client`, updating everything until it's
     /// done.
     pub fn run(&mut self, client: usize, script: &str) {
+        self.run_watching(client, script, |_| {});
+    }
+
+    /// [`Multiplayer::run`], calling `watch` after every frame.
+    pub fn run_watching(
+        &mut self,
+        client: usize,
+        script: &str,
+        mut watch: impl FnMut(&mut Multiplayer),
+    ) {
         let script = Script::parse(script).unwrap();
         self.clients[client]
             .world_mut()
@@ -329,6 +339,7 @@ impl Multiplayer {
             .extend(script.commands);
         for _ in 0..SETTLE_TIMEOUT_FRAMES {
             self.update();
+            watch(self);
             if self.clients[client]
                 .world()
                 .resource::<ScriptRunner>()

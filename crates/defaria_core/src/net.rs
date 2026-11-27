@@ -18,7 +18,7 @@ use std::sync::{
     mpsc::{Receiver, Sender, TryRecvError, channel},
 };
 
-use bevy::{math::DVec3, prelude::*};
+use bevy::prelude::*;
 
 use crate::{
     content::BlockState,
@@ -29,6 +29,7 @@ use crate::{
     machine::{EnergyBuffer, MachineActive, Slots, Tanks},
     player::{Controls, Look, Motion},
     recipe::RecipeProgress,
+    replication::{EntityPose, Kind, Pose},
     use_action::Use,
     world::{Chunk, ChunkCoord},
 };
@@ -149,27 +150,29 @@ pub enum ServerMessage {
     MachineContents(MachineContents),
     /// The machine screen closed (the machine went).
     CloseScreen,
-    /// The other players, where they are and which way they look, when
-    /// any of that changes.
-    Players(Vec<OtherPlayer>),
+    /// A replicated entity (`replication`) came into the client's range:
+    /// which (its id, for as long as it's in range), what kind, and where.
+    Spawn { id: u64, kind: Kind, pose: Pose },
+    /// A replicated entity left the client's range, or went.
+    Despawn(u64),
+    /// Where the replicated entities in the client's range were at `time`
+    /// (seconds of the server's clock). Not reliable: another follows
+    /// soon.
+    Snapshot {
+        time: f64,
+        entities: Vec<EntityPose>,
+    },
 }
 
 impl ServerMessage {
     /// Whether it must arrive: all but [`ServerMessage::Moved`], which is
     /// sent again as things move.
     pub fn reliable(&self) -> bool {
-        !matches!(self, ServerMessage::Moved { .. })
+        !matches!(
+            self,
+            ServerMessage::Moved { .. } | ServerMessage::Snapshot { .. }
+        )
     }
-}
-
-/// Another player, as a client sees it.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct OtherPlayer {
-    /// Which player it is, for as long as it's connected.
-    pub id: u64,
-    pub feet: DVec3,
-    pub look: Look,
-    pub sneaking: bool,
 }
 
 /// The parts of a player the server owns and its client shows.
@@ -310,6 +313,23 @@ mod tests {
             crate::content::FULL_FLUID,
         );
         let stone = base().default_item("defaria:stone").unwrap();
+        let motion = Motion {
+            feet: bevy::math::DVec3::new(1.5, -2.0, 1e6),
+            velocity: bevy::math::DVec3::new(0.0, -3.0, 0.25),
+            on_ground: false,
+            flying: true,
+            sneaking: false,
+            sprinting: true,
+            eye_height: 1.5,
+        };
+        let pose = Pose {
+            feet: motion.feet,
+            look: Look {
+                yaw: 1.0,
+                pitch: -0.5,
+            },
+            crouched: true,
+        };
         let mut inventory = Inventory::new();
         inventory.add(base(), ItemStack::new(stone, 12));
         let server = [
@@ -340,12 +360,33 @@ mod tests {
             },
             ServerMessage::MachineContents(MachineContents::default()),
             ServerMessage::CloseScreen,
+            ServerMessage::Moved { tick: 7, motion },
+            ServerMessage::Spawn {
+                id: 42,
+                kind: Kind::Player,
+                pose,
+            },
+            ServerMessage::Snapshot {
+                time: 12.5,
+                entities: vec![EntityPose { id: 42, pose }],
+            },
+            ServerMessage::Despawn(42),
         ];
         for message in server {
             let back: ServerMessage = decode(&encode(&message)).unwrap();
             assert_eq!(back, message);
         }
         let client = [
+            ClientMessage::Inputs(vec![Input {
+                tick: 3,
+                controls: Controls {
+                    forward: 1.0,
+                    jump: true,
+                    ..Default::default()
+                },
+                look: pose.look,
+                teleport: Some(motion),
+            }]),
             ClientMessage::Mining(true),
             ClientMessage::ToggleGameMode,
             ClientMessage::Paused(true),
