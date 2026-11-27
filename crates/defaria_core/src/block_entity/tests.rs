@@ -248,8 +248,16 @@ fn a_change_right_after_loading_is_saved() {
         .add_systems(First, change_on_next_frame);
     app.world_mut().resource_mut::<ChangeOnNextFrame>().0 = Some(11);
     move_loader(&mut app, HOME);
-    assert_eq!(part::<Ticks>(&app, POS), Some(Ticks(11)));
+    // Settling can end on the frame the chunk spawns; the change is made on
+    // the next.
+    for _ in 0..10 {
+        if app.world().resource::<ChangeOnNextFrame>().0.is_none() {
+            break;
+        }
+        app.update();
+    }
     assert_eq!(app.world().resource::<ChangeOnNextFrame>().0, None);
+    assert_eq!(part::<Ticks>(&app, POS), Some(Ticks(11)));
     move_loader(&mut app, AWAY);
     move_loader(&mut app, HOME);
     assert_eq!(part::<Ticks>(&app, POS), Some(Ticks(11)));
