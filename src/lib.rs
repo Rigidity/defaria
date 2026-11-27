@@ -65,7 +65,9 @@ impl Plugin for ClientPlugin {
             defaria_client::net::ClientNetPlugin,
             menu::MenuPlugin,
             pause::PausePlugin,
-            others::OthersPlugin,
+            defaria_client::replication::ReplicationPlugin,
+            edit_prediction::EditPredictionPlugin,
+            prediction::PredictionPlugin,
         ));
     }
 }

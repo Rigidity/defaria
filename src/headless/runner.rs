@@ -64,6 +64,7 @@ impl Plugin for HeadlessPlugin {
                 PreUpdate,
                 (run_script, apply_world_commands)
                     .chain()
+                    .after(defaria_client::prediction::ReconcileSystems)
                     .before(InputSystems)
                     .before(PickingSystems::ProcessInput),
             )

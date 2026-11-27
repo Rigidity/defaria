@@ -4,18 +4,21 @@
 //!
 //! A server app owns the world: it generates, loads, simulates and saves
 //! it, and decides everything. A client app draws what it's sent and sends
-//! what its player does: where it is ([`ClientMessage::Pose`]) and its
-//! intents (a use, holding the break button, the hotbar). Single player
-//! runs both, in one process, over a [`Link`] in memory.
+//! what its player does: what it pressed and where it looked each physics
+//! step ([`ClientMessage::Inputs`]), and its intents (a use, holding the
+//! break button, the hotbar). Single player runs both, in one process,
+//! over a [`Link`] in memory; `quic` carries them over the network.
 //!
-//! Messages go as Rust values for now; #51 encodes them for the network.
+//! Each message is reliable (it arrives, in order with the others of its
+//! kind) or not ([`ClientMessage::reliable`]): what's sent again and again,
+//! where only the newest matters, may be lost.
 
 use std::sync::{
     Mutex,
     mpsc::{Receiver, Sender, TryRecvError, channel},
 };
 
-use bevy::{math::DVec3, prelude::*};
+use bevy::prelude::*;
 
 use crate::{
     content::BlockState,
@@ -24,8 +27,9 @@ use crate::{
     inventory::{Inventory, ItemStack},
     light::ChunkLight,
     machine::{EnergyBuffer, MachineActive, Slots, Tanks},
-    player::{Look, Player},
+    player::{Controls, Look, Motion},
     recipe::RecipeProgress,
+    replication::{EntityPose, Kind, Pose},
     use_action::Use,
     world::{Chunk, ChunkCoord},
 };
@@ -33,10 +37,21 @@ use crate::{
 /// What a client sends its server.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ClientMessage {
-    /// Where its player is and which way it looks; the client moves it.
-    Pose(Pose),
-    /// The player used something (right click), as `use_action` acts on.
-    Use(Use),
+    /// The player's inputs for the physics steps the server hasn't said
+    /// it's applied yet, oldest first. Each is sent until the server says
+    /// it's applied it ([`ServerMessage::Moved`]), so losing some of these
+    /// loses nothing.
+    Inputs(Vec<Input>),
+    /// The player used something (right click), as `use_action` acts on,
+    /// after its input `tick` (the server waits until it's stepped the
+    /// player that far, so it acts on the use where the client did).
+    /// `edit` numbers the block the client placed at once, predicting the
+    /// server would ([`ServerMessage::EditDone`] answers it).
+    Use {
+        using: Use,
+        tick: u32,
+        edit: Option<u32>,
+    },
     /// Whether the player holds the break button ([`Mining::holding`]).
     Mining(bool),
     /// The player's hotbar slots.
@@ -55,15 +70,24 @@ pub enum ClientMessage {
     Paused(bool),
 }
 
-/// A player's place, what it's doing and which way it looks.
+impl ClientMessage {
+    /// Whether it must arrive: all but [`ClientMessage::Inputs`], which are
+    /// sent again until they're applied.
+    pub fn reliable(&self) -> bool {
+        !matches!(self, ClientMessage::Inputs(_))
+    }
+}
+
+/// A player's input for one physics step: what it pressed and which way it
+/// looked, numbered from 1 in the order they're stepped.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Pose {
-    /// Its feet.
-    pub feet: DVec3,
-    pub velocity: DVec3,
-    pub on_ground: bool,
+pub struct Input {
+    pub tick: u32,
+    pub controls: Controls,
     pub look: Look,
-    pub player: Player,
+    /// Where the player was put before this step, if it was (a scenario's
+    /// `camera`): the server puts it there too.
+    pub teleport: Option<Motion>,
 }
 
 /// A move of items the player asks for, from a screen.
@@ -123,25 +147,45 @@ pub enum ServerMessage {
     },
     /// Whether everything in the client's range is loaded and sent.
     Settled(bool),
+    /// The server has acted on the use that carried this edit and the
+    /// ones before it, and the chunks it changed were sent before this:
+    /// the client's world is the server's there now. Sent with the chunks,
+    /// so it comes after them.
+    EditDone(u32),
+    /// Where the server has the client's player after the last of its
+    /// inputs it's applied (tick 0 for none yet): what the client predicted
+    /// from it is checked against this. Not reliable: it's sent again as
+    /// the player moves.
+    Moved { tick: u32, motion: Motion },
     /// Open the screen of the machine at this voxel, in this state.
     OpenScreen { pos: IVec3, state: BlockState },
     /// What the machine whose screen is open holds, when it changes.
     MachineContents(MachineContents),
     /// The machine screen closed (the machine went).
     CloseScreen,
-    /// The other players, where they are and which way they look, when
-    /// any of that changes.
-    Players(Vec<OtherPlayer>),
+    /// A replicated entity (`replication`) came into the client's range:
+    /// which (its id, for as long as it's in range), what kind, and where.
+    Spawn { id: u64, kind: Kind, pose: Pose },
+    /// A replicated entity left the client's range, or went.
+    Despawn(u64),
+    /// Where the replicated entities in the client's range were at `time`
+    /// (seconds of the server's clock). Not reliable: another follows
+    /// soon.
+    Snapshot {
+        time: f64,
+        entities: Vec<EntityPose>,
+    },
 }
 
-/// Another player, as a client sees it.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct OtherPlayer {
-    /// Which player it is, for as long as it's connected.
-    pub id: u64,
-    pub feet: DVec3,
-    pub look: Look,
-    pub sneaking: bool,
+impl ServerMessage {
+    /// Whether it must arrive: all but [`ServerMessage::Moved`], which is
+    /// sent again as things move.
+    pub fn reliable(&self) -> bool {
+        !matches!(
+            self,
+            ServerMessage::Moved { .. } | ServerMessage::Snapshot { .. }
+        )
+    }
 }
 
 /// The parts of a player the server owns and its client shows.
@@ -282,6 +326,23 @@ mod tests {
             crate::content::FULL_FLUID,
         );
         let stone = base().default_item("defaria:stone").unwrap();
+        let motion = Motion {
+            feet: bevy::math::DVec3::new(1.5, -2.0, 1e6),
+            velocity: bevy::math::DVec3::new(0.0, -3.0, 0.25),
+            on_ground: false,
+            flying: true,
+            sneaking: false,
+            sprinting: true,
+            eye_height: 1.5,
+        };
+        let pose = Pose {
+            feet: motion.feet,
+            look: Look {
+                yaw: 1.0,
+                pitch: -0.5,
+            },
+            crouched: true,
+        };
         let mut inventory = Inventory::new();
         inventory.add(base(), ItemStack::new(stone, 12));
         let server = [
@@ -312,12 +373,33 @@ mod tests {
             },
             ServerMessage::MachineContents(MachineContents::default()),
             ServerMessage::CloseScreen,
+            ServerMessage::Moved { tick: 7, motion },
+            ServerMessage::Spawn {
+                id: 42,
+                kind: Kind::Player,
+                pose,
+            },
+            ServerMessage::Snapshot {
+                time: 12.5,
+                entities: vec![EntityPose { id: 42, pose }],
+            },
+            ServerMessage::Despawn(42),
         ];
         for message in server {
             let back: ServerMessage = decode(&encode(&message)).unwrap();
             assert_eq!(back, message);
         }
         let client = [
+            ClientMessage::Inputs(vec![Input {
+                tick: 3,
+                controls: Controls {
+                    forward: 1.0,
+                    jump: true,
+                    ..Default::default()
+                },
+                look: pose.look,
+                teleport: Some(motion),
+            }]),
             ClientMessage::Mining(true),
             ClientMessage::ToggleGameMode,
             ClientMessage::Paused(true),

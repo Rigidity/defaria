@@ -6,8 +6,15 @@
 //! uses.
 //!
 //! The server owns everything: the client's chunks are copies, and the
-//! client only asks (to use, to break, to move items). Only movement is
-//! the client's own for now; #214 makes the server check it.
+//! client only asks (to use, to break, to move items). Even its player's
+//! movement: the client predicts it, and the server steps it from the
+//! client's inputs ([`movement`]).
+
+mod movement;
+mod replication;
+
+pub use movement::PlayerInputs;
+pub use replication::SNAPSHOT_INTERVAL;
 
 use bevy::{platform::collections::HashSet, prelude::*};
 
@@ -24,15 +31,12 @@ use crate::{
         has_screen,
     },
     mining::Mining,
-    net::{
-        ClientMessage, MachineContents, OtherPlayer, PlayerState, Pose, ServerLink, ServerMessage,
-        Transfer,
-    },
-    physics::Body,
-    player::{Look, Player, START_POSITION, START_TARGET, feet_below, player},
+    net::{ClientMessage, MachineContents, PlayerState, ServerLink, ServerMessage, Transfer},
+    player::{Look, MovedByInputs, START_POSITION, START_TARGET, feet_below, player},
     recipe::RecipeProgress,
+    replication::{Kind, Replicated},
     streaming::{ChunkLoader, ChunkUnloaded, StreamingSettings, StreamingStatus, loader_chunk},
-    use_action::{UseAction, UseStep},
+    use_action::{Use, UseAction, UseStep},
     world::{Chunk, ChunkCoord, ChunkMap, Voxels},
 };
 
@@ -47,7 +51,13 @@ impl Plugin for ServerNetPlugin {
                 (
                     accept,
                     receive,
-                    (apply_poses, apply_intents, apply_transfers, note_pauses),
+                    (
+                        (movement::take_inputs, movement::move_by_inputs).chain(),
+                        apply_intents,
+                        apply_transfers,
+                        note_pauses,
+                        take_uses.after(movement::move_by_inputs),
+                    ),
                     close_screens,
                     pause_with_players,
                 )
@@ -59,9 +69,11 @@ impl Plugin for ServerNetPlugin {
                 Last,
                 (
                     send_chunks,
+                    answer_edits,
+                    movement::send_moves,
                     send_player_state,
                     send_mining,
-                    send_players,
+                    replication::send_entities,
                     send_machine_contents,
                     send_status,
                 )
@@ -104,8 +116,13 @@ pub struct Connection {
     center: Option<IVec3>,
     /// Whether the player is paused.
     paused: bool,
-    /// The other players as last sent.
-    others: Option<Vec<OtherPlayer>>,
+    /// The uses the client sent that haven't been acted on yet, oldest
+    /// first: their use, the input they came after, their edit, and how
+    /// long they've waited.
+    uses: std::collections::VecDeque<(Use, u32, Option<u32>, f32)>,
+    /// The edits the client predicted with uses acted on this frame, to
+    /// answer.
+    edits: Vec<u32>,
 }
 
 impl Connection {
@@ -120,7 +137,8 @@ impl Connection {
             settled: None,
             center: None,
             paused: false,
-            others: None,
+            uses: default(),
+            edits: Vec::new(),
         }
     }
 
@@ -129,8 +147,8 @@ impl Connection {
     }
 }
 
-/// Each new connection joins as a player where new players start (the
-/// client puts it where it is with its first [`ClientMessage::Pose`]).
+/// Each new connection joins as a player where new players start, moved
+/// by its client's inputs.
 fn accept(mut commands: Commands, mut incoming: ResMut<Incoming>) {
     for link in incoming.0.drain(..) {
         let eyes = Transform::from_translation(START_POSITION).looking_at(START_TARGET, Vec3::Y);
@@ -138,6 +156,10 @@ fn accept(mut commands: Commands, mut incoming: ResMut<Incoming>) {
         commands.spawn((
             Name::new("Player"),
             player(feet, Look::from_rotation(eyes.rotation)),
+            MovedByInputs,
+            PlayerInputs::default(),
+            Replicated(Kind::Player),
+            replication::Interest::default(),
             Connection::new(link),
         ));
     }
@@ -156,62 +178,20 @@ fn receive(mut commands: Commands, mut connections: Query<(Entity, &mut Connecti
     }
 }
 
-/// The client moves its player: the last pose it sent is where it is.
-fn apply_poses(
-    mut players: Query<(
-        &Connection,
-        &mut Body,
-        &mut Transform,
-        &mut Look,
-        &mut Player,
-    )>,
-) {
-    for (connection, mut body, mut transform, mut look, mut player) in &mut players {
-        let pose = connection
-            .inbox
-            .iter()
-            .rev()
-            .find_map(|message| match message {
-                ClientMessage::Pose(pose) => Some(pose),
-                _ => None,
-            });
-        let Some(Pose {
-            feet,
-            velocity,
-            on_ground,
-            look: new_look,
-            player: new_player,
-        }) = pose
-        else {
-            continue;
-        };
-        body.position = *feet;
-        body.previous = *feet;
-        body.velocity = *velocity;
-        body.on_ground = *on_ground;
-        transform.translation = feet.as_vec3();
-        transform.rotation = new_look.yaw_rotation();
-        look.set_if_neq(*new_look);
-        player.set_if_neq(new_player.clone());
-    }
-}
-
-/// What the player means to do: a use, holding the break button, its
-/// hotbar and the slot in hand, the game mode.
+/// What the player means to do: holding the break button, its hotbar and
+/// the slot in hand, the game mode. (Its uses are [`take_uses`]'.)
 fn apply_intents(
     mut players: Query<(
         &Connection,
-        &mut UseAction,
         Option<&mut Mining>,
         Option<&mut Hotbar>,
         Option<&mut ActiveSlot>,
         Option<&mut GameMode>,
     )>,
 ) {
-    for (connection, mut action, mut mining, mut hotbar, mut active, mut mode) in &mut players {
+    for (connection, mut mining, mut hotbar, mut active, mut mode) in &mut players {
         for message in &connection.inbox {
             match message {
-                ClientMessage::Use(using) => *action = UseAction(Some(*using)),
                 ClientMessage::Mining(holding) => {
                     if let Some(mining) = &mut mining
                         && mining.holding != *holding
@@ -305,6 +285,51 @@ fn apply_transfers(
                     }
                 }
             }
+        }
+    }
+}
+
+/// The longest a use waits for the input it came after, should that
+/// never come, before it's acted on anyway.
+const MAX_USE_WAIT: f32 = 2.0;
+
+/// Queues the uses each client sent, and acts on the oldest once the
+/// player has been stepped through the input it came after: one a frame,
+/// as `use_action` takes them, each where the client made it.
+fn take_uses(
+    time: Res<Time>,
+    mut players: Query<(&mut Connection, &mut UseAction, Option<&PlayerInputs>)>,
+) {
+    for (mut connection, mut action, inputs) in &mut players {
+        let connection = &mut *connection;
+        for message in &connection.inbox {
+            if let ClientMessage::Use { using, tick, edit } = message {
+                connection.uses.push_back((*using, *tick, *edit, 0.0));
+            }
+        }
+        for (.., waited) in &mut connection.uses {
+            *waited += time.delta_secs();
+        }
+        let applied = inputs.map_or(u32::MAX, PlayerInputs::applied);
+        let ready = connection
+            .uses
+            .front()
+            .is_some_and(|(_, tick, _, waited)| *tick <= applied || *waited > MAX_USE_WAIT);
+        if !ready {
+            continue;
+        }
+        let (using, _, edit, _) = connection.uses.pop_front().unwrap();
+        *action = UseAction(Some(using));
+        connection.edits.extend(edit);
+    }
+}
+
+/// Answers the edits whose uses were acted on this frame, after the chunks
+/// they changed were sent.
+fn answer_edits(mut connections: Query<&mut Connection>) {
+    for mut connection in &mut connections {
+        if let Some(last) = connection.edits.drain(..).max() {
+            connection.send(ServerMessage::EditDone(last));
         }
     }
 }
@@ -560,36 +585,6 @@ fn send_mining(mut players: Query<(&mut Connection, &Mining)>) {
     }
 }
 
-/// Sends each client where the other players are, when that changes.
-fn send_players(
-    players: Query<(Entity, &Body, &Look, &Player)>,
-    mut connections: Query<(Entity, &mut Connection)>,
-) {
-    let all: Vec<(Entity, OtherPlayer)> = players
-        .iter()
-        .map(|(entity, body, look, player)| {
-            let other = OtherPlayer {
-                id: entity.to_bits(),
-                feet: body.position,
-                look: *look,
-                sneaking: player.sneaking,
-            };
-            (entity, other)
-        })
-        .collect();
-    for (me, mut connection) in &mut connections {
-        let others: Vec<OtherPlayer> = all
-            .iter()
-            .filter(|(entity, _)| *entity != me)
-            .map(|(_, other)| other.clone())
-            .collect();
-        if connection.others.as_ref() != Some(&others) {
-            connection.others = Some(others.clone());
-            connection.send(ServerMessage::Players(others));
-        }
-    }
-}
-
 /// Sends a client with a machine's screen open what the machine holds
 /// when it changes, and closes the screen when the machine goes.
 fn send_machine_contents(
@@ -656,8 +651,9 @@ mod tests {
         hotbar::HotbarPlugin,
         inventory::{InventoryPlugin, player::STARTING_COUNT},
         mining::MiningPlugin,
-        net::{ClientLink, link},
-        player::EYE_HEIGHT,
+        net::{ClientLink, Input, link},
+        physics::Body,
+        player::{Controls, EYE_HEIGHT, Motion, Player},
         testing::world_app,
         use_action::UseActionPlugin,
     };
@@ -740,24 +736,47 @@ mod tests {
         assert!(app.world().get::<Player>(player).is_some());
     }
 
-    /// The client moves its player: a pose puts it there, and the chunks
-    /// around its new place are sent and those left behind dropped.
+    /// An input of a step `tick`, holding `controls`, putting the player
+    /// at `teleport` first if given.
+    fn input(tick: u32, controls: Controls, teleport: Option<Motion>) -> Input {
+        Input {
+            tick,
+            controls,
+            look: Look::default(),
+            teleport,
+        }
+    }
+
+    /// A player put somewhere by its client (a scenario's `camera`) is put
+    /// there on the server too, and the chunks around its new place are
+    /// sent and those left behind dropped.
     #[test]
-    fn a_pose_moves_the_player_and_its_range() {
+    fn a_teleport_moves_the_player_and_its_range() {
         let (mut app, mut client, _) = server();
         let player = the_player(&mut app);
         let feet = DVec3::new(4064.5, 56.0 - EYE_HEIGHT, 92.5);
-        client.send(ClientMessage::Pose(Pose {
+        let motion = Motion {
             feet,
             velocity: DVec3::ZERO,
             on_ground: false,
-            look: Look::default(),
-            player: Player::default(),
-        }));
+            flying: true,
+            sneaking: false,
+            sprinting: false,
+            eye_height: EYE_HEIGHT,
+        };
+        client.send(ClientMessage::Inputs(vec![input(
+            1,
+            Controls::default(),
+            Some(motion),
+        )]));
         let sent = until(&mut app, &mut client, |message| {
             matches!(message, ServerMessage::Settled(true))
         });
         assert_eq!(app.world().get::<Body>(player).unwrap().position, feet);
+        assert!(sent.iter().any(|message| matches!(
+            message,
+            ServerMessage::Moved { tick: 1, motion } if motion.feet == feet
+        )));
         let far = ChunkCoord::split(IVec3::new(4064, 56, 92)).0;
         assert!(
             sent.iter().any(
@@ -766,6 +785,69 @@ mod tests {
         );
         let home = ChunkCoord::split(START_POSITION.floor().as_ivec3()).0;
         assert!(sent.contains(&ServerMessage::Unload(home)));
+    }
+
+    /// Each input is a step of the player, applied once however often it's
+    /// sent, and the client is told the last applied and where it left the
+    /// player.
+    #[test]
+    fn inputs_step_the_player_once_each() {
+        let (mut app, mut client, _) = server();
+        let player = the_player(&mut app);
+        let start = app.world().get::<Body>(player).unwrap().position;
+        let forward = Controls {
+            forward: 1.0,
+            ..default()
+        };
+        let mut moves = Vec::new();
+        for tick in 1..=10 {
+            // Every input not yet confirmed, as clients send them.
+            let unconfirmed = (tick.max(3) - 2..=tick)
+                .map(|tick| input(tick, forward, None))
+                .collect();
+            client.send(ClientMessage::Inputs(unconfirmed));
+            app.update();
+            moves.extend(
+                client
+                    .receive()
+                    .into_iter()
+                    .filter_map(|message| match message {
+                        ServerMessage::Moved { tick, motion } => Some((tick, motion)),
+                        _ => None,
+                    }),
+            );
+        }
+        assert_eq!(moves.last().unwrap().0, 10);
+        let applied = app.world().get::<PlayerInputs>(player).unwrap().applied();
+        assert_eq!(applied, 10);
+        let body = app.world().get::<Body>(player).unwrap();
+        assert_ne!(body.position, start);
+        assert_eq!(moves.last().unwrap().1.feet, body.position);
+    }
+
+    /// A client can't step its player faster than time passes: a flood of
+    /// inputs is taken a frame's worth (and a burst) at a time.
+    #[test]
+    fn inputs_are_held_to_the_time_passing() {
+        let (mut app, mut client, _) = server();
+        let player = the_player(&mut app);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            crate::physics::STEP,
+        ));
+        app.update();
+        let flood = (1..=600)
+            .map(|tick| input(tick, Controls::default(), None))
+            .collect();
+        client.send(ClientMessage::Inputs(flood));
+        app.update();
+        let applied = app.world().get::<PlayerInputs>(player).unwrap().applied();
+        assert!((1..=21).contains(&applied), "{applied} steps at once");
+        for _ in 0..10 {
+            app.update();
+        }
+        let later = app.world().get::<PlayerInputs>(player).unwrap().applied();
+        // A step a frame, a frame a step.
+        assert!((applied + 9..=applied + 11).contains(&later), "{later}");
     }
 
     /// An edit to a chunk the client has sends the chunk again.
@@ -789,6 +871,56 @@ mod tests {
             unreachable!();
         };
         assert_eq!(chunk.at(local), block("stone"));
+    }
+
+    /// Uses that arrive together are acted on one a frame, each once the
+    /// player has been stepped through the input it came after, and only
+    /// then is its edit answered.
+    #[test]
+    fn uses_wait_their_turn_and_their_input() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Update, take_uses);
+        let (_client, server) = link();
+        let using = |sneak| Use {
+            eyes: Transform::default(),
+            target: None,
+            sneak,
+        };
+        let mut connection = Connection::new(server);
+        connection.inbox = vec![
+            ClientMessage::Use {
+                using: using(false),
+                tick: 0,
+                edit: Some(1),
+            },
+            ClientMessage::Use {
+                using: using(true),
+                tick: 5,
+                edit: Some(2),
+            },
+        ];
+        let player = app
+            .world_mut()
+            .spawn((connection, UseAction::default(), PlayerInputs::default()))
+            .id();
+        let frame = |app: &mut App| {
+            app.update();
+            let world = app.world_mut();
+            let action = world.get_mut::<UseAction>(player).unwrap().0.take();
+            let mut connection = world.get_mut::<Connection>(player).unwrap();
+            connection.inbox.clear();
+            let edits = std::mem::take(&mut connection.edits);
+            (action.map(|using| using.sneak), edits)
+        };
+        assert_eq!(frame(&mut app), (Some(false), vec![1]));
+        // The second came after input 5, which hasn't been stepped.
+        assert_eq!(frame(&mut app), (None, vec![]));
+        app.world_mut()
+            .get_mut::<PlayerInputs>(player)
+            .unwrap()
+            .set_applied(5);
+        assert_eq!(frame(&mut app), (Some(true), vec![2]));
     }
 
     /// Asking to switch the game mode switches it, and the client is sent

@@ -9,11 +9,13 @@
 //! content's fingerprint); the server answers on it, accepting or refusing.
 //! Then:
 //!
-//! - chunks, their changes and drops, and whether the client's settled go
-//!   on a stream of their own from the server ([`bulk`]), so a lost
-//!   packet of chunks doesn't hold up the rest;
-//! - a client's pose goes as a datagram: unreliable, the newest is all
-//!   that matters;
+//! - chunks, their changes and drops, whether the client's settled, and
+//!   which of its predicted edits are done (after the chunks they
+//!   changed) go on a stream of their own from the server ([`bulk`]), so
+//!   a lost packet of chunks doesn't hold up the rest;
+//! - messages that needn't arrive (a client's inputs, which it sends
+//!   again until they're applied, and where the server has its player:
+//!   `reliable()` says) go as datagrams, when they fit in one;
 //! - everything else goes on the control stream, in order.
 //!
 //! On a stream, each message is a frame: its length, a flag byte (whether
@@ -92,6 +94,7 @@ fn bulk(message: &ServerMessage) -> bool {
             | ServerMessage::LightChanged { .. }
             | ServerMessage::Unload(_)
             | ServerMessage::Settled(_)
+            | ServerMessage::EditDone(_)
     )
 }
 
@@ -345,12 +348,17 @@ async fn carry_for_server(
             game.send(message);
         }
         for message in game.receive() {
+            let bytes = encode(&message);
+            if !message.reliable() && fits(&connection, &bytes) {
+                let _ = connection.send_datagram(bytes.into());
+                continue;
+            }
             let stream = if bulk(&message) {
                 &mut bulk_stream
             } else {
                 &mut control
             };
-            if write_frame(stream, &encode(&message)).await.is_err() {
+            if write_frame(stream, &bytes).await.is_err() {
                 return;
             }
         }
@@ -370,6 +378,17 @@ async fn play(
     mut game: ServerLink,
 ) {
     let (to_game, from_net) = mpsc::channel::<ServerMessage>();
+    let _datagrams = {
+        let connection = connection.clone();
+        let to_game = to_game.clone();
+        smol::spawn(async move {
+            while let Ok(bytes) = connection.read_datagram().await {
+                if let Ok(message) = decode::<ServerMessage>(&bytes) {
+                    let _ = to_game.send(message);
+                }
+            }
+        })
+    };
     let _control = {
         let to_game = to_game.clone();
         smol::spawn(async move {
@@ -405,10 +424,7 @@ async fn play(
         }
         for message in game.receive() {
             let bytes = encode(&message);
-            let small = connection
-                .max_datagram_size()
-                .is_some_and(|max| bytes.len() <= max);
-            if matches!(message, ClientMessage::Pose(_)) && small {
+            if !message.reliable() && fits(&connection, &bytes) {
                 let _ = connection.send_datagram(bytes.into());
             } else if write_frame(&mut control, &bytes).await.is_err() {
                 return;
@@ -420,6 +436,13 @@ async fn play(
         }
         smol::Timer::after(POLL).await;
     }
+}
+
+/// Whether `bytes` fit in a datagram on `connection`.
+fn fits(connection: &Connection, bytes: &[u8]) -> bool {
+    connection
+        .max_datagram_size()
+        .is_some_and(|max| bytes.len() <= max)
 }
 
 /// What `future` comes to, or nothing if it takes longer than `limit`.
@@ -604,7 +627,7 @@ mod tests {
 
     /// A client connects over UDP on this machine; messages go both ways,
     /// in order on each stream, a big one (deflated on its way) too, and a
-    /// pose as a datagram.
+    /// player's inputs as a datagram.
     #[test]
     fn messages_cross_the_network() {
         let listener = listen(local(), 7).unwrap();
@@ -638,16 +661,15 @@ mod tests {
         assert_eq!(bulk, [ServerMessage::Settled(false), big]);
         assert!(got.contains(&ServerMessage::CloseScreen));
 
-        client.send(ClientMessage::Pose(defaria_core::net::Pose {
-            feet: bevy::math::DVec3::new(1.0, 2.0, 3.0),
-            velocity: bevy::math::DVec3::ZERO,
-            on_ground: true,
+        client.send(ClientMessage::Inputs(vec![defaria_core::net::Input {
+            tick: 1,
+            controls: default(),
             look: default(),
-            player: default(),
-        }));
+            teleport: None,
+        }]));
         assert!(matches!(
             wait_for(|| server.receive(), 1)[0],
-            ClientMessage::Pose(_)
+            ClientMessage::Inputs(_)
         ));
 
         // The client goes: the server's end sees it.

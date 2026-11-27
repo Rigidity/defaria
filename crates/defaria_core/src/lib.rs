@@ -22,6 +22,7 @@ pub mod perlin;
 pub mod physics;
 pub mod player;
 pub mod recipe;
+pub mod replication;
 pub mod save;
 pub mod script;
 pub mod server;

@@ -201,6 +201,57 @@ mirror for big mods, rather than from the server.
 copies), when public servers need anti-cheat or accounts, or when
 bandwidth for light or chunks shows up in the `net` report.
 
+*As built in #214*, prediction and replication:
+
+- Movement is the server's, from inputs. A client numbers its input each
+  physics step and steps its player at once; it sends every input the
+  server hasn't confirmed (up to 32, as a datagram), so losing some loses
+  nothing. The server steps the player once per input as they arrive,
+  with the same function (`player::step`), rather than on its own physics
+  steps: a client's clock and the server's never need to agree, and a
+  late input is still applied in order. A player with no inputs (paused,
+  or its client stalled) stands still, even in the air.
+- A client can't step its player faster than time passes: a budget of
+  steps refills at the physics rate (5% over, for jitter), with a burst
+  of 20. What it does with its inputs isn't checked otherwise: a client
+  that sends inputs only ever moves as the physics lets it, but a
+  teleport (a scenario's `camera`, sent with the next input) is taken
+  as it is. Checking that, by permission, comes with players' keys (#216)
+  and server commands.
+- The server answers with where its last applied input left the player;
+  the client compares that with what it had after the same input, and on
+  a difference (beyond 1e-4) puts the player there and steps it again
+  through the inputs since, drawing the difference fading out over about
+  a tenth of a second (more than 4 blocks is a jump). Same world, same
+  steps, same `f64` results: in the tests the client is never put right
+  in normal play, through a tenth of a second of delay and a quarter of
+  messages lost.
+- Only placing is predicted, and conservatively: a client doesn't know
+  which hooks scripts have, so it doesn't predict a use on a block with
+  any script, or with an item that has a script or an action. It checks
+  its own body, not other players', so a block placed into someone is
+  placed and rolled back. Breaking isn't predicted: it takes time the
+  server keeps. The server answers a use's edit after the chunks it
+  changed, on the same stream, so the client takes what the server has
+  once it's answered.
+- A use carries the client's last input; the server queues uses and acts
+  on one a frame, each once it's stepped the player that far (or two
+  seconds have passed), so it checks a placement against the body where
+  the client had it, and none is lost when several arrive at once. A
+  voxel placed into twice before the server answers (a slab, then its
+  other half) is one pending edit: the newest, over what the server had.
+- Replicated entities: each client is told (reliably) of those in the
+  chunks it has, and sent snapshots of all of them, twenty a second, in
+  one message (a datagram when it fits). Clients draw them a tenth of a
+  second behind the server's clock, between the snapshots around it,
+  easing their clock toward that; past the newest they hold rather than
+  extrapolate. Interest is the chunks a client has, the same set as for
+  blocks; entities further than that aren't sent.
+- What's lost or late only shows in the tests through the in-memory
+  harness's `Conditions`: a fixed delay in frames and a share of the
+  unreliable messages dropped, deterministic; not reordering or
+  jitter.
+
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 
 **Context.** Placing a slab on a slab made two slabs in two voxels, and

@@ -37,8 +37,9 @@ use crate::{
     game_mode::{GameMode, harvest, use_up},
     hotbar::{ActiveSlot, Hotbar},
     inventory::Inventory,
+    machine::has_screen,
     physics::{Aabb, Body},
-    use_action::{UseAction, UseStep},
+    use_action::{Use, UseAction, UseStep},
     world::{FLUID_STEPS, RemeshChunks, VoxelFluid, Voxels, filled, fluid_step, fluid_surface},
 };
 
@@ -276,48 +277,20 @@ fn edit_blocks(
             continue;
         };
         action.claim();
-        let camera = using.eyes;
-        let Some(hit) = using.target else {
-            continue;
-        };
         let Some(item) = hotbar.item(*active) else {
             continue;
         };
-        let Some(block) = hotbar.block(*active, &content) else {
-            continue;
-        };
+        let mode = mode.copied().unwrap_or_default();
+        let boxes = bodies.iter().map(Body::aabb);
         let Some(Placing {
             pos,
             block,
-            added,
             replaced,
-        }) = placing(&content, &voxels, hit, block, &camera)
+            ..
+        }) = placing_for(&content, &voxels, &using, hotbar, *active, mode, boxes)
         else {
             continue;
         };
-        // Not into the camera, outside the world, over another block (but
-        // over one placing replaces: air, which may hold fluid, or a
-        // plant), or where what it adds would overlap someone.
-        let overlaps = content.state(added).collision.iter().any(|b| {
-            let b = Aabb::of_block(pos, b);
-            bodies.iter().any(|body| body.aabb().intersects(&b))
-        });
-        // Nor where it can't stand (a flower off the grass).
-        let supported = !content.needs_support(block)
-            || voxels
-                .get(pos - IVec3::Y)
-                .is_some_and(|below| content.supports(block, below));
-        if pos == camera.translation.floor().as_ivec3() || overlaps || !supported {
-            continue;
-        }
-        // In survival, only what you have, and placing uses it up. A fluid
-        // block is creative only: placing one would make fluid from
-        // nothing, so in survival fluid comes only from containers (a
-        // bucket).
-        let mode = mode.copied().unwrap_or_default();
-        if !mode.is_creative() && content.state(block).is_fluid() {
-            continue;
-        }
         let mut inventory = inventory.map(Mut::into_inner);
         if !use_up(mode, inventory.as_deref_mut(), item) {
             continue;
@@ -329,6 +302,75 @@ fn edit_blocks(
         }
         voxels.set(pos, block);
     }
+}
+
+/// What placing the block in hand does for `using`, if it can: where it
+/// goes, the voxel's new state and what it replaces. Not into the eyes,
+/// outside the world, over another block (but over one placing replaces:
+/// air, which may hold fluid, or a plant), where what it adds would
+/// overlap one of `bodies`, or where it can't stand (a flower off the
+/// grass); and a fluid block only in creative, since placing one makes
+/// fluid from nothing. Whether a survival player has one to place is the
+/// caller's to check. The server places by it, and a client predicts by
+/// it.
+pub fn placing_for(
+    content: &Content,
+    voxels: &Voxels,
+    using: &Use,
+    hotbar: &Hotbar,
+    active: ActiveSlot,
+    mode: GameMode,
+    mut bodies: impl Iterator<Item = Aabb>,
+) -> Option<Placing> {
+    let hit = using.target?;
+    let block = hotbar.block(active, content)?;
+    let placing = placing(content, voxels, hit, block, &using.eyes)?;
+    let Placing {
+        pos, block, added, ..
+    } = placing;
+    let boxes: Vec<Aabb> = content
+        .state(added)
+        .collision
+        .iter()
+        .map(|b| Aabb::of_block(pos, b))
+        .collect();
+    let overlaps = bodies.any(|body| boxes.iter().any(|b| body.intersects(b)));
+    let supported = !content.needs_support(block)
+        || voxels
+            .get(pos - IVec3::Y)
+            .is_some_and(|below| content.supports(block, below));
+    let fluid_in_survival = !mode.is_creative() && content.state(block).is_fluid();
+    let into_eyes = pos == using.eyes.translation.floor().as_ivec3();
+    (!into_eyes && !overlaps && supported && !fluid_in_survival).then_some(placing)
+}
+
+/// Whether a step of a use before placing may claim `using` with `item`
+/// in hand, so that nothing's placed: an item that does something (the
+/// wrench, a fluid container, one with a script), a block with a script
+/// (unless sneaking with something in hand, which passes it by), or a
+/// machine with a screen (unless sneaking). A client predicting placing
+/// goes by it: it doesn't know which hooks scripts have, so any script
+/// counts.
+pub fn claimed_before_placing(
+    content: &Content,
+    voxels: &Voxels,
+    using: &Use,
+    item: Option<ItemState>,
+) -> bool {
+    let item = item
+        .and_then(|item| content.item_state(item))
+        .map(|info| &content.items[info.item]);
+    if item.is_some_and(|item| {
+        item.action.is_some() || item.fluid_capacity.is_some() || item.script.is_some()
+    }) {
+        return true;
+    }
+    let Some(target) = using.target.and_then(|hit| voxels.get(hit.block)) else {
+        return false;
+    };
+    let scripted = content.blocks[content.state(target).block].script.is_some();
+    let screen = content.machine(target).is_some_and(has_screen);
+    (scripted && !(using.sneak && item.is_some())) || (screen && !using.sneak)
 }
 
 /// Whether placing `placed` where `replaced` is replaces it: air (which
@@ -364,15 +406,15 @@ fn placement(
 
 /// Where a right click places a block, and what it puts there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Placing {
-    pos: IVec3,
+pub struct Placing {
+    pub pos: IVec3,
     /// The voxel's new state.
-    block: BlockState,
+    pub block: BlockState,
     /// What's new in it: `block`, or the half it adds to a combined one.
-    added: BlockState,
+    pub added: BlockState,
     /// What it replaces, which a survival player gets: a plant, or air
     /// (which may hold fluid). Air too when it fills a half.
-    replaced: BlockState,
+    pub replaced: BlockState,
 }
 
 /// What placing `item_block` (the state the item places) at `hit` from a

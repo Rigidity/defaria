@@ -7,8 +7,8 @@
 //! yet. It also sends the player's own state (inventory, game mode,
 //! mining), which the client puts on the local player.
 //!
-//! The client sends where the local player is, each frame it moves, and
-//! what it does: a use (right click), holding the break button, and its
+//! The client sends what the local player does (its movement is
+//! `prediction`'s): a use (right click), holding the break button, and its
 //! hotbar. Features send anything else (moving items, the game mode) as
 //! [`ToServer`] messages, and read what they need of the server's as
 //! [`FromServer`] ones.
@@ -19,9 +19,8 @@ use crate::session::GameState;
 use defaria_core::{
     hotbar::{ActiveSlot, Hotbar},
     mining::Mining,
-    net::{ClientLink, ClientMessage, PlayerState, Pose, ServerMessage},
-    physics::Body,
-    player::{LocalPlayer, Look, Player},
+    net::{ClientLink, ClientMessage, PlayerState, ServerMessage},
+    player::LocalPlayer,
     streaming::{StreamingSettings, StreamingStatus},
     use_action::UseAction,
     world::{AwaitingNeighbours, ChunkCoord, ChunkMap, spawn_chunk},
@@ -37,6 +36,7 @@ impl Plugin for ClientNetPlugin {
             .init_resource::<ServerSettled>()
             .add_message::<ToServer>()
             .add_message::<FromServer>()
+            .add_message::<ChunkReceived>()
             .add_observer(give_the_player_mining)
             .add_systems(OnExit(GameState::Playing), forget_the_server)
             .add_systems(
@@ -47,9 +47,7 @@ impl Plugin for ClientNetPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (send_pose, send_intents, send_messages)
-                    .chain()
-                    .in_set(SendSystems),
+                (send_intents, send_messages).chain().in_set(SendSystems),
             );
     }
 }
@@ -69,6 +67,11 @@ pub struct ServerConnection(pub ClientLink);
 /// A message for the server, sent at the end of the frame.
 #[derive(Message, Debug, Clone)]
 pub struct ToServer(pub ClientMessage);
+
+/// A chunk arrived or changed from the server this frame (once its
+/// `Chunk` is in place).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct ChunkReceived(pub IVec3);
 
 /// A message from the server that features act on (screens): everything
 /// but chunks and the player's state, which this module applies.
@@ -137,6 +140,7 @@ fn receive(
         With<LocalPlayer>,
     >,
     mut forward: MessageWriter<FromServer>,
+    mut received: MessageWriter<ChunkReceived>,
 ) {
     let Some(mut connection) = connection else {
         return;
@@ -159,10 +163,12 @@ fn receive(
                     (light, DespawnOnExit(GameState::Playing)),
                 );
                 touched.insert(coord.0);
+                received.write(ChunkReceived(coord.0));
             }
             ServerMessage::ChunkChanged { coord, chunk } => {
                 if let Some(entity) = map.get(coord) {
                     commands.entity(entity).insert(chunk);
+                    received.write(ChunkReceived(coord.0));
                 }
             }
             ServerMessage::LightChanged { coord, light } => {
@@ -266,43 +272,14 @@ fn update_awaiting(mut commands: Commands, map: Res<ChunkMap>, touched: Option<R
     commands.remove_resource::<Touched>();
 }
 
-/// How long a pose that hasn't changed goes before it's sent again: poses
-/// cross the network unreliably, so the last of a movement may be lost.
-const POSE_AGAIN: f32 = 0.5;
-
-/// Sends where the local player is when it's moved or turned, and every
-/// [`POSE_AGAIN`] seconds while it hasn't.
-fn send_pose(
-    mut connection: Option<ResMut<ServerConnection>>,
-    player: Query<(&Body, &Look, &Player), With<LocalPlayer>>,
-    time: Res<Time<Real>>,
-    mut last: Local<Option<Pose>>,
-    mut since: Local<f32>,
-) {
-    let (Some(connection), Ok((body, look, player))) = (&mut connection, player.single()) else {
-        return;
-    };
-    let pose = Pose {
-        feet: body.position,
-        velocity: body.velocity,
-        on_ground: body.on_ground,
-        look: *look,
-        player: player.clone(),
-    };
-    *since += time.delta_secs();
-    if last.as_ref() != Some(&pose) || *since >= POSE_AGAIN {
-        *since = 0.0;
-        *last = Some(pose.clone());
-        connection.0.send(ClientMessage::Pose(pose));
-    }
-}
-
 /// Sends what the local player does: a use (which the server's steps act
 /// on, so the client's is claimed here), holding the break button, and
 /// its hotbar when they change.
 fn send_intents(
     mut connection: Option<ResMut<ServerConnection>>,
     joined: Res<Joined>,
+    mut edits: Option<ResMut<crate::edit_prediction::PredictedEdits>>,
+    prediction: Option<Res<crate::prediction::Prediction>>,
     mut player: Query<
         (
             &mut UseAction,
@@ -320,7 +297,11 @@ fn send_intents(
         return;
     };
     if let Some(using) = action.pending() {
-        connection.0.send(ClientMessage::Use(using));
+        let edit = edits.as_mut().and_then(|edits| edits.this_use.take());
+        let tick = prediction
+            .as_ref()
+            .map_or(0, |prediction| prediction.tick());
+        connection.0.send(ClientMessage::Use { using, tick, edit });
         action.claim();
     }
     let holding = mining.is_some_and(|mining| mining.holding);
@@ -362,7 +343,7 @@ mod tests {
         inventory::{Inventory, ItemStack},
         light::ChunkLight,
         net::{ServerLink, link},
-        player::local_player,
+        player::{Look, local_player},
         use_action::Use,
         world::{Chunk, WorldPlugin},
     };
@@ -527,7 +508,11 @@ mod tests {
         app.world_mut().get_mut::<Mining>(player).unwrap().holding = true;
         app.update();
         let sent = server.receive();
-        assert!(sent.contains(&ClientMessage::Use(using)));
+        assert!(sent.contains(&ClientMessage::Use {
+            using,
+            tick: 0,
+            edit: None
+        }));
         assert!(sent.contains(&ClientMessage::Mining(true)));
         assert_eq!(
             app.world().get::<UseAction>(player).unwrap().pending(),

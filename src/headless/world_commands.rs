@@ -21,7 +21,7 @@ use defaria_core::{
     inventory::{Inventory, ItemStack},
     machine::{Slots, Tanks},
     physics::Body,
-    player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player, put_eyes},
+    player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player, Teleported, put_eyes},
     script::random_tick::RandomTicks,
     streaming::{ChunkLoader, StreamingSettings, loader_chunk},
     world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, VoxelFluid, Voxels},
@@ -488,8 +488,10 @@ pub(super) fn network_report(world: &World, pos: IVec3) -> String {
 /// `pitch`, flying, so the view stays put.
 fn place_camera(
     In((position, yaw, pitch)): In<(Vec3, f32, f32)>,
+    mut commands: Commands,
     mut players: Query<
         (
+            Entity,
             &mut Look,
             &mut Transform,
             &mut Player,
@@ -499,7 +501,7 @@ fn place_camera(
         With<LocalPlayer>,
     >,
 ) -> Result<(), String> {
-    let (mut look, mut transform, mut player, mut body, bob) = players
+    let (entity, mut look, mut transform, mut player, mut body, bob) = players
         .single_mut()
         .map_err(|error| format!("camera: {error}"))?;
     // The body turns to face the look as the frame is drawn.
@@ -515,6 +517,8 @@ fn place_camera(
         bob.settle();
     }
     put_eyes(position.as_dvec3(), EYE_HEIGHT, &mut body, &mut transform);
+    // The server puts it there too, with its next input.
+    commands.entity(entity).insert(Teleported);
     Ok(())
 }
 
