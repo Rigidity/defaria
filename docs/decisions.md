@@ -617,8 +617,9 @@ that set off ever more edits can't use up memory. One pool for every
 mod, and its size and the tick's 4 ms, are provisional, for the user to
 confirm. A block's errors
 disable its voxel (`Caller::Block`) until another block is placed there.
-Using a scripted block is a right click handled in `BlockUseSystems`,
-as machine screens and the wrench are, taking the click: after the
+Using a scripted block is a step of a right click's use
+(`use_action::UseStep`), as machine screens and the wrench are, claiming
+the use: after the
 wrench (an item's action in hand wins) and before a machine's screen
 (so a scripted machine's `on_used` replaces its screen); using a
 scripted item comes after every block use, so a block that does
@@ -872,8 +873,8 @@ be filled by hand (any group but a recipe machine's outputs;
 provisional, for the user to confirm: the other way is a filter in the
 definition saying which groups hands fill). Fluid shows in litres (a
 block of fluid is a cubic metre). Using a block is a right click handled in
-`BlockUseSystems`, before placing, which takes the click so nothing is
-placed; **Shift with right click places** against a machine instead.
+a step of its use (`use_action::UseStep::Screen`), before placing,
+which claims the use so nothing is placed; **Shift with right click places** against a machine instead.
 Only machines with slots, tanks or recipes have a screen: one with just
 an energy buffer (a powered lamp, a battery) would show a single bar, and
 taking right click from it would make placing against it need Shift, so

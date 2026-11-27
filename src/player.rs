@@ -346,6 +346,7 @@ pub struct PlayerMovement;
 /// camera (`fly_camera`) is its child.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
 #[reflect(Component)]
+#[require(crate::use_action::UseAction)]
 pub struct LocalPlayer;
 
 /// The player's movement state. Its [`Body`] is on the same entity.

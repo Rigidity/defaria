@@ -13,24 +13,19 @@
 //! An item does this when its file says `action: "wrench"`. The faces are
 //! kept in the conduit's block entity, as [`BlockedFaces`] (a part this
 //! plugin adds), which `connections` reads, so the connection properties, the arms drawn and
-//! the networks all follow. A wrench places nothing. Its click is a use
-//! of the block, in [`BlockUseSystems`] before the others: with a wrench
-//! in hand, right click on any block is the wrench's, so it never opens a
-//! machine's screen.
+//! the networks all follow. A wrench places nothing. Its use comes first
+//! ([`UseStep::Wrench`]): with a wrench in hand, right click on any block
+//! is the wrench's, so it never opens a machine's screen.
 
-use bevy::{
-    prelude::*,
-    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
-};
+use bevy::prelude::*;
 
 use crate::{
-    block_edit::{BlockUseSystems, Hit, crosshair_target, ray_box, target_shape},
+    block_edit::{Hit, ray_box, target_shape},
     block_entity::{BlockEntities, RegisterBlockEntityPart},
     connections::{Blocked, BlockedFaces},
     content::{BlockBox, BlockState, Content, Direction, ItemAction},
     hotbar::{ActiveSlot, Hotbar},
-    machine::screen::open_machine_screen,
-    player::{Eyes, LocalPlayer},
+    use_action::{UseAction, UseStep},
     world::Voxels,
 };
 
@@ -39,13 +34,7 @@ pub struct WrenchPlugin;
 impl Plugin for WrenchPlugin {
     fn build(&self, app: &mut App) {
         app.register_block_entity_part::<BlockedFaces>()
-            .add_systems(
-                Update,
-                use_wrench
-                    .in_set(BlockUseSystems)
-                    // Without a sync point, as the set has none.
-                    .before_ignore_deferred(open_machine_screen),
-            );
+            .add_systems(Update, use_wrench.in_set(UseStep::Wrench));
     }
 }
 
@@ -135,47 +124,41 @@ fn wrench_target(
 }
 
 /// Blocks or opens the face of the conduit that the wrench is aimed at
-/// ([`wrench_target`]), on right click. It takes every right click on a
-/// block while in hand, whether it turns a face or not.
-pub(crate) fn use_wrench(
+/// ([`wrench_target`]), on a use. It claims every use on a block while in
+/// hand, whether it turns a face or not.
+fn use_wrench(
     mut commands: Commands,
-    mut mouse: ResMut<ButtonInput<MouseButton>>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    eyes: Single<Eyes, With<LocalPlayer>>,
-    player: Option<Single<(&Hotbar, &ActiveSlot), With<LocalPlayer>>>,
+    mut players: Query<(&mut UseAction, &Hotbar, &ActiveSlot)>,
     content: Res<Content>,
     voxels: Voxels,
     index: Res<BlockEntities>,
     blocked: Blocked,
 ) {
-    let camera = eyes.transform();
-    if cursor.grab_mode == CursorGrabMode::None || !mouse.just_pressed(MouseButton::Right) {
-        return;
+    for (mut action, hotbar, active) in &mut players {
+        let Some(using) = action.pending() else {
+            continue;
+        };
+        if !is_wrench(&content, hotbar, *active) {
+            continue;
+        }
+        let Some(hit) = using.target else {
+            continue;
+        };
+        action.claim();
+        let ray = Ray3d::new(using.eyes.translation, using.eyes.forward());
+        let at = |pos| blocked.at(pos);
+        let Some((pos, side)) = wrench_target(&content, &voxels, at, ray, hit) else {
+            continue;
+        };
+        let Some(entity) = index.get(pos) else {
+            continue;
+        };
+        // Taken off whole, still blocked, so what's around it is put right.
+        match turned(Some(blocked.at(pos)), side) {
+            Some(faces) => commands.entity(entity).insert(faces),
+            None => commands.entity(entity).remove::<BlockedFaces>(),
+        };
     }
-    let Some(player) = player else {
-        return;
-    };
-    let (hotbar, active) = player.into_inner();
-    if !is_wrench(&content, hotbar, *active) {
-        return;
-    }
-    let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
-        return;
-    };
-    mouse.clear_just_pressed(MouseButton::Right);
-    let ray = Ray3d::new(camera.translation, camera.forward());
-    let at = |pos| blocked.at(pos);
-    let Some((pos, side)) = wrench_target(&content, &voxels, at, ray, hit) else {
-        return;
-    };
-    let Some(entity) = index.get(pos) else {
-        return;
-    };
-    // Taken off whole, still blocked, so what's around it is put right.
-    match turned(Some(blocked.at(pos)), side) {
-        Some(faces) => commands.entity(entity).insert(faces),
-        None => commands.entity(entity).remove::<BlockedFaces>(),
-    };
 }
 
 #[cfg(test)]

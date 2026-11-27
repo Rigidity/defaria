@@ -34,18 +34,15 @@
 //! What doesn't fit where it's poured stays in the container; flow spreads
 //! what does. Taking and pouring go through `fluid_network::world`'s
 //! [`take`] and [`pour`], as pumps and outlets do, so flow wakes around
-//! what changes. The click is a use of the block, in [`BlockUseSystems`],
-//! after the wrench and before scripted blocks and machine screens. It's
-//! taken whenever the click was the container's, even if nothing moved
-//! (at the weight limit, say), and passed on otherwise.
+//! what changes. The click is a use ([`UseStep::Container`]), after the
+//! wrench and before scripted blocks and machine screens. It's claimed
+//! whenever the click was the container's, even if nothing moved (at the
+//! weight limit, say), and passed on otherwise.
 
-use bevy::{
-    prelude::*,
-    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
-};
+use bevy::prelude::*;
 
 use crate::{
-    block_edit::{BlockUseSystems, Hit, fluid_target},
+    block_edit::{Hit, fluid_target},
     block_entity::BlockEntities,
     content::{BlockState, Content, ItemState},
     fluid_network::{
@@ -54,30 +51,18 @@ use crate::{
     },
     hotbar::{ActiveSlot, Hotbar},
     inventory::{Inventory, ItemStack, model::ItemData},
-    machine::{
-        Tank, Tanks,
-        screen::{has_screen, open_machine_screen},
-    },
-    player::{Eyes, LocalPlayer},
-    script::{ScriptIndex, using::use_scripted_block},
+    machine::{Tank, Tanks, screen::has_screen},
+    script::ScriptIndex,
     ui::SlotFluid,
+    use_action::{UseAction, UseStep},
     world::Voxels,
-    wrench::use_wrench,
 };
 
 pub struct FluidContainerPlugin;
 
 impl Plugin for FluidContainerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            use_container
-                .in_set(BlockUseSystems)
-                // Without sync points, as the set has none.
-                .after_ignore_deferred(use_wrench)
-                .before_ignore_deferred(use_scripted_block)
-                .before_ignore_deferred(open_machine_screen),
-        );
+        app.add_systems(Update, use_container.in_set(UseStep::Container));
     }
 }
 
@@ -432,58 +417,66 @@ fn in_hand(content: &Content, hotbar: &Hotbar, active: ActiveSlot) -> Option<(It
     Some((item, capacity(content, item)?))
 }
 
-/// Right click with a fluid container in hand: takes or pours (see the
-/// module docs), taking the click when it's the container's.
+/// A use with a fluid container in hand: takes or pours (see the module
+/// docs), claiming the use when it's the container's.
 fn use_container(
-    mut mouse: ResMut<ButtonInput<MouseButton>>,
-    keys: Res<ButtonInput<KeyCode>>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    eyes: Single<Eyes, With<LocalPlayer>>,
-    player: Option<Single<(&Hotbar, &ActiveSlot, &mut Inventory), With<LocalPlayer>>>,
+    mut players: Query<(&mut UseAction, &Hotbar, &ActiveSlot, &mut Inventory)>,
     content: Res<Content>,
     scripts: Option<Res<ScriptIndex>>,
     mut voxels: Voxels,
     index: Res<BlockEntities>,
     mut tanks: Query<&mut Tanks>,
 ) {
-    if cursor.grab_mode == CursorGrabMode::None || !mouse.just_pressed(MouseButton::Right) {
-        return;
-    }
-    let Some(player) = player else {
-        return;
-    };
-    let (hotbar, active, mut inventory) = player.into_inner();
-    let Some((item, capacity)) = in_hand(&content, hotbar, *active) else {
-        return;
-    };
-    let Some(hit) = fluid_target(&eyes.transform(), &content, &voxels) else {
-        return;
-    };
-    let pour_only = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    let inventory = inventory.as_mut();
-    let taken = if let Some(mut tanks) = index.get(hit.block).and_then(|e| tanks.get_mut(e).ok()) {
-        use_on_tanks(&content, inventory, item, capacity, &mut tanks, pour_only)
-    } else {
-        let usable = |state| {
-            content.machine(state).is_some_and(has_screen)
-                || scripts
-                    .as_ref()
-                    .is_some_and(|scripts| scripts.is_usable(&content, state))
+    for (mut action, hotbar, active, mut inventory) in &mut players {
+        let Some(using) = action.pending() else {
+            continue;
         };
-        use_on_world(
+        let Some((item, capacity)) = in_hand(&content, hotbar, *active) else {
+            continue;
+        };
+        let Some(hit) = fluid_target(&using.eyes, &content, &voxels) else {
+            continue;
+        };
+        let used = use_at(
             &content,
+            scripts.as_deref(),
             &mut voxels,
-            inventory,
-            item,
-            capacity,
+            &index,
+            &mut tanks,
+            inventory.as_mut(),
+            (item, capacity),
             hit,
-            pour_only,
-            usable,
-        )
-    };
-    if taken {
-        mouse.clear_just_pressed(MouseButton::Right);
+            using.sneak,
+        );
+        if used {
+            action.claim();
+        }
     }
+}
+
+/// Takes or pours with `item` (holding `capacity`) at `hit`, pouring only
+/// if `pour_only`: whether the use was the container's.
+fn use_at(
+    content: &Content,
+    scripts: Option<&ScriptIndex>,
+    voxels: &mut Voxels,
+    index: &BlockEntities,
+    tanks: &mut Query<&mut Tanks>,
+    inventory: &mut Inventory,
+    (item, capacity): (ItemState, u64),
+    hit: Hit,
+    pour_only: bool,
+) -> bool {
+    if let Some(mut tanks) = index.get(hit.block).and_then(|e| tanks.get_mut(e).ok()) {
+        return use_on_tanks(content, inventory, item, capacity, &mut tanks, pour_only);
+    }
+    let usable = |state| {
+        content.machine(state).is_some_and(has_screen)
+            || scripts.is_some_and(|scripts| scripts.is_usable(content, state))
+    };
+    use_on_world(
+        content, voxels, inventory, item, capacity, hit, pour_only, usable,
+    )
 }
 
 #[cfg(test)]

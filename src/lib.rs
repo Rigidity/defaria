@@ -37,6 +37,7 @@ mod support;
 #[cfg(test)]
 mod testing;
 pub mod ui;
+mod use_action;
 mod view_bob;
 mod voxel_material;
 mod world;
@@ -91,6 +92,7 @@ impl Plugin for GamePlugin {
             wrench::WrenchPlugin,
             fluid_container::FluidContainerPlugin,
             support::SupportPlugin,
+            use_action::UseActionPlugin,
         ));
     }
 }
