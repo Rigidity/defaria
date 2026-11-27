@@ -432,3 +432,77 @@ fn far_chunks_sort_at_staggered_places() {
     }
     assert!(places.len() >= 8, "only {} different places", places.len());
 }
+
+/// Drawing on top of core's test apps: meshes, and the material they use.
+fn with_meshing(app: &mut App) {
+    app.add_plugins(MeshingPlugin)
+        .init_asset::<Mesh>()
+        .insert_resource(BlockMaterial::unloaded(Handle::default()));
+}
+
+/// The chunk's mesh.
+fn mesh_of(app: &App, coord: IVec3) -> Option<AssetId<Mesh>> {
+    let entity = app.world().resource::<ChunkMap>().get(ChunkCoord(coord))?;
+    app.world().get::<Mesh3d>(entity).map(|mesh| mesh.id())
+}
+
+fn set_voxel(app: &mut App, pos: IVec3, state: BlockState) {
+    app.world_mut()
+        .run_system_once(move |mut voxels: Voxels| {
+            assert!(voxels.set(pos, state));
+        })
+        .unwrap();
+    app.update();
+    finish_meshing(app);
+}
+
+/// A lamp's light reaching into a chunk its edit didn't touch remeshes
+/// that chunk too, from the light changing alone; chunks out of reach
+/// keep their meshes.
+#[test]
+fn light_changes_remesh_the_chunks_they_reach() {
+    let mut app = defaria_core::testing::patch_app(base().clone());
+    with_meshing(&mut app);
+    finish_meshing(&mut app);
+    // High in the air, where the terrain doesn't reach: a stone in the
+    // middle of one chunk, and a lamp 3 voxels into the next.
+    let (lit, lamp_chunk) = (IVec3::new(1, 3, 2), IVec3::new(2, 3, 2));
+    let origin = |coord: IVec3| coord * CHUNK_SIZE as i32;
+    set_voxel(&mut app, origin(lit) + IVec3::splat(8), block("stone"));
+    let before = mesh_of(&app, lit).expect("the stone has a mesh");
+    let far = IVec3::new(7, 0, 7);
+    let far_before = mesh_of(&app, far);
+    assert!(far_before.is_some());
+
+    set_voxel(
+        &mut app,
+        origin(lamp_chunk) + IVec3::new(3, 8, 8),
+        block("red_lamp"),
+    );
+    assert_ne!(
+        mesh_of(&app, lit),
+        Some(before),
+        "lit chunk wasn't remeshed"
+    );
+    assert_eq!(mesh_of(&app, far), far_before, "far chunk was remeshed");
+}
+
+/// Streamed in, the chunks with every chunk around them loaded are drawn,
+/// and only those: the edge of what's loaded waits for its neighbours.
+#[test]
+fn streamed_chunks_are_drawn_once_their_neighbours_load() {
+    let app = defaria_core::testing::world_app(base().clone())
+        .with(with_meshing)
+        .build();
+    let mut chunks = app
+        .world()
+        .try_query::<(&ChunkCoord, Has<Meshed>, Has<AwaitingNeighbours>)>()
+        .unwrap();
+    let (mut drawn, mut waiting) = (0, 0);
+    for (coord, meshed, awaiting) in chunks.iter(app.world()) {
+        assert_eq!(meshed, !awaiting, "{coord:?}");
+        drawn += meshed as usize;
+        waiting += awaiting as usize;
+    }
+    assert!(drawn > 0 && waiting > 0, "{drawn} drawn, {waiting} waiting");
+}
