@@ -11,6 +11,7 @@ mod machine_screen;
 mod menus;
 mod multiplayer;
 mod player_save;
+mod prediction;
 mod script;
 mod support;
 mod ui;

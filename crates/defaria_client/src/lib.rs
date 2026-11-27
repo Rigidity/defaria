@@ -18,6 +18,7 @@ pub mod meshing;
 pub mod net;
 pub mod others;
 pub mod pause;
+pub mod prediction;
 pub mod session;
 pub mod ui;
 pub mod view_bob;

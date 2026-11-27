@@ -4,11 +4,14 @@
 //!
 //! A server app owns the world: it generates, loads, simulates and saves
 //! it, and decides everything. A client app draws what it's sent and sends
-//! what its player does: where it is ([`ClientMessage::Pose`]) and its
-//! intents (a use, holding the break button, the hotbar). Single player
-//! runs both, in one process, over a [`Link`] in memory.
+//! what its player does: what it pressed and where it looked each physics
+//! step ([`ClientMessage::Inputs`]), and its intents (a use, holding the
+//! break button, the hotbar). Single player runs both, in one process,
+//! over a [`Link`] in memory; `quic` carries them over the network.
 //!
-//! Messages go as Rust values for now; #51 encodes them for the network.
+//! Each message is reliable (it arrives, in order with the others of its
+//! kind) or not ([`ClientMessage::reliable`]): what's sent again and again,
+//! where only the newest matters, may be lost.
 
 use std::sync::{
     Mutex,
@@ -24,7 +27,7 @@ use crate::{
     inventory::{Inventory, ItemStack},
     light::ChunkLight,
     machine::{EnergyBuffer, MachineActive, Slots, Tanks},
-    player::{Look, Player},
+    player::{Controls, Look, Motion},
     recipe::RecipeProgress,
     use_action::Use,
     world::{Chunk, ChunkCoord},
@@ -33,8 +36,11 @@ use crate::{
 /// What a client sends its server.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ClientMessage {
-    /// Where its player is and which way it looks; the client moves it.
-    Pose(Pose),
+    /// The player's inputs for the physics steps the server hasn't said
+    /// it's applied yet, oldest first. Each is sent until the server says
+    /// it's applied it ([`ServerMessage::Moved`]), so losing some of these
+    /// loses nothing.
+    Inputs(Vec<Input>),
     /// The player used something (right click), as `use_action` acts on.
     Use(Use),
     /// Whether the player holds the break button ([`Mining::holding`]).
@@ -55,15 +61,24 @@ pub enum ClientMessage {
     Paused(bool),
 }
 
-/// A player's place, what it's doing and which way it looks.
+impl ClientMessage {
+    /// Whether it must arrive: all but [`ClientMessage::Inputs`], which are
+    /// sent again until they're applied.
+    pub fn reliable(&self) -> bool {
+        !matches!(self, ClientMessage::Inputs(_))
+    }
+}
+
+/// A player's input for one physics step: what it pressed and which way it
+/// looked, numbered from 1 in the order they're stepped.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Pose {
-    /// Its feet.
-    pub feet: DVec3,
-    pub velocity: DVec3,
-    pub on_ground: bool,
+pub struct Input {
+    pub tick: u32,
+    pub controls: Controls,
     pub look: Look,
-    pub player: Player,
+    /// Where the player was put before this step, if it was (a scenario's
+    /// `camera`): the server puts it there too.
+    pub teleport: Option<Motion>,
 }
 
 /// A move of items the player asks for, from a screen.
@@ -123,6 +138,11 @@ pub enum ServerMessage {
     },
     /// Whether everything in the client's range is loaded and sent.
     Settled(bool),
+    /// Where the server has the client's player after the last of its
+    /// inputs it's applied (tick 0 for none yet): what the client predicted
+    /// from it is checked against this. Not reliable: it's sent again as
+    /// the player moves.
+    Moved { tick: u32, motion: Motion },
     /// Open the screen of the machine at this voxel, in this state.
     OpenScreen { pos: IVec3, state: BlockState },
     /// What the machine whose screen is open holds, when it changes.
@@ -132,6 +152,14 @@ pub enum ServerMessage {
     /// The other players, where they are and which way they look, when
     /// any of that changes.
     Players(Vec<OtherPlayer>),
+}
+
+impl ServerMessage {
+    /// Whether it must arrive: all but [`ServerMessage::Moved`], which is
+    /// sent again as things move.
+    pub fn reliable(&self) -> bool {
+        !matches!(self, ServerMessage::Moved { .. })
+    }
 }
 
 /// Another player, as a client sees it.

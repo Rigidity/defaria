@@ -125,7 +125,8 @@ pub use runner::HeadlessPlugin;
 pub use script::Script;
 #[cfg(test)]
 pub use test_app::{
-    Multiplayer, run_more, server, server_world, settle, test_client, test_game, test_multiplayer,
+    Conditions, Multiplayer, run_more, server, server_world, settle, test_client, test_game,
+    test_multiplayer, test_multiplayer_over,
 };
 
 /// Fixed time step for every headless frame.

@@ -66,6 +66,7 @@ impl Plugin for ClientPlugin {
             menu::MenuPlugin,
             pause::PausePlugin,
             others::OthersPlugin,
+            prediction::PredictionPlugin,
         ));
     }
 }

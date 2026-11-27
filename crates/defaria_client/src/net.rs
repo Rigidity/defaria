@@ -7,8 +7,8 @@
 //! yet. It also sends the player's own state (inventory, game mode,
 //! mining), which the client puts on the local player.
 //!
-//! The client sends where the local player is, each frame it moves, and
-//! what it does: a use (right click), holding the break button, and its
+//! The client sends what the local player does (its movement is
+//! `prediction`'s): a use (right click), holding the break button, and its
 //! hotbar. Features send anything else (moving items, the game mode) as
 //! [`ToServer`] messages, and read what they need of the server's as
 //! [`FromServer`] ones.
@@ -19,9 +19,8 @@ use crate::session::GameState;
 use defaria_core::{
     hotbar::{ActiveSlot, Hotbar},
     mining::Mining,
-    net::{ClientLink, ClientMessage, PlayerState, Pose, ServerMessage},
-    physics::Body,
-    player::{LocalPlayer, Look, Player},
+    net::{ClientLink, ClientMessage, PlayerState, ServerMessage},
+    player::LocalPlayer,
     streaming::{StreamingSettings, StreamingStatus},
     use_action::UseAction,
     world::{AwaitingNeighbours, ChunkCoord, ChunkMap, spawn_chunk},
@@ -47,9 +46,7 @@ impl Plugin for ClientNetPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (send_pose, send_intents, send_messages)
-                    .chain()
-                    .in_set(SendSystems),
+                (send_intents, send_messages).chain().in_set(SendSystems),
             );
     }
 }
@@ -266,37 +263,6 @@ fn update_awaiting(mut commands: Commands, map: Res<ChunkMap>, touched: Option<R
     commands.remove_resource::<Touched>();
 }
 
-/// How long a pose that hasn't changed goes before it's sent again: poses
-/// cross the network unreliably, so the last of a movement may be lost.
-const POSE_AGAIN: f32 = 0.5;
-
-/// Sends where the local player is when it's moved or turned, and every
-/// [`POSE_AGAIN`] seconds while it hasn't.
-fn send_pose(
-    mut connection: Option<ResMut<ServerConnection>>,
-    player: Query<(&Body, &Look, &Player), With<LocalPlayer>>,
-    time: Res<Time<Real>>,
-    mut last: Local<Option<Pose>>,
-    mut since: Local<f32>,
-) {
-    let (Some(connection), Ok((body, look, player))) = (&mut connection, player.single()) else {
-        return;
-    };
-    let pose = Pose {
-        feet: body.position,
-        velocity: body.velocity,
-        on_ground: body.on_ground,
-        look: *look,
-        player: player.clone(),
-    };
-    *since += time.delta_secs();
-    if last.as_ref() != Some(&pose) || *since >= POSE_AGAIN {
-        *since = 0.0;
-        *last = Some(pose.clone());
-        connection.0.send(ClientMessage::Pose(pose));
-    }
-}
-
 /// Sends what the local player does: a use (which the server's steps act
 /// on, so the client's is claimed here), holding the break button, and
 /// its hotbar when they change.
@@ -362,7 +328,7 @@ mod tests {
         inventory::{Inventory, ItemStack},
         light::ChunkLight,
         net::{ServerLink, link},
-        player::local_player,
+        player::{Look, local_player},
         use_action::Use,
         world::{Chunk, WorldPlugin},
     };

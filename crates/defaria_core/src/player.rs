@@ -184,15 +184,12 @@ impl Plugin for PlayerPlugin {
             .register_type::<Look>()
             .register_type::<Controls>()
             .configure_sets(FixedUpdate, ReadControls.before(PlayerMovement))
-            .add_systems(
-                FixedUpdate,
-                (move_player, ease_eye_height)
-                    .chain()
-                    .in_set(PlayerMovement),
-            )
+            .add_systems(FixedUpdate, move_players.in_set(PlayerMovement))
             .add_systems(
                 RunFixedMainLoop,
-                place_the_player.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
+                place_the_player
+                    .in_set(PlacePlayers)
+                    .in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
             )
             // Whatever turned the look this frame (the mouse, a script's
             // `camera`), the body faces it when it's drawn. Nothing else
@@ -283,7 +280,9 @@ impl Look {
 
 /// What a player is trying to do, for its next physics step: for the local
 /// player, the keys held.
-#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+#[derive(
+    Component, Reflect, Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[reflect(Component)]
 pub struct Controls {
     /// Forward (+1) or back (−1), relative to where it faces.
@@ -298,6 +297,72 @@ pub struct Controls {
     /// Start or stop flying, on the next physics step, which clears it.
     pub toggle_fly: bool,
 }
+
+/// Where a player is and how it's moving: all a physics step starts from
+/// but its [`Controls`] and [`Look`]. What a client's prediction and the
+/// server compare.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Motion {
+    pub feet: DVec3,
+    pub velocity: DVec3,
+    pub on_ground: bool,
+    pub flying: bool,
+    pub sneaking: bool,
+    pub sprinting: bool,
+    pub eye_height: f64,
+}
+
+/// How far apart two [`Motion`]s may be and still count as the same: far
+/// below what anyone sees, far above the rounding of the same steps.
+const MOTION_TOLERANCE: f64 = 1e-4;
+
+impl Motion {
+    /// A player's.
+    pub fn of(body: &Body, player: &Player) -> Self {
+        Self {
+            feet: body.position,
+            velocity: body.velocity,
+            on_ground: body.on_ground,
+            flying: player.flying,
+            sneaking: player.sneaking,
+            sprinting: player.sprinting,
+            eye_height: player.eye_height,
+        }
+    }
+
+    /// Puts a player in this motion at once, with nothing drawn between
+    /// where it was and here.
+    pub fn put(&self, body: &mut Body, player: &mut Player) {
+        body.position = self.feet;
+        body.previous = self.feet;
+        body.velocity = self.velocity;
+        body.on_ground = self.on_ground;
+        player.flying = self.flying;
+        player.sneaking = self.sneaking;
+        player.sprinting = self.sprinting;
+        player.eye_height = self.eye_height;
+        player.previous_eye_height = self.eye_height;
+    }
+
+    /// Whether `other` is this one, but for rounding.
+    pub fn matches(&self, other: &Motion) -> bool {
+        self.feet.distance(other.feet) <= MOTION_TOLERANCE
+            && self.velocity.distance(other.velocity) <= MOTION_TOLERANCE
+            && (self.eye_height - other.eye_height).abs() <= MOTION_TOLERANCE
+            && (self.on_ground, self.flying, self.sneaking, self.sprinting)
+                == (
+                    other.on_ground,
+                    other.flying,
+                    other.sneaking,
+                    other.sprinting,
+                )
+    }
+}
+
+/// The local player was put somewhere (a scenario's `camera`): its next
+/// input tells the server, which puts it there too.
+#[derive(Component, Debug, Default)]
+pub struct Teleported;
 
 /// Where a player's eyes are and which way they look: what it aims from.
 #[derive(QueryData)]
@@ -331,6 +396,11 @@ pub struct ReadControls;
 /// player moved runs after it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerMovement;
+
+/// Where players are put where they're drawn, between their last two
+/// physics steps, after the fixed main loop.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlacePlayers;
 
 /// The player this game is played as, as opposed to other players and
 /// mobs. Features that act for whoever is playing (the hotbar, the
@@ -381,134 +451,175 @@ fn drift(velocity: f64, accel: f64, decay: f64, dt: f64) -> (f64, f64) {
     (new, distance)
 }
 
-/// One physics step of each player: its controls to velocity, then
-/// through the world.
-fn move_player(
+/// One physics step of each player that moves itself (not one a server
+/// moves from its client's inputs: [`MovedByInputs`]).
+fn move_players(
     time: Res<Time>,
     shapes: WorldShapes,
     fluids: FluidView,
-    mut players: Query<(&Look, &mut Controls, &mut Player, &mut Body)>,
+    mut players: Query<(&Look, &mut Controls, &mut Player, &mut Body), Without<MovedByInputs>>,
 ) {
     let dt = time.delta_secs_f64();
     for (look, mut controls, mut player, mut body) in &mut players {
-        if dt == 0.0 {
-            continue;
-        }
-        if controls.toggle_fly {
-            controls.toggle_fly = false;
-            player.flying = !player.flying;
-            body.velocity.y = 0.0;
-        }
-        let Controls {
-            forward: forward_input,
-            right: right_input,
-            jump,
-            sneak: shift,
-            sprint,
-            toggle_fly: _,
-        } = *controls;
-        // In the unloaded world, wait for it to load.
-        if shapes.shape(body.position.floor().as_ivec3()).is_none() {
-            body.velocity = DVec3::ZERO;
-            continue;
-        }
-        player.sneaking = shift && !player.flying;
-        player.sprinting = sprint && forward_input > 0.0 && !player.sneaking;
+        step(
+            dt,
+            look,
+            &mut controls,
+            &mut player,
+            &mut body,
+            &shapes,
+            &fluids,
+        );
+    }
+}
 
-        // Horizontal movement follows yaw only.
-        let yaw = DQuat::from_rotation_y(look.yaw as f64);
-        let forward = yaw * DVec3::NEG_Z;
-        let right = yaw * DVec3::X;
-        let wish = (forward * forward_input + right * right_input).normalize_or_zero();
+/// A player a server moves a step for each of its client's inputs as they
+/// arrive, rather than each physics step of its own.
+#[derive(Component, Debug, Default)]
+pub struct MovedByInputs;
 
-        let (rule, mut boost) = if player.flying {
-            (FLY, if player.sprinting { 2.0 } else { 1.0 })
-        } else if body.on_ground {
-            (WALK, 1.0)
-        } else {
-            (AIR, 1.0)
-        };
-        if player.sneaking {
-            boost *= SNEAK;
+/// One physics step of `dt` seconds of a player: its controls to velocity,
+/// then through the world, and its eyes eased toward their height. The
+/// same on a client predicting its own player and on the server: given the
+/// same world, state and inputs, they come out the same.
+pub fn step(
+    dt: f64,
+    look: &Look,
+    controls: &mut Controls,
+    player: &mut Player,
+    body: &mut Body,
+    shapes: &WorldShapes,
+    fluids: &FluidView,
+) {
+    move_player(dt, look, controls, player, body, shapes, fluids);
+    ease_eye_height(dt, player);
+}
+
+/// The step's movement: [`step`] but the eyes.
+fn move_player(
+    dt: f64,
+    look: &Look,
+    controls: &mut Controls,
+    player: &mut Player,
+    body: &mut Body,
+    shapes: &WorldShapes,
+    fluids: &FluidView,
+) {
+    if dt == 0.0 {
+        return;
+    }
+    if controls.toggle_fly {
+        controls.toggle_fly = false;
+        player.flying = !player.flying;
+        body.velocity.y = 0.0;
+    }
+    let Controls {
+        forward: forward_input,
+        right: right_input,
+        jump,
+        sneak: shift,
+        sprint,
+        toggle_fly: _,
+    } = *controls;
+    // In the unloaded world, wait for it to load.
+    if shapes.shape(body.position.floor().as_ivec3()).is_none() {
+        body.velocity = DVec3::ZERO;
+        return;
+    }
+    player.sneaking = shift && !player.flying;
+    player.sprinting = sprint && forward_input > 0.0 && !player.sneaking;
+
+    // Horizontal movement follows yaw only.
+    let yaw = DQuat::from_rotation_y(look.yaw as f64);
+    let forward = yaw * DVec3::NEG_Z;
+    let right = yaw * DVec3::X;
+    let wish = (forward * forward_input + right * right_input).normalize_or_zero();
+
+    let (rule, mut boost) = if player.flying {
+        (FLY, if player.sprinting { 2.0 } else { 1.0 })
+    } else if body.on_ground {
+        (WALK, 1.0)
+    } else {
+        (AIR, 1.0)
+    };
+    if player.sneaking {
+        boost *= SNEAK;
+    }
+    if player.sprinting && !player.flying {
+        boost *= SPRINT;
+    }
+    // In a fluid: slower the deeper, down to its `move_speed` waist
+    // deep; swimming once it's chest deep.
+    let (min, max) = (body.aabb().min, body.aabb().max);
+    let immersion = (!player.flying)
+        .then(|| fluids.immersion(body.position.x, body.position.z, min.y, max.y))
+        .flatten()
+        .and_then(|(kind, depth)| Some((fluids.fluid(kind)?.move_speed as f64, depth)));
+    let mut swim = None;
+    if let Some((move_speed, depth)) = immersion {
+        boost *= 1.0 - (1.0 - move_speed) * (depth * 2.0).min(1.0);
+        if depth >= if jump { SWIM_UP_DEPTH } else { SWIM_DEPTH } {
+            swim = Some(move_speed);
         }
-        if player.sprinting && !player.flying {
-            boost *= SPRINT;
+    }
+    let mut velocity = body.velocity;
+    if !player.flying && body.on_ground && jump && swim.is_none() {
+        velocity.y = JUMP_SPEED;
+        if player.sprinting {
+            velocity += forward * SPRINT_JUMP_BOOST;
         }
-        // In a fluid: slower the deeper, down to its `move_speed` waist
-        // deep; swimming once it's chest deep.
-        let (min, max) = (body.aabb().min, body.aabb().max);
-        let immersion = (!player.flying)
-            .then(|| fluids.immersion(body.position.x, body.position.z, min.y, max.y))
-            .flatten()
-            .and_then(|(kind, depth)| Some((fluids.fluid(kind)?.move_speed as f64, depth)));
-        let mut swim = None;
-        if let Some((move_speed, depth)) = immersion {
-            boost *= 1.0 - (1.0 - move_speed) * (depth * 2.0).min(1.0);
-            if depth >= if jump { SWIM_UP_DEPTH } else { SWIM_DEPTH } {
-                swim = Some(move_speed);
-            }
-        }
-        let mut velocity = body.velocity;
-        if !player.flying && body.on_ground && jump && swim.is_none() {
-            velocity.y = JUMP_SPEED;
-            if player.sprinting {
-                velocity += forward * SPRINT_JUMP_BOOST;
-            }
-        }
-        let mut motion = DVec3::ZERO;
-        let accel = wish * rule.accel() * boost;
+    }
+    let mut motion = DVec3::ZERO;
+    let accel = wish * rule.accel() * boost;
+    for axis in [0, 2] {
+        (velocity[axis], motion[axis]) = drift(velocity[axis], accel[axis], rule.decay(), dt);
+    }
+    (velocity.y, motion.y) = if player.flying {
+        let rise = jump as i8 as f64 - shift as i8 as f64;
+        let rule = FLY_VERTICAL;
+        drift(velocity.y, rule.accel() * rise, rule.decay(), dt)
+    } else if let Some(move_speed) = swim {
+        let target = if jump { SWIM_UP } else { -SINK } * move_speed;
+        drift(velocity.y, target / SWIM_RESPONSE, 1.0 / SWIM_RESPONSE, dt)
+    } else {
+        let decay = decay(FALL_FRICTION);
+        drift(velocity.y, -TERMINAL_SPEED * decay, decay, dt)
+    };
+
+    // Not when jumping: a sneaking jump off an edge carries on over it.
+    if player.sneaking && body.on_ground && motion.y <= 0.0 {
+        let guarded = guard_edges(body.aabb(), motion, body.step_height, shapes);
         for axis in [0, 2] {
-            (velocity[axis], motion[axis]) = drift(velocity[axis], accel[axis], rule.decay(), dt);
-        }
-        (velocity.y, motion.y) = if player.flying {
-            let rise = jump as i8 as f64 - shift as i8 as f64;
-            let rule = FLY_VERTICAL;
-            drift(velocity.y, rule.accel() * rise, rule.decay(), dt)
-        } else if let Some(move_speed) = swim {
-            let target = if jump { SWIM_UP } else { -SINK } * move_speed;
-            drift(velocity.y, target / SWIM_RESPONSE, 1.0 / SWIM_RESPONSE, dt)
-        } else {
-            let decay = decay(FALL_FRICTION);
-            drift(velocity.y, -TERMINAL_SPEED * decay, decay, dt)
-        };
-
-        // Not when jumping: a sneaking jump off an edge carries on over it.
-        if player.sneaking && body.on_ground && motion.y <= 0.0 {
-            let guarded = guard_edges(body.aabb(), motion, body.step_height, &shapes);
-            for axis in [0, 2] {
-                if guarded[axis] != motion[axis] {
-                    velocity[axis] = 0.0;
-                }
+            if guarded[axis] != motion[axis] {
+                velocity[axis] = 0.0;
             }
-            motion = guarded;
         }
-        let before = body.position;
-        body.advance(motion, velocity, &shapes);
-        // Swimming up into a wall climbs out over it.
-        let moved = body.position - before;
-        let blocked = (moved.xz() - motion.xz()).length() > 1e-6;
-        if immersion.is_some_and(|(_, depth)| depth > 0.0) && jump && blocked {
-            body.velocity.y = body.velocity.y.max(CLIMB_OUT_SPEED);
-        }
-        if player.flying && body.on_ground {
-            player.flying = false;
-        }
+        motion = guarded;
+    }
+    let before = body.position;
+    body.advance(motion, velocity, shapes);
+    // Swimming up into a wall climbs out over it.
+    let moved = body.position - before;
+    let blocked = (moved.xz() - motion.xz()).length() > 1e-6;
+    if immersion.is_some_and(|(_, depth)| depth > 0.0) && jump && blocked {
+        body.velocity.y = body.velocity.y.max(CLIMB_OUT_SPEED);
+    }
+    if player.flying && body.on_ground {
+        player.flying = false;
     }
 }
 
 /// Moves the eyes part of the way to where they should be: lower when
 /// sneaking. [`EYE_EASING`] is per tick, so it's spread over the steps.
-fn ease_eye_height(time: Res<Time>, mut players: Query<&mut Player>) {
-    let ease = per_tick(EYE_EASING, time.delta_secs_f64());
-    for mut player in &mut players {
-        let target = if player.sneaking {
-            SNEAK_EYE_HEIGHT
-        } else {
-            EYE_HEIGHT
-        };
-        player.previous_eye_height = player.eye_height;
-        player.eye_height += (target - player.eye_height) * ease;
-    }
+fn ease_eye_height(dt: f64, player: &mut Player) {
+    let ease = per_tick(EYE_EASING, dt);
+    let target = if player.sneaking {
+        SNEAK_EYE_HEIGHT
+    } else {
+        EYE_HEIGHT
+    };
+    player.previous_eye_height = player.eye_height;
+    player.eye_height += (target - player.eye_height) * ease;
 }
 
 /// Puts each player's [`Transform`] at its feet, and its eyes at their
@@ -516,7 +627,7 @@ fn ease_eye_height(time: Res<Time>, mut players: Query<&mut Player>) {
 /// whatever the frame rate.
 fn place_the_player(
     time: Res<Time<Fixed>>,
-    mut players: Query<(&Body, &mut Player, &mut Transform)>,
+    mut players: Query<(&Body, &mut Player, &mut Transform), Without<MovedByInputs>>,
 ) {
     let fraction = time.overstep_fraction_f64();
     for (body, mut player, mut transform) in &mut players {

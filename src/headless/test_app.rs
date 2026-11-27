@@ -124,6 +124,83 @@ pub fn server_world(app: &App) -> &World {
 pub struct Multiplayer {
     pub server: App,
     pub clients: Vec<App>,
+    /// What's between each client and the server.
+    relays: Vec<Relay>,
+}
+
+/// How the links between a [`Multiplayer`]'s clients and server behave,
+/// to test the game under a bad connection, the same way every run.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Conditions {
+    /// How many frames each message takes, each way.
+    pub delay: u32,
+    /// The share of the messages that may be lost (not `reliable()`) that
+    /// are, each way.
+    pub loss: f64,
+}
+
+/// What's between a client and the server: messages each way, encoded
+/// and decoded as over the network, held back and lost as the
+/// [`Conditions`] say.
+struct Relay {
+    /// The client's side: what it sends comes out here.
+    client: defaria_core::net::ServerLink,
+    /// The server's side: what it sends comes out here.
+    server: defaria_core::net::ClientLink,
+    to_server: std::collections::VecDeque<(u64, defaria_core::net::ClientMessage)>,
+    to_client: std::collections::VecDeque<(u64, defaria_core::net::ServerMessage)>,
+    conditions: Conditions,
+    frame: u64,
+    /// For losing messages: the same losses every run.
+    random: u64,
+}
+
+impl Relay {
+    /// Whether the next message that may be lost is.
+    fn lose(&mut self) -> bool {
+        // xorshift64
+        self.random ^= self.random << 13;
+        self.random ^= self.random >> 7;
+        self.random ^= self.random << 17;
+        let unit = (self.random >> 11) as f64 / (1u64 << 53) as f64;
+        unit < self.conditions.loss
+    }
+
+    /// Takes what each side sent, and passes on what's due.
+    fn pump(&mut self) {
+        use defaria_core::net::{decode, encode};
+        let due = self.frame + self.conditions.delay as u64;
+        for message in self.client.receive() {
+            if !message.reliable() && self.lose() {
+                continue;
+            }
+            self.to_server
+                .push_back((due, decode(&encode(&message)).unwrap()));
+        }
+        for message in self.server.receive() {
+            if !message.reliable() && self.lose() {
+                continue;
+            }
+            self.to_client
+                .push_back((due, decode(&encode(&message)).unwrap()));
+        }
+        while self
+            .to_server
+            .front()
+            .is_some_and(|(at, _)| *at <= self.frame)
+        {
+            let (_, message) = self.to_server.pop_front().unwrap();
+            self.server.send(message);
+        }
+        while self
+            .to_client
+            .front()
+            .is_some_and(|(at, _)| *at <= self.frame)
+        {
+            let (_, message) = self.to_client.pop_front().unwrap();
+            self.client.send(message);
+        }
+    }
 }
 
 /// A client with no server of its own and no script yet, loading a small
@@ -151,6 +228,12 @@ pub fn test_client() -> App {
 /// A [`Multiplayer`] with `clients` clients, each with no script of its
 /// own yet (see [`Multiplayer::run`]), loading a small world.
 pub fn test_multiplayer(clients: usize) -> Multiplayer {
+    test_multiplayer_over(clients, Conditions::default())
+}
+
+/// [`test_multiplayer`], each client's messages delayed and lost as
+/// `conditions` say.
+pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multiplayer {
     let mut server = App::new();
     server
         .insert_resource(defaria_core::script::ScriptSettings::untimed())
@@ -163,20 +246,34 @@ pub fn test_multiplayer(clients: usize) -> Multiplayer {
     server.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
         super::FRAME_TIME,
     ));
-    let clients = (0..clients)
-        .map(|_| {
+    let (clients, relays) = (0..clients)
+        .map(|index| {
             let mut client = test_client();
-            let (to_server, at_server) = defaria_core::net::link();
+            let (to_server, client_side) = defaria_core::net::link();
+            let (server_side, at_server) = defaria_core::net::link();
             client.insert_resource(defaria_client::net::ServerConnection(to_server));
             server
                 .world_mut()
                 .resource_mut::<defaria_core::server::Incoming>()
                 .0
                 .push(at_server);
-            client
+            let relay = Relay {
+                client: client_side,
+                server: server_side,
+                to_server: default(),
+                to_client: default(),
+                conditions,
+                frame: 0,
+                random: 0x9E37_79B9_7F4A_7C15 ^ index as u64,
+            };
+            (client, relay)
         })
-        .collect();
-    Multiplayer { server, clients }
+        .unzip();
+    Multiplayer {
+        server,
+        clients,
+        relays,
+    }
 }
 
 impl Multiplayer {
@@ -185,7 +282,19 @@ impl Multiplayer {
         for client in &mut self.clients {
             client.update();
         }
+        self.pump();
         self.server.update();
+        self.pump();
+        for relay in &mut self.relays {
+            relay.frame += 1;
+        }
+    }
+
+    /// Passes on what's due between the clients and the server.
+    fn pump(&mut self) {
+        for relay in &mut self.relays {
+            relay.pump();
+        }
     }
 
     /// Updates until every client has loaded what's around its player.
