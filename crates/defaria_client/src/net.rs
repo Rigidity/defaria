@@ -279,6 +279,7 @@ fn send_intents(
     mut connection: Option<ResMut<ServerConnection>>,
     joined: Res<Joined>,
     mut edits: Option<ResMut<crate::edit_prediction::PredictedEdits>>,
+    prediction: Option<Res<crate::prediction::Prediction>>,
     mut player: Query<
         (
             &mut UseAction,
@@ -297,7 +298,10 @@ fn send_intents(
     };
     if let Some(using) = action.pending() {
         let edit = edits.as_mut().and_then(|edits| edits.this_use.take());
-        connection.0.send(ClientMessage::Use { using, edit });
+        let tick = prediction
+            .as_ref()
+            .map_or(0, |prediction| prediction.tick());
+        connection.0.send(ClientMessage::Use { using, tick, edit });
         action.claim();
     }
     let holding = mining.is_some_and(|mining| mining.holding);
@@ -504,7 +508,11 @@ mod tests {
         app.world_mut().get_mut::<Mining>(player).unwrap().holding = true;
         app.update();
         let sent = server.receive();
-        assert!(sent.contains(&ClientMessage::Use { using, edit: None }));
+        assert!(sent.contains(&ClientMessage::Use {
+            using,
+            tick: 0,
+            edit: None
+        }));
         assert!(sent.contains(&ClientMessage::Mining(true)));
         assert_eq!(
             app.world().get::<UseAction>(player).unwrap().pending(),

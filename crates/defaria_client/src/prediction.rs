@@ -44,7 +44,8 @@ pub struct PredictionPlugin;
 
 impl Plugin for PredictionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Prediction>()
+        app.register_type::<Correction>()
+            .init_resource::<Prediction>()
             .add_systems(OnExit(GameState::Playing), forget)
             .add_systems(
                 FixedUpdate,
@@ -53,7 +54,10 @@ impl Plugin for PredictionPlugin {
                     note_outcome.after(PlayerMovement),
                 ),
             )
-            .add_systems(PreUpdate, reconcile.after(ReceiveSystems))
+            .add_systems(
+                PreUpdate,
+                reconcile.in_set(ReconcileSystems).after(ReceiveSystems),
+            )
             .add_systems(
                 RunFixedMainLoop,
                 draw_correction
@@ -63,6 +67,12 @@ impl Plugin for PredictionPlugin {
             .add_systems(PostUpdate, send_inputs.in_set(SendSystems));
     }
 }
+
+/// Where the local player is put where the server has it, in
+/// `PreUpdate`: whatever else moves it that frame (a scenario's `camera`)
+/// goes after.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ReconcileSystems;
 
 /// The steps the server hasn't confirmed yet, and the numbering.
 #[derive(Resource, Debug, Default)]
@@ -80,9 +90,17 @@ pub struct Prediction {
     pub corrections: u32,
 }
 
+impl Prediction {
+    /// The last input numbered: the step the player has been taken to.
+    pub fn tick(&self) -> u32 {
+        self.tick
+    }
+}
+
 /// Where the local player is drawn away from its body after a correction,
 /// fading out.
-#[derive(Component, Debug, Default, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Default, Clone, Copy)]
+#[reflect(Component)]
 pub struct Correction(pub Vec3);
 
 /// A world left: the next starts afresh.

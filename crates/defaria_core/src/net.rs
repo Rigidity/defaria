@@ -42,10 +42,16 @@ pub enum ClientMessage {
     /// it's applied it ([`ServerMessage::Moved`]), so losing some of these
     /// loses nothing.
     Inputs(Vec<Input>),
-    /// The player used something (right click), as `use_action` acts on.
-    /// `edit` numbers the block the client placed at once, predicting
-    /// the server would ([`ServerMessage::EditDone`] answers it).
-    Use { using: Use, edit: Option<u32> },
+    /// The player used something (right click), as `use_action` acts on,
+    /// after its input `tick` (the server waits until it's stepped the
+    /// player that far, so it acts on the use where the client did).
+    /// `edit` numbers the block the client placed at once, predicting the
+    /// server would ([`ServerMessage::EditDone`] answers it).
+    Use {
+        using: Use,
+        tick: u32,
+        edit: Option<u32>,
+    },
     /// Whether the player holds the break button ([`Mining::holding`]).
     Mining(bool),
     /// The player's hotbar slots.

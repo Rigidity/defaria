@@ -12,7 +12,7 @@
 //! Breaking isn't predicted: it takes time the server keeps, and its
 //! cracks show how far along it is.
 
-use bevy::prelude::*;
+use bevy::{platform::collections::HashSet, prelude::*};
 use defaria_core::{
     block_edit::{claimed_before_placing, placing_for},
     content::{BlockState, Content},
@@ -61,8 +61,8 @@ impl PredictedEdits {
     }
 }
 
-/// A block placed at once: where, what, and what the server has there as
-/// far as the client knows.
+/// A voxel placed into at once: the last edit there, the block it placed,
+/// and what the server has there as far as the client knows.
 #[derive(Debug, Clone, Copy)]
 struct Edit {
     number: u32,
@@ -122,12 +122,24 @@ fn predict_placing(
     };
     edits.last += 1;
     let number = edits.last;
-    edits.pending.push(Edit {
-        number,
-        pos: placing.pos,
-        placed: placing.block,
-        server,
-    });
+    // One entry a voxel (a slab, then its other half): the newest edit and
+    // block, over what the server had before the first.
+    match edits
+        .pending
+        .iter_mut()
+        .find(|edit| edit.pos == placing.pos)
+    {
+        Some(edit) => {
+            edit.number = number;
+            edit.placed = placing.block;
+        }
+        None => edits.pending.push(Edit {
+            number,
+            pos: placing.pos,
+            placed: placing.block,
+            server,
+        }),
+    }
     edits.this_use = Some(number);
     voxels.set(placing.pos, placing.block);
 }
@@ -141,18 +153,19 @@ fn settle_edits(
     mut edits: ResMut<PredictedEdits>,
 ) {
     let edits = &mut *edits;
-    for ChunkReceived(coord) in received.read() {
-        for edit in &mut edits.pending {
-            if ChunkCoord::split(edit.pos).0.0 != *coord {
-                continue;
-            }
-            let Some(now) = voxels.get(edit.pos) else {
-                continue;
-            };
-            edit.server = now;
-            if now != edit.placed {
-                voxels.set(edit.pos, edit.placed);
-            }
+    // The server's chunks are in place: each voxel holds the server's
+    // block until it's placed into again, so it's read once.
+    let received: HashSet<IVec3> = received.read().map(|ChunkReceived(coord)| *coord).collect();
+    for edit in &mut edits.pending {
+        if !received.contains(&ChunkCoord::split(edit.pos).0.0) {
+            continue;
+        }
+        let Some(now) = voxels.get(edit.pos) else {
+            continue;
+        };
+        edit.server = now;
+        if now != edit.placed {
+            voxels.set(edit.pos, edit.placed);
         }
     }
     // Gone with their chunks.

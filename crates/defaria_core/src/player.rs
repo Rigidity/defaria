@@ -361,7 +361,8 @@ impl Motion {
 
 /// The local player was put somewhere (a scenario's `camera`): its next
 /// input tells the server, which puts it there too.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Reflect, Debug, Default)]
+#[reflect(Component)]
 pub struct Teleported;
 
 /// Where a player's eyes are and which way they look: what it aims from.
@@ -475,7 +476,8 @@ fn move_players(
 
 /// A player a server moves a step for each of its client's inputs as they
 /// arrive, rather than each physics step of its own.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Reflect, Debug, Default)]
+#[reflect(Component)]
 pub struct MovedByInputs;
 
 /// One physics step of `dt` seconds of a player: its controls to velocity,

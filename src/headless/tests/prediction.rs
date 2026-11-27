@@ -171,3 +171,24 @@ fn a_refused_edit_is_rolled_back() {
     assert_eq!(voxel(&mut game.clients[0], placed), Some(BlockState::AIR));
     assert_eq!(edits(&game, 0), (0, 1));
 }
+
+/// A slab, then its other half, placed one after the other faster than
+/// the server answers: the client shows each at once and ends with what
+/// the server has, the whole block.
+#[test]
+fn a_slab_and_its_other_half_placed_at_once() {
+    let (mut game, placed) = over_a_stone();
+    // The fifth slot holds stone slabs.
+    game.run(0, "press Digit5\nwait 1\nrelease Digit5\nwait 1");
+    game.run(0, "hold MouseRight 1\nwait 3");
+    let half = voxel(&mut game.clients[0], placed).unwrap();
+    assert_ne!(half, BlockState::AIR);
+    game.run(0, "hold MouseRight 1\nwait 1");
+    let whole = voxel(&mut game.clients[0], placed).unwrap();
+    assert_ne!(whole, half, "the other half went in at once");
+    assert_eq!(edits(&game, 0).0, 1, "one voxel waiting");
+    game.run(0, "wait 40");
+    assert_eq!(voxel(&mut game.server, placed), Some(whole));
+    assert_eq!(voxel(&mut game.clients[0], placed), Some(whole));
+    assert_eq!(edits(&game, 0), (0, 0));
+}

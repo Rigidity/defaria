@@ -13,7 +13,7 @@
 
 use std::collections::VecDeque;
 
-use bevy::prelude::*;
+use bevy::{platform::collections::HashMap, prelude::*};
 use defaria_core::{
     net::ServerMessage,
     player::{EYE_HEIGHT, SIZE, SNEAK_EYE_HEIGHT},
@@ -36,6 +36,7 @@ impl Plugin for ReplicationPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Replica>()
             .init_resource::<Playback>()
+            .init_resource::<Replicas>()
             .add_systems(OnExit(GameState::Playing), forget)
             .add_systems(Update, (take_entities, play_back).chain());
     }
@@ -50,6 +51,12 @@ pub struct Replica {
     pub kind: Kind,
 }
 
+/// Each replica's entity, by its id: kept as messages are taken, so a
+/// replica spawned and despawned in one frame (in and out of range) goes,
+/// though its entity isn't there yet.
+#[derive(Resource, Debug, Default)]
+struct Replicas(HashMap<u64, Entity>);
+
 /// A replica's poses from the snapshots still to be drawn, by the server's
 /// time, oldest first.
 #[derive(Component, Debug, Default)]
@@ -63,8 +70,9 @@ pub struct Playback {
 }
 
 /// A world left: the next starts afresh.
-fn forget(mut playback: ResMut<Playback>) {
+fn forget(mut playback: ResMut<Playback>, mut replicas: ResMut<Replicas>) {
     *playback = Playback::default();
+    replicas.0.clear();
 }
 
 /// Spawns and despawns replicas, and adds snapshots' poses to them.
@@ -72,7 +80,8 @@ fn take_entities(
     mut commands: Commands,
     mut messages: MessageReader<FromServer>,
     mut playback: ResMut<Playback>,
-    mut replicas: Query<(Entity, &Replica, &mut Snapshots)>,
+    mut ids: ResMut<Replicas>,
+    mut replicas: Query<&mut Snapshots>,
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     mut look: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
@@ -82,6 +91,9 @@ fn take_entities(
             ServerMessage::Spawn { id, kind, pose } => {
                 // Where it was when it came into range, from now on.
                 let since = playback.time.unwrap_or(f64::NEG_INFINITY);
+                if let Some(old) = ids.0.remove(id) {
+                    commands.entity(old).despawn();
+                }
                 let mut replica = commands.spawn((
                     Name::new(format!("{kind:?}")),
                     Replica {
@@ -97,19 +109,23 @@ fn take_entities(
                 {
                     replica.insert((Mesh3d(mesh), MeshMaterial3d(material)));
                 }
+                ids.0.insert(*id, replica.id());
             }
             ServerMessage::Despawn(id) => {
-                for (entity, replica, _) in &replicas {
-                    if replica.id == *id {
-                        commands.entity(entity).despawn();
-                    }
+                if let Some(entity) = ids.0.remove(id) {
+                    commands.entity(entity).despawn();
                 }
             }
             ServerMessage::Snapshot { time, entities } => {
                 playback.newest = playback.newest.max(*time);
                 playback.time.get_or_insert(*time - DELAY);
-                for (_, replica, mut snapshots) in &mut replicas {
-                    let Some(entity) = entities.iter().find(|entity| entity.id == replica.id)
+                for entity in entities {
+                    // (One spawned this frame isn't there yet: it starts
+                    // from where it came into range.)
+                    let Some(mut snapshots) = ids
+                        .0
+                        .get(&entity.id)
+                        .and_then(|replica| replicas.get_mut(*replica).ok())
                     else {
                         continue;
                     };
@@ -199,5 +215,72 @@ fn figure(kind: Kind, pose: &Pose) -> Transform {
             let middle = pose.feet + bevy::math::DVec3::Y * (SIZE.y / 2.0 - sink);
             Transform::from_translation(middle.as_vec3()).with_rotation(pose.look.yaw_rotation())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use defaria_core::{player::Look, replication::EntityPose};
+
+    use super::*;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<GameState>()
+            .add_message::<FromServer>()
+            .add_plugins(ReplicationPlugin);
+        app
+    }
+
+    fn pose(x: f64) -> Pose {
+        Pose {
+            feet: bevy::math::DVec3::new(x, 0.0, 0.0),
+            look: Look::default(),
+            crouched: false,
+        }
+    }
+
+    fn send(app: &mut App, messages: impl IntoIterator<Item = ServerMessage>) {
+        for message in messages {
+            app.world_mut().write_message(FromServer(message));
+        }
+        app.update();
+    }
+
+    fn replicas(app: &mut App) -> usize {
+        let world = app.world_mut();
+        world.query::<&Replica>().iter(world).count()
+    }
+
+    /// A replica comes and goes as the server says, even both in one
+    /// frame (in and out of range at once), and comes again with the same
+    /// id.
+    #[test]
+    fn replicas_come_and_go() {
+        let mut app = app();
+        let spawn = ServerMessage::Spawn {
+            id: 7,
+            kind: Kind::Player,
+            pose: pose(0.0),
+        };
+        send(&mut app, [spawn.clone(), ServerMessage::Despawn(7)]);
+        assert_eq!(replicas(&mut app), 0);
+        send(&mut app, [spawn.clone()]);
+        assert_eq!(replicas(&mut app), 1);
+        send(&mut app, [spawn]);
+        assert_eq!(replicas(&mut app), 1, "once, however often it's said");
+        send(
+            &mut app,
+            [ServerMessage::Snapshot {
+                time: 1.0,
+                entities: vec![EntityPose {
+                    id: 7,
+                    pose: pose(4.0),
+                }],
+            }],
+        );
+        send(&mut app, [ServerMessage::Despawn(7)]);
+        assert_eq!(replicas(&mut app), 0);
     }
 }

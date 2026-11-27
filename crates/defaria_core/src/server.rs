@@ -36,7 +36,7 @@ use crate::{
     recipe::RecipeProgress,
     replication::{Kind, Replicated},
     streaming::{ChunkLoader, ChunkUnloaded, StreamingSettings, StreamingStatus, loader_chunk},
-    use_action::{UseAction, UseStep},
+    use_action::{Use, UseAction, UseStep},
     world::{Chunk, ChunkCoord, ChunkMap, Voxels},
 };
 
@@ -56,7 +56,7 @@ impl Plugin for ServerNetPlugin {
                         apply_intents,
                         apply_transfers,
                         note_pauses,
-                        note_edits,
+                        take_uses.after(movement::move_by_inputs),
                     ),
                     close_screens,
                     pause_with_players,
@@ -116,7 +116,12 @@ pub struct Connection {
     center: Option<IVec3>,
     /// Whether the player is paused.
     paused: bool,
-    /// The edits the client predicted with uses this frame, to answer.
+    /// The uses the client sent that haven't been acted on yet, oldest
+    /// first: their use, the input they came after, their edit, and how
+    /// long they've waited.
+    uses: std::collections::VecDeque<(Use, u32, Option<u32>, f32)>,
+    /// The edits the client predicted with uses acted on this frame, to
+    /// answer.
     edits: Vec<u32>,
 }
 
@@ -132,6 +137,7 @@ impl Connection {
             settled: None,
             center: None,
             paused: false,
+            uses: default(),
             edits: Vec::new(),
         }
     }
@@ -172,22 +178,20 @@ fn receive(mut commands: Commands, mut connections: Query<(Entity, &mut Connecti
     }
 }
 
-/// What the player means to do: a use, holding the break button, its
-/// hotbar and the slot in hand, the game mode.
+/// What the player means to do: holding the break button, its hotbar and
+/// the slot in hand, the game mode. (Its uses are [`take_uses`]'.)
 fn apply_intents(
     mut players: Query<(
         &Connection,
-        &mut UseAction,
         Option<&mut Mining>,
         Option<&mut Hotbar>,
         Option<&mut ActiveSlot>,
         Option<&mut GameMode>,
     )>,
 ) {
-    for (connection, mut action, mut mining, mut hotbar, mut active, mut mode) in &mut players {
+    for (connection, mut mining, mut hotbar, mut active, mut mode) in &mut players {
         for message in &connection.inbox {
             match message {
-                ClientMessage::Use { using, .. } => *action = UseAction(Some(*using)),
                 ClientMessage::Mining(holding) => {
                     if let Some(mining) = &mut mining
                         && mining.holding != *holding
@@ -285,19 +289,38 @@ fn apply_transfers(
     }
 }
 
-/// Notes the edits the client predicted with its uses, to answer once
-/// they're acted on.
-fn note_edits(mut connections: Query<&mut Connection>) {
-    for mut connection in &mut connections {
-        let edits: Vec<u32> = connection
-            .inbox
-            .iter()
-            .filter_map(|message| match message {
-                ClientMessage::Use { edit, .. } => *edit,
-                _ => None,
-            })
-            .collect();
-        connection.edits.extend(edits);
+/// The longest a use waits for the input it came after, should that
+/// never come, before it's acted on anyway.
+const MAX_USE_WAIT: f32 = 2.0;
+
+/// Queues the uses each client sent, and acts on the oldest once the
+/// player has been stepped through the input it came after: one a frame,
+/// as `use_action` takes them, each where the client made it.
+fn take_uses(
+    time: Res<Time>,
+    mut players: Query<(&mut Connection, &mut UseAction, Option<&PlayerInputs>)>,
+) {
+    for (mut connection, mut action, inputs) in &mut players {
+        let connection = &mut *connection;
+        for message in &connection.inbox {
+            if let ClientMessage::Use { using, tick, edit } = message {
+                connection.uses.push_back((*using, *tick, *edit, 0.0));
+            }
+        }
+        for (.., waited) in &mut connection.uses {
+            *waited += time.delta_secs();
+        }
+        let applied = inputs.map_or(u32::MAX, PlayerInputs::applied);
+        let ready = connection
+            .uses
+            .front()
+            .is_some_and(|(_, tick, _, waited)| *tick <= applied || *waited > MAX_USE_WAIT);
+        if !ready {
+            continue;
+        }
+        let (using, _, edit, _) = connection.uses.pop_front().unwrap();
+        *action = UseAction(Some(using));
+        connection.edits.extend(edit);
     }
 }
 
@@ -848,6 +871,56 @@ mod tests {
             unreachable!();
         };
         assert_eq!(chunk.at(local), block("stone"));
+    }
+
+    /// Uses that arrive together are acted on one a frame, each once the
+    /// player has been stepped through the input it came after, and only
+    /// then is its edit answered.
+    #[test]
+    fn uses_wait_their_turn_and_their_input() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Update, take_uses);
+        let (_client, server) = link();
+        let using = |sneak| Use {
+            eyes: Transform::default(),
+            target: None,
+            sneak,
+        };
+        let mut connection = Connection::new(server);
+        connection.inbox = vec![
+            ClientMessage::Use {
+                using: using(false),
+                tick: 0,
+                edit: Some(1),
+            },
+            ClientMessage::Use {
+                using: using(true),
+                tick: 5,
+                edit: Some(2),
+            },
+        ];
+        let player = app
+            .world_mut()
+            .spawn((connection, UseAction::default(), PlayerInputs::default()))
+            .id();
+        let mut frame = |app: &mut App| {
+            app.update();
+            let world = app.world_mut();
+            let action = world.get_mut::<UseAction>(player).unwrap().0.take();
+            let mut connection = world.get_mut::<Connection>(player).unwrap();
+            connection.inbox.clear();
+            let edits = std::mem::take(&mut connection.edits);
+            (action.map(|using| using.sneak), edits)
+        };
+        assert_eq!(frame(&mut app), (Some(false), vec![1]));
+        // The second came after input 5, which hasn't been stepped.
+        assert_eq!(frame(&mut app), (None, vec![]));
+        app.world_mut()
+            .get_mut::<PlayerInputs>(player)
+            .unwrap()
+            .set_applied(5);
+        assert_eq!(frame(&mut app), (Some(true), vec![2]));
     }
 
     /// Asking to switch the game mode switches it, and the client is sent

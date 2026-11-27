@@ -33,8 +33,10 @@ const MAX_WAITING: usize = 128;
 
 /// A player's inputs from its client: those waiting, the last applied,
 /// and how many steps it may take now.
-#[derive(Component, Debug)]
+#[derive(Component, Reflect, Debug)]
+#[reflect(Component)]
 pub struct PlayerInputs {
+    #[reflect(ignore)]
     waiting: BTreeMap<u32, Input>,
     applied: u32,
     budget: f64,
@@ -58,6 +60,11 @@ impl PlayerInputs {
     /// The last input applied.
     pub fn applied(&self) -> u32 {
         self.applied
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_applied(&mut self, tick: u32) {
+        self.applied = tick;
     }
 }
 
