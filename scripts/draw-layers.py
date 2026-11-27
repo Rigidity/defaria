@@ -11,8 +11,12 @@ src/block_texture/layer.rs checks) into OUT_DIR:
 - stained_glass.png: the same pane with a fuller middle (alpha 150), so
   its material's color shows, and the streaks brighter.
 - water.png: soft ripples, wider than tall, fully solid; the water
-  material's palette carries the transparency.
-- lava.png: dark crust plates with bright molten seams between them.
+  material's palette carries the transparency. A strip of WATER_FRAMES
+  frames: two sets of ripples crossing, drifting opposite ways, so the
+  surface shimmers without going anywhere, and loops.
+- lava.png: dark crust plates with bright molten seams between them. A
+  strip of LAVA_FRAMES frames: the plates sway on small circles and the
+  seams' heat swells and ebbs, looping; the texture blends between them.
 - tuft.png: blades of grass rising from the bottom edge, transparent
   around them, for the crossed-quad plant model.
 - items/ingot.png: a metal bar seen from above and in front, its top
@@ -28,13 +32,14 @@ src/block_texture/layer.rs checks) into OUT_DIR:
   crossed-quad plant model.
 
 Each tiles with itself where it needs to (water and lava wrap at the
-edges). Deterministic: the same seed always draws the same images.
+edges, in every frame). Deterministic: the same seed always draws the same
+images.
 
 Usage:
     python3 scripts/draw-layers.py OUT_DIR [--preview PREVIEW.png]
 
---preview writes the images side by side over a mid gray, upscaled
-8x. Standard library only.
+--preview writes the images side by side over a mid gray, upscaled 8x,
+animated ones as a column of their frames. Standard library only.
 """
 
 import argparse
@@ -106,41 +111,94 @@ def glass(middle=px(5, 40), streak=px(7, 120)):
     return rows
 
 
+WATER_FRAMES = 16
+LAVA_FRAMES = 16
+
+
+def looping_noise(rng, cells, frames, frame_cells):
+    """Smooth value noise over SIZE x SIZE x frames that wraps in all
+    three, 0 to 1: at(x, y, frame)."""
+    grid = [[[rng.random() for _ in range(cells)] for _ in range(cells)] for _ in range(frame_cells)]
+
+    def smooth(t):
+        return t * t * (3 - 2 * t)
+
+    def at(x, y, frame):
+        fx, fy, ft = x * cells / SIZE, y * cells / SIZE, frame * frame_cells / frames
+        x0, y0, t0 = int(fx) % cells, int(fy) % cells, int(ft) % frame_cells
+        x1, y1, t1 = (x0 + 1) % cells, (y0 + 1) % cells, (t0 + 1) % frame_cells
+        tx, ty, tt = smooth(fx - int(fx)), smooth(fy - int(fy)), smooth(ft - int(ft))
+
+        def plane(t):
+            top = grid[t][y0][x0] * (1 - tx) + grid[t][y0][x1] * tx
+            bottom = grid[t][y1][x0] * (1 - tx) + grid[t][y1][x1] * tx
+            return top * (1 - ty) + bottom * ty
+
+        return plane(t0) * (1 - tt) + plane(t1) * tt
+
+    return at
+
+
 def water(rng):
-    noise = wrapping_noise(rng, 4)
-    rows = []
-    for y in range(SIZE):
-        row = []
-        for x in range(SIZE):
-            # Ripples: horizontal bands warped by the noise.
-            wave = math.sin((y + noise(x, y) * 5) * 2 * math.pi / 8)
-            value = 0.5 + 0.35 * wave + 0.25 * (noise((x + 7) % SIZE, (y + 3) % SIZE) - 0.5)
-            row.append(px(min(5, max(2, 2 + int(value * 4)))))
-        rows.append(row)
-    return rows
+    noise = looping_noise(rng, 4, WATER_FRAMES, 4)
+    frames = []
+    for frame in range(WATER_FRAMES):
+        phase = 2 * math.pi * frame / WATER_FRAMES
+        rows = []
+        for y in range(SIZE):
+            row = []
+            for x in range(SIZE):
+                # Ripples: two sets of bands, wider than tall, crossing at
+                # a slant and drifting opposite ways (a whole wavelength a
+                # loop, so the frames wrap), warped by the noise.
+                warp = noise(x, y, frame) * 4
+                a = math.sin((y + x / 2 + warp) * 2 * math.pi / 8 + phase)
+                b = math.sin((y - x / 2 + warp) * 2 * math.pi / 8 - phase)
+                value = 0.5 + 0.25 * (a + b) + 0.25 * (noise((x + 7) % SIZE, (y + 3) % SIZE, frame) - 0.5)
+                row.append(px(min(5, max(2, 2 + int(value * 4)))))
+            rows.append(row)
+        frames.append(rows)
+    return frames
 
 
 def lava(rng):
     # Crust plates around random centres (wrapping); the seams between two
-    # plates are molten and bright.
-    centres = [(rng.uniform(0, SIZE), rng.uniform(0, SIZE)) for _ in range(6)]
-
+    # plates are molten and bright. Each centre sways round a small circle,
+    # once a loop, from its own starting angle.
     def dist(x, y, c):
-        dx = min(abs(x - c[0]), SIZE - abs(x - c[0]))
-        dy = min(abs(y - c[1]), SIZE - abs(y - c[1]))
+        dx = min(abs(x - c[0]) % SIZE, SIZE - abs(x - c[0]) % SIZE)
+        dy = min(abs(y - c[1]) % SIZE, SIZE - abs(y - c[1]) % SIZE)
         return math.hypot(dx, dy)
 
-    noise = wrapping_noise(rng, 4)
-    rows = []
-    for y in range(SIZE):
-        row = []
-        for x in range(SIZE):
-            d = sorted(dist(x + 0.5, y + 0.5, c) for c in centres)
-            seam = d[1] - d[0]  # 0 on the border between two plates
-            heat = 0.85 * max(0.0, 1.0 - seam / 1.6) + 0.3 * noise(x, y)
-            row.append(px(min(7, max(1, 1 + int(heat * 6)))))
-        rows.append(row)
-    return rows
+    # Centres at least 4 pixels apart: two close together would leave a
+    # wide molten patch between them as they sway.
+    centres = []
+    while len(centres) < 6:
+        c = (rng.uniform(0, SIZE), rng.uniform(0, SIZE), rng.uniform(0, 2 * math.pi))
+        if all(dist(c[0], c[1], other) >= 4 for other in centres):
+            centres.append(c)
+    noise = looping_noise(rng, 4, LAVA_FRAMES, 2)
+
+    frames = []
+    for frame in range(LAVA_FRAMES):
+        turn = 2 * math.pi * frame / LAVA_FRAMES
+        moved = [(cx + 0.7 * math.cos(turn + a), cy + 0.7 * math.sin(turn + a)) for cx, cy, a in centres]
+        rows = []
+        for y in range(SIZE):
+            row = []
+            for x in range(SIZE):
+                d = sorted(dist(x + 0.5, y + 0.5, c) for c in moved)
+                seam = d[1] - d[0]  # 0 on the border between two plates
+                heat = 0.85 * max(0.0, 1.0 - seam / 2.2) + 0.5 * noise(x, y, frame)
+                row.append(px(min(7, max(1, 1 + int(heat * 6)))))
+            rows.append(row)
+        frames.append(rows)
+    return frames
+
+
+def strip(frames):
+    """A list of frames as one image, the first on top."""
+    return [row for frame in frames for row in frame]
 
 
 def tuft(rng):
@@ -282,19 +340,24 @@ def dead_bush():
 
 
 def preview(path, images):
+    """Each image's frames down a column (a still image is one frame)."""
     scale, gap = 8, 8
-    width = len(images) * (SIZE * scale + gap) + gap
-    height = SIZE * scale + 2 * gap
+    columns = [[image[i:i + SIZE] for i in range(0, len(image), SIZE)] for image in images]
+    width = len(columns) * (SIZE * scale + gap) + gap
+    tallest = max(len(frames) for frames in columns)
+    height = tallest * (SIZE * scale + gap) + gap
     mid = 128
     rows = [[(mid, mid, mid, 255)] * width for _ in range(height)]
-    for n, image in enumerate(images):
+    for n, frames in enumerate(columns):
         ox = gap + n * (SIZE * scale + gap)
-        for y in range(SIZE * scale):
-            for x in range(SIZE * scale):
-                r, g, b, a = image[y // scale][x // scale]
-                t = a / 255
-                c = round(r * t + mid * (1 - t))
-                rows[gap + y][ox + x] = (c, c, c, 255)
+        for f, image in enumerate(frames):
+            oy = gap + f * (SIZE * scale + gap)
+            for y in range(SIZE * scale):
+                for x in range(SIZE * scale):
+                    r, g, b, a = image[y // scale][x // scale]
+                    t = a / 255
+                    c = round(r * t + mid * (1 - t))
+                    rows[oy + y][ox + x] = (c, c, c, 255)
     write_png(path, rows)
 
 
@@ -304,11 +367,16 @@ def main():
     parser.add_argument("--preview")
     args = parser.parse_args()
     rng = random.Random(0xDEFA41A)
+    # Water and lava draw from their own seeds. The images after them were
+    # drawn when the still water and lava took 16 and 28 draws from `rng`,
+    # so skip as many to keep those the same.
+    for _ in range(16 + 28):
+        rng.random()
     images = {
         "glass": glass(),
         "stained_glass": glass(px(4, 150), px(7, 200)),
-        "water": water(rng),
-        "lava": lava(rng),
+        "water": strip(water(random.Random(0xDEFA41A + 1))),
+        "lava": strip(lava(random.Random(0xDEFA41A + 2))),
         "tuft": tuft(rng),
         "items/ingot": ingot(),
         "moss": moss(rng),

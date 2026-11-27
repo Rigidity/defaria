@@ -212,7 +212,9 @@ impl Voxels<'_, '_> {
         let room = self.content.state(chunk.at(local)).fluid_room;
         let chunk = chunk.bypass_change_detection();
         if chunk.set_fluid_at(local, fluid, room) {
-            self.touched(pos);
+            // A fluid voxel decides the flow on faces further away than
+            // its own neighbours' (see `fluid::scroll`).
+            self.touched_within(pos, crate::meshing::MARGIN);
         }
         self.fluid_changes.write(FluidChanged {
             pos,
@@ -227,7 +229,13 @@ impl Voxels<'_, '_> {
     /// remeshed: a voxel on a chunk's edge also shows, hides or shades
     /// faces of the chunks across that edge.
     fn touched(&mut self, pos: IVec3) {
-        for touching in ChunkCoord::touching(pos) {
+        self.touched_within(pos, 1);
+    }
+
+    /// [`Voxels::touched`], for a voxel whose change reaches `reach`
+    /// voxels into the chunks around it.
+    fn touched_within(&mut self, pos: IVec3, reach: i32) {
+        for touching in ChunkCoord::within(pos, reach) {
             if let Some(mut chunk) = self
                 .map
                 .get(touching)

@@ -12,14 +12,15 @@ use super::{
 use crate::{
     block_texture::Palette,
     content::{
-        Content, Texture, TextureLayer, check_name, qualify,
-        schema::{LayerDef, TextureDef, TextureRef},
+        Animation, Content, Texture, TextureLayer, check_name, qualify,
+        schema::{AnimationDef, LayerDef, TextureDef, TextureRef},
     },
 };
 
 /// A texture file, checked, with its inputs still to fill.
 pub(super) struct Template {
     layers: Vec<LayerTemplate>,
+    animation: Option<Animation>,
     /// The inputs its layers use, and for a `#tag` input the tag its
     /// materials need.
     inputs: BTreeMap<String, Option<String>>,
@@ -103,7 +104,37 @@ pub(super) fn template(
             }
         }
     }
-    Ok((Template { layers, inputs }, problems))
+    let animation = def.def.animation.map(animation).transpose()?;
+    Ok((
+        Template {
+            layers,
+            inputs,
+            animation,
+        },
+        problems,
+    ))
+}
+
+/// A texture's `animation`, checked.
+fn animation(def: AnimationDef) -> Result<Animation, String> {
+    if let Some(frame_time) = def.frame_time
+        && !(frame_time.is_finite() && frame_time > 0.0)
+    {
+        return Err(format!(
+            "an animation's `frame_time` is more than 0 seconds, not {frame_time}"
+        ));
+    }
+    if !(def.scroll.is_finite() && def.scroll >= 0.0) {
+        return Err(format!(
+            "an animation's `scroll` is 0 or more, not {}",
+            def.scroll
+        ));
+    }
+    Ok(Animation {
+        frame_time: def.frame_time,
+        blend: def.blend,
+        scroll: def.scroll,
+    })
 }
 
 fn layer_template(
@@ -164,7 +195,7 @@ fn image_path(id: &str, dirs: &HashMap<String, String>) -> Result<String, String
 
 /// The most tiles the game has room for: every tile is a layer of one
 /// texture array, and 2048 layers is what GPUs commonly allow.
-const MAX_TILES: usize = 2048;
+pub const MAX_TILES: usize = 2048;
 
 /// The texture templates, and the tiles baked from them so far (in
 /// [`Content::textures`]).
@@ -325,6 +356,7 @@ impl Textures {
             template: id.into(),
             layers,
             cutout: false,
+            animation: template.animation,
         });
         content.texture_index.insert(key, layer);
         Ok(layer)

@@ -400,11 +400,24 @@ pub fn axis_of(direction: IVec3) -> usize {
 /// edges and corners it lies on, since a voxel shades the corners of faces
 /// next to it.
 pub fn touching_offsets(local: IVec3) -> impl Iterator<Item = IVec3> {
-    let last = CHUNK_SIZE as i32 - 1;
-    let edge = local.map(|v| match v {
-        0 => -1,
-        v if v == last => 1,
-        _ => 0,
+    offsets_within(local, 1)
+}
+
+/// The offsets of the chunks within `reach` voxels of the voxel at chunk
+/// position `local`, its own (zero) among them: [`touching_offsets`] for
+/// what can see further, such as the flow on fluid faces, which a voxel
+/// two in from an edge decides for the chunk across it (see
+/// `fluid::scroll`).
+pub fn offsets_within(local: IVec3, reach: i32) -> impl Iterator<Item = IVec3> {
+    let size = CHUNK_SIZE as i32;
+    let edge = local.map(|v| {
+        if v < reach {
+            -1
+        } else if v >= size - reach {
+            1
+        } else {
+            0
+        }
     });
     // One bit per axis: step across that axis's edge or not. Steps along an
     // axis the voxel isn't on an edge of would repeat an offset.
@@ -496,5 +509,41 @@ mod tests {
         chunk.set_fluid_at(IVec3::ONE, None, FULL_FLUID);
         assert!(chunk.compact());
         assert_eq!(chunk.fluid_layer().heap_bytes(), 0);
+    }
+
+    /// A voxel reaches the chunks across the edges it's within `reach` of:
+    /// with a reach of 2, the second voxel in from an edge does too, and
+    /// one in the middle reaches only its own chunk.
+    #[test]
+    fn offsets_within_a_reach() {
+        let sorted = |local: IVec3, reach| {
+            let mut offsets: Vec<IVec3> = offsets_within(local, reach).collect();
+            offsets.sort_by_key(|o| o.to_array());
+            offsets
+        };
+        let last = CHUNK_SIZE as i32 - 1;
+        assert_eq!(sorted(IVec3::new(last - 1, 5, 5), 1), [IVec3::ZERO]);
+        assert_eq!(
+            sorted(IVec3::new(last - 1, 5, 5), 2),
+            [IVec3::ZERO, IVec3::X]
+        );
+        assert_eq!(
+            sorted(IVec3::new(1, 1, 8), 2),
+            [
+                IVec3::new(-1, -1, 0),
+                IVec3::NEG_X,
+                IVec3::NEG_Y,
+                IVec3::ZERO
+            ]
+        );
+        assert_eq!(sorted(IVec3::splat(8), 2), [IVec3::ZERO]);
+        // A reach of 1 is touching.
+        for local in [IVec3::ZERO, IVec3::new(last, 3, 0), IVec3::splat(4)] {
+            assert_eq!(sorted(local, 1), {
+                let mut t: Vec<IVec3> = touching_offsets(local).collect();
+                t.sort_by_key(|o| o.to_array());
+                t
+            });
+        }
     }
 }

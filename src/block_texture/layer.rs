@@ -55,8 +55,10 @@ impl Palette {
 }
 
 /// Colors the grayscale `image` with `palette`, in linear color. Fails if
-/// the image isn't [`TILE_SIZE`] square or uses a color that isn't one of
-/// the gray levels. Fully transparent pixels may hold any color.
+/// the image isn't [`TILE_SIZE`] wide and a whole number of tiles high (a
+/// strip of animation frames, the first on top), or uses a color that
+/// isn't one of the gray levels. Fully transparent pixels may hold any
+/// color. Each [`TILE_SIZE`]-square run of the result is one frame.
 pub fn colorize(image: &Image, palette: &Palette) -> Result<Vec<LinearRgba>, String> {
     let format = image.texture_descriptor.format;
     if !matches!(
@@ -66,9 +68,10 @@ pub fn colorize(image: &Image, palette: &Palette) -> Result<Vec<LinearRgba>, Str
         return Err(format!("must decode to RGBA8, not {format:?}"));
     }
     let (width, height) = (image.width(), image.height());
-    if (width, height) != (TILE_SIZE, TILE_SIZE) {
+    if width != TILE_SIZE || height == 0 || !height.is_multiple_of(TILE_SIZE) {
         return Err(format!(
-            "is {width}×{height}, expected {TILE_SIZE}×{TILE_SIZE}"
+            "is {width}×{height}, expected {TILE_SIZE}×{TILE_SIZE}, or {TILE_SIZE} wide \
+             with frames {TILE_SIZE} high stacked"
         ));
     }
     let pixels = image.data.as_deref().ok_or("has no pixel data")?;
@@ -95,14 +98,14 @@ pub fn colorize(image: &Image, palette: &Palette) -> Result<Vec<LinearRgba>, Str
         .collect()
 }
 
-/// Stacks colorized layers, bottom first, with ordinary "over" blending in
-/// linear color. Returns sRGB RGBA8 pixels.
-pub fn stack(layers: &[Vec<LinearRgba>]) -> Vec<u8> {
+/// Stacks colorized layers (one frame of each), bottom first, with
+/// ordinary "over" blending in linear color. Returns sRGB RGBA8 pixels.
+pub fn stack(layers: &[&[LinearRgba]]) -> Vec<u8> {
     let len = (TILE_SIZE * TILE_SIZE) as usize;
     // Premultiplied while blending.
     let mut out = vec![LinearRgba::NONE; len];
     for layer in layers {
-        for (dst, src) in out.iter_mut().zip(layer) {
+        for (dst, src) in out.iter_mut().zip(layer.iter()) {
             let premultiplied = (*src * src.alpha).with_alpha(src.alpha);
             *dst = premultiplied + *dst * (1.0 - src.alpha);
         }
@@ -152,6 +155,29 @@ pub(crate) mod test_images {
     pub fn flat_gray(level: usize) -> Image {
         let v = gray(level);
         image(|_, _| [v, v, v, 255])
+    }
+
+    /// A strip of animation frames, frame `i` all gray level `levels[i]`.
+    pub fn strip(levels: &[usize]) -> Image {
+        let data = levels
+            .iter()
+            .flat_map(|&level| {
+                let v = gray(level);
+                std::iter::repeat_n([v, v, v, 255], (TILE_SIZE * TILE_SIZE) as usize)
+            })
+            .flatten()
+            .collect();
+        Image::new(
+            Extent3d {
+                width: TILE_SIZE,
+                height: TILE_SIZE * levels.len() as u32,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            data,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::all(),
+        )
     }
 }
 
@@ -289,6 +315,32 @@ mod tests {
                 .unwrap_err()
                 .contains("32×32")
         );
+        // Tall, but not a whole number of frames.
+        big.resize(Extent3d {
+            width: 16,
+            height: 24,
+            depth_or_array_layers: 1,
+        });
+        assert!(
+            colorize(&big, &test_palette())
+                .unwrap_err()
+                .contains("16×24")
+        );
+    }
+
+    /// A strip of frames, 16 wide and a whole number of frames high,
+    /// colorizes whole: frame after frame, the first on top.
+    #[test]
+    fn colorize_takes_a_strip_of_frames() {
+        let strip = test_images::strip(&[1, 6, 3]);
+        let colors = colorize(&strip, &test_palette()).unwrap();
+        let len = (TILE_SIZE * TILE_SIZE) as usize;
+        assert_eq!(colors.len(), 3 * len);
+        for (frame, level) in [1, 6, 3].into_iter().enumerate() {
+            let expected = LinearRgba::from(test_palette().color(level));
+            assert_eq!(colors[frame * len], expected, "frame {frame}");
+            assert_eq!(colors[frame * len + len - 1], expected, "frame {frame}");
+        }
     }
 
     #[test]
@@ -302,7 +354,7 @@ mod tests {
         let mut top = vec![LinearRgba::NONE; len];
         top[0] = blue;
         top[1] = blue.with_alpha(0.5);
-        let out = stack(&[bottom, top]);
+        let out = stack(&[&bottom, &top]);
         assert_eq!(out[0..4], [0, 0, 255, 255]);
         // An even linear mix of red and blue is 188 in sRGB, not 128.
         assert_eq!(out[4..8], [188, 0, 188, 255]);

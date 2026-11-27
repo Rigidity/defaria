@@ -35,12 +35,15 @@
 
 use bevy::{
     asset::RenderAssetUsages,
-    mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexFormat},
+    mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexAttributeValues, VertexFormat},
     prelude::*,
 };
 
 use crate::{
-    content::{BakedFace, BlockState, Content, Direction, MAX_LIGHT, Render, Vertex},
+    content::{
+        BakedFace, BlockState, Content, Direction, FULL_FLUID, Fluid, MAX_LIGHT, Render, Vertex,
+    },
+    fluid::{flow, scroll},
     light::{CHANNELS, ChunkLight, Light, part_full_dim},
     world::{CHUNK_SIZE, Chunk, FLUID_STEPS, FluidTop, VoxelFluid, axis_of, fluid_surface},
 };
@@ -55,12 +58,19 @@ pub const ATTRIBUTE_CORNER: MeshVertexAttribute =
 /// lowest, where 255 is [`MAX_LIGHT`]. The same on every vertex of a face.
 pub const ATTRIBUTE_LIGHT: MeshVertexAttribute =
     MeshVertexAttribute::new("Light", 0x0DEF_A41A_0002, VertexFormat::Uint32x4);
-/// The face's layer in the block texture array (with [`BACK_FACE`] set on
-/// a double-sided block's back faces), then its four corners' ambient
+/// The face's texture (with [`BACK_FACE`] set on a double-sided block's
+/// back faces, and a fluid face's flags, see [`scroll`]), then its four
+/// corners' ambient
 /// occlusion, one byte each from the lowest: 3 is open, 0 is fully
 /// occluded. The same on every vertex of a face.
 pub const ATTRIBUTE_FACE: MeshVertexAttribute =
     MeshVertexAttribute::new("Face", 0x0DEF_A41A_0003, VertexFormat::Uint32x2);
+
+/// A fluid face's flow at each vertex (see [`scroll`]): which way, and how
+/// strongly, its texture moves, in its texture coordinates; zero
+/// everywhere else. The shader blends the corners across the face.
+pub const ATTRIBUTE_FLOW: MeshVertexAttribute =
+    MeshVertexAttribute::new("Flow", 0x0DEF_A41A_0004, VertexFormat::Snorm16x2);
 
 /// Set in [`ATTRIBUTE_FACE`]'s layer on a back face, which the shader
 /// draws a hair farther away than it is. Must match `BACK_FACE` in the
@@ -101,12 +111,21 @@ fn cut_face(face: &BakedFace, top: &FluidTop) -> BakedFace {
     }
 }
 
-/// Voxels along each axis of a [`Neighborhood`].
-const PADDED: usize = CHUNK_SIZE + 2;
+/// How many voxels around the chunk a [`Neighborhood`] holds on each side:
+/// two, as a fluid face's corner averages the flow of the voxels around it
+/// (see [`scroll::corner`]), which depends on the voxels around those.
+pub const MARGIN: i32 = 2;
+/// Each voxel's flow in a [`Neighborhood`], by its index, worked out once:
+/// the corners of several faces average it. Made with the first fluid
+/// face, so chunks without fluid don't pay for it.
+type FlowCache = Option<Vec<Option<scroll::Flow>>>;
 
-/// A chunk's blocks, fluid and light and the layer of voxels around it,
-/// copied out for meshing. Positions are chunk-local, from -1 to
-/// [`CHUNK_SIZE`].
+/// Voxels along each axis of a [`Neighborhood`].
+const PADDED: usize = CHUNK_SIZE + 2 * MARGIN as usize;
+
+/// A chunk's blocks, fluid and light and the [`MARGIN`] voxels around it,
+/// copied out for meshing. Positions are chunk-local, from `-MARGIN` to
+/// [`CHUNK_SIZE`]` + MARGIN - 1`.
 #[derive(Debug, Clone)]
 pub(super) struct Neighborhood {
     blocks: Vec<BlockState>,
@@ -169,7 +188,7 @@ impl Neighborhood {
         let mut blocks = Vec::with_capacity(PADDED.pow(3));
         let mut light = Vec::with_capacity(PADDED.pow(3));
         let mut fluids = Vec::with_capacity(PADDED.pow(3));
-        let range = -1..=CHUNK_SIZE as i32;
+        let range = -MARGIN..CHUNK_SIZE as i32 + MARGIN;
         for y in range.clone() {
             for z in range.clone() {
                 for x in range.clone() {
@@ -188,7 +207,7 @@ impl Neighborhood {
     }
 
     fn index(pos: IVec3) -> usize {
-        let p = (pos + IVec3::ONE).as_uvec3();
+        let p = (pos + IVec3::splat(MARGIN)).as_uvec3();
         debug_assert!(
             p.cmplt(UVec3::splat(PADDED as u32)).all(),
             "{pos} is outside"
@@ -254,6 +273,61 @@ impl Neighborhood {
         })
     }
 
+    /// How high the fluid at `pos` stands, as flow measures it: its amount
+    /// on top of the part of the voxel its block takes.
+    fn fluid_level(&self, content: &Content, pos: IVec3) -> u16 {
+        let (fluid, _) = self.fluids[Self::index(pos)];
+        let room = content.state(self.block(pos)).fluid_room;
+        fluid.map_or(0, |fluid| fluid.amount) + FULL_FLUID.saturating_sub(room)
+    }
+
+    /// Which way the fluid `kind` at `pos` flows (see [`scroll`]). Whether
+    /// it flows at all goes by the amounts, as flow itself does, not by the
+    /// heights drawn, which are sticky (a settled pool can be drawn a
+    /// little uneven for good): it falls while the voxel below has room
+    /// for it, and flows across toward neighbours holding the same fluid
+    /// (waterlogged blocks among them) whose level is lower by as much as
+    /// flow moves sideways (a `ripple`, and at least [`flow::SHARE`]
+    /// units). Flowing across, it runs down its drawn surface's slope, or
+    /// toward those neighbours where the surface is level.
+    fn fluid_flow(
+        &self,
+        content: &Content,
+        kind: BlockState,
+        fluid: &Fluid,
+        pos: IVec3,
+    ) -> scroll::Flow {
+        let below = pos - IVec3::Y;
+        let room_below = content.state(self.block(below)).fluid_room;
+        let falling = match self.fluids[Self::index(below)].0 {
+            None => room_below > 0,
+            Some(there) => there.kind == kind && there.amount < room_below,
+        };
+        let level = fluid.ripple.max(flow::SHARE) as f32;
+        let here = self.fluid_level(content, pos) as f32;
+        let toward: Vec3 = [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z]
+            .into_iter()
+            .filter(|&side| self.fluid(pos + side) == Some(kind))
+            .map(|side| (side, here - self.fluid_level(content, pos + side) as f32))
+            .filter(|(_, drop)| drop.abs() >= level)
+            .map(|(side, drop)| side.as_vec3() * drop / FULL_FLUID as f32)
+            .sum();
+        let downhill = if toward == Vec3::ZERO {
+            Vec3::ZERO
+        } else {
+            // Down the slope: the corners' heights fall this much across
+            // the voxel in X and in Z.
+            let top = self.fluid_top(content, kind, pos);
+            let slope = Vec3::new(
+                top.corner(0, 0) + top.corner(0, 1) - top.corner(1, 0) - top.corner(1, 1),
+                0.0,
+                top.corner(0, 0) + top.corner(1, 0) - top.corner(0, 1) - top.corner(1, 1),
+            ) / 2.0;
+            if slope.length() > 1e-3 { slope } else { toward }
+        };
+        scroll::Flow { falling, downhill }
+    }
+
     /// The faces of the fluid `fluid` at `pos`, and their backs if it's
     /// double-sided, cut to its surface (see [`FluidTop`]):
     ///
@@ -273,9 +347,13 @@ impl Neighborhood {
         pos: IVec3,
         builder: &mut MeshBuilder,
         opaque: &impl Fn(IVec3) -> bool,
+        flows: &mut FlowCache,
     ) {
         let state = content.state(fluid);
         let block = content.state(self.block(pos));
+        let Some(definition) = &state.fluid else {
+            return;
+        };
         // Built only once a face shows: most of a sea shows none.
         let mut top = None;
         for face in &state.faces {
@@ -287,6 +365,7 @@ impl Neighborhood {
                 continue;
             }
             let top = *top.get_or_insert_with(|| self.fluid_top(content, fluid, pos));
+            let model = face;
             let (face, shading) = if side == Direction::Up && !top.is_full() {
                 // A lowered top lies inside the voxel, so nothing beside it
                 // can hide it. It's still the surface the light above falls
@@ -311,10 +390,49 @@ impl Neighborhood {
                 let cut = cut_face(face, &top);
                 (cut.clone(), cut)
             };
+            // Each corner's flow, averaged over the voxels around it in
+            // the face's plane holding the same fluid (waterlogged blocks
+            // among them), in the face's texture coordinates.
+            let normal = face.normal;
+            let (a, b) = scroll::plane_axes(normal);
+            let corners: Vec<Vec2> = model
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    let around = |offset: IVec2| {
+                        let at = pos + a * offset.x + b * offset.y;
+                        (self.fluid(at) == Some(fluid)).then(|| {
+                            let slot = &mut flows.get_or_insert_with(|| vec![None; PADDED.pow(3)])
+                                [Self::index(at)];
+                            let flow = *slot.get_or_insert_with(|| {
+                                self.fluid_flow(content, fluid, definition, at)
+                            });
+                            scroll::face_vector(flow, normal)
+                        })
+                    };
+                    let toward = scroll::corner_toward(normal, vertex.pos);
+                    scroll::to_uv(normal, scroll::corner(around, toward))
+                })
+                .collect();
+            let flowing = corners.iter().any(|flow| flow.length() > 1e-3);
+            let face = BakedFace {
+                // Texture coordinates from where the face is, so they run
+                // on from one tile to the next.
+                vertices: face
+                    .vertices
+                    .iter()
+                    .map(|vertex| Vertex {
+                        pos: vertex.pos,
+                        uv: scroll::uv_at(normal, pos.as_vec3() + vertex.pos),
+                    })
+                    .collect(),
+                layer: face.layer | scroll::WRAPPED | if flowing { scroll::FLOWING } else { 0 },
+                ..face
+            };
             let shading = self.shade_face(content, pos, &shading, state.emits_light(), opaque);
-            builder.push(pos.as_vec3(), &face, &shading, false);
+            builder.push_flowing(pos.as_vec3(), &face, &shading, false, &corners);
             if state.double_sided {
-                builder.push(pos.as_vec3(), &face, &shading, true);
+                builder.push_flowing(pos.as_vec3(), &face, &shading, true, &corners);
             }
         }
     }
@@ -337,13 +455,14 @@ impl Neighborhood {
         let opaque_at = |pos: IVec3| opaque[Self::index(pos)];
 
         let mut builders: [MeshBuilder; 3] = Default::default();
+        let mut flows = None;
         // Only translucent faces are sorted.
         builders[Render::Translucent as usize].sorted = true;
         for (x, y, z) in Chunk::positions() {
             let pos = IVec3::new(x as i32, y as i32, z as i32);
             if let Some(fluid) = self.fluid(pos) {
                 let builder = &mut builders[content.state(fluid).render as usize];
-                self.fluid_faces(content, fluid, pos, builder, &opaque_at);
+                self.fluid_faces(content, fluid, pos, builder, &opaque_at, &mut flows);
             }
             let voxel = self.block(pos);
             if voxel.is_air() {
@@ -589,6 +708,7 @@ struct MeshBuilder {
     corners: Vec<[f32; 2]>,
     lights: Vec<[u32; 4]>,
     faces: Vec<[u32; 2]>,
+    flows: Vec<[i16; 2]>,
     indices: Vec<u32>,
     /// Whether to record `sort_faces`, for a translucent mesh.
     sorted: bool,
@@ -602,6 +722,19 @@ impl MeshBuilder {
     /// neighbour's face in the same plane (a slab's side beside water or
     /// lava) then wins the depth test, where they'd flicker otherwise.
     fn push(&mut self, origin: Vec3, face: &BakedFace, shading: &FaceShading, back: bool) {
+        self.push_flowing(origin, face, shading, back, &[]);
+    }
+
+    /// [`MeshBuilder::push`], with each vertex's flow (see
+    /// [`ATTRIBUTE_FLOW`]), by the face's vertex order; none is still.
+    fn push_flowing(
+        &mut self,
+        origin: Vec3,
+        face: &BakedFace,
+        shading: &FaceShading,
+        back: bool,
+        flows: &[Vec2],
+    ) {
         let base = self.positions.len() as u32;
         let count = face.vertices.len();
         let triangle = count == 3;
@@ -615,7 +748,13 @@ impl MeshBuilder {
         for i in 0..count {
             // The back runs the other way round: the first vertex, then the
             // rest in reverse, which swaps the second and fourth corners.
-            let vertex = &face.vertices[if back && i > 0 { count - i } else { i }];
+            let index = if back && i > 0 { count - i } else { i };
+            let vertex = &face.vertices[index];
+            let flow = flows.get(index).copied().unwrap_or(Vec2::ZERO);
+            self.flows.push(
+                flow.to_array()
+                    .map(|f| (f.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16),
+            );
             let pos = origin + vertex.pos;
             center += pos;
             self.positions.push(pos.to_array());
@@ -659,6 +798,7 @@ impl MeshBuilder {
         .with_inserted_attribute(ATTRIBUTE_CORNER, self.corners)
         .with_inserted_attribute(ATTRIBUTE_LIGHT, self.lights)
         .with_inserted_attribute(ATTRIBUTE_FACE, self.faces)
+        .with_inserted_attribute(ATTRIBUTE_FLOW, VertexAttributeValues::Snorm16x2(self.flows))
         .with_inserted_indices(Indices::U32(self.indices))
     }
 }
@@ -735,5 +875,7 @@ impl CornerShading {
     }
 }
 
+#[cfg(test)]
+mod flow_tests;
 #[cfg(test)]
 mod tests;

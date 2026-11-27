@@ -1,3 +1,7 @@
+// Water: its image is a strip of 16 frames of shimmering ripples, a
+// tenth of a second each (the loop takes 1.6 seconds). Where it flows,
+// the ripples run along with it at a block a second.
 {
   layers: [{ image: "water", material: "water" }],
+  animation: { frame_time: 0.1, scroll: 1 },
 }

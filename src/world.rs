@@ -21,7 +21,7 @@ mod voxels;
 pub use chunk::split_fluid;
 pub use chunk::{
     CHUNK_SIZE, CHUNK_VOLUME, Chunk, FLUID_STEPS, VoxelFluid, axis_of, filled, fluid_step,
-    fluid_surface, touching_offsets,
+    fluid_surface, offsets_within, touching_offsets,
 };
 pub use chunk_array::ChunkArray;
 pub use fluid_top::FluidTop;
@@ -72,6 +72,13 @@ impl ChunkCoord {
     pub fn touching(pos: IVec3) -> impl Iterator<Item = ChunkCoord> {
         let (coord, local) = Self::split(pos);
         touching_offsets(local).map(move |offset| ChunkCoord(coord.0 + offset))
+    }
+
+    /// The chunks within `reach` voxels of the voxel at `pos`, its own
+    /// among them: see [`offsets_within`].
+    pub fn within(pos: IVec3, reach: i32) -> impl Iterator<Item = ChunkCoord> {
+        let (coord, local) = Self::split(pos);
+        offsets_within(local, reach).map(move |offset| ChunkCoord(coord.0 + offset))
     }
 
     /// The 26 chunks around this one.

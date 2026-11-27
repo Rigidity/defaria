@@ -41,6 +41,7 @@ use std::{collections::BTreeMap, ops::Range, path::Path};
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
 
 use crate::block_texture::Palette;
+pub use bake::MAX_TILES;
 pub use connect::{Connections, Joins, Rule, SIDE_VALUES};
 pub use machine::{
     Emits, EnergySpec, FACING, ItemFilter, MAX_SLOTS, Machine, MachinePort, MachineRecipes,
@@ -193,6 +194,22 @@ pub struct Texture {
     /// Whether a cut-out block's face shows it, so its mipmaps keep its
     /// share of solid pixels (see `block_texture`).
     pub cutout: bool,
+    /// How it moves. Its images' frames (see `block_texture`) only show
+    /// with one.
+    pub animation: Option<Animation>,
+}
+
+/// How a [`Texture`] moves: it steps through the frames its images hold,
+/// and scrolls along flowing fluid faces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Animation {
+    /// Seconds each frame shows for, more than 0: `None` for a texture
+    /// that only scrolls.
+    pub frame_time: Option<f32>,
+    /// Whether each frame fades into the next.
+    pub blend: bool,
+    /// Blocks a second it scrolls along a flowing fluid's faces, 0 or more.
+    pub scroll: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

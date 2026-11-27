@@ -40,9 +40,13 @@ script to redraw them.
   level darker) and brighter streaks (alpha 200), so the material's color
   shows through. Colored by the `stained_glass` materials.
 - `water.png`: soft, wrapping ripples, fully solid; the water material's
-  palette carries its alpha.
+  palette carries its alpha. A strip of 16 frames (2026-11-26): two sets
+  of slanted ripples crossing and drifting opposite ways, warped by noise
+  that loops in time, so the surface shimmers in place.
 - `lava.png`: dark crust plates with bright molten seams between them,
-  wrapping.
+  wrapping. A strip of 16 frames (2026-11-26): the plates' centres sway
+  on small circles and the seams' heat follows noise that loops in time;
+  the texture blends between frames.
 - `tuft.png`: nine blades of grass rising from the bottom edge and bending
   outward toward their tips, thicker near the ground, transparent around
   them.

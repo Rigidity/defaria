@@ -260,7 +260,8 @@ follow it directly.
 
 ## Art and Retro Diffusion
 
-Block textures are 16×16 grayscale layer images in a mod's `images/` folder
+Block textures are 16×16 grayscale layer images (or vertical strips of
+16×16 animation frames) in a mod's `images/` folder
 (the base game's are in `assets/mods/defaria/images/`), colored by material
 palettes and stacked at runtime as the mod's texture files say
 (`src/block_texture.rs`). Layers use only the 8 gray levels that `cargo test`
@@ -403,6 +404,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   nowhere to push it and to reactions (`reactions/` in a mod), which it
   counts. `src/fluid/evaporation.rs` dries up films under open sky, also
   counted. Also what the player swims in and the fog inside fluid.
+  `src/fluid/scroll.rs`: which way a fluid's faces scroll their texture
+  as it flows.
 - `src/streaming.rs`: loading, unloading and saving chunks around the
   camera. The world has no edges, up and down included.
 - `src/fog.rs`: distance fog that follows the edge of the drawn world.
