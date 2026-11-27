@@ -72,6 +72,25 @@ pub struct MaterialDef {
 pub struct TextureDef {
     /// Bottom first.
     pub layers: Vec<LayerDef>,
+    /// How it moves: needed when an image is a strip of frames.
+    #[serde(default)]
+    pub animation: Option<AnimationDef>,
+}
+
+/// A texture's `animation`.
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct AnimationDef {
+    /// Seconds each frame shows for. Needed when an image has frames.
+    #[serde(default)]
+    pub frame_time: Option<f32>,
+    /// Whether each frame fades into the next, for smooth slow motion.
+    #[serde(default)]
+    pub blend: bool,
+    /// How fast it scrolls along a flowing fluid's faces, in blocks a
+    /// second.
+    #[serde(default)]
+    pub scroll: f32,
 }
 
 /// One grayscale image and what colors it: a material, or a palette given

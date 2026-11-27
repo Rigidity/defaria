@@ -211,6 +211,7 @@ mod tests {
             materials.add(VoxelMaterial {
                 blocks: Handle::default(),
                 lighting: default(),
+                animations: Handle::default(),
                 alpha_mode,
             })
         };

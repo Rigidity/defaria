@@ -1,0 +1,32 @@
+# Water and lava move. Two still pools side by side, seen close up: the
+# same view a few frames apart shows the water's ripples changed (a frame
+# every tenth of a second) and the lava's crust shifted (half a second a
+# frame, blending). Then water poured over a ledge runs down a wall and
+# spreads: its flowing faces scroll along the flow, shot twice a few
+# frames apart, while the still pools beside it only shimmer.
+# Run: cargo headless scenarios/animated-fluids.txt
+camera 30 60 40 0 -50
+settle
+fill 20 40 30 40 54 50 air
+fill 20 40 30 40 49 50 stone
+# Two pools, water on the left and lava on the right.
+fill 24 49 36 29 49 41 water
+fill 31 49 36 36 49 41 lava
+wait 1
+camera 30.5 53 44 0 -50
+wait 5
+screenshot target/scenarios/animated-fluids/pools-0.png
+wait 9
+screenshot target/scenarios/animated-fluids/pools-9.png
+wait 30
+screenshot target/scenarios/animated-fluids/pools-39.png
+wait 1
+# A ledge with water falling off it onto the floor.
+fill 24 50 31 36 54 33 stone
+fill 29 55 32 31 55 34 water
+wait 60
+camera 30.5 54 41 0 -25
+wait 2
+screenshot target/scenarios/animated-fluids/flowing-0.png
+wait 10
+screenshot target/scenarios/animated-fluids/flowing-10.png

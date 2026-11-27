@@ -670,14 +670,17 @@ fn fluid_is_drawn_at_its_height() {
     let sliver = fluid_mesh(&[(A, "water", Some(1))]);
     let top = positions(&sliver).iter().map(|p| p.y).fold(0.0, f32::max);
     assert_eq!(top, A.y as f32 + 1.0 / 16.0);
-    // The sides' texture runs from the middle of the tile down.
+    // Fluid's texture comes from where it is (see `fluid::scroll::uv_at`):
+    // `v` runs down the sides, so a half-high side shows half a tile, cut
+    // rather than squashed, and the top runs along Z.
     let Some(VertexAttributeValues::Float32x2(uvs)) = half.attribute(Mesh::ATTRIBUTE_UV_0) else {
         panic!("no uvs");
     };
     let mut vs: Vec<f32> = uvs.iter().map(|uv| uv[1]).collect();
     vs.sort_by(f32::total_cmp);
     vs.dedup();
-    assert_eq!(vs, [0.0, 0.5, 1.0]);
+    let (y, z) = (A.y as f32, A.z as f32);
+    assert_eq!(vs, [-(y + 0.5), -y, z, z + 1.0]);
 }
 
 /// Between two voxels of the same fluid, no side shows: the higher
@@ -1124,7 +1127,8 @@ fn back_faces_are_flagged() {
         for (n, quad) in faces.chunks(4).enumerate() {
             let back = n % 2 == 1;
             assert_eq!(quad[0][0] & BACK_FACE != 0, back, "{name} face {n}");
-            assert_eq!(quad[0][0] & !BACK_FACE, layer);
+            // (Falling, it also has flow bits; see `fluid::scroll`.)
+            assert_eq!(quad[0][0] & crate::fluid::scroll::TEXTURE_BITS, layer);
         }
     }
 }

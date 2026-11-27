@@ -73,6 +73,10 @@ index into a palette, so an image is shape and shading only, and one image
 can be stone in one texture and copper in another.
 `scripts/gray-layer.py` turns any 16×16 image into one.
 
+An image can also be a strip of animation frames: 16 wide, with frames of
+16×16 stacked down it, the first on top. A texture using one needs an
+`animation` (see [Animation](#animation)).
+
 Images load through the asset server, so in dev builds editing one updates
 the game while it runs. An image that's missing, won't load, is the wrong
 size or uses other colors is logged, and the tiles that use it show a
@@ -193,8 +197,44 @@ reported, and the tiles that use it show the placeholder. A texture's
 inputs are all `$name`s or all `#tag`s, not a mix.
 
 All mods together have room for 2048 tiles, counting every combination a
-tagged texture makes. A texture whose combinations don't fit is reported
-and left out.
+tagged texture makes and every animation frame after the first. A
+texture whose combinations don't fit is reported and left out; one whose
+frames don't fit shows only its first.
+
+### Animation
+
+A texture whose images are strips of frames (see [Images](#images)) steps
+through them, with `animation` saying how:
+
+```json5
+// textures/lava.json5
+{
+  layers: [{ image: "lava", material: "lava" }],
+  animation: {
+    frame_time: 0.5, // seconds each frame shows for: needed with frames
+    blend: true,     // fade each frame into the next (default false)
+    scroll: 0.25,    // blocks a second it moves along flowing fluid (default 0)
+  },
+}
+```
+
+The animation loops: after the last frame comes the first. Layers can
+hold different numbers of frames, and repeat until they line up (two
+frames over three make six); a still layer shows in every frame. A
+texture has at most 64 frames. Item icons show the first. `blend` suits
+slow motion, like lava's; without it, frames switch at once.
+
+`scroll` is for fluids: a fluid's faces that flow move their texture
+along the flow at that speed: its top downhill, its sides down while it
+falls, and across along the flow otherwise. Faces of still fluid don't.
+The flow is smooth from block to block (each corner of a face takes the
+average of the voxels around it, fading out toward still fluid), and a
+fluid's texture is laid on by where it is in the world, one tile a
+block, so it runs on across the faces rather than restarting at each.
+A texture without frames can scroll too: `animation: { scroll: 1 }`.
+The game's clock restarts every hour, so a loop (frames times
+`frame_time`) and a scroll that fit a whole number of times into an hour
+never jump.
 
 ## Models
 

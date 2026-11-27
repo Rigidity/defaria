@@ -1,0 +1,24 @@
+# Water poured onto flat ground spreads out in every direction at once.
+# Its flowing top scrolls outward from the middle, continuously across
+# the blocks, with no seams where neighbouring tiles flow different ways.
+# Seen from above while it spreads, then up close at a slant.
+# Run: cargo headless scenarios/fluid-spreading.txt
+camera 30 70 30 0 -89
+settle
+fill 10 50 10 50 60 50 air
+fill 10 45 10 50 49 50 stone
+camera 30.5 60 30.5 0 -89
+wait 30
+fill 29 50 29 31 52 31 water
+wait 40
+screenshot target/scenarios/fluid-spreading/above-0.png
+wait 3
+screenshot target/scenarios/fluid-spreading/above-3.png
+wait 1
+camera 30.5 54 35.5 0 -45
+wait 2
+screenshot target/scenarios/fluid-spreading/close-0.png
+wait 3
+screenshot target/scenarios/fluid-spreading/close-3.png
+wait 1
+fluids

@@ -1,3 +1,7 @@
+// Lava: its image is a strip of 16 frames of slowly shifting crust, half a
+// second each, fading into each other. Where it flows, it creeps along at
+// a quarter of a block a second.
 {
   layers: [{ image: "lava", material: "lava" }],
+  animation: { frame_time: 0.5, blend: true, scroll: 0.25 },
 }

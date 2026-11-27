@@ -9,6 +9,21 @@
 // instead would blend across each of the quad's two triangles separately,
 // which shows the diagonal as bands and creases.
 //
+// Animated textures: a texture's first frame is the array layer of its own
+// index, and its other frames come after every texture's first. The
+// `animations` table (see `block_texture::Animations` in
+// src/block_texture.rs) says, per texture, how many frames it has, where
+// the rest are, and how it moves; the time comes from Bevy's globals, so
+// animating needs no remeshing or uploads.
+//
+// Fluid faces take their texture coordinates from where they are, wrapping
+// every block (WRAPPED), and flowing ones (FLOWING) move their texture by a
+// flow map: a flow vector at each vertex, which the mesher averages over
+// the voxels sharing the corner (see src/fluid/scroll.rs), blended across
+// the face, so the flow runs on continuously from tile to tile. Two
+// samples half a cycle apart, each pushed along the flow and pulled back
+// once a cycle, cross-fade so neither's reset or stretching shows.
+//
 // Distance fog comes from the camera's `DistanceFog` (see src/fog.rs), in the
 // view's bindings, when it has one. It's a cylinder around the camera, like
 // the loaded world: `be` holds how far it reaches sideways, up and down, and
@@ -36,6 +51,23 @@ struct Lighting {
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var blocks_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var<uniform> lighting: Lighting;
 
+// One texture's entry in the animation table. Must match
+// `Animations::words` in src/block_texture.rs.
+struct Animation {
+    // How many frames it steps through: 1 for a still texture.
+    frames: u32,
+    // The array layer of its second frame; the rest follow it.
+    rest: u32,
+    // Seconds a frame shows for.
+    frame_time: f32,
+    // Blocks a second it scrolls along a flowing face.
+    scroll: f32,
+    // 1 if each frame fades into the next.
+    blend: u32,
+};
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var<storage, read> animations: array<Animation>;
+
 // Light levels run from 0 to this.
 const MAX_LIGHT: f32 = 15.0;
 // Each level down is this much dimmer.
@@ -51,6 +83,14 @@ const OCCLUDED: f32 = 0.3;
 // water or lava) wins the depth test instead of flickering with it.
 const BACK_FACE: u32 = 0x80000000u;
 const BACK_DEPTH_BIAS: f32 = 2e-5;
+// The rest of a face's layer (see src/fluid/scroll.rs): the texture's index
+// in the low bits, WRAPPED on a fluid face and FLOWING on one that flows.
+const TEXTURE_BITS: u32 = 0x00ffffffu;
+const FLOWING: u32 = 0x10000000u;
+const WRAPPED: u32 = 0x20000000u;
+// Seconds each of the flow map's two phases takes to push its sample along
+// and start again.
+const FLOW_CYCLE: f32 = 1.0;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -64,6 +104,8 @@ struct Vertex {
     // The texture layer (with BACK_FACE on a back face), then each corner's
     // ambient occlusion as bytes, 0-3.
     @location(5) face: vec2<u32>,
+    // A fluid face's flow here, in its texture coordinates; zero elsewhere.
+    @location(6) flow: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -74,6 +116,7 @@ struct VertexOutput {
     @location(3) corner: vec2<f32>,
     @location(4) @interpolate(flat) light: vec4<u32>,
     @location(5) @interpolate(flat) face: vec2<u32>,
+    @location(6) flow: vec2<f32>,
 };
 
 @vertex
@@ -92,6 +135,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.corner = vertex.corner;
     out.light = vertex.light;
     out.face = vertex.face;
+    out.flow = vertex.flow;
     return out;
 }
 
@@ -154,14 +198,57 @@ fn dynamic_light(position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 // within one screen pixel of a texel edge, where it blends across the edge.
 // That gives hard pixel edges without the stair-step aliasing of nearest
 // filtering. Far away, a texel is smaller than a pixel, the snap does
-// nothing, and the mipmaps take over.
-fn pixel_art_uv(uv: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
+// nothing, and the mipmaps take over. `texels_per_pixel` is how many
+// texels a screen pixel covers, capped at 1, where the snap becomes the
+// identity; it's worked out once (derivatives need uniform control flow)
+// and serves the flow map's shifted samples too.
+fn pixel_art_uv(uv: vec2<f32>, size: vec2<f32>, texels_per_pixel: vec2<f32>) -> vec2<f32> {
     let texel = uv * size;
-    // Capped at 1, where the snap becomes the identity.
-    let texels_per_pixel = clamp(fwidth(texel), vec2<f32>(1e-5), vec2<f32>(1.0));
     let edge = floor(texel + 0.5);
     let offset = clamp((texel - edge) / texels_per_pixel, vec2<f32>(-0.5), vec2<f32>(0.5));
     return (edge + offset) / size;
+}
+
+struct Frame {
+    layer: u32,
+    next: u32,
+    fade: f32,
+};
+
+// The array layer of texture `texture`'s frame `frame`.
+fn frame_layer(texture: u32, animation: Animation, frame: u32) -> u32 {
+    return select(animation.rest + frame - 1u, texture, frame == 0u);
+}
+
+// What texture `texture` shows `time` seconds in: frame after frame, each
+// for its frame time, fading into the next if it blends. As
+// `Animations::frame_at` in src/block_texture.rs.
+fn animated_frame(texture: u32, animation: Animation, time: f32) -> Frame {
+    var out: Frame;
+    out.layer = texture;
+    out.next = texture;
+    out.fade = 0.0;
+    if animation.frames > 1u {
+        let steps = time / animation.frame_time;
+        let frame = u32(floor(steps)) % animation.frames;
+        out.layer = frame_layer(texture, animation, frame);
+        out.next = frame_layer(texture, animation, (frame + 1u) % animation.frames);
+        out.fade = select(0.0, fract(steps), animation.blend != 0u);
+    }
+    return out;
+}
+
+// Samples `frame` at `uv`, faded into the next frame if it blends. Explicit
+// gradients (the unshifted UV's, so mip level and anisotropy follow how
+// the face is seen), so sampling needn't be in uniform control flow, and
+// only blending textures pay for the second sample.
+fn sample_frame(uv: vec2<f32>, frame: Frame, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    var texel = textureSampleGrad(blocks, blocks_sampler, uv, i32(frame.layer), ddx, ddy);
+    if frame.fade > 0.0 {
+        let next = textureSampleGrad(blocks, blocks_sampler, uv, i32(frame.next), ddx, ddy);
+        texel = mix(texel, next, frame.fade);
+    }
+    return texel;
 }
 
 // The alpha a texel is drawn with. Cut-out faces use alpha to coverage
@@ -208,16 +295,32 @@ fn fogged(color: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(blocks));
-    // Pass the unsnapped UV's derivatives so mip level and anisotropy are
-    // chosen from how the face is actually seen, not from the snapped UV.
-    let texel = textureSampleGrad(
-        blocks,
-        blocks_sampler,
-        pixel_art_uv(in.uv, size),
-        i32(in.face.x & ~BACK_FACE),
-        dpdx(in.uv),
-        dpdy(in.uv),
-    );
+    let time = bevy_pbr::render::mesh_view_bindings::globals.time;
+    let texture = in.face.x & TEXTURE_BITS;
+    let animation = animations[texture];
+    let texels_per_pixel = clamp(fwidth(in.uv * size), vec2<f32>(1e-5), vec2<f32>(1.0));
+    let ddx = dpdx(in.uv);
+    let ddy = dpdy(in.uv);
+    let frame = animated_frame(texture, animation, time);
+    var texel: vec4<f32>;
+    if (in.face.x & FLOWING) != 0u {
+        // The flow map: two samples pushed along the flow, half a cycle
+        // apart, each pulled back to the start once a cycle. Each fades out
+        // as it nears its reset, while the other is halfway.
+        let phase = fract(time / FLOW_CYCLE);
+        let shift = in.flow * animation.scroll * FLOW_CYCLE;
+        let first = fract(pixel_art_uv(in.uv - shift * phase, size, texels_per_pixel));
+        let second = fract(pixel_art_uv(in.uv - shift * fract(phase + 0.5), size, texels_per_pixel));
+        let a = sample_frame(first, frame, ddx, ddy);
+        let b = sample_frame(second, frame, ddx, ddy);
+        texel = mix(a, b, abs(1.0 - 2.0 * phase));
+    } else {
+        // Still: one sample, where the face is. A fluid face's coordinates
+        // run on past its block, so they wrap.
+        let snapped = pixel_art_uv(in.uv, size, texels_per_pixel);
+        let wrapped = (in.face.x & WRAPPED) != 0u;
+        texel = sample_frame(select(snapped, fract(snapped), wrapped), frame, ddx, ddy);
+    }
 
     let baked = baked_light(in.light, in.corner);
     let normal = normalize(in.world_normal);

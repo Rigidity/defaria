@@ -52,6 +52,7 @@ use item::add_items;
 use material::material;
 use model::model;
 use parse::parse_file;
+pub use texture::MAX_TILES;
 use texture::{Textures, template};
 
 pub(crate) use fill::title_case;

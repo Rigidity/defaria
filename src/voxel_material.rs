@@ -21,8 +21,11 @@ use bevy::{
     pbr::{MaterialPipeline, MaterialPipelineKey},
     platform::collections::{HashMap, HashSet},
     prelude::*,
-    render::render_resource::{
-        AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    render::{
+        render_resource::{
+            AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+        },
+        storage::ShaderBuffer,
     },
     shader::ShaderRef,
 };
@@ -30,7 +33,7 @@ use bevy::{
 use crate::{
     block_texture,
     content::Content,
-    meshing::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT},
+    meshing::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_FLOW, ATTRIBUTE_LIGHT},
 };
 
 /// The most dynamic lights drawn at once: the ones nearest the camera.
@@ -69,6 +72,10 @@ pub struct VoxelMaterial {
     pub blocks: Handle<Image>,
     #[uniform(2)]
     pub lighting: LightingUniform,
+    /// Each texture's frames and how it moves
+    /// ([`block_texture::Animations::words`]).
+    #[storage(3, read_only, visibility(fragment))]
+    pub animations: Handle<ShaderBuffer>,
     /// Opaque, cut out (alpha to coverage, with holes where the texture is
     /// transparent) or blended.
     pub alpha_mode: AlphaMode,
@@ -149,13 +156,14 @@ impl Material for VoxelMaterial {
 
 /// The shader's vertex inputs, at locations 0, 1, 2, ... in this order:
 /// each mesh attribute and how the shader declares it.
-const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 6] = [
+const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 7] = [
     (Mesh::ATTRIBUTE_POSITION, "position: vec3<f32>"),
     (Mesh::ATTRIBUTE_NORMAL, "normal: vec3<f32>"),
     (Mesh::ATTRIBUTE_UV_0, "uv: vec2<f32>"),
     (ATTRIBUTE_CORNER, "corner: vec2<f32>"),
     (ATTRIBUTE_LIGHT, "light: vec4<u32>"),
     (ATTRIBUTE_FACE, "face: vec2<u32>"),
+    (ATTRIBUTE_FLOW, "flow: vec2<f32>"),
 ];
 
 /// The materials chunk meshes are drawn with, one per
@@ -193,11 +201,13 @@ impl FromWorld for BlockMaterial {
         // A handle with no image behind it yet: chunks don't draw until the
         // layers have loaded and the real texture replaces it.
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
+        let animations = world.resource::<Assets<ShaderBuffer>>().reserve_handle();
         let mut materials = world.resource_mut::<Assets<VoxelMaterial>>();
         let mut add = |alpha_mode| {
             materials.add(VoxelMaterial {
                 blocks: blocks.clone(),
                 lighting: default(),
+                animations: animations.clone(),
                 alpha_mode,
             })
         };
@@ -246,6 +256,9 @@ impl BlockMaterial {
 /// before its event can be read, so building on presence alone would build
 /// once early and again when the last event arrives.
 ///
+/// The animation table is rebuilt with it, since how many frames an image
+/// holds can change in a reload too.
+///
 /// Each rebuild is a new image asset, not an overwrite of the old one: when
 /// an image's size and format don't change, Bevy updates the existing GPU
 /// texture by copying in mip 0 only, which would leave stale mips and read
@@ -260,6 +273,7 @@ fn build_block_texture(
     // Layers whose latest load failed.
     mut failed: Local<HashSet<AssetId<Image>>>,
     mut images: ResMut<Assets<Image>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
     mut tiles: ResMut<BlockTiles>,
 ) {
@@ -290,24 +304,29 @@ fn build_block_texture(
     if !changed || !ready {
         return;
     }
-    let (texture, built, errors) = block_texture::build(&content.textures, |path| {
+    let built = block_texture::build(&content.textures, |path| {
         let layer = block.layers.get(path)?;
         if failed.contains(&layer.id()) {
             return None;
         }
         images.get(layer)
     });
-    for error in errors {
+    for error in built.errors {
         error!("can't build texture {error}; showing a placeholder");
     }
-    let texture = images.add(texture);
-    tiles.0 = built;
+    let texture = images.add(built.image);
+    let table = buffers.add(ShaderBuffer::new(
+        built.animations.words(),
+        RenderAssetUsages::RENDER_WORLD,
+    ));
+    tiles.0 = built.tiles;
     // Assigning through `get_mut` marks each material modified, so its
     // bind group is rebuilt with the new texture. The old texture is
     // dropped.
     for handle in block.all() {
         if let Some(mut material) = materials.get_mut(handle) {
             material.blocks = texture.clone();
+            material.animations = table.clone();
         }
     }
 }
@@ -315,8 +334,12 @@ fn build_block_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_texture::{TILE_SIZE, layer::test_images::flat_gray, mip_levels};
-    use crate::content::base;
+    use crate::block_texture::{
+        TILE_SIZE,
+        layer::test_images::{flat_gray, strip},
+        mip_levels,
+    };
+    use crate::content::{base, base_texture};
     use bevy::color::ColorToPacked;
 
     /// The shader declares the bindings the material provides, at the same
@@ -327,6 +350,54 @@ mod tests {
         assert!(shader.contains("@binding(0) var blocks: texture_2d_array<f32>"));
         assert!(shader.contains("@binding(1) var blocks_sampler: sampler"));
         assert!(shader.contains("@binding(2) var<uniform> lighting: Lighting"));
+        assert!(shader.contains("@binding(3) var<storage, read> animations: array<Animation>"));
+        // The flow bits the mesher packs (see `fluid::scroll`).
+        use crate::fluid::scroll;
+        for constant in [
+            format!("const TEXTURE_BITS: u32 = 0x{:08x}u;", scroll::TEXTURE_BITS),
+            format!("const FLOWING: u32 = 0x{:08x}u;", scroll::FLOWING),
+            format!("const WRAPPED: u32 = 0x{:08x}u;", scroll::WRAPPED),
+        ] {
+            assert!(
+                shader.contains(&constant),
+                "the shader doesn't declare {constant}"
+            );
+        }
+        // The animation table's entries, word by word as `words` writes
+        // them: the struct's fields in order, each 32 bits.
+        let start = shader.find("struct Animation {").unwrap();
+        let body = &shader[start..start + shader[start..].find("};").unwrap()];
+        let fields: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with(','))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "frames: u32,",
+                "rest: u32,",
+                "frame_time: f32,",
+                "scroll: f32,",
+                "blend: u32,",
+            ]
+        );
+        assert_eq!(fields.len(), block_texture::ANIMATION_WORDS);
+        // The frame math `Animations::frame_at` spells out for the tests,
+        // and the flow map: a shift of `scroll` blocks a second along the
+        // vertex flow, two phases half a cycle apart, cross-faded by a
+        // triangle weight.
+        for line in [
+            "return select(animation.rest + frame - 1u, texture, frame == 0u);",
+            "let frame = u32(floor(steps)) % animation.frames;",
+            "out.fade = select(0.0, fract(steps), animation.blend != 0u);",
+            "let shift = in.flow * animation.scroll * FLOW_CYCLE;",
+            "let first = fract(pixel_art_uv(in.uv - shift * phase, size, texels_per_pixel));",
+            "let second = fract(pixel_art_uv(in.uv - shift * fract(phase + 0.5), size, texels_per_pixel));",
+            "texel = mix(a, b, abs(1.0 - 2.0 * phase));",
+        ] {
+            assert!(shader.contains(line), "the shader doesn't say {line}");
+        }
         assert!(shader.contains(&format!(
             "const MAX_DYNAMIC_LIGHTS: u32 = {MAX_DYNAMIC_LIGHTS}u;"
         )));
@@ -349,6 +420,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Image>()
             .init_asset::<VoxelMaterial>()
+            .init_asset::<ShaderBuffer>()
             .insert_resource(base().clone())
             .register_asset_loader(bevy::image::ImageLoader::new(
                 bevy::image::CompressedImageFormats::NONE,
@@ -371,6 +443,15 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         panic!("block texture never built");
+    }
+
+    /// The animation table the material hands the shader right now.
+    fn table(app: &App) -> Vec<u32> {
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        let handle = &materials.get(&block.material).unwrap().animations;
+        let buffers = app.world().resource::<Assets<ShaderBuffer>>();
+        buffers.get(handle).unwrap().cast_slice().unwrap().to_vec()
     }
 
     /// The texture the material samples right now.
@@ -439,7 +520,16 @@ mod tests {
             .get(&blocks)
             .unwrap();
         let size = texture.texture_descriptor.size;
-        assert_eq!(size.depth_or_array_layers, base().textures.len() as u32);
+        // A layer per texture, and one per extra frame of animated ones.
+        let extra: u32 = table(&app)
+            .chunks(block_texture::ANIMATION_WORDS)
+            .map(|entry| entry[0] - 1)
+            .sum();
+        assert!(extra > 0, "nothing is animated");
+        assert_eq!(
+            size.depth_or_array_layers,
+            base().textures.len() as u32 + extra
+        );
         assert_eq!(texture.texture_descriptor.mip_level_count, 5);
         // The same tiles are kept for the CPU.
         let tiles = &app.world().resource::<BlockTiles>().0;
@@ -486,6 +576,39 @@ mod tests {
             material_events.modified(&app),
             "material wasn't marked modified"
         );
+    }
+
+    /// Hot reloading an animated image with a different number of frames
+    /// rebuilds the animation table with the texture, and every material
+    /// gets the new table.
+    #[test]
+    fn reloading_frames_rebuilds_the_animation_table() {
+        let mut app = app();
+        built_texture(&mut app);
+        let water = base_texture("water") as usize;
+        let frames = |app: &App| table(app)[water * block_texture::ANIMATION_WORDS];
+        let before = frames(&app);
+        assert!(before > 2, "water has {before} frames");
+
+        let image = layer(&app, "water");
+        *app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .get_mut(&image)
+            .unwrap() = strip(&[2, 3]);
+        app.update();
+        app.update();
+
+        assert_eq!(frames(&app), 2);
+        let block = app.world().resource::<BlockMaterial>();
+        let materials = app.world().resource::<Assets<VoxelMaterial>>();
+        let table = materials.get(&block.material).unwrap().animations.clone();
+        for handle in block.all() {
+            assert_eq!(materials.get(handle).unwrap().animations, table);
+        }
+        // Water's first frame is what item icons show: the strip's first.
+        let tiles = &app.world().resource::<BlockTiles>().0;
+        let water_palette = base().materials["defaria:water"].palette;
+        assert_eq!(tiles[water][..4], water_palette.color(2).to_u8_array());
     }
 
     /// The three chunk materials blend as their names say: opaque, cut out

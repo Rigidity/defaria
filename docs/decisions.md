@@ -2169,3 +2169,41 @@ hanging and climbing plants.
 
 **When to revisit.** With dropped items, or with the first plant that
 hangs or climbs.
+
+## Fluid flow on faces is a flow map from the amounts (2026-11-26)
+
+**Decision.** How a fluid face moves its texture (`fluid::scroll`) is a
+flow map worked out by the mesher. Each voxel's flow comes from the
+amounts of fluid around it: down a side while the voxel below is air or
+the same fluid with room, otherwise across, toward neighbours of the same
+fluid holding less by as much as flow moves sideways (a `ripple`, and at
+least an eighth's worth), down its drawn slope. Not from the heights
+drawn alone: those are sticky, so a settled pool can be drawn a step or
+two uneven for good, and a spreading sheet can be drawn level. Each
+corner of a face averages the unit flows of the voxels around it in the
+face's plane, as `FluidTop` averages heights, and the shader blends the
+corners with Valve's two-phase flow map (a one-second cycle) over texture
+coordinates taken from the world, so the flow is continuous from tile to
+tile. Every flowing face moves at its texture's one `scroll` speed,
+however steep, and the neighbourhood meshing reads is two voxels wide
+around the chunk (not one) so corners agree across chunk edges. The time
+is Bevy's `globals.time`, which wraps every hour.
+
+**What's wrong with it.** It's a guess at how the fluid moves, from a
+snapshot: a voxel trickling single units shows still, and a steep fall
+moves no faster than a gentle slope. Faces only change their flow when
+their chunk is remeshed: when a drawn height changes, and once more when
+flow in the chunk has been quiet for a second and a half (so fluid that
+settled without its heights changing stops moving, a little late). The
+thin rim of a sheet spreading by single units shows still. The flow map
+stretches the texture a little where the flow turns within a face, which
+the cross-fade hides but doesn't remove. And a loop or scroll that
+doesn't fit an hour a whole number of times jumps once an hour.
+
+**What should replace it.** The flow solver's own per-voxel flux (what
+moved last step, and which way), kept with the fluid and fed to the
+mesher, with the speed scaled by it; and a clock of our own in the
+lighting uniform that wraps at a multiple of every animation's loop.
+
+**When to revisit.** If flowing water looks wrong in play, or meshing's
+wider neighbourhood shows up in remesh times.

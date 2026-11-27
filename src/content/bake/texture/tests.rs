@@ -364,3 +364,80 @@ fn tagged_input_mistakes_are_reported() {
         assert!(all.contains(expected), "expected `{expected}` in: {all}");
     }
 }
+
+/// A texture's `animation` loads onto it, and onto every tile a
+/// templated one makes; one with a frame time or scroll out of range
+/// is reported and left out.
+#[test]
+fn textures_load_their_animation() {
+    let content = content(&[
+        (
+            "textures/moving.json5",
+            r#"{
+                layers: [{ image: "a", material: "grey" }],
+                animation: { frame_time: 0.25, blend: true, scroll: 2 },
+            }"#,
+        ),
+        (
+            "textures/stepping.json5",
+            r#"{
+                layers: [{ image: "a", material: "$any" }],
+                animation: { scroll: 1 },
+            }"#,
+        ),
+        (
+            "blocks/thing.json5",
+            r#"{ model: "quad", textures: { all: { texture: "stepping", materials: { any: "grey" } } } }"#,
+        ),
+        (
+            "textures/never.json5",
+            r#"{ layers: [{ image: "a", material: "grey" }], animation: { frame_time: 0 } }"#,
+        ),
+        (
+            "textures/backwards.json5",
+            r#"{ layers: [{ image: "a", material: "grey" }], animation: { frame_time: 1, scroll: -1 } }"#,
+        ),
+        (
+            "textures/endless.json5",
+            r#"{ layers: [{ image: "a", material: "grey" }], animation: { frame_time: Infinity } }"#,
+        ),
+        (
+            "textures/unknown.json5",
+            r#"{ layers: [{ image: "a", material: "grey" }], animation: { scroll: NaN } }"#,
+        ),
+    ]);
+    let texture = |id: &str| content.texture(id).map(|i| &content.textures[i as usize]);
+    assert_eq!(
+        texture("test:moving").unwrap().animation,
+        Some(Animation {
+            frame_time: Some(0.25),
+            blend: true,
+            scroll: 2.0
+        })
+    );
+    assert_eq!(
+        texture("test:stepping(any=test:grey)").unwrap().animation,
+        Some(Animation {
+            frame_time: None,
+            blend: false,
+            scroll: 1.0
+        })
+    );
+    assert_eq!(texture("test:a").unwrap().animation, None);
+    for (id, message) in [
+        ("never", "frame_time"),
+        ("backwards", "scroll"),
+        ("endless", "frame_time"),
+        ("unknown", "scroll"),
+    ] {
+        assert!(texture(&format!("test:{id}")).is_none(), "{id}");
+        assert!(
+            content
+                .errors
+                .iter()
+                .any(|e| e.contains(&format!("{id}.json5")) && e.contains(message)),
+            "{}",
+            errors(&content)
+        );
+    }
+}

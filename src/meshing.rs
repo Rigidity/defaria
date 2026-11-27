@@ -36,9 +36,8 @@ use crate::{
 
 mod build;
 
-#[cfg(test)]
-pub use build::BACK_FACE;
-pub use build::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT};
+pub use build::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_FLOW, ATTRIBUTE_LIGHT};
+pub use build::{BACK_FACE, MARGIN};
 use build::{ChunkMeshes, Neighborhood, TranslucentFaces};
 
 pub struct MeshingPlugin;
