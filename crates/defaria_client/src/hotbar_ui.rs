@@ -17,6 +17,7 @@ use bevy::{
 };
 
 use crate::{
+    session::GameState,
     ui::slot::hotbar_fluid,
     ui::{ItemSlot, PointerTravel, UiTheme, item_slot, playing, typing},
 };
@@ -63,6 +64,7 @@ impl Plugin for HotbarUiPlugin {
                     )
                         .in_set(HotbarInput),
                     (show_hotbar, show_active_name).after(HotbarInput),
+                    hide_out_of_play,
                 ),
             );
     }
@@ -137,10 +139,29 @@ pub fn hotbar_height(theme: &UiTheme) -> f32 {
     BOTTOM + theme.slot_size + 2.0 * theme.slot_gap + NAME_GAP + name
 }
 
+/// The hotbar's root node.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HotbarRoot;
+
+/// The hotbar shows only while playing a world, not in the menus.
+fn hide_out_of_play(
+    state: Option<Res<State<GameState>>>,
+    mut roots: Query<&mut Visibility, With<HotbarRoot>>,
+) {
+    let wanted = match state.map(|state| *state.get()) {
+        Some(GameState::Menu) => Visibility::Hidden,
+        _ => Visibility::Inherited,
+    };
+    for mut visibility in &mut roots {
+        visibility.set_if_neq(wanted);
+    }
+}
+
 fn spawn_hotbar(mut commands: Commands, theme: Res<UiTheme>) {
     commands
         .spawn((
             Name::new("Hotbar"),
+            HotbarRoot,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: px(BOTTOM),

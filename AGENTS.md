@@ -332,6 +332,16 @@ frame; the messages between them are `defaria_core::net`. So:
 - What happens on a click shows the next frame: the server acts on it at
   the end of the frame, the client sees the result at the start of the
   next.
+- The client is in a `session::GameState`: `Menu` (the main menu, the
+  world list and the new world screen, `crates/defaria_client/src/menu.rs`)
+  or `Playing` a world. The windowed game starts at the menu
+  (`StartAtMenu`); headless runs and tests start playing. What belongs
+  to the world on the client (its chunks, the local player) has
+  `DespawnOnExit(GameState::Playing)`; the integrated server starts on
+  entering `Playing` (with the world in `WorldFolder`, or one in memory)
+  and saves and goes on leaving it. Escape opens the pause menu
+  (`crates/defaria_client/src/pause.rs`), which pauses a server in the
+  game's own process (`server::PauseWithPlayers`).
 
 Each crate's `dev` feature turns on the same Bevy features, so building
 or testing any crate on its own (`cargo test -p defaria_core`) shares
@@ -464,8 +474,8 @@ relative path.
   C switches): whether breaking gives items and placing uses them up.
 - `crates/defaria_core/src/inventory/`: inventories. `model.rs` has `Inventory` (how many of
   each item, limited only by weight), a component any entity can have;
-  `player.rs` the local player's (on the entity with `LocalPlayer`, saved
-  in `player.json5`); `transfer.rs` moving items between inventories and
+  `player.rs` a player's (what a new one starts with, saved in
+  `player.json5`); `transfer.rs` moving items between inventories and
   the creative catalog.
   `crates/defaria_client/src/inventory_screen/`: the inventory screen (E)
   and what other screens build on: `list.rs` sorted item lists on
@@ -492,9 +502,11 @@ relative path.
   between voxels, losing fluid only to blocks placed into it with
   nowhere to push it and to reactions (`reactions/` in a mod), which it
   counts. `crates/defaria_core/src/fluid/evaporation.rs` dries up films under open sky, also
-  counted. Also what the player swims in and the fog inside fluid.
-  `crates/defaria_core/src/fluid/scroll.rs`: which way a fluid's faces scroll their texture
-  as it flows.
+  counted. Also what the player swims in.
+  `crates/defaria_core/src/fluid/quiet.rs` redraws (and resends) a chunk
+  once the flow in it has gone quiet, and
+  `crates/defaria_client/src/meshing/scroll.rs` works out which way a
+  fluid's faces scroll their texture as it flows.
 - `crates/defaria_core/src/streaming.rs`: loading, unloading and saving chunks around the
   camera. The world has no edges, up and down included.
 - `crates/defaria_client/src/fog.rs`: distance fog that follows the edge of the drawn world.

@@ -8,6 +8,7 @@ mod game_mode;
 mod inventory_screen;
 mod light;
 mod machine_screen;
+mod menus;
 mod player_save;
 mod script;
 mod support;

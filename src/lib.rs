@@ -46,7 +46,7 @@ impl Plugin for ClientPlugin {
             voxel_material::VoxelMaterialPlugin,
             world::WorldPlugin,
             dynamic_light::DynamicLightPlugin,
-            player::LocalPlayerPlugin,
+            session::SessionPlugin,
             fog::FogPlugin,
             fov::FovPlugin,
             input::InputPlugin,
@@ -60,6 +60,8 @@ impl Plugin for ClientPlugin {
             use_action::UseActionPlugin,
             hotbar_ui::HotbarUiPlugin,
             defaria_client::net::ClientNetPlugin,
+            menu::MenuPlugin,
+            pause::PausePlugin,
         ));
     }
 }

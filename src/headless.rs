@@ -17,7 +17,9 @@
 //! `put`, `hotbar`, `give`, `random-ticks`, `evaporation`, `lookups`) and
 //! the `fluids` and `network` reports act on the server's world; `camera`
 //! moves the client's player, as the mouse and keys do; `inspect` looks in
-//! the client's world, then the server's.
+//! the client's world, then the server's. A run starts playing a world in
+//! memory; its pause menu's **Main menu** leads to a world list in a
+//! temporary folder of the run's own (never the player's saved worlds).
 //!
 //! # Script format
 //!

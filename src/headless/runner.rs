@@ -79,8 +79,7 @@ impl Plugin for HeadlessPlugin {
                     .after(defaria_core::world::ChunkCompaction),
             );
         if self.rendering {
-            app.add_systems(PreStartup, create_render_target)
-                .add_observer(render_to_image);
+            app.add_observer(render_to_image);
             share_pipeline_status(app);
         }
     }
@@ -92,6 +91,13 @@ impl Plugin for HeadlessPlugin {
         let timed = (self.script.commands.iter()).any(|c| matches!(c, Command::Systems(_)));
         if timed {
             super::system_timing::time_systems(app);
+        }
+        // Before the first frame, when play starts and the player's camera
+        // spawns (the initial state is entered before `PreStartup`).
+        if self.rendering {
+            app.world_mut()
+                .run_system_cached(create_render_target)
+                .expect("the offscreen image");
         }
     }
 }
