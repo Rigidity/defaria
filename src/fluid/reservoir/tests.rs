@@ -583,3 +583,194 @@ fn a_reservoir_drawn_below_a_sill_is_two() {
         "{below_sill} of {full}"
     );
 }
+
+/// Ponds 12 square at `origins`, `depths` deep, each its own reservoir
+/// holding at most `max_columns`, then the walls between them opened up
+/// to voxels with `room` for fluid. Returns how many ticks they took to
+/// settle (or `limit`), and the least and most any column holds after.
+fn ponds_opened(
+    origins: &[(i32, i32)],
+    depths: &[i32],
+    max_columns: usize,
+    room: u16,
+    limit: usize,
+) -> (usize, i64, i64) {
+    let mut grid = Grid::default();
+    for (&(ox, oz), &depth) in origins.iter().zip(depths) {
+        for x in ox..ox + 12 {
+            for z in oz..oz + 12 {
+                for y in 0..5 {
+                    let cell = if y < depth {
+                        Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID)
+                    } else {
+                        Cell::OPEN
+                    };
+                    grid.cells.insert(IVec3::new(x, y, z), cell);
+                }
+            }
+        }
+    }
+    let mut sim = sim(true);
+    sim.reservoirs.max_columns = max_columns;
+    let start = held(&grid, &sim);
+    for &(ox, oz) in origins {
+        sim.reservoirs
+            .draw(&grid, &water(), IVec3::new(ox + 5, 0, oz + 5), 0)
+            .unwrap();
+    }
+    assert_eq!(sim.reservoirs.len(), origins.len());
+    let size = |pick: fn(&(i32, i32)) -> i32| origins.iter().map(pick).max().unwrap() + 12;
+    let (width, depth) = (size(|o| o.0), size(|o| o.1));
+    for x in 0..width {
+        for z in 0..depth {
+            if !grid.cells.contains_key(&IVec3::new(x, 0, z)) {
+                for y in 0..5 {
+                    grid.cells.insert(IVec3::new(x, y, z), Cell::Open(room));
+                    sim.wake_around(&grid, IVec3::new(x, y, z));
+                }
+            }
+        }
+    }
+    let ticks = run(&mut grid, &mut sim, limit, |grid, sim| {
+        assert_eq!(held(grid, sim), start);
+    });
+    let totals: Vec<i64> = origins
+        .iter()
+        .flat_map(|&(ox, oz)| (ox..ox + 12).flat_map(move |x| (oz..oz + 12).map(move |z| (x, z))))
+        .map(|(x, z)| {
+            (0..5)
+                .map(|y| grid.amount(IVec3::new(x, y, z)) as i64)
+                .sum()
+        })
+        .collect();
+    (
+        ticks,
+        *totals.iter().min().unwrap(),
+        *totals.iter().max().unwrap(),
+    )
+}
+
+/// Four reservoirs too big to merge, meeting at a corner, settle level and
+/// soon: where they meet, their seams are written at their levels exactly.
+#[test]
+fn reservoirs_meeting_at_a_corner_settle_level() {
+    let origins = [(0, 0), (13, 0), (0, 13), (13, 13)];
+    let (ticks, low, high) = ponds_opened(&origins, &[4, 1, 2, 3], 200, FULL_FLUID, 2000);
+    assert!(ticks < 2000, "never settled");
+    assert!(high - low <= 2 * LAZY, "columns from {low} to {high}");
+}
+
+/// Three reservoirs too big to merge, side by side, settle level too.
+#[test]
+fn three_reservoirs_in_a_row_settle_level() {
+    let origins = [(0, 0), (13, 0), (26, 0)];
+    let (ticks, low, high) = ponds_opened(&origins, &[4, 2, 1], 200, FULL_FLUID, 2000);
+    assert!(ticks < 2000, "never settled");
+    assert!(high - low <= 2 * LAZY, "columns from {low} to {high}");
+}
+
+/// Two reservoirs that meet through voxels a block shares with fluid
+/// (which can't be members) count as touching, and settle level.
+#[test]
+fn reservoirs_meeting_through_shared_voxels_settle_level() {
+    for max_columns in [200, 4096] {
+        let (ticks, low, high) = ponds_opened(&[(0, 0), (13, 0)], &[4, 1], max_columns, 990, 4000);
+        assert!(ticks < 4000, "never settled, at most {max_columns} columns");
+        assert!(high - low <= 3 * LAZY, "columns from {low} to {high}");
+    }
+}
+
+/// A line of waterlogged tufts across a pond's floor splits it into two
+/// reservoirs; drawing from one, the pond still comes to rest, level.
+#[test]
+fn a_pond_split_by_tufts_settles_when_drawn_from() {
+    let mut grid = pond(16, 3);
+    for z in 0..16 {
+        grid.cells
+            .insert(IVec3::new(8, 0, z), Cell::Fluid(WATER, 900, 900));
+    }
+    let mut sim = sim(true);
+    let start = held(&grid, &sim);
+    sim.reservoirs
+        .draw(&grid, &water(), IVec3::new(2, 2, 2), 0)
+        .unwrap();
+    sim.reservoirs
+        .draw(&grid, &water(), IVec3::new(12, 2, 2), 0)
+        .unwrap();
+    assert_eq!(sim.reservoirs.len(), 2);
+    let drawn = sim
+        .reservoirs
+        .draw(&grid, &water(), IVec3::new(2, 2, 2), 3000)
+        .unwrap() as i64;
+    sim.wake_around(&grid, IVec3::new(2, 2, 2));
+    let ticks = run(&mut grid, &mut sim, 4000, |grid, sim| {
+        assert_eq!(held(grid, sim), start - drawn);
+    });
+    assert!(ticks < 4000, "never settled");
+    let column = |x: i32| {
+        (0..4)
+            .map(|y| grid.amount(IVec3::new(x, y, 5)) as i64)
+            .sum::<i64>()
+    };
+    assert!(
+        (column(2) - column(13)).abs() <= 2 * LAZY,
+        "{} and {}",
+        column(2),
+        column(13)
+    );
+}
+
+/// A reservoir drawn from evens out with every reservoir it touches, not
+/// just one: three in a row, too big to merge, pumped from the middle,
+/// stay close to one level all the while.
+#[test]
+fn a_drawn_reservoir_evens_out_with_all_its_neighbours() {
+    let mut grid = Grid::default();
+    for x in 0..38 {
+        for z in 0..12 {
+            for y in 0..6 {
+                let cell = if y < 4 {
+                    Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID)
+                } else {
+                    Cell::OPEN
+                };
+                grid.cells.insert(IVec3::new(x, y, z), cell);
+            }
+        }
+    }
+    let mut sim = sim(true);
+    sim.reservoirs.max_columns = 150;
+    for x in [5, 18, 31] {
+        sim.reservoirs
+            .draw(&grid, &water(), IVec3::new(x, 0, 5), 0)
+            .unwrap();
+    }
+    assert_eq!(sim.reservoirs.len(), 3);
+    let start = held(&grid, &sim);
+    let column = |grid: &Grid, x: i32| -> i64 {
+        (0..6)
+            .map(|y| grid.amount(IVec3::new(x, y, 5)) as i64)
+            .sum()
+    };
+    let mut drawn = 0;
+    let mut worst = 0;
+    for tick in 0..600 {
+        drawn += sim
+            .reservoirs
+            .draw(&grid, &water(), IVec3::new(18, 0, 5), 2000)
+            .unwrap_or(0) as i64;
+        sim.tick(&mut grid, fluids, 0.02, usize::MAX);
+        assert_eq!(held(&grid, &sim), start - drawn);
+        if tick > 50 {
+            let far = column(&grid, 1).max(column(&grid, 36));
+            worst = worst.max(far - column(&grid, 18));
+        }
+    }
+    assert!(drawn > 500_000, "drew {drawn}");
+    // Within a few quarter steps, not the half a block a neighbour left
+    // out would fall behind by.
+    assert!(
+        worst <= 8 * LAZY,
+        "the far ponds stood {worst} above the middle"
+    );
+}

@@ -784,7 +784,7 @@ fn finish_step(
         if was != Some(now) {
             // A reservoir takes what its members would give or get.
             if let Some(was) = was
-                && reservoirs.pool(pos, was, now)
+                && reservoirs.pool(&*cells, pos, was, now)
             {
                 continue;
             }

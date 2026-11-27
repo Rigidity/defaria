@@ -152,6 +152,8 @@ pub struct Reservoir {
     /// Levelling emptied a column since it was last checked for still
     /// being one body.
     emptied: bool,
+    /// How many of its columns held fluid when it was last levelled.
+    wet: i64,
     /// Its fluid's `film`: spread thinner than this on average, it's
     /// dropped and flows as before.
     film: u16,
@@ -338,7 +340,7 @@ impl Reservoirs {
     /// Flow is about to change the cell at `pos` from `was` to `now`.
     /// Returns whether a reservoir took the change, in which case flow
     /// leaves the cell as it is.
-    pub fn pool(&mut self, pos: IVec3, was: Cell, now: Cell) -> bool {
+    pub fn pool(&mut self, cells: &impl CellView, pos: IVec3, was: Cell, now: Cell) -> bool {
         if self.max_columns == 0 {
             return false;
         }
@@ -360,7 +362,7 @@ impl Reservoirs {
             let reservoir = self.list.get_mut(&id).expect("member");
             reservoir.balance += delta;
             if reservoir.columns[&(pos.x, pos.z)].rim {
-                self.note_neighbours(id, kind, pos);
+                self.note_neighbours(cells, id, kind, pos);
             }
             return true;
         }
@@ -374,10 +376,19 @@ impl Reservoirs {
     /// reservoir `id` at `pos`, at its height, to merge the two: fluid
     /// moving between them would be pooled on both sides and wake nothing,
     /// so they'd stop at different levels.
-    fn note_neighbours(&mut self, id: u32, kind: BlockState, pos: IVec3) {
+    fn note_neighbours(&mut self, cells: &impl CellView, id: u32, kind: BlockState, pos: IVec3) {
         for side in SIDES {
-            let next = IVec3::new(pos.x + side.x, pos.y, pos.z + side.y);
-            if let Some(other) = self.member(next, kind)
+            let step = IVec3::new(side.x, 0, side.y);
+            let next = pos + step;
+            // Beside it, or one further through a voxel of the fluid that
+            // can't be a member (one a block shares, like a waterlogged
+            // tuft): fluid moving through that is between the two as well.
+            let other = self.member(next, kind).or_else(|| {
+                matches!(cells.cell(next), Some(Cell::Fluid(k, _, _)) if k == kind)
+                    .then(|| self.member(next + step, kind))
+                    .flatten()
+            });
+            if let Some(other) = other
                 && other != id
             {
                 self.touching.push((id.min(other), id.max(other)));
@@ -395,6 +406,9 @@ impl Reservoirs {
         let mut touching = std::mem::take(&mut self.touching);
         touching.sort_unstable();
         touching.dedup();
+        // Each one's level as evened out so far this pass: one with several
+        // neighbours evens out with all of them, not just the first.
+        let mut levels: HashMap<u32, i64> = HashMap::new();
         for (a, b) in touching {
             let (Some(first), Some(second)) = (self.list.get(&a), self.list.get(&b)) else {
                 continue;
@@ -403,7 +417,8 @@ impl Reservoirs {
                 continue;
             }
             if first.columns.len() + second.columns.len() > self.max_columns {
-                let (Some(high), Some(low)) = (first.level, second.level) else {
+                let level = |id: u32, r: &Reservoir| levels.get(&id).copied().or(r.level);
+                let (Some(high), Some(low)) = (level(a, first), level(b, second)) else {
                     continue;
                 };
                 // A unit apart is as close as two levels of whole units
@@ -414,9 +429,14 @@ impl Reservoirs {
                 }
                 // Over two bodies of n and m columns, a difference d in
                 // level evens out when d·n·m/(n+m) moves across.
-                let (n, m) = (first.columns.len() as i128, second.columns.len() as i128);
-                let moved = ((high - low) as i128 * n * m / (n + m)) as i64;
+                // Half of that a step: the columns either side don't all take
+                // fluid alike as the level moves (a cut's empty ones don't),
+                // so all of it at once can overshoot and swing back.
+                let (n, m) = (first.wet.max(1) as i128, second.wet.max(1) as i128);
+                let moved = ((high - low) as i128 * n * m / (n + m) / 2) as i64;
                 let moved = moved.clamp(-second.total(), first.total());
+                levels.insert(a, high - moved / n as i64);
+                levels.insert(b, low + moved / m as i64);
                 for (id, change) in [(a, -moved), (b, moved)] {
                     let reservoir = self.list.get_mut(&id).expect("listed");
                     reservoir.balance += change;
@@ -692,11 +712,13 @@ impl Reservoirs {
         let owners = &self.owners;
         let reservoir = self.list.get_mut(&id).expect("listed");
         for (&(x, z), column) in reservoir.columns.iter_mut() {
+            // Beside another's column, or one further past a column no
+            // reservoir has (see `note_neighbours`).
+            let other = |at: IVec2| owners.get(&at).is_some_and(|&other| other != id);
             column.seam = column.rim
                 && SIDES.iter().any(|&side| {
-                    owners
-                        .get(&IVec2::new(x + side.x, z + side.y))
-                        .is_some_and(|&other| other != id)
+                    let next = IVec2::new(x, z) + side;
+                    other(next) || (!owners.contains_key(&next) && other(next + side))
                 });
         }
     }
@@ -859,6 +881,7 @@ impl Reservoirs {
             dirty: Vec::new(),
             dropped: false,
             emptied: false,
+            wet: 0,
             film,
         };
         let keys: Vec<IVec2> = reservoir
@@ -943,6 +966,28 @@ fn level(cells: &mut impl Cells, reservoir: &mut Reservoir, flush: bool, wake: &
         // Nothing takes more than a reservoir holds, so this can't happen.
         return;
     }
+    // Rim columns beside fluid that isn't the reservoir's (in a voxel a
+    // block shares, say) are written exactly too, as seams are: fluid
+    // moving through it between two of the reservoir's columns that sat
+    // a few units apart would never stop.
+    let edges: Vec<(i32, i32)> = (reservoir.columns.iter())
+        .filter(|(_, c)| c.rim && !c.seam)
+        .map(|(&key, _)| key)
+        .collect();
+    for (x, z) in edges {
+        let y = {
+            let column = &reservoir.columns[&(x, z)];
+            column.top.max(column.bottom)
+        };
+        let beside_fluid = SIDES.iter().any(|&side| {
+            let next = (x + side.x, z + side.y);
+            let ours = (reservoir.columns.get(&next)).is_some_and(|c| (c.bottom..=c.top).contains(&y));
+            !ours && matches!(cells.cell(IVec3::new(next.0, y, next.1)), Some(Cell::Fluid(k, _, _)) if k == kind)
+        });
+        if beside_fluid {
+            reservoir.columns.get_mut(&(x, z)).expect("listed").seam = true;
+        }
+    }
     // The highest level whose columns hold no more than the total, looked
     // for in a flat list, which is much quicker to go over many times.
     let spans: Vec<(i64, i64)> = reservoir
@@ -981,6 +1026,11 @@ fn level(cells: &mut impl Cells, reservoir: &mut Reservoir, flush: bool, wake: &
         .count() as i64;
     let (mut extra, mut seam_extra) = (extra.min(others), (extra - others).max(0));
     reservoir.level = Some(level);
+    reservoir.wet = reservoir
+        .columns
+        .values()
+        .filter(|c| c.at_level(level) > 0)
+        .count() as i64;
     for (&(x, z), column) in reservoir.columns.iter_mut() {
         let mut want = column.at_level(level);
         let left = if column.seam {
