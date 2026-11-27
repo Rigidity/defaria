@@ -5,6 +5,7 @@ use defaria::{
     Cli, DevToolsPlugin, GamePlugin,
     headless::{self, HeadlessPlugin, Script},
 };
+use defaria_client::session::{StartAtMenu, WorldsFolder};
 use defaria_core::{
     save::{self, WorldFolder},
     streaming::StreamingSettings,
@@ -13,15 +14,27 @@ use defaria_core::{
 fn main() -> AppExit {
     let cli = Cli::from_args(std::env::args().skip(1));
     let mut app = App::new();
-    // Headless runs play a world in memory unless told otherwise, so every
-    // run of a scenario starts from the same world.
-    let world = match cli.world.clone() {
-        Some(folder) => Some(folder),
-        None if cli.headless.is_none() => save::default_world(),
-        None => None,
+    // `--world` plays that world at once. Otherwise the game opens at the
+    // main menu, and headless runs play a world in memory, so every run of
+    // a scenario starts from the same world; their world list (reached
+    // through the pause menu) is a folder of their own, never the player's.
+    match cli.world.clone() {
+        Some(folder) => {
+            app.insert_resource(WorldFolder(folder));
+        }
+        None if cli.headless.is_none() => {
+            app.insert_resource(StartAtMenu);
+        }
+        None => {}
+    }
+    let worlds = match cli.headless {
+        Some(_) => Some(
+            std::env::temp_dir().join(format!("defaria-headless-worlds-{}", std::process::id())),
+        ),
+        None => save::worlds_dir(),
     };
-    if let Some(folder) = world {
-        app.insert_resource(WorldFolder(folder));
+    if let Some(worlds) = worlds {
+        app.insert_resource(WorldsFolder(worlds));
     }
 
     if let Some(path) = cli.headless {

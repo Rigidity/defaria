@@ -8,8 +8,9 @@
 //!
 //! What the client app was set up with that the server needs (the world's
 //! folder, the render distance, terrain and script settings, the content
-//! already loaded) is copied over when the server starts, at `PreStartup`,
-//! so settings given after the plugins count.
+//! already loaded) is copied over when the server starts, as play starts
+//! (`GameState::Playing`), so settings given after the plugins count. When
+//! play ends (back to the main menu), the server saves the world and goes.
 
 use std::time::Duration;
 
@@ -19,14 +20,14 @@ use bevy::{
     prelude::*,
     time::TimeUpdateStrategy,
 };
-use defaria_client::net::ServerConnection;
+use defaria_client::{net::ServerConnection, pause::Paused, session::GameState};
 use defaria_core::{
     content::Content,
     fluid::FluidSettings,
     net::link,
     save::WorldFolder,
     script::{ScriptSettings, hooks::HookSettings, random_tick::RandomTicks},
-    server::Incoming,
+    server::{Incoming, PauseWithPlayers},
     streaming::StreamingSettings,
     worldgen::TerrainSettings,
 };
@@ -37,7 +38,9 @@ pub struct IntegratedServerPlugin;
 
 impl Plugin for IntegratedServerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, start_server)
+        app.add_systems(OnEnter(GameState::Playing), start_server)
+            .add_systems(OnExit(GameState::Playing), stop_server)
+            .add_systems(Update, pause_with_the_player)
             .add_systems(Last, step_server)
             .init_schedule(StopServerOnExit)
             .add_systems(StopServerOnExit, stop_server_on_exit);
@@ -80,6 +83,8 @@ fn start_server(world: &mut World) {
     }
     app.finish();
     app.cleanup();
+    // In single player, pausing pauses the game.
+    app.insert_resource(PauseWithPlayers(true));
     let (client, server) = link();
     app.world_mut().resource_mut::<Incoming>().0.push(server);
     world.insert_resource(ServerConnection(client));
@@ -124,6 +129,37 @@ fn stop_server_on_exit(world: &mut World) {
     if let Some(mut server) = world.remove_non_send::<IntegratedServer>() {
         server.app.update();
         world.insert_non_send(server);
+    }
+}
+
+/// Leaving the world: the server saves it (as it does when the game
+/// exits) and goes, and so does the connection to it.
+fn stop_server(world: &mut World) {
+    if let Some(mut server) = world.remove_non_send::<IntegratedServer>() {
+        server.app.world_mut().write_message(AppExit::Success);
+        server.app.update();
+    }
+    world.remove_resource::<ServerConnection>();
+    world.remove_resource::<WorldFolder>();
+    if let Some(mut time) = world.get_resource_mut::<Time<Virtual>>() {
+        time.unpause();
+    }
+}
+
+/// In single player the client pauses with its player too, so its own
+/// player stops where it is.
+fn pause_with_the_player(
+    paused: Res<Paused>,
+    server: Option<NonSend<IntegratedServer>>,
+    mut time: ResMut<Time<Virtual>>,
+) {
+    let pause = paused.0 && server.is_some();
+    if pause != time.is_paused() {
+        if pause {
+            time.pause();
+        } else {
+            time.unpause();
+        }
     }
 }
 

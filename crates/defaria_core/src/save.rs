@@ -64,11 +64,6 @@ pub fn data_dir() -> Option<PathBuf> {
     }
 }
 
-/// The world the game opens when it isn't told which.
-pub fn default_world() -> Option<PathBuf> {
-    Some(data_dir()?.join("worlds").join("world"))
-}
-
 /// The folder of the world to load and save. Without this resource the
 /// world is kept in memory only.
 #[derive(Resource, Debug, Clone, PartialEq, Eq)]
@@ -107,6 +102,10 @@ pub fn open_world(folder: &Path, seed: u64) -> Result<u64, String> {
                     info.format
                 ));
             }
+            // Written again, so when it was last written is when the world
+            // was last played (see `list_worlds`).
+            write_atomically(&path, info.to_json5().as_bytes())
+                .map_err(|error| format!("can't write {}: {error}", path.display()))?;
             Ok(info.seed)
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -122,6 +121,96 @@ pub fn open_world(folder: &Path, seed: u64) -> Result<u64, String> {
         }
         Err(error) => Err(format!("can't read {}: {error}", path.display())),
     }
+}
+
+/// The folder of saved worlds, in the game's folder ([`data_dir`]).
+pub fn worlds_dir() -> Option<PathBuf> {
+    Some(data_dir()?.join("worlds"))
+}
+
+/// A saved world, as the world list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedWorld {
+    pub folder: PathBuf,
+    /// Its folder's name.
+    pub name: String,
+    pub seed: u64,
+    /// When it was last played: when its `world.json5` was last written.
+    pub last_played: std::time::SystemTime,
+}
+
+/// The worlds in `worlds`, the most recently played first. Folders that
+/// aren't worlds (no `world.json5`, or one this build can't read) are left
+/// out.
+pub fn list_worlds(worlds: &Path) -> Vec<SavedWorld> {
+    let Ok(entries) = std::fs::read_dir(worlds) else {
+        return Vec::new();
+    };
+    let mut found: Vec<SavedWorld> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let folder = entry.path();
+            let path = folder.join(WORLD_FILE);
+            let text = std::fs::read_to_string(&path).ok()?;
+            let info: WorldInfo = json5::from_str(&text).ok()?;
+            let last_played = std::fs::metadata(&path).ok()?.modified().ok()?;
+            Some(SavedWorld {
+                name: folder.file_name()?.to_string_lossy().into_owned(),
+                folder,
+                seed: info.seed,
+                last_played,
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| b.last_played.cmp(&a.last_played).then(a.name.cmp(&b.name)));
+    found
+}
+
+/// Creates a new world named `name` in `worlds`, with `seed`, and returns
+/// its folder. The folder is the name with characters folder names can't
+/// have left out, and a number after it if one of that name is there
+/// already.
+pub fn create_world(worlds: &Path, name: &str, seed: u64) -> Result<PathBuf, String> {
+    let clean: String = name
+        .chars()
+        .filter(|c| {
+            !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !c.is_control()
+        })
+        .collect();
+    let clean = clean.trim().trim_start_matches('.');
+    let base = if clean.is_empty() { "World" } else { clean };
+    let folder = (1..)
+        .map(|n| match n {
+            1 => worlds.join(base),
+            n => worlds.join(format!("{base} ({n})")),
+        })
+        .find(|folder| !folder.exists())
+        .expect("some number is free");
+    open_world(&folder, seed)?;
+    Ok(folder)
+}
+
+/// The seed a new world's seed field means: a number as it is, other
+/// text hashed (so a word makes the same world every time), and nothing
+/// a random seed.
+pub fn seed_from_text(text: &str) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let text = text.trim();
+    if text.is_empty() {
+        return std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+    }
+    if let Ok(seed) = text.parse::<u64>() {
+        return seed;
+    }
+    if let Ok(seed) = text.parse::<i64>() {
+        return seed as u64;
+    }
+    // FNV-1a: the same on every build and platform.
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// Writes `data` to a temporary file next to `path`, then moves it over
@@ -626,5 +715,52 @@ pub mod tests {
         assert_eq!(name, "defaria");
         #[cfg(target_os = "macos")]
         assert!(dir.ends_with("Library/Application Support/Defaria"));
+    }
+
+    /// New worlds go in folders named after them (a number added when the
+    /// name's taken, characters folders can't have left out), and the list
+    /// shows them, the most recently played first.
+    #[test]
+    fn worlds_are_created_and_listed() {
+        let worlds = temp_folder("world-list");
+        let first = create_world(&worlds, "My World", 7).unwrap();
+        let second = create_world(&worlds, "My World", 8).unwrap();
+        let odd = create_world(&worlds, "  a/b:c  ", 9).unwrap();
+        let unnamed = create_world(&worlds, "", 10).unwrap();
+        assert_eq!(first, worlds.join("My World"));
+        assert_eq!(second, worlds.join("My World (2)"));
+        assert_eq!(odd, worlds.join("abc"));
+        assert_eq!(unnamed, worlds.join("World"));
+        // Not a world: left out.
+        std::fs::create_dir_all(worlds.join("junk")).unwrap();
+        // Played in this order, oldest first.
+        let at = |seconds: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+        for (folder, seconds) in [(&odd, 100), (&first, 200), (&unnamed, 300), (&second, 400)] {
+            std::fs::File::options()
+                .write(true)
+                .open(folder.join(WORLD_FILE))
+                .unwrap()
+                .set_modified(at(seconds))
+                .unwrap();
+        }
+        let listed = list_worlds(&worlds);
+        let names: Vec<&str> = listed.iter().map(|world| world.name.as_str()).collect();
+        assert_eq!(names, ["My World (2)", "World", "My World", "abc"]);
+        assert_eq!(listed[0].seed, 8);
+        // Opening one makes it the most recent.
+        assert_eq!(open_world(&first, 0), Ok(7));
+        assert_eq!(list_worlds(&worlds)[0].name, "My World");
+        assert!(list_worlds(&worlds.join("missing")).is_empty());
+    }
+
+    /// A seed field's text: numbers as they are, words hashed the same
+    /// every time, nothing a random seed.
+    #[test]
+    fn seeds_come_from_text() {
+        assert_eq!(seed_from_text(" 42 "), 42);
+        assert_eq!(seed_from_text("-1"), u64::MAX);
+        assert_eq!(seed_from_text("glacier"), seed_from_text("glacier"));
+        assert_ne!(seed_from_text("glacier"), seed_from_text("Glacier"));
+        assert_ne!(seed_from_text(""), seed_from_text(""));
     }
 }

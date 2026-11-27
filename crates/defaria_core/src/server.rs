@@ -38,13 +38,15 @@ pub struct ServerNetPlugin;
 impl Plugin for ServerNetPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Incoming>()
+            .init_resource::<PauseWithPlayers>()
             .add_systems(
                 PreUpdate,
                 (
                     accept,
                     receive,
-                    (apply_poses, apply_intents, apply_transfers),
+                    (apply_poses, apply_intents, apply_transfers, note_pauses),
                     close_screens,
+                    pause_with_players,
                 )
                     .chain()
                     .in_set(ReceiveSystems),
@@ -67,6 +69,11 @@ impl Plugin for ServerNetPlugin {
 /// Where what clients sent is applied, in `PreUpdate`.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReceiveSystems;
+
+/// Whether the game pauses while every player is paused: a server in the
+/// game's own process, for single player, does; a dedicated one doesn't.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct PauseWithPlayers(pub bool);
 
 /// New connections, which join as players on the next frame.
 #[derive(Resource, Default)]
@@ -91,6 +98,8 @@ pub struct Connection {
     settled: Option<bool>,
     /// The chunk the player's range was last worked out around.
     center: Option<IVec3>,
+    /// Whether the player is paused.
+    paused: bool,
 }
 
 impl Connection {
@@ -104,6 +113,7 @@ impl Connection {
             machine: None,
             settled: None,
             center: None,
+            paused: false,
         }
     }
 
@@ -288,6 +298,40 @@ fn apply_transfers(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Notes which players paused or stopped.
+fn note_pauses(mut connections: Query<&mut Connection>) {
+    for mut connection in &mut connections {
+        let paused = connection
+            .inbox
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                ClientMessage::Paused(paused) => Some(*paused),
+                _ => None,
+            });
+        if let Some(paused) = paused {
+            connection.paused = paused;
+        }
+    }
+}
+
+/// While every player is paused (and the server pauses with its players),
+/// the game is: time stands still, so nothing moves or grows.
+fn pause_with_players(
+    pause: Res<PauseWithPlayers>,
+    connections: Query<&Connection>,
+    mut time: ResMut<Time<Virtual>>,
+) {
+    let paused = pause.0 && !connections.is_empty() && connections.iter().all(|c| c.paused);
+    if paused != time.is_paused() {
+        if paused {
+            time.pause();
+        } else {
+            time.unpause();
         }
     }
 }
@@ -734,5 +778,25 @@ mod tests {
         app.update();
         let mut players = app.world_mut().query::<&Player>();
         assert_eq!(players.iter(app.world()).count(), 0);
+    }
+
+    /// A server that pauses with its players stops time while every player
+    /// is paused, and starts it again when one isn't; one that doesn't
+    /// (a dedicated server) never stops.
+    #[test]
+    fn the_game_pauses_while_every_player_is() {
+        let (mut app, mut client, _) = server();
+        app.insert_resource(PauseWithPlayers(true));
+        client.send(ClientMessage::Paused(true));
+        app.update();
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        client.send(ClientMessage::Paused(false));
+        app.update();
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+
+        app.insert_resource(PauseWithPlayers(false));
+        client.send(ClientMessage::Paused(true));
+        app.update();
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
     }
 }

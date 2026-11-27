@@ -40,8 +40,14 @@ can't read at all is treated the same way.
 }
 ```
 
-Written when the world is created. A world keeps its seed for good, whatever
-seed the game would otherwise use.
+Written when the world is created, and written again (unchanged) each time
+it's opened, so when it was last written is when the world was last played:
+the world list puts the most recently played first. A world keeps its seed
+for good, whatever seed the game would otherwise use.
+
+Worlds are folders in the game's `worlds` folder, named after the world: the
+name given on the new world screen, with characters folder names can't have
+left out, and a number after it if one of that name is there already.
 
 ## `player.json5`
 

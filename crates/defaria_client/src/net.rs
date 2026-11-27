@@ -14,6 +14,8 @@
 //! [`FromServer`] ones.
 
 use bevy::{platform::collections::HashSet, prelude::*};
+
+use crate::session::GameState;
 use defaria_core::{
     hotbar::{ActiveSlot, Hotbar},
     mining::Mining,
@@ -36,6 +38,7 @@ impl Plugin for ClientNetPlugin {
             .add_message::<ToServer>()
             .add_message::<FromServer>()
             .add_observer(give_the_player_mining)
+            .add_systems(OnExit(GameState::Playing), forget_the_server)
             .add_systems(
                 PreUpdate,
                 (receive, update_awaiting).chain().in_set(ReceiveSystems),
@@ -84,6 +87,12 @@ struct Joined(bool, Option<(Hotbar, ActiveSlot)>);
 #[derive(Resource, Debug, Default)]
 struct ServerSettled(bool);
 
+/// A world left: the next one's server starts afresh.
+fn forget_the_server(mut joined: ResMut<Joined>, mut settled: ResMut<ServerSettled>) {
+    *joined = Joined::default();
+    *settled = ServerSettled::default();
+}
+
 /// The local player mines with the button it holds; the server says how
 /// far along it is.
 fn give_the_player_mining(add: On<Add<LocalPlayer>>, mut commands: Commands) {
@@ -124,7 +133,13 @@ fn receive(
                 if let Some(old) = map.remove(coord) {
                     commands.entity(old).despawn();
                 }
-                spawn_chunk(&mut commands, &mut map, coord, chunk, light);
+                spawn_chunk(
+                    &mut commands,
+                    &mut map,
+                    coord,
+                    chunk,
+                    (light, DespawnOnExit(GameState::Playing)),
+                );
                 touched.insert(coord.0);
             }
             ServerMessage::ChunkChanged { coord, chunk } => {

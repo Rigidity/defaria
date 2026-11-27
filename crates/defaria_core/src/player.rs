@@ -204,26 +204,6 @@ impl Plugin for PlayerPlugin {
     }
 }
 
-/// Spawns the local player at [`START_POSITION`], looking at
-/// [`START_TARGET`]. Separate from [`PlayerPlugin`], so tests of players
-/// spawn their own.
-pub struct LocalPlayerPlugin;
-
-impl Plugin for LocalPlayerPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_the_local_player);
-    }
-}
-
-fn spawn_the_local_player(mut commands: Commands) {
-    let eyes = Transform::from_translation(START_POSITION).looking_at(START_TARGET, Vec3::Y);
-    let feet = feet_below(START_POSITION.as_dvec3(), EYE_HEIGHT);
-    commands.spawn((
-        Name::new("Player"),
-        local_player(feet, Look::from_rotation(eyes.rotation)),
-    ));
-}
-
 /// The local player, standing with its feet at `feet` and looking along
 /// `look`.
 pub fn local_player(feet: DVec3, look: Look) -> impl Bundle {

@@ -51,6 +51,8 @@ pub enum ClientMessage {
     /// The player closed the machine screen it had open, of the machine
     /// at this voxel.
     CloseScreen(IVec3),
+    /// The player paused (its pause menu is open), or stopped.
+    Paused(bool),
 }
 
 /// A player's place, what it's doing and which way it looks.
