@@ -50,10 +50,9 @@ fn game() -> App {
     assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
     let ore = ore(&app);
     let content = app.world().resource::<Content>().clone();
-    let mut players = app
-        .world_mut()
-        .query_filtered::<&mut Inventory, With<LocalPlayer>>();
-    let mut inventory = players.single_mut(app.world_mut()).unwrap();
+    let server = crate::headless::server(&mut app);
+    let mut players = server.query_filtered::<&mut Inventory, With<defaria_core::player::Player>>();
+    let mut inventory = players.single_mut(server).unwrap();
     assert!(inventory.add(&content, ItemStack::new(ore, 64)).is_none());
     run_more(&mut app, "wait 2");
     app

@@ -67,10 +67,10 @@ fn a_full_inventory_leaves_the_block() {
     run_more(&mut app, "hold MouseLeft 1\nwait 1\nhold KeyC 1\nwait 2");
     {
         // Carrying as much as they can.
-        let mut players = app
-            .world_mut()
-            .query_filtered::<&mut Inventory, With<LocalPlayer>>();
-        let mut inventory = players.single_mut(app.world_mut()).unwrap();
+        let server = crate::headless::server(&mut app);
+        let mut players =
+            server.query_filtered::<&mut Inventory, With<defaria_core::player::Player>>();
+        let mut inventory = players.single_mut(server).unwrap();
         inventory.max_weight = Some(inventory.weight(base()));
     }
     run_more(&mut app, "hold MouseLeft 90\nwait 2");
@@ -92,10 +92,10 @@ fn survival_needs_the_item_to_place() {
     run_more(&mut app, "fill 40 119 40 40 119 40 soil\nwait 2");
     run_more(&mut app, "hold MouseLeft 1\nwait 1");
     {
-        let mut players = app
-            .world_mut()
-            .query_filtered::<&mut Inventory, With<LocalPlayer>>();
-        let mut inventory = players.single_mut(app.world_mut()).unwrap();
+        let server = crate::headless::server(&mut app);
+        let mut players =
+            server.query_filtered::<&mut Inventory, With<defaria_core::player::Player>>();
+        let mut inventory = players.single_mut(server).unwrap();
         let all = inventory.count(stone);
         inventory.remove(stone, all);
     }

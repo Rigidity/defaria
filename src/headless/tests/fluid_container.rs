@@ -85,13 +85,9 @@ fn player_inventory(app: &mut App) -> Inventory {
 }
 
 fn give(app: &mut App, stack: ItemStack) {
-    let mut players = app
-        .world_mut()
-        .query_filtered::<&mut Inventory, With<LocalPlayer>>();
-    players
-        .single_mut(app.world_mut())
-        .unwrap()
-        .add(base(), stack);
+    let server = crate::headless::server(app);
+    let mut players = server.query_filtered::<&mut Inventory, With<defaria_core::player::Player>>();
+    players.single_mut(server).unwrap().add(base(), stack);
 }
 
 fn water_in(app: &mut App, from: IVec3, to: IVec3) -> u64 {

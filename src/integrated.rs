@@ -2,9 +2,9 @@
 //! app ([`ServerPlugin`]), held by the client app and stepped once a
 //! client frame, connected to the client through a link in memory.
 //!
-//! The server's time follows the client's frames: each step is as long as
-//! the client frame before it, so headless runs and tests stay
-//! deterministic. Running it on its own thread instead is a later step.
+//! The server's time follows the client's frames: it steps at the end of
+//! each, as long as it, so headless runs and tests stay deterministic, and
+//! what the player does reaches the server the frame it does it. Running it on its own thread instead is a later step.
 //!
 //! What the client app was set up with that the server needs (the world's
 //! folder, the render distance, terrain and script settings, the content
@@ -32,8 +32,7 @@ pub struct IntegratedServerPlugin;
 impl Plugin for IntegratedServerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, start_server)
-            .add_systems(First, step_server)
-            .add_systems(Last, stop_server_on_exit);
+            .add_systems(Last, (step_server, stop_server_on_exit).chain());
     }
 }
 
@@ -78,9 +77,9 @@ fn forward<R: Resource + Clone>(client: &World, server: &mut App) {
     }
 }
 
-/// Runs a server frame as long as the client's last one, before the
-/// client's: it takes what the client sent last frame and sends what
-/// changed, which the client applies this frame.
+/// Runs a server frame as long as the client's, at the end of the
+/// client's: it takes what the client sent this frame and sends what
+/// changed, which the client applies at the start of its next.
 fn step_server(world: &mut World) {
     let delta = world.resource::<Time>().delta();
     let Some(mut server) = world.remove_non_send::<IntegratedServer>() else {
