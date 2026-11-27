@@ -313,11 +313,11 @@ fn the_network_report_says_what_energy_moved() {
 
 /// The slots of the machine at `pos`.
 fn machine_slots(app: &App, pos: IVec3) -> Slots {
-    let entity = crate::headless::server_world(&app)
+    let entity = crate::headless::server_world(app)
         .resource::<BlockEntities>()
         .get(pos)
         .unwrap();
-    crate::headless::server_world(&app)
+    crate::headless::server_world(app)
         .get::<Slots>(entity)
         .unwrap()
         .clone()

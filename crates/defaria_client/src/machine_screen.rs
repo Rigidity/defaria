@@ -222,7 +222,7 @@ pub fn show_machine_contents(
                 Some(tanks) => view.insert(tanks),
                 None => view.remove::<Tanks>(),
             };
-            match energy.clone() {
+            match energy {
                 Some(energy) => view.insert(energy),
                 None => view.remove::<EnergyBuffer>(),
             };

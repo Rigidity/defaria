@@ -505,3 +505,175 @@ fn send_status(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bevy::{ecs::system::RunSystemOnce, math::DVec3};
+
+    use super::*;
+    use crate::{
+        block_entity::BlockEntityPlugin,
+        content::{base, block},
+        game_mode::GameModePlugin,
+        hotbar::HotbarPlugin,
+        inventory::{InventoryPlugin, player::STARTING_COUNT},
+        mining::MiningPlugin,
+        net::{ClientLink, link},
+        player::EYE_HEIGHT,
+        testing::world_app,
+        use_action::UseActionPlugin,
+    };
+
+    /// A server with a client joined, and everything it was sent until it
+    /// was told it's settled.
+    fn server() -> (App, ClientLink, Vec<ServerMessage>) {
+        let mut app = world_app(base().clone())
+            .plugins((
+                ServerNetPlugin,
+                BlockEntityPlugin,
+                InventoryPlugin,
+                HotbarPlugin,
+                GameModePlugin,
+                MiningPlugin,
+                UseActionPlugin,
+            ))
+            .build();
+        let (mut client, server) = link();
+        app.world_mut().resource_mut::<Incoming>().0.push(server);
+        let sent = until(&mut app, &mut client, |message| {
+            matches!(message, ServerMessage::Settled(true))
+        });
+        (app, client, sent)
+    }
+
+    /// Updates the app until the client is sent a message `done` says is
+    /// the one, and returns everything sent up to it.
+    fn until(
+        app: &mut App,
+        client: &mut ClientLink,
+        done: impl Fn(&ServerMessage) -> bool,
+    ) -> Vec<ServerMessage> {
+        let mut sent = Vec::new();
+        for _ in 0..3000 {
+            app.update();
+            crate::streaming::finish_loads(app.world_mut());
+            for message in client.receive() {
+                let last = done(&message);
+                sent.push(message);
+                if last {
+                    return sent;
+                }
+            }
+        }
+        panic!("never sent; sent {} messages", sent.len());
+    }
+
+    fn the_player(app: &mut App) -> Entity {
+        app.world_mut()
+            .query_filtered::<Entity, With<Connection>>()
+            .single(app.world())
+            .unwrap()
+    }
+
+    /// A client that joins is a player, and is sent every chunk in its
+    /// range (each once), what it carries, and then that it's settled.
+    #[test]
+    fn a_client_joins_and_is_sent_its_range() {
+        let (mut app, _client, sent) = server();
+        let player = the_player(&mut app);
+        let center = ChunkCoord::split((START_POSITION).floor().as_ivec3()).0.0;
+        let settings = app.world().resource::<StreamingSettings>().clone();
+        let mut chunks = HashSet::new();
+        for message in &sent {
+            if let ServerMessage::Chunk { coord, .. } = message {
+                assert!(chunks.insert(coord.0), "{coord:?} sent twice");
+            }
+        }
+        let window: HashSet<IVec3> = settings.window(center).collect();
+        assert_eq!(chunks, window);
+        let state = sent.iter().find_map(|message| match message {
+            ServerMessage::PlayerState(state) => Some(state),
+            _ => None,
+        });
+        let state = state.expect("its state was sent");
+        let stone = base().default_item("defaria:stone").unwrap();
+        assert_eq!(state.inventory.count(stone), STARTING_COUNT);
+        assert_eq!(state.game_mode, GameMode::Creative);
+        assert!(app.world().get::<Player>(player).is_some());
+    }
+
+    /// The client moves its player: a pose puts it there, and the chunks
+    /// around its new place are sent and those left behind dropped.
+    #[test]
+    fn a_pose_moves_the_player_and_its_range() {
+        let (mut app, mut client, _) = server();
+        let player = the_player(&mut app);
+        let feet = DVec3::new(4064.5, 56.0 - EYE_HEIGHT, 92.5);
+        client.send(ClientMessage::Pose(Pose {
+            feet,
+            velocity: DVec3::ZERO,
+            on_ground: false,
+            look: Look::default(),
+            player: Player::default(),
+        }));
+        let sent = until(&mut app, &mut client, |message| {
+            matches!(message, ServerMessage::Settled(true))
+        });
+        assert_eq!(app.world().get::<Body>(player).unwrap().position, feet);
+        let far = ChunkCoord::split(IVec3::new(4064, 56, 92)).0;
+        assert!(
+            sent.iter().any(
+                |message| matches!(message, ServerMessage::Chunk { coord, .. } if *coord == far)
+            )
+        );
+        let home = ChunkCoord::split(START_POSITION.floor().as_ivec3()).0;
+        assert!(sent.contains(&ServerMessage::Unload(home)));
+    }
+
+    /// An edit to a chunk the client has sends the chunk again.
+    #[test]
+    fn edits_in_range_are_sent() {
+        let (mut app, mut client, _) = server();
+        let pos = START_POSITION.floor().as_ivec3();
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| {
+                voxels.set(pos, block("stone"));
+            })
+            .unwrap();
+        let sent = until(&mut app, &mut client, |message| {
+            matches!(message, ServerMessage::ChunkChanged { .. })
+        });
+        let Some(ServerMessage::ChunkChanged { coord, chunk }) = sent.last() else {
+            unreachable!();
+        };
+        let (expected, local) = ChunkCoord::split(pos);
+        assert_eq!(*coord, expected);
+        assert_eq!(chunk.at(local), block("stone"));
+    }
+
+    /// Asking to switch the game mode switches it, and the client is sent
+    /// its new state.
+    #[test]
+    fn the_game_mode_switches_when_asked() {
+        let (mut app, mut client, _) = server();
+        client.send(ClientMessage::ToggleGameMode);
+        let sent = until(&mut app, &mut client, |message| {
+            matches!(message, ServerMessage::PlayerState(_))
+        });
+        let Some(ServerMessage::PlayerState(state)) = sent.last() else {
+            unreachable!();
+        };
+        assert_eq!(state.game_mode, GameMode::Survival);
+    }
+
+    /// A client that goes leaves: its player is gone.
+    #[test]
+    fn a_client_that_goes_leaves() {
+        let (mut app, client, _) = server();
+        drop(client);
+        app.update();
+        app.update();
+        let mut players = app.world_mut().query::<&Player>();
+        assert_eq!(players.iter(app.world()).count(), 0);
+    }
+}

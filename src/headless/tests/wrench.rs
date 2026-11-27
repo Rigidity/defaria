@@ -104,10 +104,10 @@ fn a_wrench_on_a_machine_reopens_the_conduit_blocked_against_it() {
 const E: Direction = Direction::East;
 
 fn faces(app: &App, pos: IVec3) -> Option<BlockedFaces> {
-    let entity = crate::headless::server_world(&app)
+    let entity = crate::headless::server_world(app)
         .resource::<BlockEntities>()
         .get(pos)?;
-    crate::headless::server_world(&app)
+    crate::headless::server_world(app)
         .get::<BlockedFaces>(entity)
         .copied()
 }

@@ -103,11 +103,11 @@ fn carried(app: &mut App, item: ItemState) -> u32 {
 
 /// The furnace's `input` slot.
 fn input(app: &App) -> Option<ItemStack> {
-    let entity = crate::headless::server_world(&app)
+    let entity = crate::headless::server_world(app)
         .resource::<BlockEntities>()
         .get(FURNACE)
         .unwrap();
-    let slots = crate::headless::server_world(&app)
+    let slots = crate::headless::server_world(app)
         .get::<Slots>(entity)
         .unwrap();
     slots.group("input").unwrap().slots[0].clone()
@@ -321,11 +321,11 @@ fn dropping_on_a_group_puts_items_there() {
         )
     };
     let held = |app: &App| {
-        let entity = crate::headless::server_world(&app)
+        let entity = crate::headless::server_world(app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .unwrap();
-        let slots = crate::headless::server_world(&app)
+        let slots = crate::headless::server_world(app)
             .get::<Slots>(entity)
             .unwrap();
         slots.0[catalyst].slots[0].clone()
@@ -679,11 +679,11 @@ fn a_scripted_machine_is_used_rather_than_opened() {
     app.insert_resource(content);
     settle(&mut app);
     let used = |app: &mut App| {
-        let entity = crate::headless::server_world(&app)
+        let entity = crate::headless::server_world(app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .unwrap();
-        crate::headless::server_world(&app)
+        crate::headless::server_world(app)
             .get::<BlockData>(entity)
             .and_then(|data| data.0.get("used").cloned())
     };

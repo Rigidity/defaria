@@ -68,11 +68,11 @@ fn a_panel_makes_energy_from_the_sky_and_keeps_its_count() {
 }
 
 fn panel_data(app: &App, pos: IVec3) -> (i64, u64) {
-    let entity = crate::headless::server_world(&app)
+    let entity = crate::headless::server_world(app)
         .resource::<BlockEntities>()
         .get(pos)
         .unwrap();
-    let made = match crate::headless::server_world(&app)
+    let made = match crate::headless::server_world(app)
         .get::<BlockData>(entity)
         .unwrap()
         .0["made"]
@@ -81,7 +81,7 @@ fn panel_data(app: &App, pos: IVec3) -> (i64, u64) {
         Value::Float(n) => n as i64,
         ref other => panic!("made is {other:?}"),
     };
-    let stored = crate::headless::server_world(&app)
+    let stored = crate::headless::server_world(app)
         .get::<EnergyBuffer>(entity)
         .unwrap()
         .stored;

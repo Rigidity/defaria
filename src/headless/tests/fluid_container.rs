@@ -227,11 +227,11 @@ fn a_bucket_fills_and_empties_a_machine_tank() {
     ));
     give(&mut app, buckets(1, WATER, FULL));
     let tank_water = |app: &mut App| {
-        let entity = crate::headless::server_world(&app)
+        let entity = crate::headless::server_world(app)
             .resource::<BlockEntities>()
             .get(tank)
             .unwrap();
-        crate::headless::server_world(&app)
+        crate::headless::server_world(app)
             .get::<Tanks>(entity)
             .unwrap()
             .total(WATER)
