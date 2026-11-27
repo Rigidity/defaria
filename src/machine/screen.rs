@@ -3,8 +3,9 @@
 //! writing UI.
 //!
 //! - **Opening:** right click on a machine with slots, tanks or recipes
-//!   opens its screen, instead of placing the held block against it (in
-//!   [`BlockUseSystems`]). With Shift held, right click places as usual.
+//!   opens its screen, instead of placing the held block against it (its
+//!   step of a use, [`UseStep::Screen`]). With Shift held, right click
+//!   places as usual.
 //!   A machine with only an energy buffer (a lamp, a battery) has nothing
 //!   to do on a screen, so blocks place against it as against any other.
 //! - **Closing:** E or Escape, as the inventory; and on its own when the
@@ -37,7 +38,6 @@ use bevy::{
         pointer::PointerButton,
     },
     prelude::*,
-    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 
 use super::{
@@ -45,7 +45,6 @@ use super::{
     exchange::{input_groups, into_machine_from, out_of_machine},
 };
 use crate::{
-    block_edit::{BlockUseSystems, crosshair_target},
     block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content, Machine},
     fluid_container::slot_fluid,
@@ -57,12 +56,13 @@ use crate::{
         list::{ItemList, ListEntry, ListSource, Owner, item_list},
         screen::{INVENTORY_ROWS, WeightLabel},
     },
-    player::{Eyes, LocalPlayer},
+    player::LocalPlayer,
     recipe::{RecipeProgress, RecipeStatus},
     ui::{
         Bar, ItemSlot, NO_FLUID, PointerTravel, Tooltip, UiScreen, UiTheme, bar, fluid_color,
         fluid_name, format_fluid, item_slot, scroll::Scrollable, scroll_panel, typing,
     },
+    use_action::{UseAction, UseStep},
     world::Voxels,
 };
 
@@ -95,7 +95,7 @@ impl Plugin for MachineScreenPlugin {
             .add_systems(
                 Update,
                 (
-                    open_machine_screen.in_set(BlockUseSystems),
+                    open_machine_screen.in_set(UseStep::Screen),
                     close_machine_screen.run_if(not(typing)),
                     (show_slots, show_tanks, show_energy, show_progress),
                 ),
@@ -169,26 +169,24 @@ pub fn has_screen(machine: &Machine) -> bool {
     !machine.slots.is_empty() || !machine.tanks.is_empty() || machine.recipes.is_some()
 }
 
-pub(crate) fn open_machine_screen(
+/// Opens the screen of the machine the local player uses, claiming the
+/// use, unless they sneak.
+fn open_machine_screen(
     mut commands: Commands,
-    mut mouse: ResMut<ButtonInput<MouseButton>>,
-    keys: Res<ButtonInput<KeyCode>>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    eyes: Single<Eyes, With<LocalPlayer>>,
+    action: Single<&mut UseAction, With<LocalPlayer>>,
     content: Res<Content>,
     voxels: Voxels,
     index: Res<BlockEntities>,
     theme: Res<UiTheme>,
 ) {
-    let camera = eyes.transform();
-    // The click that locks the cursor uses nothing, as it places nothing.
-    if cursor.grab_mode == CursorGrabMode::None || !mouse.just_pressed(MouseButton::Right) {
+    let mut action = action.into_inner();
+    let Some(using) = action.pending() else {
+        return;
+    };
+    if using.sneak {
         return;
     }
-    if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-        return;
-    }
-    let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
+    let Some(hit) = using.target else {
         return;
     };
     let Some(state) = voxels.get(hit.block) else {
@@ -201,7 +199,7 @@ pub(crate) fn open_machine_screen(
         return;
     }
     // Used: nothing is placed against it.
-    mouse.clear_just_pressed(MouseButton::Right);
+    action.claim();
     let screen = MachineScreen {
         machine: entity,
         pos: hit.block,

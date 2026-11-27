@@ -678,3 +678,133 @@ fn a_scripted_machine_is_used_rather_than_opened() {
     assert!(!is_open(&mut app));
     assert_eq!(used(&mut app), Some(Value::Int(1)));
 }
+
+/// The base game and a test mod with a block whose item's script has
+/// `on_use` (turning the block aimed at into a marker), a machine with a
+/// screen and no script, and the scripted machine of
+/// [`scripted_machine_mods`].
+fn scripted_item_mods() -> Vec<crate::content::load::ModFiles> {
+    test_mods(&[
+        (
+            "blocks/box.json5",
+            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, script: "box", machine: { slots: { items: 1 } } }"#,
+        ),
+        (
+            "scripts/box.luau",
+            "function on_used(block, player)\n\tblock.data.used = (block.data.used or 0) + 1\nend\n",
+        ),
+        (
+            "blocks/crate.json5",
+            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" }, machine: { slots: { items: 1 } } }"#,
+        ),
+        (
+            "blocks/marker.json5",
+            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" } }"#,
+        ),
+        (
+            "blocks/wand.json5",
+            r#"{ model: "defaria:cube", textures: { all: "defaria:machine_side" } }"#,
+        ),
+        ("items/wand.json5", r#"{ script: "wand" }"#),
+        (
+            "scripts/wand.luau",
+            "function on_use(item, player)\n\treturn player.target:set(\"test:marker\")\nend\n",
+        ),
+    ])
+}
+
+/// An item's `on_use` comes after what the block it's used on does: with
+/// a scripted item that would also place a block, right click on stone
+/// uses the item (and places nothing), on a machine opens its screen, and
+/// on a scripted machine runs the machine's `on_used`.
+#[test]
+fn a_scripted_item_comes_after_the_block_it_is_used_on() {
+    use crate::{
+        block_entity::{BlockData, Value},
+        content::load::order,
+        script::{ScriptIndex, ScriptRuntime, ScriptSettings, ScriptSources},
+    };
+    let content = Content::from_mods(scripted_item_mods());
+    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let state = |id: &str| content.default_state(id).unwrap();
+    let [stone, crate_, scripted, marker] =
+        ["defaria:stone", "test:crate", "test:box", "test:marker"].map(state);
+    let sources = ScriptSources::from_mods(&order(scripted_item_mods(), &mut Vec::new()));
+    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
+    app.insert_resource(ScriptIndex::new(&content, &runtime))
+        .insert_resource(runtime)
+        .insert_resource(content);
+    settle(&mut app);
+    let front = FURNACE + IVec3::Z;
+    run_more(
+        &mut app,
+        "fill 60 66 84 68 74 92 air\n\
+         fill 64 70 89 64 70 89 stone\n\
+         wait 2\n\
+         hold MouseLeft 1\n\
+         wait 1\n\
+         hotbar 1 test:wand\n\
+         wait 1",
+    );
+    assert_eq!(voxel(&mut app, FURNACE), stone);
+
+    run_more(&mut app, "hold MouseRight 1\nwait 5");
+    assert_eq!(voxel(&mut app, FURNACE), marker, "the item was used");
+    assert!(voxel(&mut app, front).is_air(), "and nothing was placed");
+
+    run_more(
+        &mut app,
+        "fill 64 70 89 64 70 89 test:crate\nwait 2\nhold MouseRight 1\nwait 5",
+    );
+    assert!(is_open(&mut app), "the machine's screen opened");
+    assert_eq!(voxel(&mut app, FURNACE), crate_, "and the item wasn't used");
+
+    run_more(
+        &mut app,
+        "hold KeyE 1\nwait 3\n\
+         fill 64 70 89 64 70 89 test:box\n\
+         wait 2\n\
+         hold MouseRight 1\n\
+         wait 5",
+    );
+    assert!(!is_open(&mut app));
+    assert_eq!(voxel(&mut app, FURNACE), scripted, "the item wasn't used");
+    let entity = app
+        .world()
+        .resource::<BlockEntities>()
+        .get(FURNACE)
+        .unwrap();
+    let used = app
+        .world()
+        .get::<BlockData>(entity)
+        .and_then(|data| data.0.get("used").cloned());
+    assert_eq!(used, Some(Value::Int(1)), "the machine was used");
+    assert!(voxel(&mut app, front).is_air(), "nothing was placed");
+}
+
+/// The view doesn't turn on the frame a use opens a machine's screen,
+/// though the mouse moved then too, and the use is gone by the end of the
+/// frame; a right click on air leaves no use behind either.
+#[test]
+fn opening_a_screen_stops_the_view_turning() {
+    use crate::{player::Look, use_action::UseAction};
+    let mut app = game();
+    let look = |app: &mut App| {
+        let mut looks = app
+            .world_mut()
+            .query_filtered::<(&Look, &UseAction), With<LocalPlayer>>();
+        let (look, action) = looks.single(app.world()).unwrap();
+        (look.yaw, action.pending())
+    };
+    let (before, _) = look(&mut app);
+    run_more(&mut app, "mouse 200 0\nhold MouseRight 1\nwait 3");
+    assert!(is_open(&mut app));
+    assert_eq!(look(&mut app), (before, None));
+
+    run_more(
+        &mut app,
+        "hold KeyE 1\nwait 3\nfill 64 70 89 64 70 89 air\nwait 2\nhold MouseRight 1\nwait 1",
+    );
+    assert_eq!(look(&mut app).1, None, "no use outlasts its frame");
+}

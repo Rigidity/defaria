@@ -20,11 +20,11 @@
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
 //! - Nothing is edited while a screen (the inventory) is open.
-//! - Right click on a block that does something when used (a machine
-//!   opens its screen, a script's `on_used` runs) uses it instead of
-//!   placing against it, and an item that does something when used (the
-//!   wrench, a script's `on_use`) is used instead of placing. Features
-//!   handle that in [`BlockUseSystems`].
+//! - Right click is a use (see `use_action`), and placing is its last
+//!   step ([`UseStep::Place`]): a block that does something when used (a
+//!   machine opens its screen, a script's `on_used` runs) or an item that
+//!   does (the wrench, a script's `on_use`) claims the use first, so
+//!   nothing is placed.
 //!
 //! Edits go through [`Voxels`], and the terrain remeshes the changed chunks
 //! on the same frame.
@@ -38,12 +38,13 @@ use crate::{
     content::{BlockBox, BlockState, Content, Direction, ItemState},
     fly_camera::FlyCameraSystems,
     game_mode::{GameMode, harvest, use_up},
-    hotbar::{ActiveSlot, Hotbar, HotbarInput},
+    hotbar::{ActiveSlot, Hotbar},
     inventory::Inventory,
     meshing::RemeshChunks,
     physics::{Aabb, Body},
     player::{Eyes, LocalPlayer},
     ui::{UiScreen, playing},
+    use_action::{UseAction, UseStep},
     world::{FLUID_STEPS, VoxelFluid, Voxels, filled, fluid_step, fluid_surface},
 };
 
@@ -62,27 +63,12 @@ impl Plugin for BlockEditPlugin {
                 show_crosshair
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
             )
-            .configure_sets(
-                Update,
-                // Without a sync point after it, so a screen it opens
-                // applies at the end of the frame, as one a key opens does.
-                BlockUseSystems
-                    .run_if(playing)
-                    .after(HotbarInput)
-                    .before_ignore_deferred(BlockEditSystems)
-                    .before_ignore_deferred(FlyCameraSystems),
-            )
             .add_systems(
                 Update,
                 (
-                    // Before the fly camera, so the click that locks the cursor
-                    // finds it still unlocked and edits nothing. After the
-                    // hotbar, so a slot picked this frame is the one placed.
                     edit_blocks
                         .in_set(BlockEditSystems)
-                        .run_if(playing)
-                        .after(HotbarInput)
-                        .before(FlyCameraSystems)
+                        .in_set(UseStep::Place)
                         .before(RemeshChunks),
                     // After the camera moves, so the outline matches the
                     // frame being drawn.
@@ -98,20 +84,6 @@ impl Plugin for BlockEditPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockEditSystems;
 
-/// Where right clicks on blocks that do something when used are handled,
-/// while playing, before blocks are placed (and before the fly camera, so
-/// the click that locks the cursor finds it unlocked). A system here that
-/// uses a click takes it with
-/// `ButtonInput::<MouseButton>::clear_just_pressed(MouseButton::Right)`,
-/// so nothing is placed against the block too. Use
-/// [`crosshair_target`] for the block.
-///
-/// They run in order of precedence, each taking the click from those
-/// after it: the wrench (an item's action, in hand) first, then a
-/// block's script's `on_used`, then a machine's screen.
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BlockUseSystems;
-
 /// Where the block under the crosshair is outlined. Systems that change
 /// blocks run before it, so the outline never surrounds a block removed
 /// on the frame being drawn.
@@ -119,7 +91,7 @@ pub struct BlockUseSystems;
 pub struct BlockOutlineSystems;
 
 /// A block a ray ran into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hit {
     pub block: IVec3,
     /// The face the ray entered through, pointing back toward the ray's
@@ -297,86 +269,81 @@ pub fn crosshair_target(transform: &Transform, content: &Content, voxels: &Voxel
     })
 }
 
+/// Places the block in hand against the face aimed at, for each use no
+/// earlier step claimed, if it can go there and, in survival, the player
+/// has one. As the last step, it claims every use it sees, so none
+/// outlasts its frame.
 fn edit_blocks(
-    mouse: Res<ButtonInput<MouseButton>>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    eyes: Single<Eyes, With<LocalPlayer>>,
-    player: Option<
-        Single<
-            (
-                &Hotbar,
-                &ActiveSlot,
-                Option<&mut Inventory>,
-                Option<&GameMode>,
-            ),
-            With<LocalPlayer>,
-        >,
-    >,
+    mut players: Query<(
+        &mut UseAction,
+        &Hotbar,
+        &ActiveSlot,
+        Option<&mut Inventory>,
+        Option<&GameMode>,
+    )>,
     content: Res<Content>,
     bodies: Query<&Body>,
     mut voxels: Voxels,
 ) {
-    let camera = eyes.transform();
-    if cursor.grab_mode == CursorGrabMode::None {
-        return;
+    for (mut action, hotbar, active, inventory, mode) in &mut players {
+        let Some(using) = action.pending() else {
+            continue;
+        };
+        action.claim();
+        let camera = using.eyes;
+        let Some(hit) = using.target else {
+            continue;
+        };
+        let Some(item) = hotbar.item(*active) else {
+            continue;
+        };
+        let Some(block) = hotbar.block(*active, &content) else {
+            continue;
+        };
+        let Some((pos, face)) = placement(&content, &voxels, hit, block) else {
+            continue;
+        };
+        // Properties such as a log's axis follow the face clicked or the
+        // view.
+        let block = content.placed(block, face, *camera.forward());
+        // Not into the camera, outside the world, over another block (but
+        // over one placing replaces: air, which may hold fluid, or a
+        // plant), or where it would overlap someone.
+        let overlaps = content.state(block).collision.iter().any(|b| {
+            let b = Aabb::of_block(pos, b);
+            bodies.iter().any(|body| body.aabb().intersects(&b))
+        });
+        let Some(replaced) = voxels.get(pos) else {
+            continue;
+        };
+        let replaceable = replaces(&content, replaced, block);
+        // Nor where it can't stand (a flower off the grass).
+        let supported = !content.needs_support(block)
+            || voxels
+                .get(pos - IVec3::Y)
+                .is_some_and(|below| content.supports(block, below));
+        if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps || !supported {
+            continue;
+        }
+        // In survival, only what you have, and placing uses it up. A fluid
+        // block is creative only: placing one would make fluid from
+        // nothing, so in survival fluid comes only from containers (a
+        // bucket).
+        let mode = mode.copied().unwrap_or_default();
+        if !mode.is_creative() && content.state(block).is_fluid() {
+            continue;
+        }
+        let mut inventory = inventory.map(Mut::into_inner);
+        if !use_up(mode, inventory.as_deref_mut(), item) {
+            continue;
+        }
+        // A plant built over goes into the inventory in survival, if it
+        // fits (otherwise it's lost, as when it loses its support).
+        if let Some(inventory) = inventory {
+            harvest(mode, inventory, &content, replaced);
+        }
+        voxels.set(pos, block);
     }
-    if !mouse.just_pressed(MouseButton::Right) {
-        return;
-    }
-    let Some(hit) = crosshair_target(&camera, &content, &voxels) else {
-        return;
-    };
-    let Some(player) = player else {
-        return;
-    };
-    let (hotbar, active, inventory, mode) = player.into_inner();
-    let Some(item) = hotbar.item(*active) else {
-        return;
-    };
-    let Some(block) = hotbar.block(*active, &content) else {
-        return;
-    };
-    let Some((pos, face)) = placement(&content, &voxels, hit, block) else {
-        return;
-    };
-    // Properties such as a log's axis follow the face clicked or the view.
-    let block = content.placed(block, face, *camera.forward());
-    // Not into the camera, outside the world, over another block (but
-    // over one placing replaces: air, which may hold fluid, or a plant),
-    // or where it would overlap someone.
-    let overlaps = content.state(block).collision.iter().any(|b| {
-        let b = Aabb::of_block(pos, b);
-        bodies.iter().any(|body| body.aabb().intersects(&b))
-    });
-    let Some(replaced) = voxels.get(pos) else {
-        return;
-    };
-    let replaceable = replaces(&content, replaced, block);
-    // Nor where it can't stand (a flower off the grass).
-    let supported = !content.needs_support(block)
-        || voxels
-            .get(pos - IVec3::Y)
-            .is_some_and(|below| content.supports(block, below));
-    if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps || !supported {
-        return;
-    }
-    // In survival, only what you have, and placing uses it up. A fluid
-    // block is creative only: placing one would make fluid from nothing,
-    // so in survival fluid comes only from containers (a bucket).
-    let mode = mode.copied().unwrap_or_default();
-    if !mode.is_creative() && content.state(block).is_fluid() {
-        return;
-    }
-    let mut inventory = inventory.map(Mut::into_inner);
-    if !use_up(mode, inventory.as_deref_mut(), item) {
-        return;
-    }
-    // A plant built over goes into the inventory in survival, if it fits
-    // (otherwise it's lost, as when it loses its support).
-    if let Some(inventory) = inventory {
-        harvest(mode, inventory, &content, replaced);
-    }
-    voxels.set(pos, block);
 }
 
 /// Whether placing `placed` where `replaced` is replaces it: air (which
@@ -514,13 +481,13 @@ mod tests {
         inventory::player::new_player,
         meshing::{apply_finished_meshes, remesh_changed_chunks, testing::finish_meshing},
         mining::{Mining, MiningPlugin},
-        player::Player,
         player::SIZE,
         script::{
             BlockUsed, ItemUsed, ScriptIndex,
             using::{use_scripted_block, use_scripted_item},
         },
         testing::{chunk_app, insert_chunk},
+        use_action::{UseActionPlugin, UseSystems},
         voxel_material::BlockMaterial,
         world::{Chunk, ChunkCoord},
         worldgen::{Terrain, TerrainBlocks},
@@ -725,7 +692,7 @@ mod tests {
     /// chunks empty.
     fn app_with(content: Content, hotbar: Hotbar) -> (App, Entity, Entity) {
         let mut app = chunk_app(content, Duration::from_millis(50));
-        app.add_plugins((AssetPlugin::default(), MiningPlugin))
+        app.add_plugins((AssetPlugin::default(), MiningPlugin, UseActionPlugin))
             .init_asset::<Mesh>()
             .insert_resource(BlockMaterial::unloaded(Handle::default()))
             .init_resource::<ButtonInput<KeyCode>>()
@@ -735,7 +702,12 @@ mod tests {
             .add_systems(
                 Update,
                 (
-                    (select_with_keys, edit_blocks).chain().before(RemeshChunks),
+                    (
+                        select_with_keys.before(UseSystems),
+                        edit_blocks.in_set(UseStep::Place),
+                    )
+                        .chain()
+                        .before(RemeshChunks),
                     (remesh_changed_chunks, apply_finished_meshes)
                         .chain()
                         .in_set(RemeshChunks),
@@ -1262,10 +1234,10 @@ mod tests {
         app.insert_resource(ScriptIndex::new(base(), &runtime))
             .add_systems(
                 Update,
-                (use_scripted_block, use_scripted_item)
-                    .chain()
-                    .after(select_with_keys)
-                    .before(edit_blocks),
+                (
+                    use_scripted_block.in_set(UseStep::Block),
+                    use_scripted_item.in_set(UseStep::Item),
+                ),
             );
         (app, left, right)
     }
@@ -1308,16 +1280,10 @@ mod tests {
         click(&mut app, MouseButton::Right);
         assert_eq!(drain::<BlockUsed>(&mut app).len(), 1);
 
-        let entity = app
-            .world_mut()
-            .query_filtered::<Entity, With<LocalPlayer>>()
-            .single(app.world())
-            .unwrap();
-        app.world_mut().entity_mut(entity).insert(Player {
-            sneaking: true,
-            ..default()
-        });
         press_key(&mut app, KeyCode::Digit1);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ShiftLeft);
         click(&mut app, MouseButton::Right);
         assert!(drain::<BlockUsed>(&mut app).is_empty());
         assert!(!voxel(&app, left, 13, 1, 5).is_air());

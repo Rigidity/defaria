@@ -9,6 +9,7 @@ use crate::{
     headless::{Script, run_more, settle, test_game},
     inventory::player::{load, save},
     machine::Slots,
+    player::LocalPlayer,
     streaming::StreamingSettings,
     world::VoxelFluid,
 };

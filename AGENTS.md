@@ -337,6 +337,13 @@ documented in `docs/modding.md`; keep that file, the serde types in
   condition), item icons, item slots, bars and tooltips. Build new UI from these,
   in the feature's own module. F10 opens a gallery of the widgets in dev
   builds (`src/ui/gallery.rs`), for working on how they look.
+- `src/use_action.rs`: right click as a `UseAction` on the player (a
+  `Use`: the eyes, the crosshair's block, Shift), read by one system and
+  acted on in order of precedence by the steps of `UseStep` (the wrench,
+  a fluid container, a block's script, a machine's screen, an item's
+  script, placing), each claiming the use when it's theirs. New things
+  that do something on right click add a step there, not another reader
+  of the mouse.
 - `src/block_edit.rs`: the crosshair, its target and placing blocks.
   `src/mining.rs`: breaking blocks by holding left click, for a time set
   by their hardness (`Mining`, on the local player, has the target and
@@ -426,7 +433,7 @@ documented in `docs/modding.md`; keep that file, the serde types in
   using a machine opens, laid out from its definition;
   `src/machine/exchange.rs`: moving items between the player and a
   machine. Using a block (right click) is
-  handled in `block_edit::BlockUseSystems`, before placing.
+  its step of a use (`use_action::UseStep::Screen`), before placing.
 - `src/recipe.rs` (and `src/recipe/`): recipe machines (a `machine` with
   `recipes`), in `FixedUpdate` on network ticks: start a recipe on what's
   in their input slots and tanks, draw its energy (or make a generator's)
@@ -454,9 +461,9 @@ documented in `docs/modding.md`; keep that file, the serde types in
   `data`) and `ScriptWorld::call`, which calls a hook with it; `hooks.rs`
   calls blocks' and items' scripts (`on_used`, `on_placed`, `on_broken`,
   `on_neighbour_changed`, items' `on_use`) and `random_tick.rs` gives
-  blocks random ticks; `using.rs` turns right clicks into uses of
-  scripted blocks (in `block_edit::BlockUseSystems`) and items (after
-  every block use). Documented in `docs/scripting.md`.
+  blocks random ticks; `using.rs` is the steps of a use (see
+  `use_action`) for scripted blocks and items (after every block use).
+  Documented in `docs/scripting.md`.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `src/content.rs` (and `src/content/`): mod loading and the `Content`
   registry.
