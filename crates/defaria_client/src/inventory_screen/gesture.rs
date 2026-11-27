@@ -28,18 +28,17 @@ use bevy::{
     prelude::*,
 };
 
-use super::list::{ItemList, ListEntry, ListSource};
+use super::list::{ItemList, ListEntry, ListSource, Owner};
 use crate::{
     hotbar_ui::{HOTBAR_KEYS, HotbarInput, HotbarSlot},
+    net::ToServer,
     ui::{ItemIcon, PointerTravel, UiPointer, UiTheme, typing},
 };
-use defaria_core::inventory::{
-    Inventory, ItemStack,
-    transfer::{half, transfer},
-};
 use defaria_core::{
-    content::{Content, ItemState},
+    content::ItemState,
     hotbar::Hotbar,
+    inventory::{ItemStack, transfer::half},
+    net::{ClientMessage, Transfer},
     player::LocalPlayer,
 };
 
@@ -82,37 +81,27 @@ enum Dragging {
     HotbarSlot(usize, bool),
 }
 
-/// Moves up to `count` of `kind` from `from` to `to`, finding their
-/// inventories. Returns how many moved.
+/// Asks the server to move up to `count` of `kind` from `from` to `to`:
+/// between the local player and the creative catalog, the only lists
+/// there are to move between.
 fn move_items(
-    content: &Content,
-    player: Option<Entity>,
-    inventories: &mut Query<&mut Inventory>,
+    to_server: &mut MessageWriter<ToServer>,
     from: ListSource,
     to: ListSource,
     kind: &ItemStack,
     count: u32,
-) -> u32 {
-    let entity = |source| match source {
-        ListSource::Catalog => None,
-        ListSource::Inventory(owner) => owner.entity(player),
+) {
+    let player = ListSource::Inventory(Owner::LocalPlayer);
+    let to_player = match (from, to) {
+        (ListSource::Catalog, to) if to == player => true,
+        (from, ListSource::Catalog) if from == player => false,
+        _ => return,
     };
-    match (entity(from), entity(to)) {
-        (Some(a), Some(b)) if a == b => 0,
-        (Some(a), Some(b)) => {
-            let Ok([mut a, mut b]) = inventories.get_many_mut([a, b]) else {
-                return 0;
-            };
-            transfer(content, Some(&mut a), Some(&mut b), kind, count)
-        }
-        (Some(a), None) => inventories.get_mut(a).map_or(0, |mut a| {
-            transfer(content, Some(&mut a), None, kind, count)
-        }),
-        (None, Some(b)) => inventories.get_mut(b).map_or(0, |mut b| {
-            transfer(content, None, Some(&mut b), kind, count)
-        }),
-        (None, None) => 0,
-    }
+    to_server.write(ToServer(ClientMessage::Transfer(Transfer::Catalog {
+        kind: kind.clone(),
+        count,
+        to_player,
+    })));
 }
 
 /// How many a click or drag moves of `entry`.
@@ -148,13 +137,11 @@ fn sends_to(
 fn click_entry(
     click: On<PointerClick>,
     keys: Res<ButtonInput<KeyCode>>,
-    content: Res<Content>,
     entries: Query<&ListEntry>,
     parents: Query<&ChildOf>,
     lists: Query<&ItemList>,
     travel: Res<PointerTravel>,
-    player: Option<Single<Entity, With<LocalPlayer>>>,
-    mut inventories: Query<&mut Inventory>,
+    mut to_server: MessageWriter<ToServer>,
 ) {
     let Ok(entry) = entries.get(click.entity) else {
         return;
@@ -171,16 +158,7 @@ fn click_entry(
     }
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let count = amount(entry, click.button, shift);
-    let player = player.map(|player| *player);
-    move_items(
-        &content,
-        player,
-        &mut inventories,
-        entry.source,
-        to,
-        &entry.stack,
-        count,
-    );
+    move_items(&mut to_server, entry.source, to, &entry.stack, count);
 }
 
 fn start_drag(
@@ -218,13 +196,11 @@ fn drop_target(
 
 fn drop_on(
     drop: On<PointerDragDrop>,
-    content: Res<Content>,
     slots: Query<&HotbarSlot>,
     lists: Query<&ItemList>,
     parents: Query<&ChildOf>,
     mut players: Query<&mut Hotbar, With<LocalPlayer>>,
-    player: Option<Single<Entity, With<LocalPlayer>>>,
-    mut inventories: Query<&mut Inventory>,
+    mut to_server: MessageWriter<ToServer>,
     mut dragging: ResMut<Dragging>,
 ) {
     // A drop bubbles up; only the node it landed on counts.
@@ -234,7 +210,6 @@ fn drop_on(
     let Some(target) = drop_target(drop.entity, &slots, &lists, &parents) else {
         return;
     };
-    let player = player.map(|player| *player);
     match (&mut *dragging, target) {
         (Dragging::Entry(entry, _), Ok(slot)) => {
             if let Ok(mut hotbar) = players.single_mut() {
@@ -245,15 +220,7 @@ fn drop_on(
         (Dragging::Entry(entry, button), Err(list)) => {
             if list != entry.source {
                 let count = amount(entry, *button, *button == PointerButton::Primary);
-                move_items(
-                    &content,
-                    player,
-                    &mut inventories,
-                    entry.source,
-                    list,
-                    &entry.stack,
-                    count,
-                );
+                move_items(&mut to_server, entry.source, list, &entry.stack, count);
             }
         }
         (Dragging::HotbarSlot(from, taken), Ok(to)) => {

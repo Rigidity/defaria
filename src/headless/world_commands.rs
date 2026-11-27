@@ -3,7 +3,10 @@
 //! `lookups`), and the
 //! `fluids` and `network` reports.
 
-use std::{collections::HashSet, time::Instant};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 use bevy::prelude::*;
 
@@ -29,7 +32,42 @@ use defaria_core::{
 pub(super) fn apply_world_commands(world: &mut World) {
     let commands = std::mem::take(&mut world.resource_mut::<ScriptRunner>().world_commands);
     for command in commands {
-        let result = match command {
+        // The camera is the client's player, which the client moves; the
+        // rest set up the world, which is the server's.
+        let result = if let Command::Camera {
+            position,
+            yaw,
+            pitch,
+        } = command
+        {
+            world
+                .run_system_cached_with(place_camera, (position, yaw, pitch))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result)
+        } else {
+            match crate::integrated::with_server(world, |server| apply_to_world(server, command)) {
+                Some(Ok((set, elapsed))) => {
+                    let filled = &mut world.resource_mut::<ScriptRunner>().filled;
+                    filled.0 += set;
+                    filled.1 += elapsed;
+                    Ok(())
+                }
+                Some(Err(error)) => Err(error),
+                None => Err("no server to set up the world on".into()),
+            }
+        };
+        if let Err(error) = result {
+            error!("{error}");
+            world.write_message(AppExit::error());
+        }
+    }
+}
+
+/// Applies a command that sets up the world to `world`, the server's.
+/// Returns how many voxels a `fill` set, and how long it took.
+fn apply_to_world(world: &mut World, command: Command) -> Result<(usize, Duration), String> {
+    let result = {
+        match command {
             Command::Fill { min, max, block } => {
                 let start = Instant::now();
                 let result = world
@@ -37,11 +75,7 @@ pub(super) fn apply_world_commands(world: &mut World) {
                     .map_err(|error| error.to_string())
                     .and_then(|result| result);
                 let elapsed = start.elapsed();
-                result.map(|set| {
-                    let filled = &mut world.resource_mut::<ScriptRunner>().filled;
-                    filled.0 += set;
-                    filled.1 += elapsed;
-                })
+                return result.map(|set| (set, elapsed));
             }
             Command::Lookups { min, max } => world
                 .run_system_cached_with(memory::measure_lookups, (min, max))
@@ -64,14 +98,6 @@ pub(super) fn apply_world_commands(world: &mut World) {
                 .run_system_cached_with(put, (pos, name, amount, what))
                 .map_err(|error| error.to_string())
                 .and_then(|result| result),
-            Command::Camera {
-                position,
-                yaw,
-                pitch,
-            } => world
-                .run_system_cached_with(place_camera, (position, yaw, pitch))
-                .map_err(|error| error.to_string())
-                .and_then(|result| result),
             Command::Hotbar { slot, item } => world
                 .run_system_cached_with(hold_item, (slot, item))
                 .map_err(|error| error.to_string())
@@ -89,12 +115,9 @@ pub(super) fn apply_world_commands(world: &mut World) {
                 Ok(())
             }
             _ => Ok(()),
-        };
-        if let Err(error) = result {
-            error!("{error}");
-            world.write_message(AppExit::error());
         }
-    }
+    };
+    result.map(|()| (0, Duration::ZERO))
 }
 
 /// The state name `name` (see [`StateName`]), its id qualified with
@@ -120,7 +143,7 @@ fn item_state(content: &Content, name: &str) -> Result<ItemState, String> {
 fn hold_item(
     In((slot, name)): In<(usize, String)>,
     content: Res<Content>,
-    mut players: Query<(&mut Hotbar, &mut ActiveSlot), With<LocalPlayer>>,
+    mut players: Query<(&mut Hotbar, &mut ActiveSlot), With<Player>>,
 ) -> Result<(), String> {
     let item = item_state(&content, &name).map_err(|error| format!("hotbar: {error}"))?;
     let (mut hotbar, mut active) = players
@@ -136,7 +159,7 @@ fn hold_item(
 fn give_items(
     In((name, count, fluid)): In<(String, u32, Option<(String, f32)>)>,
     content: Res<Content>,
-    mut players: Query<&mut Inventory, With<LocalPlayer>>,
+    mut players: Query<&mut Inventory, With<Player>>,
 ) -> Result<(), String> {
     let item = item_state(&content, &name).map_err(|error| format!("give: {error}"))?;
     let data = match fluid {

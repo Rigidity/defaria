@@ -26,7 +26,7 @@ use crate::{
     content::{BlockState, Content},
     game_mode::{GameMode, harvest},
     inventory::Inventory,
-    player::{Eyes, LocalPlayer},
+    player::{Eyes, Player},
     support::unsupported,
     world::{RemeshChunks, Voxels},
 };
@@ -90,7 +90,7 @@ pub struct Mining {
     elapsed: Duration,
 }
 
-fn give_the_player_mining(add: On<Add<LocalPlayer>>, mut commands: Commands) {
+fn give_the_player_mining(add: On<Add<Player>>, mut commands: Commands) {
     commands.entity(add.entity).insert(Mining::default());
 }
 

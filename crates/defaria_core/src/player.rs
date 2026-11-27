@@ -227,8 +227,12 @@ fn spawn_the_local_player(mut commands: Commands) {
 /// The local player, standing with its feet at `feet` and looking along
 /// `look`.
 pub fn local_player(feet: DVec3, look: Look) -> impl Bundle {
+    (LocalPlayer, player(feet, look))
+}
+
+/// A player, standing with its feet at `feet` and looking along `look`.
+pub fn player(feet: DVec3, look: Look) -> impl Bundle {
     (
-        LocalPlayer,
         Player::default(),
         look,
         Body::new(feet, SIZE, STEP_HEIGHT),
@@ -352,13 +356,12 @@ pub struct PlayerMovement;
 /// camera (`fly_camera`) is its child.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
 #[reflect(Component)]
-#[require(crate::use_action::UseAction)]
 pub struct LocalPlayer;
 
 /// The player's movement state. Its [`Body`] is on the same entity.
-#[derive(Component, Reflect, Debug, Clone)]
+#[derive(Component, Reflect, Debug, Clone, PartialEq)]
 #[reflect(Component)]
-#[require(Look, Controls, Transform, Visibility)]
+#[require(Look, Controls, Transform, Visibility, crate::use_action::UseAction)]
 pub struct Player {
     pub flying: bool,
     pub sneaking: bool,

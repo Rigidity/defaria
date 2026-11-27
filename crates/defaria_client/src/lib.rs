@@ -14,6 +14,7 @@ pub mod input;
 pub mod inventory_screen;
 pub mod machine_screen;
 pub mod meshing;
+pub mod net;
 pub mod ui;
 pub mod view_bob;
 pub mod voxel_material;

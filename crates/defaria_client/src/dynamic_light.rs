@@ -36,7 +36,8 @@ pub struct DynamicLightPlugin;
 
 impl Plugin for DynamicLightPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(give_the_player_a_light)
+        app.init_resource::<SkyLight>()
+            .add_observer(give_the_player_a_light)
             .add_systems(Update, toggle_player_light.run_if(crate::ui::playing))
             .add_systems(
                 PostUpdate,

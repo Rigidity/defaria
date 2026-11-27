@@ -3,11 +3,11 @@
 
 use bevy::prelude::*;
 
-use crate::ui::{playing, typing};
-use defaria_core::{
-    game_mode::{GameMode, GameModeSystems},
-    player::LocalPlayer,
+use crate::{
+    net::ToServer,
+    ui::{playing, typing},
 };
+use defaria_core::{game_mode::GameModeSystems, net::ClientMessage};
 
 pub struct GameModeInputPlugin;
 
@@ -23,18 +23,9 @@ impl Plugin for GameModeInputPlugin {
     }
 }
 
-/// C switches between creative and survival.
-fn switch_mode(
-    keys: Res<ButtonInput<KeyCode>>,
-    player: Option<Single<&mut GameMode, With<LocalPlayer>>>,
-) {
-    if keys.just_pressed(KeyCode::KeyC)
-        && let Some(mut mode) = player
-    {
-        **mode = match **mode {
-            GameMode::Creative => GameMode::Survival,
-            GameMode::Survival => GameMode::Creative,
-        };
-        info!("game mode: {:?}", **mode);
+/// C asks the server to switch between creative and survival.
+fn switch_mode(keys: Res<ButtonInput<KeyCode>>, mut to_server: MessageWriter<ToServer>) {
+    if keys.just_pressed(KeyCode::KeyC) {
+        to_server.write(ToServer(ClientMessage::ToggleGameMode));
     }
 }

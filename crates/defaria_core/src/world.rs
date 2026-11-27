@@ -168,6 +168,15 @@ impl ChunkMap {
         self.0.insert(coord, chunk);
     }
 
+    /// How many chunks are loaded.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn remove(&mut self, coord: ChunkCoord) -> Option<Entity> {
         self.0.remove(&coord)
     }

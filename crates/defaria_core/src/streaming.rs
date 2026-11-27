@@ -55,7 +55,7 @@ use crate::{
     block_entity::{BlockEntityChanged, BlockEntitySystems, ChunkSaver},
     content::Content,
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
-    player::{EYE_HEIGHT, LocalPlayer},
+    player::{EYE_HEIGHT, Player},
     save::{self, WorldFolder, WorldStore, region},
     world::{
         AwaitingNeighbours, Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated,
@@ -189,7 +189,7 @@ impl StreamingSettings {
 
     /// Whether a chunk `offset` from a loader's chunk is within reach,
     /// `extra` chunks further out than what's loaded.
-    fn reaches(&self, offset: IVec3, extra: i32) -> bool {
+    pub fn reaches(&self, offset: IVec3, extra: i32) -> bool {
         // In i64: a long jump makes the offset too big to square in i32.
         let radius = (self.radius + extra) as i64;
         let (x, z) = (offset.x as i64, offset.z as i64);
@@ -243,10 +243,10 @@ pub fn loader_chunk(transform: &GlobalTransform) -> IVec3 {
 #[require(Transform)]
 pub struct ChunkLoader;
 
-/// The local player loads the world around its eyes (not its feet, so the
+/// Each player loads the world around its eyes (not its feet, so the
 /// levels above and below are counted from what it sees), with a loader
 /// that's its child at eye height.
-fn load_around_the_player(add: On<Add<LocalPlayer>>, mut commands: Commands) {
+fn load_around_the_player(add: On<Add<Player>>, mut commands: Commands) {
     commands.spawn((
         Name::new("Chunk Loader"),
         ChunkLoader,
@@ -1197,7 +1197,7 @@ mod tests {
         app.update();
         let world = app.world_mut();
         let eyes = world
-            .query_filtered::<Eyes, With<LocalPlayer>>()
+            .query_filtered::<Eyes, With<crate::player::LocalPlayer>>()
             .single(world)
             .unwrap()
             .transform();
