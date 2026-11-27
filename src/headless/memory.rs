@@ -275,6 +275,21 @@ mod tests {
         world
     }
 
+    /// A mesh handed to the render world keeps no vertices in the main
+    /// world, and counts as none; one that kept its copy counts it.
+    #[test]
+    fn extracted_meshes_count_no_bytes() {
+        use bevy::{asset::RenderAssetUsages, mesh::PrimitiveTopology};
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; 3]);
+        assert_eq!(mesh_bytes(&mesh), 3 * 12);
+        mesh.take_gpu_data().unwrap();
+        assert_eq!(mesh_bytes(&mesh), 0);
+    }
+
     #[test]
     fn memory_counts_storage_and_uniform_chunks() {
         let stone = BlockState(1);
