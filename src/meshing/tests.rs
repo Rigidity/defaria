@@ -317,6 +317,21 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     for part in [parts.cutout, parts.translucent] {
         assert_eq!(world.get::<ChildOf>(part).unwrap().parent(), see_through);
     }
+    // Only the mesh that's sorted keeps a copy in the main world once it's
+    // drawn: sorting rewrites its indices there.
+    let usage = |entity| {
+        let mesh = world.get::<Mesh3d>(entity).unwrap();
+        world
+            .resource::<Assets<Mesh>>()
+            .get(mesh)
+            .unwrap()
+            .asset_usage
+    };
+    assert_eq!(usage(see_through), RenderAssetUsages::RENDER_WORLD);
+    assert_eq!(usage(parts.cutout), RenderAssetUsages::RENDER_WORLD);
+    assert_eq!(usage(parts.translucent), RenderAssetUsages::all());
+    let pond = world.get::<ChunkParts>(water).unwrap().translucent;
+    assert_eq!(usage(pond), RenderAssetUsages::RENDER_WORLD);
 
     // Seen from the south (+Z), the north pane's faces come first.
     let first_face_z = |app: &App| {

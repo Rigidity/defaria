@@ -15,10 +15,18 @@
 //! are drawn on the chunk's own entity, cut-out and translucent ones on
 //! child entities ([`ChunkParts`]), with the translucent faces sorted back
 //! to front ([`sort_translucent_faces`]).
+//!
+//! The main world keeps no copy of a chunk's mesh once it's on the GPU
+//! ([`RenderAssetUsages::RENDER_WORLD`]): nothing reads a chunk's vertices
+//! back after it's drawn, and the copies were the largest memory a loaded
+//! chunk cost. The exception is a translucent mesh whose faces need
+//! sorting: putting them in order rewrites its indices, and Bevy can only
+//! change a mesh's data in the main world, so that mesh keeps its copy.
 
 use std::sync::Arc;
 
 use bevy::{
+    asset::RenderAssetUsages,
     mesh::Indices,
     platform::collections::HashSet,
     prelude::*,
@@ -229,7 +237,13 @@ fn show_meshes(
         translucent_faces,
     } = built;
     commands.entity(entity).insert(Meshed);
-    show_mesh(commands, entity, opaque, meshes, &material.material);
+    show_mesh(
+        commands,
+        entity,
+        render_only(opaque),
+        meshes,
+        &material.material,
+    );
     let see_through = cutout.count_vertices() + translucent.count_vertices() > 0;
     let parts = match parts {
         Some(parts) => *parts,
@@ -254,7 +268,19 @@ fn show_meshes(
             parts
         }
     };
-    show_mesh(commands, parts.cutout, cutout, meshes, &material.cutout);
+    show_mesh(
+        commands,
+        parts.cutout,
+        render_only(cutout),
+        meshes,
+        &material.cutout,
+    );
+    // Sorting rewrites the indices in the main world's copy.
+    let translucent = if translucent_faces.needs_sorting() {
+        translucent
+    } else {
+        render_only(translucent)
+    };
     show_mesh(
         commands,
         parts.translucent,
@@ -265,6 +291,14 @@ fn show_meshes(
     commands
         .entity(parts.translucent)
         .insert((translucent_faces, SortedFrom::default()));
+}
+
+/// `mesh`, with its data handed to the GPU and dropped from the main
+/// world once it's drawn. Until then (and always, in an app that doesn't
+/// render) it's readable as any mesh.
+fn render_only(mut mesh: Mesh) -> Mesh {
+    mesh.asset_usage = RenderAssetUsages::RENDER_WORLD;
+    mesh
 }
 
 /// Draws `mesh` on `entity`, or nothing if it has no faces: chunks with
