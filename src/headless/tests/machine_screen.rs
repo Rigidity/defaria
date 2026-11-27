@@ -818,9 +818,11 @@ fn a_scripted_item_comes_after_the_block_it_is_used_on() {
     assert!(voxel(&mut app, front).is_air(), "nothing was placed");
 }
 
-/// The view doesn't turn on the frame a use opens a machine's screen,
-/// though the mouse moved then too, and the use is gone by the end of the
-/// frame; a right click on air leaves no use behind either.
+/// Once a use has opened a machine's screen the mouse doesn't turn the
+/// view, and the use is gone by the end of the frame it was made; a right
+/// click on air leaves no use behind either. (The screen opens when the
+/// server says so, a frame after the click, so the mouse can still turn
+/// the view on the click's own frame.)
 #[test]
 fn opening_a_screen_stops_the_view_turning() {
     use defaria_core::{player::Look, use_action::UseAction};
@@ -832,9 +834,10 @@ fn opening_a_screen_stops_the_view_turning() {
         let (look, action) = looks.single(app.world()).unwrap();
         (look.yaw, action.pending())
     };
-    let (before, _) = look(&mut app);
-    run_more(&mut app, "mouse 200 0\nhold MouseRight 1\nwait 3");
+    run_more(&mut app, "hold MouseRight 1\nwait 3");
     assert!(is_open(&mut app));
+    let (before, _) = look(&mut app);
+    run_more(&mut app, "mouse 200 0\nwait 2");
     assert_eq!(look(&mut app), (before, None));
 
     run_more(

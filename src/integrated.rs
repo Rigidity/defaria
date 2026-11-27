@@ -13,7 +13,12 @@
 
 use std::time::Duration;
 
-use bevy::{app::PluginsState, prelude::*, time::TimeUpdateStrategy};
+use bevy::{
+    app::{MainScheduleOrder, PluginsState},
+    ecs::schedule::ScheduleLabel,
+    prelude::*,
+    time::TimeUpdateStrategy,
+};
 use defaria_client::net::ServerConnection;
 use defaria_core::{
     content::Content,
@@ -33,9 +38,19 @@ pub struct IntegratedServerPlugin;
 impl Plugin for IntegratedServerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, start_server)
-            .add_systems(Last, (step_server, stop_server_on_exit).chain());
+            .add_systems(Last, step_server)
+            .init_schedule(StopServerOnExit)
+            .add_systems(StopServerOnExit, stop_server_on_exit);
+        app.world_mut()
+            .resource_mut::<MainScheduleOrder>()
+            .insert_after(Last, StopServerOnExit);
     }
 }
+
+/// Runs after [`Last`], so it sees an [`AppExit`] sent anywhere in the
+/// frame (it's the frame's end: the app stops after it).
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+struct StopServerOnExit;
 
 /// The server app this client plays on.
 pub struct IntegratedServer {

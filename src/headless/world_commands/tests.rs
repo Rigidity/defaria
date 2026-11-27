@@ -263,7 +263,7 @@ fn poured_water_spreads_and_keeps_all_of_itself() {
 /// wire beside them another, and a voxel with no conduit has none.
 #[test]
 fn the_network_report_describes_the_conduits_network() {
-    let (mut app, exit) = run_game(
+    let (app, exit) = run_game(
         "wait 2\n\
          fill 50 20 50 54 20 50 pipe\n\
          fill 52 21 50 52 22 50 pipe\n\
@@ -294,7 +294,7 @@ fn the_network_report_describes_the_conduits_network() {
 /// consumed: a generator lighting a lamp over a wire.
 #[test]
 fn the_network_report_says_what_energy_moved() {
-    let (mut app, exit) = run_game(
+    let (app, exit) = run_game(
         "wait 2\n\
          fill 49 20 50 49 20 50 creative_generator\n\
          fill 50 20 50 53 20 50 wire\n\

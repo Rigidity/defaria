@@ -92,7 +92,8 @@ impl Plugin for MachineScreenPlugin {
             .add_systems(
                 Update,
                 (
-                    (open_machine_screen, show_machine_contents, close_on_server),
+                    // The view a screen opens with is there for its contents.
+                    (open_machine_screen, show_machine_contents, close_on_server).chain(),
                     close_machine_screen.run_if(not(typing)),
                     (show_slots, show_tanks, show_energy, show_progress),
                 )
