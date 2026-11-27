@@ -231,8 +231,14 @@ fn a_bucket_fills_and_empties_a_machine_tank() {
     ));
     give(&mut app, buckets(1, WATER, FULL));
     let tank_water = |app: &mut App| {
-        let entity = app.world().resource::<BlockEntities>().get(tank).unwrap();
-        app.world().get::<Tanks>(entity).unwrap().total(WATER)
+        let entity = crate::headless::server_world(&app)
+            .resource::<BlockEntities>()
+            .get(tank)
+            .unwrap();
+        crate::headless::server_world(&app)
+            .get::<Tanks>(entity)
+            .unwrap()
+            .total(WATER)
     };
     let click = format!(
         "{}hotbar 1 bucket\nhold MouseLeft 1\nwait 1\nhold MouseRight 1\nwait 1\n",

@@ -302,7 +302,7 @@ fn the_network_report_says_what_energy_moved() {
          wait 90\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let line = network_report(app.world_mut(), IVec3::new(51, 20, 50));
+    let line = network_report(crate::headless::server_world(&app), IVec3::new(51, 20, 50));
     assert!(
         line.ends_with(
             "; energy: stored 0 of 0 J, produced 20 J and consumed 20 J in the last second, throughput 1000 W"
@@ -313,8 +313,14 @@ fn the_network_report_says_what_energy_moved() {
 
 /// The slots of the machine at `pos`.
 fn machine_slots(app: &App, pos: IVec3) -> Slots {
-    let entity = app.world().resource::<BlockEntities>().get(pos).unwrap();
-    app.world().get::<Slots>(entity).unwrap().clone()
+    let entity = crate::headless::server_world(&app)
+        .resource::<BlockEntities>()
+        .get(pos)
+        .unwrap();
+    crate::headless::server_world(&app)
+        .get::<Slots>(entity)
+        .unwrap()
+        .clone()
 }
 
 /// `put` fills a machine's slots and tanks as a tube or pipe would: a
@@ -345,13 +351,19 @@ fn put_fills_machines_and_a_powered_furnace_smelts() {
         output.group("output").unwrap().slots[0],
         Some(defaria_core::inventory::ItemStack::new(gold, 1))
     );
-    let entity = app
-        .world()
+    let entity = crate::headless::server_world(&app)
         .resource::<BlockEntities>()
         .get(IVec3::new(52, 20, 52))
         .unwrap();
     // Its first tenth is burning.
-    assert_eq!(app.world().get::<Tanks>(entity).unwrap().0[0].amount, 400);
+    assert_eq!(
+        crate::headless::server_world(&app)
+            .get::<Tanks>(entity)
+            .unwrap()
+            .0[0]
+            .amount,
+        400
+    );
 }
 
 /// `put` fails the run where there's no machine, no such slot group or
@@ -429,7 +441,7 @@ fn the_fluids_report_counts_what_was_poured() {
          wait 1\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(app.world_mut(), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
     // At radius 4: 49 chunks a layer, 25 layers.
     assert!(
         report.starts_with("fluids in the camera's window (1225 chunks, 0 not loaded): "),
@@ -451,8 +463,12 @@ fn the_fluids_report_counts_a_box() {
          wait 1\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let mut count =
-        |min: IVec3, max: IVec3| fluid_report(app.world_mut(), FluidRegion::Box { min, max });
+    let mut count = |min: IVec3, max: IVec3| {
+        fluid_report(
+            crate::headless::server(&mut app),
+            FluidRegion::Box { min, max },
+        )
+    };
     let both = count(IVec3::new(4995, -1001, 4995), IVec3::new(5010, -1000, 5005));
     assert!(
         both.starts_with(
@@ -494,9 +510,9 @@ fn the_fluids_window_compares_across_a_trip() {
         min: IVec3::new(0, -32, 112),
         max: IVec3::new(47, 15, 127),
     };
-    let margin = fluid_report(app.world_mut(), sea);
+    let margin = fluid_report(crate::headless::server(&mut app), sea);
     assert!(margin.contains("defaria:water"), "{margin}");
-    let before = fluid_report(app.world_mut(), FluidRegion::Window);
+    let before = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
     let loaded_before = app.world().resource::<StreamingStatus>().loaded_chunks;
     run_more(
         &mut app,
@@ -507,7 +523,7 @@ fn the_fluids_window_compares_across_a_trip() {
          settle\n\
          wait 5\n",
     );
-    let after = fluid_report(app.world_mut(), FluidRegion::Window);
+    let after = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
     let loaded_after = app.world().resource::<StreamingStatus>().loaded_chunks;
     assert!(
         loaded_before > loaded_after,
@@ -535,7 +551,7 @@ fn the_fluids_report_counts_what_reacted() {
          wait 120\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(app.world_mut(), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
     let (fluids, lost) = report.split_once("; lost: reacted ").expect(&report);
     let reacted: u64 = lost.parse().expect(&report);
     let water: u64 = fluids
@@ -561,7 +577,7 @@ fn the_fluids_report_counts_what_evaporated() {
          wait 180\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(app.world_mut(), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
     assert!(report.ends_with("; lost: evaporated 2"), "{report}");
     assert!(!report.contains("defaria:water"), "all gone: {report}");
 }
@@ -583,7 +599,7 @@ fn the_fluids_report_counts_tanks_and_pipes() {
          wait 180\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(app.world_mut(), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
     assert!(
         report.ends_with(" active, defaria:water 1000 (world 0, pipes 0, machines 1000)"),
         "{report}"
@@ -593,9 +609,12 @@ fn the_fluids_report_counts_tanks_and_pipes() {
         min: IVec3::new(4990, -1002, 4990),
         max: IVec3::new(4995, -999, 4995),
     };
-    let report = fluid_report(app.world_mut(), beside);
+    let report = fluid_report(crate::headless::server(&mut app), beside);
     assert!(report.ends_with(" active"), "{report}");
-    let network = network_report(app.world_mut(), IVec3::new(4998, -1001, 5000));
+    let network = network_report(
+        crate::headless::server_world(&app),
+        IVec3::new(4998, -1001, 5000),
+    );
     assert!(
         network.contains("4999 -1001 5000 west (output)")
             && network.contains("4998 -1000 5000 down (store)"),
@@ -634,7 +653,7 @@ fn blocks_push_fluid_aside_and_edits_wake_it() {
         .collect();
     assert_eq!(row[0], 0, "the stone took the water's place");
     // What the stone took went aside, and it's all there.
-    let stats = app.world().resource::<FluidStats>();
+    let stats = crate::headless::server_world(&app).resource::<FluidStats>();
     assert!(stats.pushed_aside > 0 && stats.deleted == 0, "{stats:?}");
     let above: u64 = (51..=59)
         .map(|x| fluid_at(&app, IVec3::new(x, 22, 51)) as u64)

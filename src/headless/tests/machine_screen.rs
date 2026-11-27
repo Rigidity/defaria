@@ -104,12 +104,13 @@ fn carried(app: &mut App, item: ItemState) -> u32 {
 
 /// The furnace's `input` slot.
 fn input(app: &App) -> Option<ItemStack> {
-    let entity = app
-        .world()
+    let entity = crate::headless::server_world(&app)
         .resource::<BlockEntities>()
         .get(FURNACE)
         .unwrap();
-    let slots = app.world().get::<Slots>(entity).unwrap();
+    let slots = crate::headless::server_world(&app)
+        .get::<Slots>(entity)
+        .unwrap();
     slots.group("input").unwrap().slots[0].clone()
 }
 
@@ -321,12 +322,13 @@ fn dropping_on_a_group_puts_items_there() {
         )
     };
     let held = |app: &App| {
-        let entity = app
-            .world()
+        let entity = crate::headless::server_world(&app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .unwrap();
-        let slots = app.world().get::<Slots>(entity).unwrap();
+        let slots = crate::headless::server_world(&app)
+            .get::<Slots>(entity)
+            .unwrap();
         slots.0[catalyst].slots[0].clone()
     };
     // On the machine's name, above its slots: nothing takes stone.
@@ -361,7 +363,7 @@ fn the_screen_closes_when_the_machine_goes() {
         "camera 64.5 70.5 2092.5 0 0\nwait 2\nsettle\nwait 2",
     );
     assert!(
-        app.world()
+        crate::headless::server_world(&app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .is_none()
@@ -670,12 +672,11 @@ fn a_scripted_machine_is_used_rather_than_opened() {
         .insert_resource(content);
     settle(&mut app);
     let used = |app: &mut App| {
-        let entity = app
-            .world()
+        let entity = crate::headless::server_world(&app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .unwrap();
-        app.world()
+        crate::headless::server_world(&app)
             .get::<BlockData>(entity)
             .and_then(|data| data.0.get("used").cloned())
     };
@@ -791,13 +792,11 @@ fn a_scripted_item_comes_after_the_block_it_is_used_on() {
     );
     assert!(!is_open(&mut app));
     assert_eq!(voxel(&mut app, FURNACE), scripted, "the item wasn't used");
-    let entity = app
-        .world()
+    let entity = crate::headless::server_world(&app)
         .resource::<BlockEntities>()
         .get(FURNACE)
         .unwrap();
-    let used = app
-        .world()
+    let used = crate::headless::server_world(&app)
         .get::<BlockData>(entity)
         .and_then(|data| data.0.get("used").cloned());
     assert_eq!(used, Some(Value::Int(1)), "the machine was used");

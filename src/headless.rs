@@ -113,7 +113,7 @@ mod world_commands;
 pub use runner::HeadlessPlugin;
 pub use script::Script;
 #[cfg(test)]
-pub use test_app::{run_more, settle, test_game};
+pub use test_app::{run_more, server, server_world, settle, test_game};
 
 /// Fixed time step for every headless frame.
 pub(crate) const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);

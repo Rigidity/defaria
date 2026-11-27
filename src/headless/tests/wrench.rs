@@ -30,7 +30,7 @@ fn right_clicking_with_a_wrench_blocks_the_arm_aimed_at() {
             app.update();
             if let Some(exit) = app.should_exit() {
                 assert_eq!(exit, AppExit::Success);
-                let networks = app.world().resource::<Networks>();
+                let networks = crate::headless::server_world(&app).resource::<Networks>();
                 let ids: Vec<_> = (50..=54)
                     .map(|x| networks.at(IVec3::new(x, 20, 50)).map(|id| id.0))
                     .collect();
@@ -104,8 +104,12 @@ fn a_wrench_on_a_machine_reopens_the_conduit_blocked_against_it() {
 const E: Direction = Direction::East;
 
 fn faces(app: &App, pos: IVec3) -> Option<BlockedFaces> {
-    let entity = app.world().resource::<BlockEntities>().get(pos)?;
-    app.world().get::<BlockedFaces>(entity).copied()
+    let entity = crate::headless::server_world(&app)
+        .resource::<BlockEntities>()
+        .get(pos)?;
+    crate::headless::server_world(&app)
+        .get::<BlockedFaces>(entity)
+        .copied()
 }
 
 fn distinct(ids: &[Option<u64>]) -> usize {

@@ -32,6 +32,7 @@ impl Plugin for ClientNetPlugin {
         app.init_resource::<StreamingStatus>()
             .init_resource::<StreamingSettings>()
             .init_resource::<Joined>()
+            .init_resource::<ServerSettled>()
             .add_message::<ToServer>()
             .add_message::<FromServer>()
             .add_observer(give_the_player_mining)
@@ -69,11 +70,19 @@ pub struct ToServer(pub ClientMessage);
 #[derive(Message, Debug, Clone)]
 pub struct FromServer(pub ServerMessage);
 
-/// Whether the player's first state has arrived: its hotbar and slot in
-/// hand are the client's own after that, sent to the server as they
-/// change, so a state crossing a change on its way doesn't undo it.
+/// Whether the player's first state has arrived, and the hotbar and slot
+/// in hand the server last sent. The client changes those itself and
+/// sends them; it takes the server's only when the server changed them
+/// (a command, or joining), so a state crossing the client's change on
+/// its way doesn't undo it.
 #[derive(Resource, Debug, Default)]
-struct Joined(bool);
+struct Joined(bool, Option<(Hotbar, ActiveSlot)>);
+
+/// Whether the server last said everything around the player is loaded
+/// and sent. The client's [`StreamingStatus`] starts from it each frame
+/// (drawing then unsettles it while chunks wait to be meshed).
+#[derive(Resource, Debug, Default)]
+struct ServerSettled(bool);
 
 /// The local player mines with the button it holds; the server says how
 /// far along it is.
@@ -88,6 +97,7 @@ fn receive(
     connection: Option<ResMut<ServerConnection>>,
     mut map: ResMut<ChunkMap>,
     mut status: ResMut<StreamingStatus>,
+    mut settled: ResMut<ServerSettled>,
     mut joined: ResMut<Joined>,
     mut touched: Local<HashSet<IVec3>>,
     mut player: Query<
@@ -133,11 +143,13 @@ fn receive(
                 }
                 touched.insert(coord.0);
             }
-            ServerMessage::Settled(settled) => status.settled = settled,
+            ServerMessage::Settled(now) => settled.0 = now,
             ServerMessage::PlayerState(state) => {
                 let Ok((entity, mining, hotbar, active)) = player.single_mut() else {
                     continue;
                 };
+                let sent = (state.hotbar.clone(), state.active);
+                let changed = joined.1.as_ref() != Some(&sent);
                 apply_state(
                     &mut commands,
                     entity,
@@ -145,9 +157,9 @@ fn receive(
                     mining,
                     hotbar,
                     active,
-                    !joined.0,
+                    changed,
                 );
-                joined.0 = true;
+                *joined = Joined(true, Some(sent));
             }
             other => {
                 forward.write(FromServer(other));
@@ -155,6 +167,7 @@ fn receive(
         }
     }
     status.loaded_chunks = map.len();
+    status.settled = settled.0;
     commands.insert_resource(Touched(std::mem::take(&mut *touched)));
 }
 
@@ -164,7 +177,7 @@ struct Touched(HashSet<IVec3>);
 
 /// Puts the server's state of the player on the local player: what it
 /// carries, its game mode, its mining's target and progress (holding the
-/// button is the client's), and, when it first joins, its hotbar.
+/// button is the client's), and its hotbar if the server changed it.
 fn apply_state(
     commands: &mut Commands,
     entity: Entity,
@@ -172,7 +185,7 @@ fn apply_state(
     mining: Option<Mut<Mining>>,
     hotbar: Option<Mut<Hotbar>>,
     active: Option<Mut<ActiveSlot>>,
-    first: bool,
+    hotbar_changed: bool,
 ) {
     let PlayerState {
         inventory,
@@ -190,7 +203,7 @@ fn apply_state(
             mining.progress = new_mining.progress;
         }
     }
-    if first || hotbar.is_none() || active.is_none() {
+    if hotbar_changed || hotbar.is_none() || active.is_none() {
         commands.entity(entity).insert((new_hotbar, new_active));
     }
 }

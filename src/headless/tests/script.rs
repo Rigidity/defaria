@@ -14,7 +14,7 @@ use crate::headless::{Script, run_more, settle, test_game};
 fn the_game_starts_its_script_runtime() {
     let mut app = crate::headless::test_game(crate::headless::Script::default());
     app.update();
-    let runtime = app.world().resource::<ScriptRuntime>();
+    let runtime = crate::headless::server_world(&app).resource::<ScriptRuntime>();
     assert!(runtime.load_errors().is_empty());
 }
 
@@ -51,23 +51,40 @@ fn a_panel_makes_energy_from_the_sky_and_keeps_its_count() {
     run_more(&mut app, "wait 20");
     assert_eq!(panel_data(&app, open).0, kept);
     // Away, so its chunk unloads, and back: it's read from the save.
-    let before = app.world().resource::<BlockEntities>().get(open);
+    let before = crate::headless::server_world(&app)
+        .resource::<BlockEntities>()
+        .get(open);
     run_more(
         &mut app,
         "camera 5000.5 125 40.5 0 -60\nsettle\ncamera 40.5 125 40.5 0 -60\nsettle\nwait 2",
     );
-    assert_ne!(app.world().resource::<BlockEntities>().get(open), before);
+    assert_ne!(
+        crate::headless::server_world(&app)
+            .resource::<BlockEntities>()
+            .get(open),
+        before
+    );
     assert_eq!(panel_data(&app, open), (kept, kept as u64));
 }
 
 fn panel_data(app: &App, pos: IVec3) -> (i64, u64) {
-    let entity = app.world().resource::<BlockEntities>().get(pos).unwrap();
-    let made = match app.world().get::<BlockData>(entity).unwrap().0["made"] {
+    let entity = crate::headless::server_world(&app)
+        .resource::<BlockEntities>()
+        .get(pos)
+        .unwrap();
+    let made = match crate::headless::server_world(&app)
+        .get::<BlockData>(entity)
+        .unwrap()
+        .0["made"]
+    {
         Value::Int(n) => n,
         Value::Float(n) => n as i64,
         ref other => panic!("made is {other:?}"),
     };
-    let stored = app.world().get::<EnergyBuffer>(entity).unwrap().stored;
+    let stored = crate::headless::server_world(&app)
+        .get::<EnergyBuffer>(entity)
+        .unwrap()
+        .stored;
     (made, stored)
 }
 
