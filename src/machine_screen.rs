@@ -40,24 +40,25 @@ use bevy::{
     prelude::*,
 };
 
-use super::{
-    EnergyBuffer, Slots, Tanks,
-    exchange::{input_groups, into_machine_from, out_of_machine},
-};
 use crate::{
     block_entity::{BlockEntities, BlockEntity},
-    content::{BlockState, Content, Machine},
-    fluid_container::slot_fluid,
+    content::{BlockState, Content},
     game_mode::item_for_block,
-    hotbar::hotbar_height,
-    inventory::{
-        Inventory,
+    hotbar_ui::hotbar_height,
+    inventory::Inventory,
+    inventory_screen::{
         gesture::amount_of as amount,
         list::{ItemList, ListEntry, ListSource, Owner, item_list},
         screen::{INVENTORY_ROWS, WeightLabel},
     },
+    machine::{
+        EnergyBuffer, Slots, Tanks,
+        exchange::{input_groups, into_machine_from, out_of_machine},
+        has_screen,
+    },
     player::LocalPlayer,
     recipe::{RecipeProgress, RecipeStatus},
+    ui::slot::slot_fluid,
     ui::{
         Bar, ItemSlot, NO_FLUID, PointerTravel, Tooltip, UiScreen, UiTheme, bar, fluid_color,
         fluid_name, format_fluid, item_slot, scroll::Scrollable, scroll_panel, typing,
@@ -161,13 +162,6 @@ struct MachinePanel;
 /// items to the machine.
 #[derive(Component, Debug, Clone, Copy)]
 struct SendsToMachine;
-
-/// Whether `machine` has a screen: slots, tanks or recipes. Its energy
-/// shows on the screen of one that has, but on its own isn't worth taking
-/// right click from placing.
-pub fn has_screen(machine: &Machine) -> bool {
-    !machine.slots.is_empty() || !machine.tanks.is_empty() || machine.recipes.is_some()
-}
 
 /// Opens the screen of the machine the local player uses, claiming the
 /// use, unless they sneak.

@@ -48,7 +48,7 @@ pub const QUIET: f32 = 1.5;
 pub struct Unsettled(HashMap<ChunkCoord, f32>);
 
 /// Notes the chunks flow changes fluid in (and those within
-/// [`crate::meshing::MARGIN`] of it, whose faces' flow it decides too), and
+/// [`crate::world::MARGIN`] of it, whose faces' flow it decides too), and
 /// remeshes each once it has been quiet for [`QUIET`].
 fn remesh_settled(
     mut changes: MessageReader<FluidChanged>,
@@ -58,7 +58,7 @@ fn remesh_settled(
     mut unsettled: ResMut<Unsettled>,
 ) {
     for change in changes.read().filter(|change| change.by_flow) {
-        for coord in ChunkCoord::within(change.pos, crate::meshing::MARGIN) {
+        for coord in ChunkCoord::within(change.pos, crate::world::MARGIN) {
             unsettled.0.insert(coord, 0.0);
         }
     }

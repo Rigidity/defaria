@@ -25,9 +25,8 @@ use crate::{
     block_edit::BlockEditSystems,
     connections::ConnectionSystems,
     content::{BlockState, Content},
-    meshing::RemeshChunks,
     mining::MiningSystems,
-    world::{PropertiesUpdated, VoxelChanged, Voxels},
+    world::{PropertiesUpdated, RemeshChunks, VoxelChanged, Voxels},
 };
 
 pub struct SupportPlugin;

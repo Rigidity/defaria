@@ -43,8 +43,9 @@ use crate::{
     content::{
         BakedFace, BlockState, Content, Direction, FULL_FLUID, Fluid, MAX_LIGHT, Render, Vertex,
     },
-    fluid::{flow, scroll},
+    fluid::flow,
     light::{CHANNELS, ChunkLight, Light, part_full_dim},
+    meshing::scroll,
     world::{CHUNK_SIZE, Chunk, FLUID_STEPS, FluidTop, VoxelFluid, axis_of, fluid_surface},
 };
 
@@ -111,10 +112,7 @@ fn cut_face(face: &BakedFace, top: &FluidTop) -> BakedFace {
     }
 }
 
-/// How many voxels around the chunk a [`Neighborhood`] holds on each side:
-/// two, as a fluid face's corner averages the flow of the voxels around it
-/// (see [`scroll::corner`]), which depends on the voxels around those.
-pub const MARGIN: i32 = 2;
+pub use crate::world::MARGIN;
 /// Each voxel's flow in a [`Neighborhood`], by its index, worked out once:
 /// the corners of several faces average it. Made with the first fluid
 /// face, so chunks without fluid don't pay for it.

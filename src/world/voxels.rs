@@ -8,6 +8,12 @@ use super::{
 };
 use crate::content::{BlockState, Content, FULL_FLUID};
 
+/// How many voxels around a chunk its drawing reads on each side: two, as
+/// a fluid face's corner averages the flow of the voxels around it (see
+/// `meshing::scroll`), which depends on the voxels around those. A voxel's
+/// change redraws the chunks this close to it.
+pub const MARGIN: i32 = 2;
+
 /// Reads and writes voxels by world position, across every chunk.
 #[derive(SystemParam)]
 pub struct Voxels<'w, 's> {
@@ -213,8 +219,8 @@ impl Voxels<'_, '_> {
         let chunk = chunk.bypass_change_detection();
         if chunk.set_fluid_at(local, fluid, room) {
             // A fluid voxel decides the flow on faces further away than
-            // its own neighbours' (see `fluid::scroll`).
-            self.touched_within(pos, crate::meshing::MARGIN);
+            // its own neighbours' (see `meshing::scroll`).
+            self.touched_within(pos, MARGIN);
         }
         self.fluid_changes.write(FluidChanged {
             pos,

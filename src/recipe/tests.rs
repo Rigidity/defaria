@@ -10,7 +10,7 @@ use crate::{
     block_entity::{BlockEntities, BlockEntityPlugin},
     connections::ConnectionsPlugin,
     content::{ItemState, base, block, block_with},
-    machine::MachineCorePlugin,
+    machine::MachinePlugin,
     network::{NetworkClock, NetworkCorePlugin, energy::EnergyPlugin},
     testing::{chunk_app, insert_chunk, test_content},
     world::{Chunk, Voxels},
@@ -382,7 +382,7 @@ fn app() -> App {
         ConnectionsPlugin,
         NetworkCorePlugin,
         BlockEntityPlugin,
-        MachineCorePlugin,
+        MachinePlugin,
         EnergyPlugin,
         RecipePlugin,
     ));

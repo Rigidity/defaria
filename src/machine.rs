@@ -13,8 +13,8 @@
 //! - [`MachineActive`]: whether it's working, which puts the voxel in its
 //!   block's `active_state`.
 //!
-//! [`screen`] is the screen using a machine opens, and [`exchange`] moves
-//! items between it and the player.
+//! [`exchange`] moves items between a machine and the player (the screen
+//! using a machine opens is `machine_screen`).
 //!
 //! It also keeps [`MachinePorts`]: for each network, its machine ports and
 //! their roles, which the solvers (energy, fluid, items) iterate. Nothing
@@ -23,7 +23,6 @@
 pub mod exchange;
 mod parts;
 mod ports;
-pub mod screen;
 
 use bevy::prelude::*;
 
@@ -33,6 +32,13 @@ pub use parts::{
 };
 pub use ports::{MachinePortRef, MachinePorts};
 
+/// Whether `machine` has a screen: slots, tanks or recipes. Its energy
+/// shows on the screen of one that has, but on its own isn't worth taking
+/// right click from placing.
+pub fn has_screen(machine: &crate::content::Machine) -> bool {
+    !machine.slots.is_empty() || !machine.tanks.is_empty() || machine.recipes.is_some()
+}
+
 use crate::{
     block_entity::{BlockEntities, BlockEntity, BlockEntitySystems, RegisterBlockEntityPart},
     connections::ConnectionSystems,
@@ -41,19 +47,9 @@ use crate::{
     world::{PropertiesUpdated, VoxelChanged, Voxels},
 };
 
-/// Machines and the screen using one opens.
 pub struct MachinePlugin;
 
 impl Plugin for MachinePlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins((MachineCorePlugin, screen::MachineScreenPlugin));
-    }
-}
-
-/// Machines without their screen, for tests that have no UI.
-pub struct MachineCorePlugin;
-
-impl Plugin for MachineCorePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MachinePorts>()
             .register_block_entity_part::<Ports>()

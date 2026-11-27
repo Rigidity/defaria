@@ -7,7 +7,8 @@ use super::*;
 use crate::{
     content::ItemState,
     headless::{Script, run_more, settle, test_game},
-    inventory::{ItemStack, screen::InventoryScreen},
+    inventory::ItemStack,
+    inventory_screen::screen::InventoryScreen,
     testing::{test_content, test_mods},
 };
 

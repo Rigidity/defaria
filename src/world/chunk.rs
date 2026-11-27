@@ -407,7 +407,7 @@ pub fn touching_offsets(local: IVec3) -> impl Iterator<Item = IVec3> {
 /// position `local`, its own (zero) among them: [`touching_offsets`] for
 /// what can see further, such as the flow on fluid faces, which a voxel
 /// two in from an edge decides for the chunk across it (see
-/// `fluid::scroll`).
+/// `meshing::scroll`).
 pub fn offsets_within(local: IVec3, reach: i32) -> impl Iterator<Item = IVec3> {
     let size = CHUNK_SIZE as i32;
     let edge = local.map(|v| {

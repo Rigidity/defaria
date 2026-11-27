@@ -9,6 +9,7 @@ mod block_texture;
 mod connections;
 pub mod content;
 mod cracks;
+mod crosshair;
 mod devtools;
 mod dynamic_light;
 mod fluid;
@@ -20,9 +21,13 @@ mod fov;
 pub mod game_mode;
 pub mod headless;
 mod hotbar;
+mod hotbar_ui;
+mod input;
 pub mod inventory;
+mod inventory_screen;
 mod light;
 pub mod machine;
+mod machine_screen;
 mod meshing;
 mod mining;
 pub mod network;
@@ -77,6 +82,8 @@ impl Plugin for GamePlugin {
             fog::FogPlugin,
             fov::FovPlugin,
             mining::MiningPlugin,
+            input::InputPlugin,
+            crosshair::CrosshairPlugin,
             cracks::CracksPlugin,
             fluid::FluidPlugin,
             game_mode::GameModePlugin,
@@ -86,6 +93,8 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins((
             machine::MachinePlugin,
+            machine_screen::MachineScreenPlugin,
+            inventory_screen::InventoryScreenPlugin,
             recipe::RecipePlugin,
             script::ScriptPlugin,
             script::machine::MachineScriptPlugin,
@@ -93,6 +102,7 @@ impl Plugin for GamePlugin {
             fluid_container::FluidContainerPlugin,
             support::SupportPlugin,
             use_action::UseActionPlugin,
+            hotbar_ui::HotbarUiPlugin,
         ));
     }
 }

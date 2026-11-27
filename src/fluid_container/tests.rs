@@ -11,6 +11,10 @@ use crate::{
     machine::Slots,
     player::LocalPlayer,
     streaming::StreamingSettings,
+    ui::{
+        SlotFluid,
+        slot::{hotbar_fluid, slot_fluid},
+    },
     world::VoxelFluid,
 };
 
@@ -887,7 +891,7 @@ fn a_click_that_moves_nothing_opens_the_machine() {
     give(&mut app, empty(1));
     let screens = |app: &mut App| {
         app.world_mut()
-            .query::<&crate::machine::screen::MachineScreen>()
+            .query::<&crate::machine_screen::MachineScreen>()
             .iter(app.world())
             .count()
     };

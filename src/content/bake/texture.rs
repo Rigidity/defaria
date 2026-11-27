@@ -10,7 +10,7 @@ use super::{
     material::palette,
 };
 use crate::{
-    block_texture::Palette,
+    content::palette::Palette,
     content::{
         Animation, Content, Texture, TextureLayer, check_name, qualify,
         schema::{AnimationDef, LayerDef, TextureDef, TextureRef},

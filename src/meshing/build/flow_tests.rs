@@ -1,4 +1,4 @@
-//! Fluid faces' flow in the mesh (see `fluid::scroll`): which faces flow,
+//! Fluid faces' flow in the mesh (see `meshing::scroll`): which faces flow,
 //! which way, and that neighbouring faces agree where they meet.
 
 use bevy::{mesh::VertexAttributeValues, prelude::*};
@@ -6,7 +6,7 @@ use bevy::{mesh::VertexAttributeValues, prelude::*};
 use super::{ATTRIBUTE_FACE, ATTRIBUTE_FLOW, BACK_FACE, Neighborhood, OPEN_SKY};
 use crate::{
     content::{BlockState, FULL_FLUID, base, block},
-    fluid::scroll::{FLOWING, TEXTURE_BITS, WRAPPED},
+    meshing::scroll::{FLOWING, TEXTURE_BITS, WRAPPED},
     world::{CHUNK_SIZE, FLUID_STEPS, VoxelFluid, filled, fluid_step},
 };
 

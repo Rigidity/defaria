@@ -351,8 +351,8 @@ mod tests {
         assert!(shader.contains("@binding(1) var blocks_sampler: sampler"));
         assert!(shader.contains("@binding(2) var<uniform> lighting: Lighting"));
         assert!(shader.contains("@binding(3) var<storage, read> animations: array<Animation>"));
-        // The flow bits the mesher packs (see `fluid::scroll`).
-        use crate::fluid::scroll;
+        // The flow bits the mesher packs (see `meshing::scroll`).
+        use crate::meshing::scroll;
         for constant in [
             format!("const TEXTURE_BITS: u32 = 0x{:08x}u;", scroll::TEXTURE_BITS),
             format!("const FLOWING: u32 = 0x{:08x}u;", scroll::FLOWING),

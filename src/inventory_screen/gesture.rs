@@ -28,14 +28,15 @@ use bevy::{
     prelude::*,
 };
 
-use super::{
+use super::list::{ItemList, ListEntry, ListSource};
+use crate::inventory::{
     Inventory, ItemStack,
-    list::{ItemList, ListEntry, ListSource},
     transfer::{half, transfer},
 };
 use crate::{
     content::{Content, ItemState},
-    hotbar::{HOTBAR_KEYS, Hotbar, HotbarInput, HotbarSlot},
+    hotbar::Hotbar,
+    hotbar_ui::{HOTBAR_KEYS, HotbarInput, HotbarSlot},
     player::LocalPlayer,
     ui::{ItemIcon, PointerTravel, UiPointer, UiTheme, typing},
 };

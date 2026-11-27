@@ -25,7 +25,20 @@ pub use chunk::{
 };
 pub use chunk_array::ChunkArray;
 pub use fluid_top::FluidTop;
-pub use voxels::Voxels;
+pub use voxels::{MARGIN, Voxels};
+
+/// Where changed chunks are relit and redrawn. Systems that edit chunks
+/// run before it, so their edits show on the same frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RemeshChunks;
+
+/// A chunk with a chunk around it that isn't loaded yet, so it isn't
+/// drawn: its faces against the missing chunks would be wrong. Whatever
+/// loads the chunks takes it off once they are. Chunks without it are
+/// drawn as soon as they spawn.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct AwaitingNeighbours;
 
 pub struct WorldPlugin;
 

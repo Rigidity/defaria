@@ -183,10 +183,10 @@ impl Plugin for PlayerPlugin {
         app.register_type::<LocalPlayer>()
             .register_type::<Look>()
             .register_type::<Controls>()
-            .add_systems(Update, toggle_flying.run_if(crate::ui::playing))
+            .configure_sets(FixedUpdate, ReadControls.before(PlayerMovement))
             .add_systems(
                 FixedUpdate,
-                (read_the_keys, move_player, ease_eye_height)
+                (move_player, ease_eye_height)
                     .chain()
                     .in_set(PlayerMovement),
             )
@@ -335,6 +335,12 @@ pub fn eyes(transform: &Transform, player: &Player, look: &Look) -> Transform {
         .with_rotation(look.rotation())
 }
 
+/// Where players' [`Controls`] are set for the coming physics step (the
+/// local player's from the keys), in [`FixedUpdate`] before
+/// [`PlayerMovement`].
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ReadControls;
+
 /// The player's physics step, in [`FixedUpdate`]. Whatever follows how the
 /// player moved runs after it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -380,28 +386,6 @@ impl Default for Player {
     }
 }
 
-/// Double-tapping Space asks for the local player to start or stop flying
-/// ([`Controls::toggle_fly`]).
-fn toggle_flying(
-    time: Res<Time<Real>>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut last_tap: Local<Option<f32>>,
-    mut players: Query<&mut Controls, With<LocalPlayer>>,
-) {
-    if !keys.just_pressed(KeyCode::Space) {
-        return;
-    }
-    let now = time.elapsed_secs();
-    if last_tap.is_some_and(|last| now - last <= DOUBLE_TAP) {
-        *last_tap = None;
-        for mut controls in &mut players {
-            controls.toggle_fly = true;
-        }
-    } else {
-        *last_tap = Some(now);
-    }
-}
-
 /// How a velocity component changes over `dt` with constant `accel` and
 /// exponential `decay`: the new velocity, and how far it went.
 fn drift(velocity: f64, accel: f64, decay: f64, dt: f64) -> (f64, f64) {
@@ -410,33 +394,6 @@ fn drift(velocity: f64, accel: f64, decay: f64, dt: f64) -> (f64, f64) {
     let new = settled + (velocity - settled) * fade;
     let distance = settled * dt + (velocity - settled) * (1.0 - fade) / decay;
     (new, distance)
-}
-
-/// The keys held, as the local player's [`Controls`].
-fn read_the_keys(
-    keys: Res<ButtonInput<KeyCode>>,
-    screens: Query<(), With<crate::ui::UiScreen>>,
-    mut players: Query<&mut Controls, With<LocalPlayer>>,
-) {
-    // With a screen open, keys are for it: the player stops pressing them
-    // but still falls and slides.
-    let playing = crate::ui::playing(screens);
-    let held = |key: KeyCode| playing && keys.pressed(key);
-    let axis = |positive: KeyCode, negative: KeyCode| {
-        held(positive) as i8 as f64 - held(negative) as i8 as f64
-    };
-    for mut player in &mut players {
-        // A double tap's request stands until the step that takes it.
-        let controls = Controls {
-            forward: axis(KeyCode::KeyW, KeyCode::KeyS),
-            right: axis(KeyCode::KeyD, KeyCode::KeyA),
-            jump: held(KeyCode::Space),
-            sneak: held(KeyCode::ShiftLeft) || held(KeyCode::ShiftRight),
-            sprint: held(KeyCode::KeyF),
-            toggle_fly: player.toggle_fly,
-        };
-        player.set_if_neq(controls);
-    }
 }
 
 /// One physics step of each player: its controls to velocity, then
@@ -613,7 +570,13 @@ pub(crate) mod tests {
             .insert_resource(TimeUpdateStrategy::ManualDuration(frame))
             .insert_resource(base().clone())
             .init_resource::<ChunkMap>()
-            .init_resource::<ButtonInput<KeyCode>>();
+            .init_resource::<HeldKeys>()
+            .add_systems(
+                FixedUpdate,
+                press_held_keys
+                    .run_if(resource_exists::<HeldKeys>)
+                    .in_set(ReadControls),
+            );
         let (center, _) = ChunkCoord::split(around);
         for x in -1..=1 {
             for y in -1..=1 {
@@ -722,13 +685,35 @@ pub(crate) mod tests {
         app.world().get::<Player>(entity).unwrap().clone()
     }
 
-    pub(crate) fn hold(app: &mut App, keys: &[KeyCode]) {
-        let mut input = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-        input.release_all();
-        input.clear();
-        for &key in keys {
-            input.press(key);
+    /// The keys held in these tests. Remove it to have the real keyboard
+    /// set the controls instead.
+    #[derive(Resource, Default)]
+    pub(crate) struct HeldKeys(Vec<KeyCode>);
+
+    /// The held keys as the local player's [`Controls`], as the client's
+    /// keys give them (see `input::movement`), so these tests read as
+    /// play does.
+    fn press_held_keys(keys: Res<HeldKeys>, mut players: Query<&mut Controls, With<LocalPlayer>>) {
+        let held = |key: KeyCode| keys.0.contains(&key);
+        let axis = |positive: KeyCode, negative: KeyCode| {
+            held(positive) as i8 as f64 - held(negative) as i8 as f64
+        };
+        for mut controls in &mut players {
+            let new = Controls {
+                forward: axis(KeyCode::KeyW, KeyCode::KeyS),
+                right: axis(KeyCode::KeyD, KeyCode::KeyA),
+                jump: held(KeyCode::Space),
+                sneak: held(KeyCode::ShiftLeft) || held(KeyCode::ShiftRight),
+                sprint: held(KeyCode::KeyF),
+                toggle_fly: controls.toggle_fly,
+            };
+            controls.set_if_neq(new);
         }
+    }
+
+    /// Holds these keys, and only these, from the next frame.
+    pub(crate) fn hold(app: &mut App, keys: &[KeyCode]) {
+        app.world_mut().resource_mut::<HeldKeys>().0 = keys.to_vec();
     }
 
     pub(crate) fn run(app: &mut App, seconds: f64) {
@@ -738,11 +723,6 @@ pub(crate) mod tests {
         };
         for _ in 0..(seconds / frame).round() as usize {
             app.update();
-            // Pressed keys stay pressed, but only the first frame's are
-            // just pressed.
-            app.world_mut()
-                .resource_mut::<ButtonInput<KeyCode>>()
-                .clear();
         }
     }
 
@@ -1038,59 +1018,6 @@ pub(crate) mod tests {
         hold(&mut app, &[KeyCode::KeyW]);
         run(&mut app, 1.5);
         assert!(body(&app, player).position.y < 4.0);
-    }
-
-    /// Double-tapping Space flies; Space and Shift go up and down; landing
-    /// stops flying.
-    #[test]
-    fn double_tap_flies_and_landing_stops_it() {
-        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
-        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
-        run(&mut app, 0.1);
-        let mut tapped = 0.0;
-        for _ in 0..2 {
-            tapped = body(&app, player).position.y;
-            hold(&mut app, &[KeyCode::Space]);
-            run(&mut app, 0.05);
-            hold(&mut app, &[]);
-            run(&mut app, 0.05);
-        }
-        assert!(self::player(&app, player).flying);
-        // The first tap's jump stops when flying starts: from the second
-        // tap, it only rises for the three steps Space is held (about 0.4),
-        // not on with the jump's speed too (about a block).
-        run(&mut app, 1.0);
-        let rise = body(&app, player).position.y - tapped;
-        assert!((0.2..0.6).contains(&rise), "{rise}");
-        hold(&mut app, &[KeyCode::Space]);
-        run(&mut app, 1.0);
-        let up = body(&app, player);
-        assert!(up.position.y > 9.0, "{}", up.position);
-        // Hovering: no gravity.
-        hold(&mut app, &[]);
-        run(&mut app, 1.0);
-        let hover = body(&app, player).position.y;
-        run(&mut app, 1.0);
-        assert!((body(&app, player).position.y - hover).abs() < 1e-3);
-        hold(&mut app, &[KeyCode::ShiftLeft]);
-        run(&mut app, 3.0);
-        assert!(!self::player(&app, player).flying);
-        assert_eq!(body(&app, player).position.y, 4.0);
-    }
-
-    /// Two taps further apart than [`DOUBLE_TAP`] are two jumps, not a flight.
-    #[test]
-    fn slow_taps_dont_fly() {
-        let mut app = app(IVec3::new(8, 8, 8), FRAME, floor(4));
-        let player = spawn(&mut app, DVec3::new(8.5, 4.0, 8.5));
-        run(&mut app, 0.1);
-        for _ in 0..2 {
-            hold(&mut app, &[KeyCode::Space]);
-            run(&mut app, 0.05);
-            hold(&mut app, &[]);
-            run(&mut app, DOUBLE_TAP as f64 + 0.1);
-        }
-        assert!(!self::player(&app, player).flying);
     }
 
     /// Between physics steps, the eyes are drawn part of the way from the

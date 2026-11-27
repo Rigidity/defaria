@@ -27,7 +27,6 @@ use bevy::{
 };
 
 use crate::content::{Animation, MAX_TILES, Texture};
-pub use layer::Palette;
 
 /// Width and height of one tile, and of every layer image, in pixels.
 pub const TILE_SIZE: u32 = 16;
@@ -474,6 +473,7 @@ fn keep_coverage(pixels: &[u8], target: f32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::palette::Palette;
     use crate::content::{Render, base};
     use bevy::{
         color::ColorToPacked,

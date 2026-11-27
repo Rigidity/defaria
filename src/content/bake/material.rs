@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use super::{Def, fill::title_case};
 use crate::{
-    block_texture::Palette,
+    content::palette::Palette,
     content::{BUILT_IN_STATS, Material, check_name, check_namespace, schema::MaterialDef},
 };
 

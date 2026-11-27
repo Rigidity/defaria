@@ -51,9 +51,8 @@ use crate::{
     },
     hotbar::{ActiveSlot, Hotbar},
     inventory::{Inventory, ItemStack, model::ItemData},
-    machine::{Tank, Tanks, screen::has_screen},
+    machine::{Tank, Tanks, has_screen},
     script::ScriptIndex,
-    ui::SlotFluid,
     use_action::{UseAction, UseStep},
     world::Voxels,
 };
@@ -95,48 +94,6 @@ pub(crate) fn saved_data(
         ));
     }
     Ok(ItemData::holding(fluid, amount))
-}
-
-/// What a slot showing `stack` shows of its fluid: `None` if it isn't a
-/// fluid container.
-pub(crate) fn slot_fluid(content: &Content, stack: &ItemStack) -> Option<SlotFluid> {
-    let capacity = capacity(content, stack.item)?;
-    let held = stack.data.fluid.as_ref();
-    Some(SlotFluid {
-        fluid: held.and_then(|held| content.default_state(&held.fluid)),
-        amount: held.map_or(0, |held| held.amount),
-        capacity,
-    })
-}
-
-/// What a hotbar slot naming the container `item` shows of its fluid: all
-/// the inventory's containers of it together, how much they hold of how
-/// much they could, in the color of the first fluid among them. `None` if
-/// it isn't a fluid container.
-pub(crate) fn hotbar_fluid(
-    content: &Content,
-    inventory: &Inventory,
-    item: ItemState,
-) -> Option<SlotFluid> {
-    let capacity = capacity(content, item)?;
-    let mine = inventory
-        .entries()
-        .iter()
-        .filter(|stack| stack.item == item);
-    let mut shown = SlotFluid::default();
-    for stack in mine {
-        let count = stack.count as u64;
-        shown.capacity = shown
-            .capacity
-            .saturating_add(capacity.saturating_mul(count));
-        if let Some(held) = &stack.data.fluid {
-            shown.amount = shown
-                .amount
-                .saturating_add(held.amount.saturating_mul(count));
-            shown.fluid = shown.fluid.or_else(|| content.default_state(&held.fluid));
-        }
-    }
-    Some(shown)
 }
 
 /// One container like `stack` as a tank, to take and pour with.

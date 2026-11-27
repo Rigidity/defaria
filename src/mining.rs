@@ -12,27 +12,23 @@
 //!   of blocks that break at once.
 //! - The click that locks the cursor mines nothing, even if it's held.
 //!
-//! [`Mining`], on the local player, says which block is being mined and how far
-//! along it is, for the cracks drawn on it and for `inspect`.
+//! [`Mining`], on a player, says whether it holds the button
+//! ([`Mining::holding`], which `mining_input` sets from the mouse for the
+//! local player), which block is being mined and how far along it is, for
+//! the cracks drawn on it and for `inspect`.
 
 use std::time::Duration;
 
-use bevy::{
-    prelude::*,
-    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
-};
+use bevy::prelude::*;
 
 use crate::{
-    block_edit::{BlockEditSystems, BlockOutlineSystems, crosshair_target},
+    block_edit::{BlockEditSystems, crosshair_target},
     content::{BlockState, Content},
-    fly_camera::FlyCameraSystems,
     game_mode::{GameMode, harvest},
     inventory::Inventory,
-    meshing::RemeshChunks,
     player::{Eyes, LocalPlayer},
     support::unsupported,
-    ui::{UiScreen, playing},
-    world::Voxels,
+    world::{RemeshChunks, Voxels},
 };
 
 /// Seconds of mining per point of hardness. Stone, at a hardness of 1.5,
@@ -60,23 +56,12 @@ impl Plugin for MiningPlugin {
             .add_observer(give_the_player_mining)
             .add_systems(
                 Update,
-                (
-                    // Before the fly camera, so the click that locks the
-                    // cursor finds it still unlocked and arms nothing.
-                    arm.before(FlyCameraSystems),
-                    // After the camera turns, so the block mined is the one
-                    // under the crosshair on the frame being drawn. After
-                    // placing, so the two edits on one frame always land in
-                    // the same order. Before the outline, so it's drawn
-                    // around the next block, not one that just broke. Before
-                    // remeshing, so a break shows this frame.
-                    mine.in_set(MiningSystems)
-                        .after(arm)
-                        .after(FlyCameraSystems)
-                        .after(BlockEditSystems)
-                        .before(BlockOutlineSystems)
-                        .before(RemeshChunks),
-                ),
+                // After placing, so the two edits on one frame always land
+                // in the same order. Before remeshing, so a break shows
+                // this frame.
+                mine.in_set(MiningSystems)
+                    .after(BlockEditSystems)
+                    .before(RemeshChunks),
             );
     }
 }
@@ -85,18 +70,19 @@ impl Plugin for MiningPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MiningSystems;
 
-/// The block the camera is mining, if any, and how far along it is.
+/// The block a player is mining, if any, and how far along it is.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
 #[reflect(Component)]
 pub struct Mining {
+    /// Whether the player holds the break button, and it counts: for the
+    /// local player, pressed while playing with the cursor locked. Mining
+    /// starts over whenever it isn't.
+    pub holding: bool,
     /// The block being mined, and its state now: in a voxel of two
     /// halves, the half being mined.
     pub target: Option<(IVec3, BlockState)>,
     /// From 0 when mining starts to 1 when the block breaks.
     pub progress: f32,
-    /// Whether the held button counts: it was pressed while playing with the
-    /// cursor locked.
-    armed: bool,
     /// What's left of [`BREAK_DELAY`].
     delay: Duration,
     /// How long the target has been mined; `progress` is this over its
@@ -108,41 +94,36 @@ fn give_the_player_mining(add: On<Add<LocalPlayer>>, mut commands: Commands) {
     commands.entity(add.entity).insert(Mining::default());
 }
 
-/// Whether the player can mine now: the cursor is locked and no screen
-/// is open.
-fn can_mine(cursor: &CursorOptions, screens: Query<(), With<UiScreen>>) -> bool {
-    cursor.grab_mode != CursorGrabMode::None && playing(screens)
-}
-
-/// Arms mining on a left press made while the player can mine, before the
-/// fly camera can lock the cursor for it.
-fn arm(
-    mouse: Res<ButtonInput<MouseButton>>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    screens: Query<(), With<UiScreen>>,
-    mut mining: Single<&mut Mining, With<LocalPlayer>>,
+/// Mines the block under each player's crosshair while it holds the
+/// button, and breaks it once its break time is up.
+fn mine(
+    time: Res<Time>,
+    content: Res<Content>,
+    // What a miner gets for it, in survival.
+    mut miners: Query<(Eyes, &mut Mining, Option<(&mut Inventory, &GameMode)>)>,
+    mut voxels: Voxels,
 ) {
-    if mouse.just_pressed(MouseButton::Left) {
-        mining.armed = can_mine(&cursor, screens);
+    for (eyes, mut mining, carrier) in &mut miners {
+        mine_one(
+            &time,
+            &content,
+            &eyes.transform(),
+            &mut mining,
+            carrier,
+            &mut voxels,
+        );
     }
 }
 
-/// Mines the block under the crosshair while the armed button is held, and
-/// breaks it once its break time is up.
-fn mine(
-    time: Res<Time>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    screens: Query<(), With<UiScreen>>,
-    content: Res<Content>,
-    miner: Single<(Eyes, &mut Mining), With<LocalPlayer>>,
-    // What it gets for it, in survival.
-    carrier: Option<Single<(&mut Inventory, &GameMode), With<LocalPlayer>>>,
-    mut voxels: Voxels,
+fn mine_one(
+    time: &Time,
+    content: &Content,
+    transform: &Transform,
+    mining: &mut Mut<Mining>,
+    mut carrier: Option<(Mut<Inventory>, &GameMode)>,
+    voxels: &mut Voxels,
 ) {
-    let (eyes, mut mining) = miner.into_inner();
-    let transform = &eyes.transform();
-    if !(can_mine(&cursor, screens) && mining.armed && mouse.pressed(MouseButton::Left)) {
+    if !mining.holding {
         mining.set_if_neq(Mining::default());
         return;
     }
@@ -153,7 +134,7 @@ fn mine(
         }
         mining.delay = Duration::ZERO;
     }
-    let Some(hit) = crosshair_target(transform, &content, &voxels) else {
+    let Some(hit) = crosshair_target(transform, content, voxels) else {
         mining.target = None;
         mining.progress = 0.0;
         mining.elapsed = Duration::ZERO;
@@ -181,11 +162,10 @@ fn mine(
     }
     let needed = Duration::from_secs_f32(seconds);
     if mining.elapsed + TOLERANCE >= needed {
-        let mut carrier = carrier.map(Single::into_inner);
         // In survival the block's item has to fit in the miner's
         // inventory, or it stays put.
         if let Some((inventory, mode)) = &mut carrier
-            && !harvest(**mode, inventory, &content, target.1)
+            && !harvest(**mode, inventory, content, target.1)
         {
             mining.progress = 1.0;
             return;
@@ -196,14 +176,14 @@ fn mine(
         // it, into the same inventory if it fits. (Otherwise `support`
         // breaks it, giving nothing.)
         let above = hit.block + IVec3::Y;
-        if let Some(plant) = unsupported(&content, &voxels, above) {
+        if let Some(plant) = unsupported(content, voxels, above) {
             if let Some((inventory, mode)) = &mut carrier {
-                harvest(**mode, inventory, &content, plant);
+                harvest(**mode, inventory, content, plant);
             }
             voxels.set(above, BlockState::AIR);
         }
-        *mining = Mining {
-            armed: true,
+        **mining = Mining {
+            holding: true,
             delay: BREAK_DELAY,
             ..default()
         };
@@ -234,17 +214,9 @@ mod tests {
     /// [`app`], with these blocks and this long a frame.
     fn app_with(content: Content, step: Duration) -> App {
         let mut app = chunk_app(content, step);
-        app.init_resource::<ButtonInput<MouseButton>>()
+        app.init_resource::<Held>()
             .add_observer(give_the_player_mining)
-            .add_systems(Update, (arm, mine).chain());
-        app.world_mut().spawn((
-            Window::default(),
-            CursorOptions {
-                grab_mode: CursorGrabMode::Locked,
-                ..default()
-            },
-            PrimaryWindow,
-        ));
+            .add_systems(Update, (hold_the_button, mine).chain());
         let mut chunk = Chunk::default();
         chunk.set(5, 1, 5, block("stone"));
         chunk.set(5, 1, 7, block("soil"));
@@ -273,17 +245,26 @@ mod tests {
         *miners.single(app.world()).unwrap()
     }
 
-    fn mouse(app: &mut App) -> Mut<'_, ButtonInput<MouseButton>> {
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>()
+    /// Whether the player holds the break button, as input would say.
+    #[derive(Resource, Default)]
+    struct Held(bool);
+
+    fn hold_the_button(held: Res<Held>, mut miners: Query<&mut Mining>) {
+        for mut mining in &mut miners {
+            mining.holding = held.0;
+        }
     }
 
-    /// Runs a frame, with the button just pressed on it if `press`.
+    fn release(app: &mut App) {
+        app.world_mut().resource_mut::<Held>().0 = false;
+    }
+
+    /// Runs a frame, with the button pressed on it if `press`.
     fn frame(app: &mut App, press: bool) {
         if press {
-            mouse(app).press(MouseButton::Left);
+            app.world_mut().resource_mut::<Held>().0 = true;
         }
         app.update();
-        mouse(app).clear();
     }
 
     /// Frames, after the one the button goes down on, that a block of this
@@ -360,7 +341,7 @@ mod tests {
         for _ in 1..frames {
             frame(&mut app, false);
         }
-        mouse(&mut app).release(MouseButton::Left);
+        release(&mut app);
         frame(&mut app, false);
         assert_eq!(mining(&mut app), Mining::default());
         // Pressing again needs the whole time again.
@@ -500,35 +481,6 @@ mod tests {
         }
         frame(&mut app, false);
         assert_eq!(mining(&mut app).target, Some((next, block("stone"))));
-    }
-
-    /// A press made while the cursor is free (the click that locks it)
-    /// mines nothing, however long it's held.
-    #[test]
-    fn the_locking_click_mines_nothing() {
-        let mut app = app();
-        let mut cursors = app.world_mut().query::<&mut CursorOptions>();
-        cursors.single_mut(app.world_mut()).unwrap().grab_mode = CursorGrabMode::None;
-        frame(&mut app, true);
-        let mut cursors = app.world_mut().query::<&mut CursorOptions>();
-        cursors.single_mut(app.world_mut()).unwrap().grab_mode = CursorGrabMode::Locked;
-        for _ in 0..frames_to_break(block("stone")) * 2 {
-            frame(&mut app, false);
-        }
-        assert_eq!(mining(&mut app), Mining::default());
-        assert_eq!(at(&mut app, IVec3::new(5, 1, 5)), block("stone"));
-    }
-
-    /// Opening a screen mid-mine starts over.
-    #[test]
-    fn opening_a_screen_starts_over() {
-        let mut app = app();
-        frame(&mut app, true);
-        frame(&mut app, false);
-        assert!(mining(&mut app).progress > 0.0);
-        app.world_mut().spawn(UiScreen);
-        frame(&mut app, false);
-        assert_eq!(mining(&mut app), Mining::default());
     }
 
     /// Mining the grass under a flower in survival gives the flower too;

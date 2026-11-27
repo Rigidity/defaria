@@ -27,9 +27,11 @@ use crate::{
     block_edit::BlockEditSystems,
     block_entity::{BlockEntities, BlockEntity, BlockEntityPart, Value},
     content::{BlockState, Content, Direction},
-    meshing::RemeshChunks,
     mining::MiningSystems,
-    world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged, Voxels},
+    world::{
+        CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, RemeshChunks, VoxelChanged,
+        Voxels,
+    },
 };
 
 pub struct ConnectionsPlugin;

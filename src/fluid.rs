@@ -45,14 +45,11 @@
 
 pub mod evaporation;
 pub mod flow;
-pub mod scroll;
 
 use bevy::{ecs::system::SystemParam, prelude::*};
 
 use crate::{
     content::{BlockState, Content, Fluid},
-    fly_camera::EyeView,
-    fog::{self, FogSystems},
     world::{
         CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, FluidChanged, FluidTop, VoxelChanged, VoxelFluid,
         Voxels, fluid_surface,
@@ -64,8 +61,7 @@ pub struct FluidPlugin;
 
 impl Plugin for FluidPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(scroll::ScrollPlugin)
-            .init_resource::<FluidSettings>()
+        app.init_resource::<FluidSettings>()
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .init_resource::<evaporation::Films>()
@@ -81,8 +77,7 @@ impl Plugin for FluidPlugin {
                 )
                     .chain(),
             )
-            .add_systems(FixedUpdate, (run_flow, evaporation::evaporate).chain())
-            .add_systems(PostUpdate, fog_inside_fluid.after(FogSystems));
+            .add_systems(FixedUpdate, (run_flow, evaporation::evaporate).chain());
     }
 }
 
@@ -388,23 +383,6 @@ fn fluid_displaced(
     deleted
 }
 
-/// With the eyes inside a fluid, the fog is the fluid's: its color, from
-/// right at the eyes out to its `view.distance`, in place of the fog at the
-/// edge of the world.
-fn fog_inside_fluid(
-    fluids: FluidView,
-    mut views: Query<(&GlobalTransform, &mut DistanceFog), With<EyeView>>,
-) {
-    for (transform, mut fog) in &mut views {
-        let inside = fluids.fluid_at(transform.translation());
-        let Some(fluid) = inside.and_then(|kind| fluids.fluid(kind)) else {
-            continue;
-        };
-        fog.color = fluid.view_color;
-        fog.falloff = fog::falloff_between(0.0, fluid.view_distance);
-    }
-}
-
 /// Wakes the fluid that might move in each chunk that's just loaded, and
 /// along the faces of the loaded chunks next to it, which couldn't flow
 /// into it while it wasn't loaded.
@@ -656,40 +634,6 @@ mod tests {
         run(&mut app, 0.5);
         let stats = app.world().resource::<FluidStats>();
         assert_eq!((stats.active, stats.stepped), (0, 0));
-    }
-
-    /// With the eyes under a fluid's surface, the fog is the fluid's; above
-    /// it, or in a voxel's empty top, it's left alone.
-    #[test]
-    fn the_fog_inside_fluid_is_the_fluids() {
-        let mut app = app();
-        app.add_systems(Update, fog_inside_fluid);
-        let mut chunk = Chunk::default();
-        let half = VoxelFluid::of(block("water"), FULL_FLUID / 2);
-        chunk.set_fluid_at(IVec3::splat(4), half, FULL_FLUID);
-        insert_chunk(&mut app, IVec3::ZERO, chunk);
-        let fog_at = |app: &mut App, y: f32| {
-            let eye = app
-                .world_mut()
-                .spawn((
-                    EyeView,
-                    GlobalTransform::from_translation(Vec3::new(4.5, y, 4.5)),
-                    DistanceFog::default(),
-                ))
-                .id();
-            app.update();
-            let fog = app.world().get::<DistanceFog>(eye).unwrap().clone();
-            app.world_mut().despawn(eye);
-            (fog.color, fog.falloff)
-        };
-        let water = base().state(block("water")).fluid.clone().unwrap();
-        assert_eq!(fog_at(&mut app, 4.25).0, water.view_color);
-        assert_eq!(
-            format!("{:?}", fog_at(&mut app, 4.25).1),
-            format!("{:?}", fog::falloff_between(0.0, water.view_distance))
-        );
-        assert_eq!(fog_at(&mut app, 4.75).0, DistanceFog::default().color);
-        assert_eq!(fog_at(&mut app, 3.5).0, DistanceFog::default().color);
     }
 
     /// A chunk that loads with fluid in mid-flow, as saved during a flood,

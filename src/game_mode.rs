@@ -13,7 +13,8 @@
 //! The mode is a component of the player ([`GameMode`]), saved with them;
 //! anything without one plays as in creative, the default. The rules for
 //! using items up are [`harvest`] and [`use_up`].
-//! C switches it while playing. New players start in creative.
+//! C switches it while playing (`input::game_mode`). New players start in
+//! creative.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -21,24 +22,20 @@ use serde::{Deserialize, Serialize};
 use crate::{
     content::{BlockState, Content, ItemState},
     inventory::{Inventory, ItemStack, player::PLAYER_MAX_WEIGHT},
-    player::LocalPlayer,
-    ui::{playing, typing},
 };
 
 pub struct GameModePlugin;
 
 impl Plugin for GameModePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<GameMode>().add_systems(
-            Update,
-            (
-                switch_mode.run_if(playing).run_if(not(typing)),
-                limit_weight,
-            )
-                .chain(),
-        );
+        app.register_type::<GameMode>()
+            .add_systems(Update, limit_weight.in_set(GameModeSystems));
     }
 }
+
+/// Where a player's game mode takes effect; what switches it runs before.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GameModeSystems;
 
 /// Whether items are used up (survival) or not (creative).
 #[derive(
@@ -55,22 +52,6 @@ pub enum GameMode {
 impl GameMode {
     pub fn is_creative(self) -> bool {
         self == Self::Creative
-    }
-}
-
-/// C switches between creative and survival.
-fn switch_mode(
-    keys: Res<ButtonInput<KeyCode>>,
-    player: Option<Single<&mut GameMode, With<LocalPlayer>>>,
-) {
-    if keys.just_pressed(KeyCode::KeyC)
-        && let Some(mut mode) = player
-    {
-        **mode = match **mode {
-            GameMode::Creative => GameMode::Survival,
-            GameMode::Survival => GameMode::Creative,
-        };
-        info!("game mode: {:?}", **mode);
     }
 }
 
@@ -148,6 +129,7 @@ pub fn harvest(
 mod tests {
     use super::*;
     use crate::content::{base, block};
+    use crate::player::LocalPlayer;
 
     #[test]
     fn blocks_break_into_their_items() {
@@ -303,7 +285,7 @@ mod tests {
     fn survival_needs_the_item_to_place() {
         use crate::{
             headless::{Script, run_more, settle, test_game},
-            hotbar::HotbarSlot,
+            hotbar_ui::HotbarSlot,
             ui::ItemSlot,
         };
         let script = Script::parse("camera 40.5 123 40.5 0 -90\nwait 2").unwrap();

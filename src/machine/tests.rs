@@ -58,7 +58,7 @@ fn app(folder: Option<&Path>) -> App {
             BlockEntityPlugin,
             ConnectionsPlugin,
             NetworkCorePlugin,
-            MachineCorePlugin,
+            MachinePlugin,
         ))
         .folder(folder)
         .build()

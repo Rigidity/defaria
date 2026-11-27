@@ -13,7 +13,11 @@ use bevy::{picking::hover::Hovered, prelude::*};
 
 use super::fluid::{fluid_color, fluid_name, format_fluid};
 use super::{ItemIcon, Tooltip, UiTheme, UiWidgetSystems, icon::show_icons};
-use crate::content::{BlockState, Content, ItemState};
+use crate::{
+    content::{BlockState, Content, ItemState},
+    fluid_container,
+    inventory::{Inventory, ItemStack},
+};
 
 pub struct SlotPlugin;
 
@@ -294,6 +298,48 @@ fn style_slots(
         };
         border.set_if_neq(BorderColor::all(color));
     }
+}
+
+/// What a slot showing `stack` shows of its fluid: `None` if it isn't a
+/// fluid container.
+pub fn slot_fluid(content: &Content, stack: &ItemStack) -> Option<SlotFluid> {
+    let capacity = fluid_container::capacity(content, stack.item)?;
+    let held = stack.data.fluid.as_ref();
+    Some(SlotFluid {
+        fluid: held.and_then(|held| content.default_state(&held.fluid)),
+        amount: held.map_or(0, |held| held.amount),
+        capacity,
+    })
+}
+
+/// What a hotbar slot naming the container `item` shows of its fluid: all
+/// the inventory's containers of it together, how much they hold of how
+/// much they could, in the color of the first fluid among them. `None` if
+/// it isn't a fluid container.
+pub fn hotbar_fluid(
+    content: &Content,
+    inventory: &Inventory,
+    item: ItemState,
+) -> Option<SlotFluid> {
+    let capacity = fluid_container::capacity(content, item)?;
+    let mine = inventory
+        .entries()
+        .iter()
+        .filter(|stack| stack.item == item);
+    let mut shown = SlotFluid::default();
+    for stack in mine {
+        let count = stack.count as u64;
+        shown.capacity = shown
+            .capacity
+            .saturating_add(capacity.saturating_mul(count));
+        if let Some(held) = &stack.data.fluid {
+            shown.amount = shown
+                .amount
+                .saturating_add(held.amount.saturating_mul(count));
+            shown.fluid = shown.fluid.or_else(|| content.default_state(&held.fluid));
+        }
+    }
+    Some(shown)
 }
 
 #[cfg(test)]

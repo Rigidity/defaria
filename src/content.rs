@@ -30,6 +30,7 @@ mod combine;
 mod connect;
 pub mod load;
 mod machine;
+pub mod palette;
 mod place;
 mod reaction;
 mod recipe;
@@ -41,7 +42,6 @@ use std::{collections::BTreeMap, ops::Range, path::Path};
 
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
 
-use crate::block_texture::Palette;
 pub use bake::MAX_TILES;
 pub use combine::{COMBINED, PART_SEPARATOR};
 pub use connect::{Connections, Joins, Rule, SIDE_VALUES};
@@ -49,6 +49,7 @@ pub use machine::{
     Emits, EnergySpec, FACING, ItemFilter, MAX_SLOTS, Machine, MachinePort, MachineRecipes,
     SlotGroupSpec, TankSpec, resolve_face,
 };
+use palette::Palette;
 pub use place::Placement;
 pub use reaction::Reaction;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};

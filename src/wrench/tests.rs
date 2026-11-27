@@ -432,7 +432,7 @@ fn run_game(script: &str) -> (Option<BlockedFaces>, bool) {
             assert_eq!(exit, AppExit::Success);
             let mut screens = app
                 .world_mut()
-                .query::<&crate::machine::screen::MachineScreen>();
+                .query::<&crate::machine_screen::MachineScreen>();
             let open = screens.iter(app.world()).count() > 0;
             return (faces(&app, IVec3::new(52, 20, 49)), open);
         }

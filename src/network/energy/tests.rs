@@ -11,7 +11,7 @@ use crate::{
     block_entity::{BlockEntities, BlockEntityPlugin},
     connections::ConnectionsPlugin,
     content::{base, block},
-    machine::MachineCorePlugin,
+    machine::MachinePlugin,
     network::{NetworkClock, NetworkCorePlugin},
     testing::{chunk_app, insert_chunk, unload_chunk},
     world::{Chunk, Voxels},
@@ -202,7 +202,7 @@ fn app() -> App {
         ConnectionsPlugin,
         NetworkCorePlugin,
         BlockEntityPlugin,
-        MachineCorePlugin,
+        MachinePlugin,
         EnergyPlugin,
     ));
     insert_chunk(&mut app, IVec3::ZERO, Chunk::default());

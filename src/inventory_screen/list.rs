@@ -12,11 +12,12 @@
 
 use bevy::prelude::*;
 
-use super::{Inventory, ItemStack, model::ItemData, search::ItemQuery};
+use super::search::ItemQuery;
+use crate::inventory::{Inventory, ItemStack, model::ItemData};
 use crate::{
     content::{Content, ItemState},
-    fluid_container::slot_fluid,
     player::LocalPlayer,
+    ui::slot::slot_fluid,
     ui::{ItemSlot, UiTheme, item_slot, scroll_panel},
 };
 

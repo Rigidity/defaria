@@ -17,14 +17,14 @@
 use bevy::prelude::*;
 
 use super::{
-    Inventory,
     list::{ItemList, ListSource, ListSystems, Owner, item_list},
     search::SearchBox,
 };
+use crate::inventory::Inventory;
 use crate::{
     content::Content,
     game_mode::GameMode,
-    hotbar::hotbar_height,
+    hotbar_ui::hotbar_height,
     player::LocalPlayer,
     ui::{UiScreen, UiTheme, text_field, typing},
 };
@@ -234,11 +234,12 @@ mod tests {
     use crate::{
         content::ItemState,
         headless::{Script, run_more, settle, test_game},
-        hotbar::{ActiveSlot, Hotbar, HotbarSlot},
-        inventory::{
+        hotbar::{ActiveSlot, Hotbar},
+        hotbar_ui::HotbarSlot,
+        inventory::player::STARTING_COUNT,
+        inventory_screen::{
             gesture::{CATALOG_BATCH, CATALOG_HALF},
             list::{ItemList, ListEntry},
-            player::STARTING_COUNT,
         },
         player::Player,
     };
@@ -714,8 +715,8 @@ mod tests {
     /// What the player's list should show, from the model.
     fn expected(app: &mut App) -> Vec<String> {
         let content = app.world().resource::<Content>().clone();
-        let entries = crate::inventory::list::sorted_entries(&inventory(app));
-        crate::inventory::list::sections(&content, entries)
+        let entries = crate::inventory_screen::list::sorted_entries(&inventory(app));
+        crate::inventory_screen::list::sections(&content, entries)
             .into_iter()
             .flat_map(|section| {
                 let heading = section.category.map_or("Other".to_owned(), |index| {
@@ -786,7 +787,8 @@ mod tests {
         let mut app = open_inventory();
         let mut headings = app
             .world_mut()
-            .query_filtered::<(&Text, &ChildOf), With<crate::inventory::list::ListHeading>>();
+            .query_filtered::<(&Text, &ChildOf), With<crate::inventory_screen::list::ListHeading>>(
+            );
         let found: Vec<(String, Entity)> = headings
             .iter(app.world())
             .map(|(text, parent)| (text.0.clone(), parent.parent()))
@@ -832,7 +834,7 @@ mod tests {
     fn heading_texts(app: &mut App) -> Vec<String> {
         let mut headings = app
             .world_mut()
-            .query_filtered::<&Text, With<crate::inventory::list::ListHeading>>();
+            .query_filtered::<&Text, With<crate::inventory_screen::list::ListHeading>>();
         headings
             .iter(app.world())
             .map(|text| text.0.clone())

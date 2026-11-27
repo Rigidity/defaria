@@ -55,11 +55,11 @@ use crate::{
     block_entity::{BlockEntityChanged, BlockEntitySystems, ChunkSaver},
     content::Content,
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
-    meshing::{AwaitingNeighbours, MeshTask, Meshed, RemeshChunks},
     player::{EYE_HEIGHT, LocalPlayer},
     save::{self, WorldFolder, WorldStore, region},
     world::{
-        Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, spawn_chunk,
+        AwaitingNeighbours, Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated,
+        RemeshChunks, VoxelChanged, spawn_chunk,
     },
     worldgen::{Terrain, TerrainBlocks, TerrainSettings},
 };
@@ -95,7 +95,7 @@ impl Plugin for StreamingPlugin {
                     .after(RemeshChunks)
                     .after(BlockEntitySystems),
             )
-            .add_systems(PostUpdate, update_status)
+            .add_systems(PostUpdate, update_status.in_set(StreamingStatusSystems))
             .init_schedule(SaveOnExit)
             .add_systems(
                 SaveOnExit,
@@ -265,8 +265,10 @@ pub struct WorldSource {
     pub sky: Sky,
 }
 
-/// Whether everything the loaders want is loaded and meshed, and what
-/// they don't want (past the margin) unloaded.
+/// Whether everything the loaders want is loaded (and drawn, where the
+/// chunks are drawn: drawing unsettles it after [`StreamingStatusSystems`]
+/// while chunks wait for their meshes), and what they don't want (past
+/// the margin) unloaded.
 #[derive(Resource, Reflect, Debug, Clone, Default)]
 #[reflect(Resource)]
 pub struct StreamingStatus {
@@ -706,22 +708,20 @@ fn save_on_exit(
     info!("saved the world ({written} regions written)");
 }
 
-/// Blocks until every chunk load and mesh build started so far has
-/// finished, so the next update picks them all up, as if the background
-/// threads always kept up. For tests whose answer shouldn't depend on how
-/// fast the machine is.
+/// Blocks until every chunk load started so far has finished, so the
+/// next update picks them all up, as if the background threads always
+/// kept up. For tests whose answer shouldn't depend on how fast the
+/// machine is.
 #[cfg(test)]
-pub fn finish_background_work(world: &mut World) {
+pub fn finish_loads(world: &mut World) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    let mut meshes = world.query::<&MeshTask>();
     loop {
         let loads_done = world
             .resource::<Chunks>()
             .loading
             .values()
             .all(Task::is_finished);
-        let meshes_done = meshes.iter(world).all(MeshTask::is_finished);
-        if loads_done && meshes_done {
+        if loads_done {
             return;
         }
         assert!(
@@ -732,21 +732,18 @@ pub fn finish_background_work(world: &mut World) {
     }
 }
 
+/// Where [`StreamingStatus`] is worked out, in `PostUpdate`.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StreamingStatusSystems;
+
 /// Works out [`StreamingStatus`].
-fn update_status(
-    chunks: Res<Chunks>,
-    tasks: Query<(), With<MeshTask>>,
-    unmeshed: Query<(), (With<Chunk>, Without<Meshed>, Without<AwaitingNeighbours>)>,
-    mut status: ResMut<StreamingStatus>,
-) {
+fn update_status(chunks: Res<Chunks>, mut status: ResMut<StreamingStatus>) {
     status.loaded_chunks = chunks.loaded.len();
     status.settled = chunks.queue.is_empty()
         && chunks.waiting_to_unload == 0
         && chunks.loading.is_empty()
         && chunks.ready.is_empty()
-        && !chunks.centers.is_empty()
-        && tasks.is_empty()
-        && unmeshed.is_empty();
+        && !chunks.centers.is_empty();
 }
 
 #[cfg(test)]
@@ -856,22 +853,22 @@ mod tests {
         assert!(loaded(&deep).contains(&IVec3::new(0, -6250, 0)));
     }
 
-    /// Only chunks with all 26 chunks around them loaded are meshed.
+    /// Only chunks with all 26 chunks around them loaded are ready to
+    /// draw; the rest await their neighbours.
     #[test]
     fn the_edge_waits_for_its_neighbours() {
         let mut app = app(None, Vec3::new(8.0, 40.0, 8.0));
         let all = cylinder(IVec3::new(0, 2, 0), 0);
         let mut chunks = app
             .world_mut()
-            .query::<(&ChunkCoord, Has<Meshed>, Has<AwaitingNeighbours>)>();
-        let mut meshed = 0;
-        for (coord, has_mesh, awaiting) in chunks.iter(app.world()) {
+            .query::<(&ChunkCoord, Has<AwaitingNeighbours>)>();
+        let mut ready = 0;
+        for (coord, awaiting) in chunks.iter(app.world()) {
             let inner = around(coord.0).all(|c| all.contains(&c));
-            assert_eq!(has_mesh, inner, "{coord:?}");
             assert_eq!(awaiting, !inner, "{coord:?}");
-            meshed += has_mesh as usize;
+            ready += !awaiting as usize;
         }
-        assert!(meshed > 0);
+        assert!(ready > 0);
     }
 
     /// Moving away unloads what's out of reach (past the margin) and loads

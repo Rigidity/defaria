@@ -8,7 +8,7 @@ use crate::{
     connections::ConnectionsPlugin,
     content::{BlockState, Content, Direction, FULL_FLUID, PortRole, base},
     fluid::FluidPlugin,
-    machine::{MachineCorePlugin, Tank, Tanks},
+    machine::{MachinePlugin, Tank, Tanks},
     network::{
         NetworkChanged, NetworkClock, NetworkCorePlugin, NetworkId, NetworkMap, NetworkState,
         Networks, Share, TICKS_PER_SECOND, energy::EnergyPlugin,
@@ -233,7 +233,7 @@ fn app_with(content: Content, folder: Option<&Path>) -> App {
             BlockEntityPlugin,
             ConnectionsPlugin,
             NetworkCorePlugin,
-            MachineCorePlugin,
+            MachinePlugin,
             EnergyPlugin,
             FluidPlugin,
             FluidNetworkPlugin,

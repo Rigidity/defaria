@@ -28,6 +28,7 @@ use std::f32::consts::SQRT_2;
 use bevy::{pbr::FogFalloff, prelude::*};
 
 use crate::{
+    fluid::FluidView,
     fly_camera::EyeView,
     meshing::Meshed,
     streaming::StreamingSettings,
@@ -67,7 +68,8 @@ impl Plugin for FogPlugin {
                 .chain()
                 .in_set(FogSystems)
                 .after(TransformSystems::Propagate),
-        );
+        )
+        .add_systems(PostUpdate, fog_inside_fluid.after(FogSystems));
     }
 }
 
@@ -286,6 +288,23 @@ fn apply_fog(
     }
 }
 
+/// With the eyes inside a fluid, the fog is the fluid's: its color, from
+/// right at the eyes out to its `view.distance`, in place of the fog at the
+/// edge of the world.
+fn fog_inside_fluid(
+    fluids: FluidView,
+    mut views: Query<(&GlobalTransform, &mut DistanceFog), With<EyeView>>,
+) {
+    for (transform, mut fog) in &mut views {
+        let inside = fluids.fluid_at(transform.translation());
+        let Some(fluid) = inside.and_then(|kind| fluids.fluid(kind)) else {
+            continue;
+        };
+        fog.color = fluid.view_color;
+        fog.falloff = falloff_between(0.0, fluid.view_distance);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -293,7 +312,11 @@ mod tests {
     use bevy::{platform::collections::HashSet, time::TimeUpdateStrategy};
 
     use super::*;
-    use crate::testing::insert_chunk;
+    use crate::{
+        content::{FULL_FLUID, base, block},
+        testing::insert_chunk,
+        world::{Chunk, VoxelFluid},
+    };
 
     fn settings() -> StreamingSettings {
         StreamingSettings {
@@ -451,6 +474,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin))
             .insert_resource(settings)
+            .insert_resource(base().clone())
             .init_resource::<ChunkMap>()
             .insert_resource(ClearColor(Color::srgb(0.1, 0.2, 0.3)))
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -604,5 +628,39 @@ mod tests {
         };
         assert_eq!(extinction, Vec3::splat(8.0));
         assert_eq!(inscattering.x, 0.25);
+    }
+
+    /// With the eyes under a fluid's surface, the fog is the fluid's; above
+    /// it, or in a voxel's empty top, it's left alone.
+    #[test]
+    fn the_fog_inside_fluid_is_the_fluids() {
+        let mut app = crate::testing::chunk_app(base().clone(), Duration::from_millis(50));
+        app.add_systems(Update, fog_inside_fluid);
+        let mut chunk = Chunk::default();
+        let half = VoxelFluid::of(block("water"), FULL_FLUID / 2);
+        chunk.set_fluid_at(IVec3::splat(4), half, FULL_FLUID);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        let fog_at = |app: &mut App, y: f32| {
+            let eye = app
+                .world_mut()
+                .spawn((
+                    EyeView,
+                    GlobalTransform::from_translation(Vec3::new(4.5, y, 4.5)),
+                    DistanceFog::default(),
+                ))
+                .id();
+            app.update();
+            let fog = app.world().get::<DistanceFog>(eye).unwrap().clone();
+            app.world_mut().despawn(eye);
+            (fog.color, fog.falloff)
+        };
+        let water = base().state(block("water")).fluid.clone().unwrap();
+        assert_eq!(fog_at(&mut app, 4.25).0, water.view_color);
+        assert_eq!(
+            format!("{:?}", fog_at(&mut app, 4.25).1),
+            format!("{:?}", falloff_between(0.0, water.view_distance))
+        );
+        assert_eq!(fog_at(&mut app, 4.75).0, DistanceFog::default().color);
+        assert_eq!(fog_at(&mut app, 3.5).0, DistanceFog::default().color);
     }
 }

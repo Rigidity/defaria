@@ -53,11 +53,10 @@ use bevy::{platform::collections::HashSet, prelude::*};
 pub use crate::content::MAX_LIGHT;
 use crate::{
     content::{BlockState, Content},
-    meshing::{RemeshChunks, remesh_changed_chunks},
-    world::ChunkArray,
     world::{
         Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, VoxelFluid,
     },
+    world::{ChunkArray, RemeshChunks},
 };
 pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone, part_full_dim};
 use sky::Sky;
@@ -80,11 +79,16 @@ impl Plugin for LightPlugin {
                 Update,
                 (queue_loaded_chunks, queue_changed_voxels, propagate_light)
                     .chain()
-                    .in_set(RemeshChunks)
-                    .before(remesh_changed_chunks),
+                    .in_set(LightSystems)
+                    .in_set(RemeshChunks),
             );
     }
 }
+
+/// Where changed chunks are relit, in [`RemeshChunks`]; drawing them
+/// comes after.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LightSystems;
 
 /// The colour of sky light at full strength. One colour for the whole world.
 #[derive(Resource, Reflect, Debug, Clone, Copy)]

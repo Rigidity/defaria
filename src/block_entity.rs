@@ -42,8 +42,7 @@ use bevy::{
 
 use crate::{
     content::{BlockState, Content},
-    meshing::RemeshChunks,
-    world::{Chunk, ChunkCoord, ChunkMap, VoxelChanged},
+    world::{Chunk, ChunkCoord, ChunkMap, RemeshChunks, VoxelChanged},
 };
 
 mod value;

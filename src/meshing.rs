@@ -35,47 +35,45 @@ use bevy::{
 
 use crate::{
     content::Content,
-    light::ChunkLight,
+    light::{ChunkLight, LightSystems},
     perlin::splitmix64,
     player::{Eyes, LocalPlayer},
+    streaming::{StreamingStatus, StreamingStatusSystems},
     voxel_material::{BlockMaterial, VoxelMaterial},
     world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap},
 };
 
 mod build;
+pub mod scroll;
 
+pub use crate::world::{AwaitingNeighbours, RemeshChunks};
+pub use build::BACK_FACE;
 pub use build::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_FLOW, ATTRIBUTE_LIGHT};
-pub use build::{BACK_FACE, MARGIN};
 use build::{ChunkMeshes, Neighborhood, TranslucentFaces};
 
 pub struct MeshingPlugin;
 
 impl Plugin for MeshingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, set_sky_color).add_systems(
-            Update,
-            (
-                remesh_changed_chunks,
-                apply_finished_meshes,
-                sort_translucent_faces,
+        app.add_plugins(scroll::ScrollPlugin)
+            .add_systems(Startup, set_sky_color)
+            .add_systems(
+                PostUpdate,
+                unsettle_while_meshing.after(StreamingStatusSystems),
             )
-                .chain()
-                .in_set(RemeshChunks),
-        );
+            .add_systems(
+                Update,
+                (
+                    remesh_changed_chunks,
+                    apply_finished_meshes,
+                    sort_translucent_faces,
+                )
+                    .chain()
+                    .in_set(RemeshChunks)
+                    .after(LightSystems),
+            );
     }
 }
-
-/// Where changed chunks are relit and remeshed. Systems that edit chunks
-/// run before it, so their edits show on the same frame.
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RemeshChunks;
-
-/// A chunk that isn't meshed yet because a chunk around it isn't loaded.
-/// Whatever loads the chunks takes it off once they are, and the chunk is
-/// meshed then. Chunks without it are meshed as soon as they spawn.
-#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
-#[reflect(Component)]
-pub struct AwaitingNeighbours;
 
 /// A chunk that's been meshed at least once (it may have no mesh, if
 /// nothing in it shows).
@@ -381,6 +379,21 @@ fn sort_translucent_faces(
     }
 }
 
+/// Streaming isn't settled while a chunk that can be drawn hasn't been.
+fn unsettle_while_meshing(
+    tasks: Query<(), With<MeshTask>>,
+    unmeshed: Query<(), (With<Chunk>, Without<Meshed>, Without<AwaitingNeighbours>)>,
+    // Absent where nothing streams, as in tests of meshing alone.
+    status: Option<ResMut<StreamingStatus>>,
+) {
+    if let Some(mut status) = status
+        && status.settled
+        && !(tasks.is_empty() && unmeshed.is_empty())
+    {
+        status.settled = false;
+    }
+}
+
 fn set_sky_color(mut commands: Commands) {
     commands.insert_resource(ClearColor(Color::srgb(0.53, 0.75, 0.95)));
 }
@@ -389,6 +402,20 @@ fn set_sky_color(mut commands: Commands) {
 #[cfg(test)]
 pub mod testing {
     use super::*;
+
+    /// Blocks until every mesh build started so far has finished, so the
+    /// next update picks them all up.
+    pub fn finish_mesh_tasks(world: &mut World) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut meshes = world.query::<&MeshTask>();
+        while !meshes.iter(world).all(MeshTask::is_finished) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "meshes never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
 
     /// Updates the app until no mesh is being built in the background.
     pub fn finish_meshing(app: &mut App) {
