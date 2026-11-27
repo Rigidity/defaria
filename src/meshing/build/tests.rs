@@ -1188,3 +1188,46 @@ fn translucent_faces_sort_back_to_front() {
         );
     }
 }
+
+/// A fluid's top is shaded by the light above it, lowered or not: water
+/// dims the light in its own voxel, so a top shaded from there would
+/// darken the moment the surface dropped a step below full. Under a solid
+/// block a lowered top falls back to its own voxel.
+#[test]
+fn a_lowered_top_is_shaded_from_above() {
+    // Sky 15 above the water, 13 in it, as water's light filter leaves it.
+    let light = |pos: IVec3| Light::new(if pos.y > A.y { 15 } else { 13 }, [0, 0, 0]);
+    let top_light = |amount: u16, above: &str| {
+        let mesh = Neighborhood::with_fluid(|pos| {
+            let block = if pos == A + IVec3::Y && above != "air" {
+                block(above)
+            } else {
+                BlockState::AIR
+            };
+            let fluid = (pos == A)
+                .then(|| VoxelFluid::of(self::block("water"), amount))
+                .flatten();
+            (block, light(pos), fluid)
+        })
+        .meshes(base())
+        .translucent;
+        let normals = vec3s(&mesh, Mesh::ATTRIBUTE_NORMAL);
+        let Some(VertexAttributeValues::Uint32x4(lights)) = mesh.attribute(ATTRIBUTE_LIGHT) else {
+            panic!("no light attribute");
+        };
+        let up = normals
+            .iter()
+            .position(|&n| n == Vec3::Y)
+            .expect("a top facing up");
+        lights[up].map(|corner| corner.to_le_bytes()[0])
+    };
+    let sky = |level: f32| [(level * LEVEL_STEP).round() as u8; 4];
+    assert_eq!(top_light(FULL_FLUID, "air"), sky(15.0), "full");
+    assert_eq!(
+        top_light(FULL_FLUID * 15 / 16, "air"),
+        sky(15.0),
+        "a step down"
+    );
+    assert_eq!(top_light(FULL_FLUID / 2, "air"), sky(15.0), "half");
+    assert_eq!(top_light(FULL_FLUID / 2, "stone"), sky(13.0), "under stone");
+}
