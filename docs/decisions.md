@@ -712,13 +712,13 @@ tank, so the block draws it with ordinary variants and textures.
 carries as much as a short one, and fluid crosses a network in a tick.
 Stores drain the pipes every tick, so pipes hold fluid only on the way
 through. Marking pumps and gauges by stat and property names is
-convention, not schema. A pump can drink from a whole sea, one voxel at
-a time, waking flow across it (no reservoir, #96).
+convention, not schema. A pump draws from a body's level when the body
+is a reservoir (see "a body of it is kept level as a reservoir"), so it
+can drink a lake dry without waking flow across it.
 
 **What should replace it.** Throughput falling with distance from the
 source, if networks feel too instant. Pump and outlet as a `machine`
-field, or scripts (#118, #122), once machines have behaviour in data. A
-pump drawing from a settled body's level as a reservoir (#96).
+field, or scripts (#118, #122), once machines have behaviour in data.
 
 ## Pipe contents are written into block entities just before their chunk is saved (2026-11-26)
 
@@ -1371,48 +1371,125 @@ unique item.
 **When to revisit.** With #87, with chests or machines, with dropped
 items, or with items that hold items or wear out.
 
-## Fluid flows a voxel at a time (2026-11-25)
+## Fluid flows a voxel at a time, and a body of it is kept level as a reservoir (2026-11-26)
 
 **Context.** Fluid is volumetric: each voxel holds an amount, and flow
 moves amounts between neighbouring voxels (`src/fluid/flow.rs`). Only
 active voxels step, so settled fluid is free. Each fixed tick visits at
 most `FluidSettings::cells_per_tick` (4096) of them, a fluid's step is
 spread evenly over the ticks until its next one, and the step's changes
-are made all at once when it's done.
+are made all at once when it's done. A voxel gives each lower side at
+most an eighth of the difference between them, so levels drift together
+rather than swinging back and forth. Sideways, that's diffusion: the time
+to even out grows with the square of the distance. A pond poured into a
+channel 40 long hadn't reached its end after 40 seconds, a sea breached
+into a cut filled 6% of it in 20, and the disturbance spread out across
+the sea in a cone, waking more of it every second until the budget capped
+it. #96 compared ways to make flow faster over distance without costing
+more.
 
-**Decision.** Keep flow local: a voxel only ever looks at the voxels
-near it, and gives each lower side at most an eighth of the difference
-between them, so levels drift together rather than swinging back and
-forth. Where an eighth rounds down to nothing, a single unit trickles if it
-can't overshoot, so a wide pool settles within a drawn height of flat
-rather than in a slope. A surface counts as level once neighbours are
-within the fluid's `ripple`.
+**Measured** (#96) on `scenarios/sea-breach.txt` (a cut 64 long, 31 wide
+and 12 deep opened onto the sea, 20 seconds), `scenarios/pond-channel.txt`
+(a 12 by 12 pond, 4 deep, opened into a channel 40 long and 2 wide, which
+holds about 205 blocks once level; 40 seconds) and
+`scenarios/fluid-flow.txt`, branch and base run back to back. `main`
+is the same build with reservoirs turned off (`reservoir_columns: 0`),
+which runs exactly the old flow; on the sea it matched a build of
+`main` itself (flow 2.3 s against 2.4 s, worst tick 7 ms against 9 ms).
+"Flow" is the wall-clock time flow itself took, all told
+(`FluidStats::millis`); frames are the whole frame, rendered.
 
-**What's wrong with it.** Sideways, local flow is diffusion. Measured in
-`scenarios/sea-breach.txt` (a cut 64 long, 31 wide and 12 deep opened onto
-the sea): the sea pours in slowly, its front creeping rather than
-rushing, and after 20 seconds the cut is still mostly dry. The sea around
-the breach drops in a shallow cone, and that disturbance keeps spreading
-out across the loaded sea: 1,000
-active voxels after one second, 3,900 after twenty, under a microsecond
-each. Frame times stay in budget (mean 3.2 to 3.8 ms, worst under 10 ms,
-against 2.5 to 3 ms with the same cut on `main`, where water doesn't
-flow), but a longer drain wakes more and more of the sea until the budget
-caps it, and then flow slows down. A settled sea costs nothing: flying
-over one is as fast as on `main`. Small scenes take a while to come to
-rest too: the last units trickle for up to half a minute after water
-poured down `scenarios/fluid-flow.txt`'s stairs has visibly stopped,
-though they cost little. Chunks whose fluid changed are remeshed
-on the frame it changes, with no cap of their own; measured floods didn't
-need one (see "Chunks that fluid changes are remeshed at once, uncapped").
+| sea-breach | in the cut at 1 s / 5 s / 20 s | active at 20 s | flow in all, worst tick | frames in the first 5 s, mean and worst | frames over 20 s |
+|---|---|---|---|---|---|
+| `main` | 361 / 717 / 1,364 blocks | 6,431 | 2.3 s, 7 ms | 4.6 ms, 11 ms | 5.4 ms, 13 ms |
+| reservoirs | 4,533 / 23,239 / 23,328 blocks: full, level with the sea | 0, settled 7 s after the breach | 1.4 s, 27 ms | 10.9 ms, 46 ms | 5.3 ms, 46 ms |
 
-**What should replace it.** Treat a settled, connected body of a fluid as
-one reservoir with a shared level: water leaving it lowers the whole
-surface evenly, without stepping each voxel. That also makes a dam break
-fast, and it's what pumps drawing from a lake or an oil pool will need
-(#96 looks at this and other ways to speed flow up). Films thinner than
-`film` stay on dry ground for good: see #97 (creeping toward a drop) and
-#98 (evaporation).
+| pond-channel | in the channel at 1 s / 40 s | settled | flow in all, worst tick |
+|---|---|---|---|
+| `main` | 6 / 66 blocks | no: 380 active at 40 s | 347 ms, 0.8 ms |
+| reservoirs | 114 / 204 blocks: full, level | 3.2 s after the gate opens | 9 ms, 0.3 ms |
+
+On `fluid-flow.txt` flow took 13 ms with reservoirs against 123 ms, and
+settled at the same time: what's left trickling there is the lava and the
+films, which no reservoir takes. Frame means with nothing moving differed
+by up to 2 ms between identical runs, so they don't tell the two apart.
+(The sea-breach totals drop by 424 blocks in every run: the cut's box
+takes in some of the shore's water.)
+
+So reservoirs do the same work for less in all, and finish it: the sea's
+cut fills in 5 seconds rather than not at all, and then nothing's left
+moving. What they cost is concentrated: while the sea pours in, the
+frames are twice as long on average, and a tick that levels or merges
+reservoirs of tens of thousands of columns takes up to 27 ms (#197).
+
+The ideas weighed: **a higher `rate`** buys little (water's `rate` at 40
+rather than 20, measured earlier against the same `main` on a busier
+machine: 20% more of the channel for 1.8 times the flow, and 5% more of
+the sea's cut, since the budget caps it), because diffusion's time grows with the square of the distance
+however fast each step is. **Cheaper steps** are the same trade: any
+saving buys a higher rate, which still diffuses. **Larger steps where it's
+calm** saves work only where nothing much changes, which reservoirs make
+free anyway. **Pressure or momentum** (a velocity per face) would make
+fronts travel at a speed rather than diffuse, but costs state per moving
+face and brings back sloshing, which is what the eighth was chosen to
+avoid. **Reservoirs** turn the distance problem into a level one: a
+connected body levels out in a step however big it is.
+
+**Decision.** Flow stays local, and a connected body of one fluid becomes
+a **reservoir** (`src/fluid/reservoir.rs`): columns, each an unbroken run
+of the fluid from a bottom resting on something solid up to its top,
+joined sideways where their runs overlap. Whatever a step would take out
+of or put into a member is pooled in the reservoir's balance instead, and
+after each step the reservoir is levelled: everything it holds is shared
+over its columns so the surface is flat, filling each from its bottom up
+(columns on shallow ground empty as the level drops; the level can rise a
+voxel above a column's top). Fluid that spreads onto a cell beside a
+column joins the reservoir as a column of its own, so a front pouring out
+of one is as high as the body behind it, and advances a voxel a step
+rather than diffusing. One is found from a voxel that's about to give
+fluid away, before the step moves anything, by walking up to 1,024
+columns; then it grows a column at a time as fluid beside it moves, up to
+`FluidSettings::reservoir_columns` (16,384), taking in the fluid around
+its rim each time it's levelled; past that, another one starts beside
+it. Reservoirs found touching (flow between their members) merge if they
+fit in one; if not, fluid moves between their balances to bring them to
+one level, so a sea of several reservoirs ends level. A block put in a
+reservoir, or beside one of its columns, drops it, since it may have cut
+the body in two; it forms again, as one or two, when its fluid next
+moves. Levelling the whole of one waits until its balance comes to a
+quarter of a drawn step a column (`LAZY`), and then writes only the
+columns that far off the level, so a big lake is written over every so
+often; joined and changed columns are filled to the level straight away.
+Falling fluid (with room under its run) and bodies of fewer than 16
+columns, or thinner than two films, are never reservoirs, and one spread
+thinner than a film is dropped: the last of it flows as before. **Pumps**
+draw from a reservoir's level (`fluid_network::world::draw`), lowering
+the whole surface, rather than draining the voxels near them and waking
+flow across a lake. Nothing is made or lost: the balance is counted in
+the totals (`fluids`) and paid out before chunks are saved; a reservoir
+reaching into a chunk that unloads is dropped, and forms again when it's
+needed.
+
+**What's wrong with it.** A reservoir levels through any opening at once:
+a lake joined to a basin by a one-voxel gap evens out as fast as by a
+wide one, as communicating vessels would at rest but not on the way (#196).
+A sea bigger than one reservoir becomes a patchwork of them, levelled
+against each other a pair at a time as they're found touching; evening
+out the sea after a big breach costs ticks of up to 27 ms, against 7 ms
+for `main`'s flow there (#197). Reservoirs aren't saved: one forms
+again the first time its fluid moves after loading. Its columns are
+looked up by `(x, z)`, so two bodies stacked in one column (a pond above a
+flooded cave) can't both have it (#198). An edit made where a reservoir won't hear of it
+until the next tick is safe but costs a write: levelling checks a
+column's cells before writing them, and reads it again if they changed. Films thinner than `film` stay on dry ground for good: see
+#97 (creeping toward a drop) and #98 (evaporation). Chunks whose fluid
+changed are remeshed on the frame it changes, with no cap of their own;
+measured floods didn't need one (see "Chunks that fluid changes are
+remeshed at once, uncapped").
+
+**What should replace it.** Limit what a reservoir moves through a
+narrow opening by its width, if gaps look too fast. Merge neighbouring
+reservoirs of a sea, or keep a level per chunk for bodies too big to walk.
 
 ## Placing a block pushes fluid aside, sideways first within a bounded reach (2026-11-26)
 

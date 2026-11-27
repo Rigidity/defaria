@@ -2,7 +2,8 @@
 # nothing; then a wide cut from the land down to the bottom of the sea,
 # which the sea pours into, lowering it a little. `timing`, `fluids` and
 # `inspect FluidStats` every second show the frame times, how much is
-# active, and that the water's total stays the same while nothing loads.
+# active, and that the water's total stays the same while nothing loads;
+# `fluids` on the cut's box how much has poured into it.
 # Run: cargo headless scenarios/sea-breach.txt
 camera 2866 50 70 0 -30
 settle
@@ -10,6 +11,7 @@ timing
 wait 120
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 fluids
 screenshot target/scenarios/sea-breach/0-before.png
 # `fluids` scans every chunk in the camera's window, so start timing
@@ -22,28 +24,41 @@ fill 2830 0 0 2893 60 30 air
 wait 60
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 screenshot target/scenarios/sea-breach/1-pouring.png
 wait 60
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 wait 60
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 wait 60
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 wait 60
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 screenshot target/scenarios/sea-breach/2-filling.png
 wait 300
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 wait 300
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 wait 300
 timing
 inspect FluidStats
+fluids 2830 0 0 2893 60 30
 fluids
 screenshot target/scenarios/sea-breach/3-later.png
+# Close to the cut: full, and level with the sea.
+wait 1
+camera 2862 40 40 0 -40
+wait 2
+screenshot target/scenarios/sea-breach/4-cut.png

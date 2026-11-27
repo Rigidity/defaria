@@ -15,6 +15,7 @@ use super::solver::units_this_tick;
 use crate::{
     block_entity::BlockEntity,
     content::{BlockState, Content, Direction, FULL_FLUID},
+    fluid::{FluidSim, VoxelCells, reservoir::Reservoirs},
     machine::Tanks,
     network::NetworkClock,
     world::Voxels,
@@ -45,11 +46,14 @@ pub fn front(content: &Content, state: BlockState) -> Option<Direction> {
 /// at `pos` (in front of the pump), and from the fluid reached from it
 /// through fluid and air, no higher than it, up to [`PUMP_REACH`] voxels
 /// and [`PUMP_DISTANCE`] away. It draws one fluid, the first it finds that
-/// the tank takes, from the front first, then from the top down. Returns
-/// how much it drew.
+/// the tank takes. From a calm body big enough to be a reservoir, it draws
+/// from the reservoir's level, lowering the whole surface evenly (see
+/// [`crate::fluid::reservoir`]); otherwise from the front first, then from
+/// the top down. Returns how much it drew.
 pub fn draw(
     voxels: &mut Voxels,
     content: &Content,
+    reservoirs: &mut Reservoirs,
     pos: IVec3,
     want: u64,
     tank: &mut crate::machine::Tank,
@@ -83,14 +87,23 @@ pub fn draw(
             }
         }
     }
-    let Some(kind) = reached.iter().find_map(|&at| {
+    let Some((first, kind)) = reached.iter().find_map(|&at| {
         let (_, fluid) = voxels.get_with_fluid(at)?;
         let kind = fluid?.kind;
-        tank.takes(&content.block_of(kind).id).then_some(kind)
+        tank.takes(&content.block_of(kind).id).then_some((at, kind))
     }) else {
         return 0;
     };
     let fluid = content.block_of(kind).id.clone();
+    if let Some(flow) = content.state(kind).fluid.as_ref() {
+        let cells = VoxelCells {
+            voxels: &*voxels,
+            content,
+        };
+        if let Some(drawn) = reservoirs.draw(&cells, flow, first, want) {
+            return tank.fill(&fluid, drawn);
+        }
+    }
     // The front first, then from the top down, so a pond drains as it
     // would: its surface falls.
     reached[1..].sort_by_key(|p| (-p.y, (*p - pos).abs().element_sum()));
@@ -170,6 +183,7 @@ pub(super) fn run_pumps_and_outlets(
     content: Res<Content>,
     mut machines: Query<(&BlockEntity, &mut Tanks)>,
     mut voxels: Voxels,
+    mut sim: ResMut<FluidSim>,
 ) {
     for (block, mut tanks) in &mut machines {
         let Some(state) = voxels.get(block.pos) else {
@@ -190,7 +204,14 @@ pub(super) fn run_pumps_and_outlets(
         let target = block.pos + side.normal();
         if let Some(rate) = pump {
             let want = units_this_tick(&clock, rate as f64);
-            draw(&mut voxels, &content, target, want, &mut tank);
+            draw(
+                &mut voxels,
+                &content,
+                &mut sim.sim.reservoirs,
+                target,
+                want,
+                &mut tank,
+            );
         }
         if let Some(rate) = outlet {
             let want = units_this_tick(&clock, rate as f64);

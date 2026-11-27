@@ -397,6 +397,17 @@ pub(super) fn fluid_report(world: &mut World, region: FluidRegion) -> String {
             line += &format!(" (world {here}, pipes {pipes}, machines {machines})");
         }
     }
+    // What reservoirs have pooled and not yet written into their voxels,
+    // in the whole world: it isn't kept by voxel, so no region has it.
+    let content = world.resource::<Content>();
+    if let Some(sim) = world.get_resource::<crate::fluid::FluidSim>() {
+        for (state, amount) in sim.sim.reservoirs.pooled() {
+            if amount != 0 {
+                let name = &content.blocks[content.state(state).block].id;
+                line += &format!(", {name} pooled {amount}");
+            }
+        }
+    }
     line
 }
 
