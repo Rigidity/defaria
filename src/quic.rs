@@ -10,14 +10,19 @@
 //! Then:
 //!
 //! - chunks, their changes and drops, and whether the client's settled go
-//!   on a stream of their own from the server ([`bulk`]), so a burst of
-//!   chunks never holds up anything else;
+//!   on a stream of their own from the server ([`bulk`]), so a lost
+//!   packet of chunks doesn't hold up the rest;
 //! - a client's pose goes as a datagram: unreliable, the newest is all
 //!   that matters;
 //! - everything else goes on the control stream, in order.
 //!
 //! On a stream, each message is a frame: its length, a flag byte (whether
 //! it's compressed: big ones, chunks mostly, are deflated) and its bytes.
+//!
+//! A connection says something every few seconds while it's quiet, so it
+//! isn't timed out; a server takes only small frames from clients, and a
+//! tiny hello within a few seconds; and either end finishes writing before
+//! it closes. A stopping server closes every connection.
 //!
 //! The server's certificate is made afresh each time it starts, and the
 //! client accepts any: who the server is, and remembering it, is #216.
@@ -29,6 +34,8 @@ use std::{
     thread,
     time::Duration,
 };
+
+use smol::future::FutureExt as _;
 
 use bevy::prelude::*;
 use defaria_core::net::{
@@ -52,8 +59,19 @@ const ALPN: &[u8] = b"defaria/1";
 const SERVER_NAME: &str = "defaria";
 /// Frames bigger than this are deflated.
 const COMPRESS_OVER: usize = 512;
-/// The biggest frame accepted, so a bad length can't ask for all memory.
+/// The biggest frame a client accepts from its server, so a bad length
+/// can't ask for all memory.
 const MAX_FRAME: usize = 64 << 20;
+/// The biggest frame a server accepts from a client: what clients send is
+/// small, and they're not trusted.
+const MAX_CLIENT_FRAME: usize = 64 << 10;
+/// The biggest handshake accepted, before we know who's asking.
+const MAX_HANDSHAKE: usize = 1 << 10;
+/// How long a client has to say hello, and to connect.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often each end sends something when it has nothing to say, so an
+/// idle connection isn't timed out.
+const KEEP_ALIVE: Duration = Duration::from_secs(5);
 /// How often the background thread looks for messages the game sent.
 const POLL: Duration = Duration::from_millis(1);
 
@@ -82,12 +100,20 @@ fn bulk(message: &ServerMessage) -> bool {
 pub struct Listener {
     pub address: SocketAddr,
     incoming: mpsc::Receiver<ServerLink>,
+    endpoint: Endpoint,
 }
 
 impl Listener {
     /// The clients that connected since the last call.
     pub fn accept(&self) -> Vec<ServerLink> {
         self.incoming.try_iter().collect()
+    }
+
+    /// Closes every connection, telling the clients the server stopped,
+    /// and waits (a moment at most) for them to hear it.
+    pub fn close(&self) {
+        self.endpoint.close(0u32.into(), b"the server stopped");
+        smol::block_on(within(Duration::from_secs(1), self.endpoint.wait_idle()));
     }
 }
 
@@ -98,9 +124,11 @@ pub fn listen(address: SocketAddr, content: u64) -> io::Result<Listener> {
     let endpoint = Endpoint::server(config, address)?;
     let address = endpoint.local_addr()?;
     let (send, incoming) = mpsc::channel();
+    let listening = endpoint.clone();
     thread::Builder::new()
         .name("server network".into())
         .spawn(move || {
+            let endpoint = listening;
             smol::block_on(async move {
                 while let Some(connecting) = endpoint.accept().await {
                     let send = send.clone();
@@ -115,32 +143,47 @@ pub fn listen(address: SocketAddr, content: u64) -> io::Result<Listener> {
             });
         })?;
     info!("listening on {address}");
-    Ok(Listener { address, incoming })
+    Ok(Listener {
+        address,
+        incoming,
+        endpoint,
+    })
 }
 
 /// Connects to the server at `address` (a host and port), saying our
 /// content has the fingerprint `content`, and returns the link to it once
-/// the server has accepted. Blocks until then.
+/// the server has accepted. Blocks until then. A name with several
+/// addresses (`localhost`: IPv6 and IPv4) is tried at each, IPv4 first.
 pub fn connect(address: &str, content: u64) -> Result<ClientLink, String> {
-    let address = address
+    let mut addresses: Vec<SocketAddr> = address
         .to_socket_addrs()
         .map_err(|error| format!("{address}: {error}"))?
-        .next()
-        .ok_or_else(|| format!("{address}: no such address"))?;
+        .collect();
+    addresses.sort_by_key(SocketAddr::is_ipv6);
+    if addresses.is_empty() {
+        return Err(format!("{address}: no such address"));
+    }
     let (result_send, result) = mpsc::channel();
     thread::Builder::new()
         .name("client network".into())
         .spawn(move || {
             smol::block_on(async move {
-                match open(address, content).await {
-                    Ok((connection, control, server_end, game_end)) => {
-                        let _ = result_send.send(Ok(game_end));
-                        play(connection, control, server_end).await;
-                    }
-                    Err(error) => {
-                        let _ = result_send.send(Err(error));
+                let mut error = String::new();
+                for address in addresses {
+                    let timeout = async {
+                        smol::Timer::after(HANDSHAKE_TIMEOUT).await;
+                        Err(format!("{address} didn't answer"))
+                    };
+                    match open(address, content).or(timeout).await {
+                        Ok((connection, control, server_end, game_end)) => {
+                            let _ = result_send.send(Ok(game_end));
+                            play(connection, control, server_end).await;
+                            return;
+                        }
+                        Err(this) => error = this,
                     }
                 }
+                let _ = result_send.send(Err(error));
             });
         })
         .map_err(|error| error.to_string())?;
@@ -178,7 +221,7 @@ async fn open(
     write_frame(&mut send, &encode(&hello))
         .await
         .map_err(|error| error.to_string())?;
-    let answer = read_frame(&mut receive)
+    let answer = read_frame(&mut receive, MAX_HANDSHAKE)
         .await
         .map_err(|error| format!("the server didn't answer: {error}"))?;
     match decode::<Handshake>(&answer)? {
@@ -196,7 +239,12 @@ async fn serve(connection: Connection, content: u64, accepted: mpsc::Sender<Serv
     let Ok((mut send, mut receive)) = connection.accept_bi().await else {
         return;
     };
-    let Ok(hello) = read_frame(&mut receive).await else {
+    let no_hello = async {
+        smol::Timer::after(HANDSHAKE_TIMEOUT).await;
+        Err(io::Error::other("no hello"))
+    };
+    let Ok(hello) = read_frame(&mut receive, MAX_HANDSHAKE).or(no_hello).await else {
+        connection.close(1u32.into(), b"no hello");
         return;
     };
     let refusal = match decode::<Handshake>(&hello) {
@@ -220,8 +268,8 @@ async fn serve(connection: Connection, content: u64, accepted: mpsc::Sender<Serv
         info!("refused {}: {reason}", connection.remote_address());
         let _ = write_frame(&mut send, &encode(&Handshake::Refused(reason))).await;
         let _ = send.finish();
-        // Let the answer get there before the connection goes.
-        smol::Timer::after(Duration::from_millis(200)).await;
+        // Let the answer get there: the client closes once it's read it.
+        within(HANDSHAKE_TIMEOUT, connection.closed()).await;
         return;
     }
     if write_frame(&mut send, &encode(&Handshake::Welcome))
@@ -264,7 +312,17 @@ async fn carry_for_server(
             })
         };
         let stream = smol::spawn(async move {
-            while let Ok(frame) = read_frame(&mut from_client).await {
+            loop {
+                let frame = match read_frame(&mut from_client, MAX_CLIENT_FRAME).await {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        if connection.close_reason().is_none() {
+                            warn!("a client's stream broke: {error}");
+                            connection.close(1u32.into(), b"bad frame");
+                        }
+                        break;
+                    }
+                };
                 match decode::<ClientMessage>(&frame) {
                     Ok(message) => {
                         if to_game.send(message).is_err() {
@@ -273,6 +331,7 @@ async fn carry_for_server(
                     }
                     Err(error) => {
                         warn!("a client sent something odd: {error}");
+                        connection.close(1u32.into(), b"bad message");
                         break;
                     }
                 }
@@ -296,7 +355,7 @@ async fn carry_for_server(
             }
         }
         if game.is_closed() || connection.close_reason().is_some() {
-            connection.close(0u32.into(), b"bye");
+            goodbye(&connection, [&mut control, &mut bulk_stream]).await;
             return;
         }
         smol::Timer::after(POLL).await;
@@ -314,7 +373,7 @@ async fn play(
     let _control = {
         let to_game = to_game.clone();
         smol::spawn(async move {
-            while let Ok(frame) = read_frame(&mut from_server).await {
+            while let Ok(frame) = read_frame(&mut from_server, MAX_FRAME).await {
                 let Ok(message) = decode::<ServerMessage>(&frame) else {
                     break;
                 };
@@ -330,7 +389,7 @@ async fn play(
             let Ok(mut bulk_stream) = connection.accept_uni().await else {
                 return;
             };
-            while let Ok(frame) = read_frame(&mut bulk_stream).await {
+            while let Ok(frame) = read_frame(&mut bulk_stream, MAX_FRAME).await {
                 let Ok(message) = decode::<ServerMessage>(&frame) else {
                     break;
                 };
@@ -356,11 +415,33 @@ async fn play(
             }
         }
         if game.is_closed() || connection.close_reason().is_some() {
-            connection.close(0u32.into(), b"bye");
+            goodbye(&connection, [&mut control]).await;
             return;
         }
         smol::Timer::after(POLL).await;
     }
+}
+
+/// What `future` comes to, or nothing if it takes longer than `limit`.
+async fn within<T>(limit: Duration, future: impl Future<Output = T>) -> Option<T> {
+    async { Some(future.await) }
+        .or(async {
+            smol::Timer::after(limit).await;
+            None
+        })
+        .await
+}
+
+/// Ends a connection, once what's been written on its streams has gone (or
+/// a moment has passed): closing drops anything still unsent.
+async fn goodbye<const N: usize>(connection: &Connection, streams: [&mut SendStream; N]) {
+    if connection.close_reason().is_none() {
+        for stream in streams {
+            let _ = stream.finish();
+            within(Duration::from_secs(1), stream.stopped()).await;
+        }
+    }
+    connection.close(0u32.into(), b"bye");
 }
 
 /// Writes a frame: its length, whether it's deflated, and its bytes.
@@ -377,15 +458,16 @@ async fn write_frame(stream: &mut SendStream, bytes: &[u8]) -> io::Result<()> {
     stream.write_all(&frame).await.map_err(io::Error::other)
 }
 
-/// Reads a frame's bytes, inflated if they were deflated.
-async fn read_frame(stream: &mut RecvStream) -> io::Result<Vec<u8>> {
+/// Reads a frame's bytes, inflated if they were deflated, refusing one of
+/// more than `max` bytes either way.
+async fn read_frame(stream: &mut RecvStream, max: usize) -> io::Result<Vec<u8>> {
     let mut length = [0; 4];
     stream
         .read_exact(&mut length)
         .await
         .map_err(io::Error::other)?;
     let length = u32::from_le_bytes(length) as usize;
-    if length == 0 || length > MAX_FRAME {
+    if length == 0 || length > max + 1 {
         return Err(io::Error::other(format!("a frame of {length} bytes")));
     }
     let mut frame = vec![0; length];
@@ -395,7 +477,7 @@ async fn read_frame(stream: &mut RecvStream) -> io::Result<Vec<u8>> {
         .map_err(io::Error::other)?;
     match frame[0] {
         0 => Ok(frame.split_off(1)),
-        1 => miniz_oxide::inflate::decompress_to_vec_with_limit(&frame[1..], MAX_FRAME)
+        1 => miniz_oxide::inflate::decompress_to_vec_with_limit(&frame[1..], max)
             .map_err(|error| io::Error::other(format!("{error:?}"))),
         flag => Err(io::Error::other(format!("a frame flagged {flag}"))),
     }
@@ -416,7 +498,9 @@ fn server_config() -> Result<ServerConfig, String> {
     .map_err(|error| error.to_string())?;
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = QuicServerConfig::try_from(tls).map_err(|error| error.to_string())?;
-    Ok(ServerConfig::with_crypto(Arc::new(crypto)))
+    let mut config = ServerConfig::with_crypto(Arc::new(crypto));
+    config.transport_config(transport());
+    Ok(config)
 }
 
 /// A client's config, accepting any server's certificate (for now: #216).
@@ -430,7 +514,16 @@ fn client_config() -> Result<ClientConfig, String> {
         .with_no_client_auth();
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = QuicClientConfig::try_from(tls).map_err(|error| error.to_string())?;
-    Ok(ClientConfig::new(Arc::new(crypto)))
+    let mut config = ClientConfig::new(Arc::new(crypto));
+    config.transport_config(transport());
+    Ok(config)
+}
+
+/// How both ends' connections behave: kept alive while they're quiet.
+fn transport() -> Arc<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(KEEP_ALIVE));
+    Arc::new(transport)
 }
 
 /// Takes any server at its word, checking only that it holds the key its
@@ -575,7 +668,23 @@ mod tests {
         let listener = listen(local(), 7).unwrap();
         let error = connect(&listener.address.to_string(), 8).err().unwrap();
         assert!(error.contains("mods"), "{error}");
-        thread::sleep(Duration::from_millis(50));
         assert!(listener.accept().is_empty());
+    }
+
+    /// A server that stops tells its clients, who see their link close.
+    #[test]
+    fn clients_see_the_server_stop() {
+        let listener = listen(local(), 7).unwrap();
+        let mut client = connect(&listener.address.to_string(), 7).unwrap();
+        let _server = wait_for(|| listener.accept(), 1);
+        listener.close();
+        for _ in 0..5000 {
+            client.receive();
+            if client.is_closed() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the client never saw the server stop");
     }
 }

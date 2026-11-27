@@ -164,7 +164,22 @@ incremental builds stay cheap.
 - Other players are drawn as boxes where the server's latest positions
   put them, with no smoothing between updates (#214).
 - A client that quits without saying so (its process ends) leaves when
-  QUIC's idle timeout runs out.
+  QUIC's idle timeout runs out (30 seconds; each end keeps a quiet
+  connection alive every 5). A client whose server goes returns to the
+  menu.
+- Poses go as datagrams, and are sent again every half second while they
+  don't change, in case the last was lost; #214 numbers them.
+- One loop writes both of a server's streams, so a client slow to take
+  its chunks also slows its control messages, and what waits for it
+  isn't bounded. A writer per stream, with bounded queues, and dropping a
+  client that falls too far behind, should replace it (#225).
+- `--connect` connects on the main thread before the world starts, which
+  can block a few seconds; the connect screen (#52) should connect in the
+  background.
+- A player's inventory is saved only with one player in the world
+  (`inventory::player` saves the single `Player`), so a dedicated
+  server with several doesn't save theirs; per-player saves come with
+  players' keys (#216).
 
 **What's wrong with it.** Single player keeps two copies of the loaded
 chunks' blocks, fluid and light (about 21 MiB at the default radius

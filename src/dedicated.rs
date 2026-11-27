@@ -3,7 +3,7 @@
 //! listening for clients over the network (`quic`). It plays the world in
 //! `--world`, or the `server-world` folder in the game's folder, and saves
 //! it as the game does: as chunks unload, every so often, and when it
-//! stops. Typing `stop` (and Enter) stops it.
+//! stops. Typing `stop` (and Enter), or Ctrl-C, stops it.
 //!
 //! It never pauses: unlike the server in the game's own process, it
 //! doesn't pause with its players (`server::PauseWithPlayers`).
@@ -15,7 +15,7 @@ use std::{
     sync::{Mutex, mpsc},
 };
 
-use bevy::{log::LogPlugin, prelude::*};
+use bevy::{app::TerminalCtrlCHandlerPlugin, log::LogPlugin, prelude::*};
 use defaria_core::{
     content::Content,
     save::{WorldFolder, data_dir},
@@ -35,7 +35,7 @@ pub struct DedicatedSettings {
 /// Runs a dedicated server until it's stopped.
 pub fn run(settings: DedicatedSettings) -> AppExit {
     let mut app = App::new();
-    app.add_plugins(LogPlugin::default());
+    app.add_plugins((LogPlugin::default(), TerminalCtrlCHandlerPlugin));
     let folder = settings
         .world
         .or_else(|| Some(data_dir()?.join("server-world")));
@@ -65,7 +65,16 @@ pub fn run(settings: DedicatedSettings) -> AppExit {
     take_clients_from(&mut app, listener);
     app.insert_resource(Console(Mutex::new(console())))
         .add_systems(PreUpdate, read_console);
-    app.run()
+    let exit = app.run();
+    // The world's saved; tell the players.
+    if let Some(network) = app.world_mut().remove_resource::<Network>() {
+        network
+            .0
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner())
+            .close();
+    }
+    exit
 }
 
 /// Has the server app `app` take the clients that connect to `listener` as
