@@ -66,6 +66,9 @@ pub struct LightTable {
     /// Per state, the levels light loses coming into it, on top of the one
     /// per block.
     filter: Vec<u8>,
+    /// Per state, how much fluid its voxel has room for (`fluid_room`):
+    /// fluid that fills that room is a full voxel of it.
+    room: Vec<u16>,
 }
 
 impl LightTable {
@@ -90,7 +93,63 @@ impl LightTable {
                 .map(|s| Light::new(0, s.light))
                 .collect(),
             filter: content.states.iter().map(|s| s.light_filter).collect(),
+            room: content.states.iter().map(|s| s.fluid_room).collect(),
         }
+    }
+
+    fn filter(&self, state: BlockState) -> u8 {
+        self.filter.get(state.0 as usize).copied().unwrap_or(0)
+    }
+
+    fn room(&self, state: BlockState) -> u16 {
+        self.room.get(state.0 as usize).copied().unwrap_or(0)
+    }
+
+    /// Whether `voxel` holds fluid that doesn't fill the room its block
+    /// leaves: what's in the voxel sticks out of it.
+    fn part_full(&self, voxel: Lit) -> bool {
+        !voxel.fluid.is_air() && voxel.amount < self.room(voxel.block)
+    }
+
+    /// The levels part-full fluid in `voxel` takes off the light it passes
+    /// on: its fluid's filter, in proportion to how much of its room it
+    /// fills, rounded. A film takes off none, a voxel nearly full all of
+    /// it, as a full one would; 0 for a full voxel, whose fluid dims the
+    /// light coming in instead (see [`LightTable::entering`]).
+    fn part_full_dim(&self, voxel: Lit) -> u8 {
+        if !self.part_full(voxel) {
+            return 0;
+        }
+        part_full_dim(
+            self.filter(voxel.fluid),
+            voxel.amount,
+            self.room(voxel.block),
+        )
+    }
+
+    /// Whether light sees a voxel of `block` holding `before` the same as
+    /// one holding `after`: the same fluid as far as light goes, and full
+    /// in both or part full in both. Only those two changes relight it,
+    /// not every unit of fluid that flows.
+    pub fn same_fluid_light(
+        &self,
+        block: BlockState,
+        before: Option<(BlockState, u16)>,
+        after: Option<(BlockState, u16)>,
+    ) -> bool {
+        let lit = |fluid: Option<(BlockState, u16)>| {
+            let (fluid, amount) = fluid.unwrap_or((BlockState::AIR, 0));
+            Lit {
+                block,
+                fluid,
+                amount,
+            }
+        };
+        let (before, after) = (lit(before), lit(after));
+        self.same_light(before.fluid, after.fluid)
+            && (self.filter(after.fluid) == 0
+                || (self.part_full(before), self.part_full_dim(before))
+                    == (self.part_full(after), self.part_full_dim(after)))
     }
 
     /// The sides `state` closes, as [`LightTable::closed`] bits.
@@ -115,12 +174,38 @@ impl LightTable {
 
     /// The level light offered at `level` to `voxel` from outside it gets
     /// in with: less the levels its block and its fluid filter out (water
-    /// in with a slab dims light as water alone does).
+    /// in with a slab dims light as water alone does). Fluid that doesn't
+    /// fill the voxel leaves its light alone, so what sticks out of it is
+    /// lit as if it weren't there, and dims the light the voxel passes on
+    /// instead, by how full it is (see [`LightTable::spreading`]).
     fn entering(&self, voxel: Lit, level: u8) -> u8 {
-        let filter = |state: BlockState| self.filter.get(state.0 as usize).copied().unwrap_or(0);
-        level
-            .saturating_sub(filter(voxel.block))
-            .saturating_sub(filter(voxel.fluid))
+        let level = level.saturating_sub(self.filter(voxel.block));
+        if self.part_full(voxel) {
+            level
+        } else {
+            level.saturating_sub(self.filter(voxel.fluid))
+        }
+    }
+
+    /// The level `voxel`'s light at `level` spreads with: its own, less
+    /// what part-full fluid in it filters out by how full it is. Beyond a
+    /// voxel nearly full, light is as it would be if it were full; beyond
+    /// a film, as if it weren't there.
+    fn spreading(&self, voxel: Lit, level: u8) -> u8 {
+        level.saturating_sub(self.part_full_dim(voxel))
+    }
+
+    /// The level `channel`'s light at `level` in `voxel` offers its
+    /// neighbour toward `DIRECTIONS[direction]`, before that neighbour's
+    /// sides and filters: a level less, except full sky light going
+    /// straight down.
+    fn offered(&self, voxel: Lit, level: u8, channel: usize, direction: usize) -> u8 {
+        let level = self.spreading(voxel, level);
+        if channel == SKY && direction == DOWN && level == MAX_LIGHT {
+            MAX_LIGHT
+        } else {
+            level.saturating_sub(1)
+        }
     }
 
     /// Whether light can't come into `voxel` through all of its sides.
@@ -166,13 +251,15 @@ impl LightTable {
 }
 
 /// What light sees in a voxel: its block and its fluid's block (air for
-/// none). It treats the voxel as both: light stops at a side either
-/// covers, it's dimmed by both their filters, and the voxel gives off the
-/// brighter light of the two.
+/// none), and how much fluid. It treats the voxel as both: light stops at
+/// a side either covers, it's dimmed by both their filters, and the voxel
+/// gives off the brighter light of the two. Fluid that doesn't fill the
+/// voxel dims the light the voxel passes on, not its own.
 #[derive(Debug, Clone, Copy)]
 struct Lit {
     block: BlockState,
     fluid: BlockState,
+    amount: u16,
 }
 
 #[cfg(test)]
@@ -182,6 +269,7 @@ impl From<BlockState> for Lit {
         Self {
             block,
             fluid: BlockState::AIR,
+            amount: 0,
         }
     }
 }
@@ -189,11 +277,29 @@ impl From<BlockState> for Lit {
 impl Lit {
     /// The voxel at `index` in `chunk`.
     fn at(chunk: &Chunk, index: usize) -> Self {
+        let (fluid, amount) = chunk.fluid_at_index(index);
         Self {
             block: chunk.get_index(index),
-            fluid: chunk.fluid_kind_at_index(index),
+            fluid,
+            amount,
         }
     }
+}
+
+/// The levels fluid with this `filter` takes off light when it holds
+/// `amount` of `room`: the filter in proportion to how full it is,
+/// rounded. Meshing dims the faces drawn in or under part-full fluid by
+/// this, as light dims what the voxel passes on.
+pub fn part_full_dim(filter: u8, amount: u16, room: u16) -> u8 {
+    if room == 0 {
+        return 0;
+    }
+    let (filter, amount, room) = (
+        u32::from(filter),
+        u32::from(amount.min(room)),
+        u32::from(room),
+    );
+    ((2 * filter * amount + room) / (2 * room)) as u8
 }
 
 /// [`LightTable::closed`] bits for every side.
@@ -459,7 +565,8 @@ impl LightQueue {
             let passes = above.is_some_and(|(blocks, light)| {
                 let bottom = IVec3::new(x, 0, z);
                 let voxel = Lit::at(blocks, Chunk::index_of(bottom));
-                light.at(bottom).get(SKY) == MAX_LIGHT && !table.closed(voxel, DOWN)
+                let level = light.at(bottom).get(SKY);
+                table.offered(voxel, level, SKY, DOWN) == MAX_LIGHT && !table.closed(voxel, DOWN)
             });
             if !passes {
                 let index = Chunk::index_of(IVec3::new(x, last, z));
@@ -704,11 +811,7 @@ impl<'a> Fill<'a> {
                 }
                 let pos = Chunk::position_of(index);
                 for (i, direction) in DIRECTIONS.into_iter().enumerate() {
-                    let next = if self.channel == SKY && i == DOWN && level == MAX_LIGHT {
-                        MAX_LIGHT
-                    } else {
-                        level - 1
-                    };
+                    let next = self.table.offered(state, level, self.channel, i);
                     if next == 0 {
                         continue;
                     }

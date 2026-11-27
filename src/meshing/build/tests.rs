@@ -1195,8 +1195,12 @@ fn translucent_faces_sort_back_to_front() {
 /// block a lowered top falls back to its own voxel.
 #[test]
 fn a_lowered_top_is_shaded_from_above() {
-    // Sky 15 above the water, 13 in it, as water's light filter leaves it.
-    let light = |pos: IVec3| Light::new(if pos.y > A.y { 15 } else { 13 }, [0, 0, 0]);
+    // Sky 15 above the water, and in it too unless it's full: 13 there, as
+    // water's light filter leaves it.
+    let light = |pos: IVec3, amount: u16| {
+        let dimmed = pos.y <= A.y && amount == FULL_FLUID;
+        Light::new(if dimmed { 13 } else { 15 }, [0, 0, 0])
+    };
     let top_light = |amount: u16, above: &str| {
         let mesh = Neighborhood::with_fluid(|pos| {
             let block = if pos == A + IVec3::Y && above != "air" {
@@ -1207,7 +1211,7 @@ fn a_lowered_top_is_shaded_from_above() {
             let fluid = (pos == A)
                 .then(|| VoxelFluid::of(self::block("water"), amount))
                 .flatten();
-            (block, light(pos), fluid)
+            (block, light(pos, amount), fluid)
         })
         .meshes(base())
         .translucent;
@@ -1229,5 +1233,85 @@ fn a_lowered_top_is_shaded_from_above() {
         "a step down"
     );
     assert_eq!(top_light(FULL_FLUID / 2, "air"), sky(15.0), "half");
-    assert_eq!(top_light(FULL_FLUID / 2, "stone"), sky(13.0), "under stone");
+    // Its own voxel, less the level half a voxel of water dims a face by,
+    // blended at each corner with the three voxels of air around it.
+    assert_eq!(
+        top_light(FULL_FLUID / 2, "stone"),
+        sky((14.0 + 3.0 * 15.0) / 4.0),
+        "under stone"
+    );
+}
+
+/// The light a face is shaded with, by the first vertex facing `normal`
+/// in `mesh`.
+fn face_light(mesh: &Mesh, normal: Vec3) -> [u8; 4] {
+    let normals = vec3s(mesh, Mesh::ATTRIBUTE_NORMAL);
+    let Some(VertexAttributeValues::Uint32x4(lights)) = mesh.attribute(ATTRIBUTE_LIGHT) else {
+        panic!("no light attribute");
+    };
+    let at = normals
+        .iter()
+        .position(|&n| n == normal)
+        .expect("a face that way");
+    lights[at].map(|corner| corner.to_le_bytes()[0])
+}
+
+/// A floor under water that doesn't fill its voxel is shaded as dim as the
+/// water over it is deep: under a voxel nearly full as under a full one
+/// (so the floor doesn't brighten the moment a pool drops a step), under
+/// half a voxel a level brighter, and under a film as the open air. The
+/// water's voxel is lit as the light engine lights it: dimmed by water's
+/// filter when full, and as the air above when not.
+#[test]
+fn a_floor_under_part_full_water_is_shaded_by_its_depth() {
+    let floor_light = |amount: u16| {
+        let mesh = Neighborhood::with_fluid(|pos| {
+            let block = if pos == A - IVec3::Y {
+                block("stone")
+            } else {
+                BlockState::AIR
+            };
+            let water = pos.y == A.y;
+            let dimmed = water && amount == FULL_FLUID;
+            let light = Light::new(if dimmed { 13 } else { 15 }, [0, 0, 0]);
+            let fluid = water
+                .then(|| VoxelFluid::of(self::block("water"), amount))
+                .flatten();
+            (block, light, fluid)
+        })
+        .meshes(base())
+        .opaque;
+        face_light(&mesh, Vec3::Y)
+    };
+    let sky = |level: f32| [(level * LEVEL_STEP).round() as u8; 4];
+    assert_eq!(floor_light(FULL_FLUID), sky(13.0), "full");
+    assert_eq!(floor_light(FULL_FLUID * 15 / 16), sky(13.0), "a step down");
+    assert_eq!(floor_light(FULL_FLUID / 2), sky(14.0), "half");
+    assert_eq!(floor_light(FULL_FLUID / 16), sky(15.0), "a film");
+}
+
+/// A plant standing in a film of water is shaded as its voxel is lit, not
+/// dimmed by the water around its foot, as on dry ground.
+#[test]
+fn a_plant_in_a_film_is_shaded_as_on_dry_ground() {
+    let plant_light = |amount: u16| {
+        let mesh = Neighborhood::with_fluid(|pos| {
+            let block = if pos == A {
+                block("tuft")
+            } else {
+                BlockState::AIR
+            };
+            let fluid = (pos.y == A.y)
+                .then(|| VoxelFluid::of(self::block("water"), amount))
+                .flatten();
+            (block, Light::new(15, [0, 0, 0]), fluid)
+        })
+        .meshes(base())
+        .cutout;
+        let Some(VertexAttributeValues::Uint32x4(lights)) = mesh.attribute(ATTRIBUTE_LIGHT) else {
+            panic!("no light attribute");
+        };
+        lights[0].map(|corner| corner.to_le_bytes()[0])
+    };
+    assert_eq!(plant_light(FULL_FLUID / 16), plant_light(0));
 }
