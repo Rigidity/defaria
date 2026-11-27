@@ -3,9 +3,9 @@
   name: "{rock} Vertical Slab",
   properties: {
     // Which half of its voxel it fills: against a block's side it
-    // stands against that block, and on a floor or under a ceiling at
-    // the side of its voxel you look toward.
-    half: { values: ["north", "south", "east", "west"], place: "against" },
+    // stands against that block, and on a floor or under a ceiling in
+    // the half of its voxel you click.
+    half: { values: ["north", "south", "east", "west"], place: "nearest" },
     rock: { materials: "#rock", default: "stone" },
   },
   model: "slab_{half}",

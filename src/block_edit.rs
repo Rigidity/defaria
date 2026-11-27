@@ -91,7 +91,7 @@ pub struct BlockEditSystems;
 pub struct BlockOutlineSystems;
 
 /// A block a ray ran into.
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Reflect, Debug, Clone, Copy, PartialEq)]
 pub struct Hit {
     pub block: IVec3,
     /// The face the ray entered through, pointing back toward the ray's
@@ -100,6 +100,10 @@ pub struct Hit {
     /// Which of the block's boxes it hit, in the order its shape lists
     /// them: in a combined state, which half (see [`Content::half_at`]).
     pub shape_box: usize,
+    /// Where the ray met it, in the block's own coordinates (a full block
+    /// runs from `(0, 0, 0)` to `(1, 1, 1)`): on the face it entered
+    /// through, or the ray's origin if it started inside.
+    pub at: Vec3,
 }
 
 impl Hit {
@@ -130,10 +134,11 @@ pub fn raycast<'a>(ray: Ray3d, reach: f32, shape: impl Fn(IVec3) -> &'a [BlockBo
             .filter_map(|(i, b)| Some((ray_box(local, dir, b)?, i)))
             .filter(|&((t, _), _)| t <= reach)
             .min_by(|a, b| a.0.0.total_cmp(&b.0.0))
-            .map(|((_, normal), shape_box)| Hit {
+            .map(|((t, normal), shape_box)| Hit {
                 block,
                 normal,
                 shape_box,
+                at: local + dir * t,
             })
     };
     if let Some(hit) = hit_in(block) {
@@ -399,8 +404,8 @@ struct Placing {
 
 /// What placing `item_block` (the state the item places) at `hit` from a
 /// camera at `camera` does, if anything. It goes where [`placement`] says,
-/// with properties such as a log's axis from the face clicked or the view,
-/// and then:
+/// with properties such as a log's axis from the face clicked, the view
+/// or where on the face the click is, and then:
 ///
 /// - placed against a face (not into a plant), it fills the other half of
 ///   a half: the one clicked, if the click is on its open side (the top
@@ -416,7 +421,15 @@ fn placing(
     camera: &Transform,
 ) -> Option<Placing> {
     let (pos, face) = placement(content, voxels, hit, item_block)?;
-    let placed = content.placed(item_block, face, *camera.forward());
+    // Where the click is, in the placed block's voxel. Into a plant, it's
+    // as though on the middle of the face hit, since the click is on the
+    // plant, not the side of the voxel.
+    let placed = if pos == hit.block {
+        content.placed(item_block, face, *camera.forward())
+    } else {
+        let at = (hit.at + (hit.block - pos).as_vec3()).clamp(Vec3::ZERO, Vec3::ONE);
+        content.placed_at(item_block, face, *camera.forward(), at)
+    };
     if pos != hit.block {
         let fill = |pos: IVec3| {
             let (block, added) = content.fill_half(voxels.get(pos)?, placed)?;
@@ -592,6 +605,7 @@ mod tests {
                 block: IVec3::new(3, 0, 0),
                 normal: IVec3::NEG_X,
                 shape_box: 0,
+                at: Vec3::new(0.0, 0.5, 0.5),
             })
         );
         assert_eq!(
@@ -1128,26 +1142,26 @@ mod tests {
         app.update();
     }
 
-    /// A slab placed on top of a block is a bottom half and one under a
-    /// block a top half; against a block's side it's a bottom half too. A
-    /// vertical slab stands against the side of its voxel you look toward:
-    /// against the block whose side you click, and on a floor or a ceiling
-    /// at the far side of its voxel.
+    /// A slab takes the half of its voxel nearest the click: on top of a
+    /// block it's a bottom half, under one a top half, and on a block's
+    /// side the half clicked. A vertical slab stands against the block
+    /// whose side is clicked, wherever on it, and on a floor or a ceiling
+    /// takes the half clicked.
     #[test]
-    fn slabs_take_their_half_from_the_face_and_vertical_slabs_from_the_view() {
+    fn slabs_take_the_half_nearest_the_click() {
         let (mut app, left, _) = app();
         let target = IVec3::new(7, 7, 10);
         app.world_mut()
             .get_mut::<Chunk>(left)
             .unwrap()
             .set(7, 7, 10, block("stone"));
-        let place = |app: &mut App, item: &str, face: Direction| {
+        // Places `item` with a click at `aim` on the target's `face` (in
+        // the target's coordinates), from three blocks out, and clears it.
+        let place = |app: &mut App, item: &str, face: Direction, aim: Vec3| {
             hold(app, item);
             let normal = face.normal();
-            // Three blocks out from the face, looking back at it, a little
-            // off center so the view isn't straight along the axis.
-            let from = (target + normal * 3).as_vec3() + Vec3::splat(0.5);
-            let dir = (target.as_vec3() + Vec3::new(0.6, 0.55, 0.45) - from).normalize();
+            let from = (target + normal * 3).as_vec3() + Vec3::new(0.45, 0.5, 0.55);
+            let dir = (target.as_vec3() + aim - from).normalize();
             let up = if normal.y == 0 { Vec3::Y } else { Vec3::Z };
             crate::player::tests::put_local_eyes(
                 app,
@@ -1155,45 +1169,44 @@ mod tests {
             );
             click(app, MouseButton::Right);
             let pos = (target + normal).as_uvec3();
-            let placed = voxel(app, left, pos.x as usize, pos.y as usize, pos.z as usize);
-            // Cleared for the next.
-            app.world_mut().get_mut::<Chunk>(left).unwrap().set(
-                pos.x as usize,
-                pos.y as usize,
-                pos.z as usize,
-                BlockState::AIR,
-            );
+            let (x, y, z) = (pos.x as usize, pos.y as usize, pos.z as usize);
+            let placed = voxel(app, left, x, y, z);
+            app.world_mut()
+                .get_mut::<Chunk>(left)
+                .unwrap()
+                .set(x, y, z, BlockState::AIR);
             placed
         };
-        for (face, half, vertical) in [
-            (Direction::Up, "bottom", None),
-            (Direction::Down, "top", None),
-            (Direction::North, "bottom", Some("south")),
-            (Direction::South, "bottom", Some("north")),
-            (Direction::East, "bottom", Some("west")),
-            (Direction::West, "bottom", Some("east")),
+        for (face, aim, half, vertical) in [
+            (Direction::Up, Vec3::new(0.5, 1.0, 0.2), "bottom", "north"),
+            (Direction::Up, Vec3::new(0.8, 1.0, 0.6), "bottom", "east"),
+            (Direction::Down, Vec3::new(0.5, 0.0, 0.85), "top", "south"),
+            (Direction::Down, Vec3::new(0.1, 0.0, 0.5), "top", "west"),
+            (Direction::North, Vec3::new(0.2, 0.8, 0.0), "top", "south"),
+            (
+                Direction::North,
+                Vec3::new(0.9, 0.2, 0.0),
+                "bottom",
+                "south",
+            ),
+            (
+                Direction::South,
+                Vec3::new(0.5, 0.3, 1.0),
+                "bottom",
+                "north",
+            ),
+            (Direction::East, Vec3::new(1.0, 0.7, 0.1), "top", "west"),
+            (Direction::West, Vec3::new(0.0, 0.1, 0.5), "bottom", "east"),
         ] {
-            let placed = place(&mut app, "defaria:stone_slab", face);
-            assert_eq!(placed, slab("stone_slab", half), "{face:?}");
-            if let Some(vertical) = vertical {
-                let placed = place(&mut app, "defaria:stone_vertical_slab", face);
-                assert_eq!(placed, slab("stone_vertical_slab", vertical), "{face:?}");
-            }
+            let placed = place(&mut app, "defaria:stone_slab", face, aim);
+            assert_eq!(placed, slab("stone_slab", half), "{face:?} at {aim}");
+            let placed = place(&mut app, "defaria:stone_vertical_slab", face, aim);
+            assert_eq!(
+                placed,
+                slab("stone_vertical_slab", vertical),
+                "{face:?} at {aim}"
+            );
         }
-        // From above, looking down and a little north: at the voxel's
-        // north side.
-        hold(&mut app, "defaria:stone_vertical_slab");
-        let from = Vec3::new(7.5, 10.5, 10.9);
-        look_at(
-            &mut app,
-            from,
-            (Vec3::new(7.5, 8.0, 10.2) - from).normalize(),
-        );
-        click(&mut app, MouseButton::Right);
-        assert_eq!(
-            voxel(&app, left, 7, 8, 10),
-            slab("stone_vertical_slab", "north")
-        );
     }
 
     /// Clicking the open side of a slab with another slab in hand fills
@@ -1287,10 +1300,10 @@ mod tests {
         hold(&mut app, "defaria:stone_vertical_slab");
         click(&mut app, MouseButton::Right);
         assert_eq!(voxel(&app, left, 13, 1, 5), east);
-        // On its top, a floor: at the far side, along the view.
+        // On its top, a floor: in the half clicked, the east.
         assert_eq!(
             voxel(&app, left, 13, 2, 5),
-            slab("stone_vertical_slab", "south")
+            slab("stone_vertical_slab", "east")
         );
     }
 

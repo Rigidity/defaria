@@ -3,11 +3,11 @@
   name: "{rock} Brick Slab",
   properties: {
     // Which half of its voxel it fills: on top of a block it sits low,
-    // under one it sits high, and against a block's side it sits low too.
-    // Vertical slabs are blocks of their own (`*_vertical_slab`).
+    // under one it sits high, and against a block's side in the half you
+    // click. Vertical slabs are blocks of their own (`*_vertical_slab`).
     half: {
       values: ["bottom", "top"],
-      place: { from: "face", values: { up: "bottom", down: "top" } },
+      place: { from: "nearest", values: { down: "bottom", up: "top" } },
     },
     rock: { materials: "#rock", default: "stone" },
   },

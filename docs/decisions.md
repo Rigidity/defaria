@@ -7,10 +7,11 @@ what should replace them. Newest first.
 
 **Context.** Placing a slab on a slab made two slabs in two voxels, and
 there was no double slab (#80). Slabs also only came as bottom halves;
-they now have a top half too, picked by the face they're placed against,
-and each slab has a vertical slab beside it, a block of its own whose
-half (north, south, east or west) is the side against the block you
-click (`place: "against"`), or on a floor the side you look toward. Vertical
+they now have a top half too, and each slab has a vertical slab beside it, a block of its own whose
+half (north, south, east or west) is the side of its voxel nearest the
+click (`place: "nearest"`): against the block whose side you click, or
+on a floor the half you click. Slabs take their half the same way, so
+one placed on the upper half of a block's side is a top slab. Vertical
 halves are separate blocks so that clicking a block's side still places
 a slab rather than standing one up.
 

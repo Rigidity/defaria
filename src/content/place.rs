@@ -55,11 +55,13 @@ impl Placement {
     }
 
     /// The value index placing against `face` (the side of the block
-    /// clicked, pointing back at you) while looking along `look` gives.
-    /// Looking steeply up or down at a property that has no value for
-    /// that falls back to the way you face across the ground, so a
-    /// machine placed at your feet still faces along your look.
-    pub fn value(&self, face: Direction, look: Vec3) -> Option<usize> {
+    /// clicked, pointing back at you) while looking along `look`, with the
+    /// click `at` that point of the placed block's voxel (its own
+    /// coordinates, from 0 to 1), gives. Looking steeply up or down at a
+    /// property that has no value for that falls back to the way you
+    /// face across the ground, so a machine placed at your feet still
+    /// faces along your look.
+    pub fn value(&self, face: Direction, look: Vec3, at: Vec3) -> Option<usize> {
         let looked = || {
             self.values[Direction::along(look) as usize].or_else(|| {
                 let flat = Vec3::new(look.x, 0.0, look.z);
@@ -71,16 +73,50 @@ impl Placement {
         match self.from {
             PlaceFrom::Face => self.values[face as usize],
             PlaceFrom::Look => looked(),
-            PlaceFrom::Against => self.values[face.opposite() as usize].or_else(looked),
+            // Ties (a click in the very middle) go to the later side in
+            // `Direction::ALL`: down rather than up.
+            PlaceFrom::Nearest => Direction::ALL
+                .into_iter()
+                .rev()
+                .filter_map(|side| Some((self.values[side as usize]?, distance(at, side))))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(value, _)| value),
         }
+    }
+}
+
+/// How far `at`, a point in a voxel, is from its `side`.
+fn distance(at: Vec3, side: Direction) -> f32 {
+    let normal = side.normal();
+    let axis = (0..3).find(|&a| normal[a] != 0).unwrap();
+    if normal[axis] > 0 {
+        1.0 - at[axis]
+    } else {
+        at[axis]
     }
 }
 
 impl Content {
     /// The state a block placed as `state` ends up in, placed against
-    /// `face` of the block clicked while looking along `look`: each
-    /// property with a [`Placement`] takes the value it gives.
+    /// `face` of the block clicked while looking along `look`, with the
+    /// click in the middle of the face: see [`Content::placed_at`].
     pub fn placed(&self, state: BlockState, face: Direction, look: Vec3) -> BlockState {
+        // The middle of the placed block's side against the face.
+        let at = Vec3::splat(0.5) - face.normal().as_vec3() * 0.5;
+        self.placed_at(state, face, look, at)
+    }
+
+    /// The state a block placed as `state` ends up in, placed against
+    /// `face` of the block clicked while looking along `look`, with the
+    /// click `at` that point in the placed block's voxel: each property
+    /// with a [`Placement`] takes the value it gives.
+    pub fn placed_at(
+        &self,
+        state: BlockState,
+        face: Direction,
+        look: Vec3,
+        at: Vec3,
+    ) -> BlockState {
         if state.is_air() {
             return state;
         }
@@ -89,7 +125,11 @@ impl Content {
         let offset = (state.0 - block.first_state) as usize;
         let mut index = index_of(properties, offset);
         for (p, property) in properties.iter().enumerate() {
-            if let Some(i) = property.place.as_ref().and_then(|pl| pl.value(face, look)) {
+            if let Some(i) = property
+                .place
+                .as_ref()
+                .and_then(|pl| pl.value(face, look, at))
+            {
                 index[p] = i;
             }
         }
@@ -182,30 +222,51 @@ mod tests {
         assert_eq!(content.placed(west, Direction::Up, Vec3::NEG_Y), west);
     }
 
-    /// `against` takes the side of the placed block that touches the block
-    /// clicked, whichever way you look: placed on a block's north side,
-    /// it's `south`, even looking along the wall. With no value for that
-    /// side (placed on a floor), it's the way you look.
+    /// `nearest` takes the side of the placed block's voxel nearest the
+    /// click. A vertical slab stands against the block whose side is
+    /// clicked, however you look and wherever on the side you click, and
+    /// on a floor or under a ceiling takes the half of its voxel the click
+    /// is in. A slab on a block's side takes the half clicked; on top of
+    /// a block it's a bottom slab, under one a top slab, and a click in
+    /// the very middle of a side gives a bottom slab.
     #[test]
-    fn against_takes_the_side_touching_the_block_clicked() {
+    fn nearest_takes_the_side_nearest_the_click() {
         let content = base();
-        let slab = content.block("defaria:stone_vertical_slab").unwrap();
-        let half = |h| slab.state(&[("half", h)]).unwrap();
-        let s = slab.default_state();
-        // Looking mostly east along a wall's north side.
+        let vertical = content.block("defaria:stone_vertical_slab").unwrap();
+        let v = |h| vertical.state(&[("half", h)]).unwrap();
+        let s = vertical.default_state();
+        // Looking mostly east along a wall.
         let along = Vec3::new(0.9, -0.1, 0.3).normalize();
-        for (face, expected) in [
-            (Direction::North, "south"),
-            (Direction::South, "north"),
-            (Direction::East, "west"),
-            (Direction::West, "east"),
+        for (face, at, expected) in [
+            // Near the western edge of a block's north side: still south.
+            (Direction::North, Vec3::new(0.1, 0.9, 1.0), "south"),
+            (Direction::South, Vec3::new(0.9, 0.1, 0.0), "north"),
+            (Direction::East, Vec3::new(0.0, 0.5, 0.05), "west"),
+            (Direction::West, Vec3::new(1.0, 0.5, 0.95), "east"),
+            // On a floor, toward the north-east corner, more north.
+            (Direction::Up, Vec3::new(0.7, 0.0, 0.1), "north"),
+            (Direction::Down, Vec3::new(0.8, 1.0, 0.4), "east"),
         ] {
-            assert_eq!(content.placed(s, face, along), half(expected), "{face:?}");
+            let placed = content.placed_at(s, face, along, at);
+            assert_eq!(placed, v(expected), "{face:?} at {at}");
         }
-        // On a floor or under a ceiling: the far side, along the view.
-        assert_eq!(content.placed(s, Direction::Up, along), half("east"));
-        let down_west = Vec3::new(-0.3, -0.9, 0.1).normalize();
-        assert_eq!(content.placed(s, Direction::Down, down_west), half("west"));
+
+        let slab = content.block("defaria:stone_slab").unwrap();
+        let h = |h| slab.state(&[("half", h)]).unwrap();
+        let s = slab.default_state();
+        for (face, at, expected) in [
+            (Direction::Up, Vec3::new(0.9, 0.0, 0.9), "bottom"),
+            (Direction::Down, Vec3::new(0.1, 1.0, 0.1), "top"),
+            (Direction::East, Vec3::new(0.0, 0.8, 0.5), "top"),
+            (Direction::North, Vec3::new(0.5, 0.2, 1.0), "bottom"),
+            (Direction::West, Vec3::new(1.0, 0.5, 0.5), "bottom"),
+        ] {
+            let placed = content.placed_at(s, face, along, at);
+            assert_eq!(placed, h(expected), "{face:?} at {at}");
+        }
+        // Without a click point, the middle of the face.
+        assert_eq!(content.placed(s, Direction::East, along), h("bottom"));
+        assert_eq!(content.placed(s, Direction::Down, along), h("top"));
     }
 
     /// Looking steeply down (placing a machine on the floor in front of

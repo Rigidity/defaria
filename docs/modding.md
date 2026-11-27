@@ -777,11 +777,15 @@ properties: {
 
 - **`"face"`** uses the side of the block you click: placing on top of a
   block is `up`, against its east side `east`.
-- **`"against"`** uses the side of the placed block that touches the
-  block you click: placed on a block's north side, it's `south`, however
-  you look. Where the property has no value for that side (one with only
-  the four sides, placed on a floor or under a ceiling), it uses the way
-  you look, as `"look"` does.
+- **`"nearest"`** uses the side of the placed block's voxel nearest
+  where you click: the side that touches the block clicked, unless the
+  property has no value for that side, when it's the nearest of those
+  it has. So a property with only the four sides, placed on a block's
+  north side, is `south` wherever on that side you click, and placed on
+  a floor is the side of its voxel the click is toward. One with only
+  `up` and `down`, placed on a block's side, is `up` on its upper half.
+  A click in the very middle of a side picks the side later in the list
+  `up`, `down`, `north`, `south`, `east`, `west`.
 - **`"look"`** uses the way you look, along its strongest axis: looking
   down is `down`, looking mostly west is `west`. If the property has no
   value for `up` or `down` and you look more up or down than across, it
@@ -791,25 +795,25 @@ properties: {
   `y` or `z`), or else after itself (`up`, `down`, `north`, `south`,
   `east`, `west`). A property whose values are neither needs `values`.
 - **`{ from, values }`** says which value each direction gives; `from` is
-  `"face"` or `"look"`. A direction it leaves out keeps the value the
+  `"face"`, `"nearest"` or `"look"`. A direction it leaves out keeps the value the
   block would have had (from its item, or the default), but it must name
   at least one:
 
   ```json5
   // A slab half: on top of a block it sits low, under one it sits high,
-  // and against a block's side it keeps its default, low.
+  // and on a block's side in the half you click.
   half: {
     values: ["bottom", "top"],
-    place: { from: "face", values: { up: "bottom", down: "top" } },
+    place: { from: "nearest", values: { down: "bottom", up: "top" } },
   },
   ```
 
   A vertical slab is a block of its own, standing against the block
-  whose side you click, and on a floor or under a ceiling at the side of
-  its voxel you look toward:
+  whose side you click, and on a floor or under a ceiling in the half
+  of its voxel you click:
 
   ```json5
-  half: { values: ["north", "south", "east", "west"], place: "against" },
+  half: { values: ["north", "south", "east", "west"], place: "nearest" },
   ```
 
 `place` is for blocks' plain properties only, and not with `item: true`:
@@ -1601,10 +1605,9 @@ blocks placed into fluid delete, having nowhere to push it; the headless
 ## Not yet
 
 - JSON5 changes need a restart; images hot reload.
-- Placement can't read where on a face you click yet, so a slab placed
-  against the side of a block can't pick its half from the upper or lower
-  part of that side, and vertical slabs are blocks of their own rather
-  than a slab placed another way.
+- Vertical slabs are blocks of their own rather than a slab placed
+  another way, since a click on a block's side can't tell a top or
+  bottom slab from a vertical one.
 - A voxel holds at most two halves, both whole halves of one axis: no
   quarter blocks, stairs or small pieces yet, and a half that's
   see-through (a glass slab) or a plant doesn't share its voxel.
