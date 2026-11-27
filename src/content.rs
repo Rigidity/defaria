@@ -30,6 +30,7 @@ mod connect;
 pub mod load;
 mod machine;
 mod place;
+mod reaction;
 mod recipe;
 pub mod schema;
 mod state_name;
@@ -46,6 +47,7 @@ pub use machine::{
     SlotGroupSpec, TankSpec, resolve_face,
 };
 pub use place::Placement;
+pub use reaction::Reaction;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};
 pub use schema::{Direction, ItemAction, PlaceFrom, PortRole, Render, Solver};
 pub use state_name::StateName;
@@ -734,6 +736,8 @@ pub struct Content {
     /// Every recipe, templated ones once for each combination of their
     /// materials, in load order.
     pub recipes: Vec<Recipe>,
+    /// What fluids do where they meet, in load order.
+    pub reactions: Vec<Reaction>,
     /// What went wrong while loading, one message per problem.
     pub errors: Vec<String>,
     category_index: HashMap<String, usize>,
@@ -746,6 +750,9 @@ pub struct Content {
     recipe_types: HashMap<String, Vec<usize>>,
     /// The item states some recipe of each type takes, sorted.
     recipe_items: HashMap<String, Vec<ItemState>>,
+    /// Each pair of fluid blocks that react, both ways round, as an index
+    /// into `reactions`.
+    reaction_index: HashMap<(usize, usize), usize>,
 }
 
 impl FromWorld for Content {

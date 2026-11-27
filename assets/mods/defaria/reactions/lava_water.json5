@@ -1,0 +1,11 @@
+// Where lava and water meet, whichever flows onto which, the lava's voxel
+// turns to stone if it holds at least half a block, and otherwise just
+// cools away, and it uses up a quarter of its amount of the water (it boils
+// off; there's no steam to see yet).
+{
+  fluid: "lava",
+  with: "water",
+  makes: "stone",
+  at_least: 0.5,
+  uses: 0.25,
+}

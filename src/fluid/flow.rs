@@ -1,7 +1,7 @@
 //! How fluid moves, on any grid of [`Cells`], and the [`Simulation`] that
 //! decides which cells move when.
 //!
-//! Flow goes in steps, and a step never makes or destroys fluid. In a
+//! Flow goes in steps, and a step's moves never make or destroy fluid. In a
 //! step, each active cell first **falls**: as much as the cell below has
 //! room for, up to the fluid's `fall`. Cells fall bottom up, so a falling
 //! column moves down a cell a step without breaking up. Then each cell
@@ -36,7 +36,13 @@
 //! slab's half of its cell is full.
 //!
 //! Different fluids that touch don't flow into each other: they stop, like
-//! fluid against a wall, through [`Cells::meet`].
+//! fluid against a wall. Where a step finds two that react (a
+//! [`Reaction`], from the mod's `reactions/`), they react once the step's
+//! moves are made, in [`meet`]: one fluid's cell is used up whole, turning
+//! into a block if it held enough and cooling away if not, and some of the
+//! other's is used up. That's the only way flow loses fluid, and it's
+//! counted ([`TickReport::reacted`]). The block is a wall, so a boundary
+//! reacts once and then stops, and nothing stays active for it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -84,6 +90,10 @@ pub trait CellView {
     /// The cell at `pos`; `None` where the grid isn't loaded, which flow
     /// treats as closed, without changing what's there.
     fn cell(&self, pos: IVec3) -> Option<Cell>;
+
+    /// What happens where fluid `a` touches fluid `b`, another fluid;
+    /// `None` if they don't react, and just stop where they meet.
+    fn reaction(&self, a: BlockState, b: BlockState) -> Option<Reaction>;
 }
 
 /// A grid of cells that fluid flows through.
@@ -91,10 +101,25 @@ pub trait Cells: CellView {
     /// Sets a cell to [`Cell::Open`] or [`Cell::Fluid`].
     fn set(&mut self, pos: IVec3, cell: Cell);
 
-    /// Fluid at `from` touches a different fluid at `to`. Neither flows
-    /// into the other; this is where they'd react (#85). For now nothing
-    /// happens.
-    fn meet(&mut self, _from: IVec3, _to: IVec3) {}
+    /// Puts `block` at `pos` as its voxel's block, in place of whatever
+    /// block was there (a slab whose room held the fluid), where a reaction
+    /// has just used up the voxel's fluid.
+    fn place(&mut self, pos: IVec3, block: BlockState);
+}
+
+/// What two fluids do where they meet, as flow sees it (see "Reactions"
+/// in `docs/modding.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reaction {
+    /// The fluid whose cell is used up whole: it turns into `makes` if it
+    /// holds at least `at_least`, and otherwise cools away.
+    pub fluid: BlockState,
+    pub makes: BlockState,
+    pub at_least: u16,
+    /// How much of the other fluid's cell it uses up for each full cell of
+    /// `fluid`, in proportion to how much of `fluid` there was, and at most
+    /// what the cell holds.
+    pub uses: u16,
 }
 
 /// The four sides fluid spreads to.
@@ -239,14 +264,14 @@ fn plan_spread(
     }
     // Sides it runs off an edge into: open or holding the same fluid, with
     // room below them, so whatever goes there falls on.
-    let falling = SIDES.map(|side| {
-        let next = pos + side;
-        room(kind, cells.cell(next)).is_some() && room(kind, cells.cell(next - IVec3::Y)).is_some()
+    let below = SIDES.map(|side| cells.cell(pos + side - IVec3::Y));
+    let falling: [bool; 4] = std::array::from_fn(|i| {
+        room(kind, cells.cell(pos + SIDES[i])).is_some() && room(kind, below[i]).is_some()
     });
     let edges = falling.iter().filter(|&&falling| falling).count() as u16;
     let lower = std::cell::OnceCell::new();
     let mut given = 0;
-    for (side, falling) in SIDES.into_iter().zip(falling) {
+    for ((side, falling), below) in SIDES.into_iter().zip(falling).zip(below) {
         let next = pos + side;
         let gives = match cells.cell(next) {
             // Half of it goes over its edges in a step, however thin: what
@@ -255,6 +280,12 @@ fn plan_spread(
             Some(Cell::Fluid(k, there, room)) if k == kind && falling => {
                 here.saturating_sub(level(there, room)) / (2 * edges)
             }
+            // A fluid a reaction would use up whole doesn't spread out over
+            // the fluid it reacts with: lava doesn't creep out across water
+            // an eighth at a time, each eighth cooling away and the next
+            // following it, but stops at the edge, where it meets the water
+            // below it whole. It still runs off edges onto it.
+            Some(Cell::Open(_)) if spent_on(cells, kind, below) => 0,
             // Onto the floor of an open cell, if it's below the fluid.
             Some(Cell::Open(room)) => {
                 let floor = level(0, room);
@@ -416,20 +447,68 @@ impl Push {
     }
 }
 
+/// Fluid at `from` touched a different fluid at `to` in a step: if both
+/// are still there and they react, the reaction happens, as [`Reaction`]
+/// says. Pushes the cells it changed onto `changed`, and returns how much
+/// fluid it used up. A reaction leaves a block or room where its fluid was,
+/// so the same two cells never react twice.
+fn meet(cells: &mut impl Cells, from: IVec3, to: IVec3, changed: &mut Vec<IVec3>) -> u64 {
+    let (Some(Cell::Fluid(a, has_a, room_a)), Some(Cell::Fluid(b, has_b, room_b))) =
+        (cells.cell(from), cells.cell(to))
+    else {
+        return 0;
+    };
+    if a == b {
+        return 0;
+    }
+    let Some(reaction) = cells.reaction(a, b) else {
+        return 0;
+    };
+    let ((spent, has, spent_room), (other, kind, there, other_room)) = if reaction.fluid == a {
+        ((from, has_a, room_a), (to, b, has_b, room_b))
+    } else {
+        ((to, has_b, room_b), (from, a, has_a, room_a))
+    };
+    let used = ((reaction.uses as u32 * has as u32 + FULL_FLUID as u32 / 2) / FULL_FLUID as u32)
+        .min(there as u32) as u16;
+    cells.set(other, fill(kind, there - used, other_room));
+    cells.set(spent, Cell::Open(spent_room));
+    if has >= reaction.at_least {
+        cells.place(spent, reaction.makes);
+    }
+    changed.extend([spent, other]);
+    has as u64 + used as u64
+}
+
+/// Whether `kind` resting on `below` would be used up whole by a reaction
+/// with the fluid there.
+fn spent_on(cells: &impl CellView, kind: BlockState, below: Option<Cell>) -> bool {
+    match below {
+        Some(Cell::Fluid(other, ..)) if other != kind => cells
+            .reaction(kind, other)
+            .is_some_and(|reaction| reaction.fluid == kind),
+        _ => false,
+    }
+}
+
 /// Whether the fluid at `pos` would move if it stepped now: it has room
-/// below it, or it would spread. False where there's no fluid. This is
-/// flow's own rule, so waking only the fluid this says might move loses
-/// nothing.
+/// below it, or it would spread, or it touches a fluid it reacts with.
+/// False where there's no fluid. This is flow's own rule, so waking only
+/// the fluid this says might move loses nothing.
 pub fn might_move(cells: &impl CellView, fluid: &Fluid, pos: IVec3) -> bool {
     let Some(Cell::Fluid(kind, ..)) = cells.cell(pos) else {
         return false;
     };
-    if room(kind, cells.cell(pos - IVec3::Y)).is_some() {
+    let mut meetings = Vec::new();
+    if fall(cells, fluid, pos, &mut meetings).is_some() {
         return true;
     }
     let mut transfers = Vec::new();
-    plan_spread(cells, fluid, pos, &mut transfers, &mut Vec::new());
+    plan_spread(cells, fluid, pos, &mut transfers, &mut meetings);
     !transfers.is_empty()
+        || meetings.iter().any(|&(_, to)| {
+            matches!(cells.cell(to), Some(Cell::Fluid(other, ..)) if cells.reaction(kind, other).is_some())
+        })
 }
 
 /// Which cells step when.
@@ -513,6 +592,10 @@ impl<C: CellView> CellView for Layer<'_, C> {
             None => self.world.cell(pos),
         }
     }
+
+    fn reaction(&self, a: BlockState, b: BlockState) -> Option<Reaction> {
+        self.world.reaction(a, b)
+    }
 }
 
 /// Moves fluid as `transfer` says, in `changes` over `world`: as much as
@@ -559,6 +642,8 @@ fn apply(world: &impl CellView, changes: &mut Changes, transfer: Transfer) {
 pub struct TickReport {
     pub stepped: usize,
     pub active: usize,
+    /// Fluid used up by reactions, in thousandths of a block.
+    pub reacted: u64,
 }
 
 impl Simulation {
@@ -595,6 +680,7 @@ impl Simulation {
         budget: usize,
     ) -> TickReport {
         let mut stepped = 0;
+        let mut reacted = 0;
         let mut changed = Vec::new();
         let mut kinds: Vec<BlockState> = self.queues.keys().copied().collect();
         if !kinds.is_empty() {
@@ -646,7 +732,7 @@ impl Simulation {
                 stepped += 1;
                 if step.visited == step.visits() {
                     let step = queue.step.take().expect("started");
-                    finish_step(cells, flow, step, &mut queue.next, &mut changed);
+                    reacted += finish_step(cells, flow, step, &mut queue.next, &mut changed);
                 }
             }
         }
@@ -659,6 +745,7 @@ impl Simulation {
         TickReport {
             stepped,
             active: self.active(),
+            reacted,
         }
     }
 }
@@ -673,16 +760,17 @@ impl Queue {
 }
 
 /// Spreads what `step` planned, then makes all its changes in the world,
-/// pushing each cell it touched onto `changed`. If the world has changed under
-/// the step since it began, it's dropped instead, and its cells go back in
-/// `next` to step again.
+/// pushing each cell it touched onto `changed`, and then lets the fluids
+/// it found touching others react. Returns how much fluid they used up. If
+/// the world has changed under the step since it began, it's dropped
+/// instead, and its cells go back in `next` to step again.
 fn finish_step(
     cells: &mut impl Cells,
     fluid: &Fluid,
     mut step: Step,
     next: &mut HashSet<IVec3>,
     changed: &mut Vec<IVec3>,
-) {
+) -> u64 {
     let transfers = std::mem::take(&mut step.transfers);
     let mut landed: Vec<IVec3> = transfers.iter().map(|transfer| transfer.to).collect();
     for transfer in transfers {
@@ -710,7 +798,7 @@ fn finish_step(
         .any(|(&pos, &(was, _))| cells.cell(pos) != was);
     if stale {
         next.extend(step.cells);
-        return;
+        return 0;
     }
     for (pos, (was, now)) in step.changes {
         if was != Some(now) {
@@ -720,9 +808,10 @@ fn finish_step(
         // say, and will again.
         changed.push(pos);
     }
-    for (from, to) in step.meetings {
-        cells.meet(from, to);
-    }
+    step.meetings
+        .into_iter()
+        .map(|(from, to)| meet(cells, from, to, changed))
+        .sum()
 }
 
 #[cfg(test)]
@@ -763,7 +852,10 @@ pub(crate) mod tests {
     pub(crate) struct Grid {
         pub cells: HashMap<IVec3, Cell>,
         pub unloaded: HashSet<IVec3>,
-        pub meetings: usize,
+        /// The fluids that react, and how.
+        pub reactions: Vec<(BlockState, BlockState, Reaction)>,
+        /// Blocks reactions made, by where.
+        pub placed: HashMap<IVec3, BlockState>,
     }
 
     impl CellView for Grid {
@@ -772,6 +864,13 @@ pub(crate) mod tests {
                 return None;
             }
             Some(self.cells.get(&pos).copied().unwrap_or(Cell::Closed))
+        }
+
+        fn reaction(&self, a: BlockState, b: BlockState) -> Option<Reaction> {
+            self.reactions
+                .iter()
+                .find(|&&(x, y, _)| (x, y) == (a, b) || (y, x) == (a, b))
+                .map(|&(_, _, reaction)| reaction)
         }
     }
 
@@ -792,8 +891,13 @@ pub(crate) mod tests {
             self.cells.insert(pos, cell);
         }
 
-        fn meet(&mut self, _from: IVec3, _to: IVec3) {
-            self.meetings += 1;
+        fn place(&mut self, pos: IVec3, block: BlockState) {
+            assert!(
+                matches!(self.cell(pos), Some(Cell::Open(_))),
+                "placed {pos}, which isn't open"
+            );
+            self.cells.insert(pos, Cell::Closed);
+            self.placed.insert(pos, block);
         }
     }
 
@@ -1399,7 +1503,6 @@ pub(crate) mod tests {
         pour(&mut grid, &mut sim, IVec3::new(9, 1, 0), LAVA, FULL_FLUID);
         pour(&mut grid, &mut sim, IVec3::new(4, 0, 0), LAVA, FULL_FLUID);
         settle(&mut grid, &mut sim, 500);
-        assert!(grid.meetings > 0);
         for x in 0..10 {
             for y in 0..2 {
                 let pos = IVec3::new(x, y, 0);
@@ -1410,6 +1513,228 @@ pub(crate) mod tests {
         assert_eq!(grid.total(LAVA), 2 * FULL_FLUID as u64);
         // Settled, both stay settled.
         assert_eq!(sim.active(), 0);
+    }
+
+    const STONE: BlockState = BlockState(3);
+
+    /// Lava turning to stone where it meets water, as the base game's
+    /// `reactions/lava_water.json5` has it.
+    const LAVA_WATER: Reaction = Reaction {
+        fluid: LAVA,
+        makes: STONE,
+        at_least: FULL_FLUID / 2,
+        uses: FULL_FLUID / 4,
+    };
+
+    /// A grid where lava and water react.
+    fn reacting() -> Grid {
+        Grid {
+            reactions: vec![(LAVA, WATER, LAVA_WATER)],
+            ..default()
+        }
+    }
+
+    /// Ticks until nothing's active, checking that what's left of the
+    /// fluids and what reactions used up always adds up to what there was.
+    /// Returns how much reactions used up. Fails if it doesn't settle
+    /// within `limit`.
+    fn react(grid: &mut Grid, sim: &mut Simulation, limit: usize) -> u64 {
+        let total = |grid: &Grid| grid.total(WATER) + grid.total(LAVA);
+        let start = total(grid);
+        let mut reacted = 0;
+        for _ in 0..limit {
+            if sim.active() == 0 {
+                return reacted;
+            }
+            reacted += sim.tick(grid, fluids, 0.1, usize::MAX).reacted;
+            assert_eq!(total(grid) + reacted, start);
+        }
+        panic!("still {} active after {limit} ticks", sim.active());
+    }
+
+    /// Water poured beside half a block or more of lava turns the lava to
+    /// stone, using up some of the water, and all of it is counted.
+    #[test]
+    fn lava_meeting_water_turns_to_stone() {
+        let mut grid = reacting();
+        grid.open(IVec3::ZERO, IVec3::X);
+        let mut sim = Simulation::default();
+        grid.set(IVec3::X, Cell::Fluid(LAVA, FULL_FLUID / 2, FULL_FLUID));
+        pour(&mut grid, &mut sim, IVec3::ZERO, WATER, FULL_FLUID);
+        let reacted = react(&mut grid, &mut sim, 100);
+        assert_eq!(grid.placed.get(&IVec3::X), Some(&STONE));
+        assert_eq!(grid.cell(IVec3::X), Some(Cell::Closed));
+        // A quarter of a block of water for each block of lava.
+        assert_eq!(grid.amount(IVec3::ZERO), FULL_FLUID - FULL_FLUID / 8);
+        assert_eq!(reacted, (FULL_FLUID / 2 + FULL_FLUID / 8) as u64);
+    }
+
+    /// Less than half a block of lava cools away rather than turning to
+    /// stone, and the water flows on into where it was.
+    #[test]
+    fn thin_lava_cools_away() {
+        let mut grid = reacting();
+        grid.open(IVec3::ZERO, IVec3::X);
+        let mut sim = Simulation::default();
+        grid.set(IVec3::X, Cell::Fluid(LAVA, FULL_FLUID / 2 - 1, FULL_FLUID));
+        pour(&mut grid, &mut sim, IVec3::ZERO, WATER, FULL_FLUID);
+        let reacted = react(&mut grid, &mut sim, 500);
+        assert!(grid.placed.is_empty());
+        assert_eq!(grid.total(LAVA), 0);
+        let water = FULL_FLUID - FULL_FLUID / 8;
+        assert_eq!(grid.total(WATER), water as u64);
+        assert!(grid.amount(IVec3::X) > 0, "the water flowed on");
+        assert_eq!(reacted, (FULL_FLUID / 2 - 1 + FULL_FLUID / 8) as u64);
+    }
+
+    /// Whichever flows onto which, it's the lava that turns to stone: lava
+    /// falling onto water, and water falling onto lava.
+    #[test]
+    fn the_same_reaction_whichever_falls_on_which() {
+        for (top, bottom) in [(LAVA, WATER), (WATER, LAVA)] {
+            let mut grid = reacting();
+            grid.open(IVec3::ZERO, IVec3::Y);
+            let mut sim = Simulation::default();
+            grid.set(IVec3::ZERO, Cell::Fluid(bottom, FULL_FLUID, FULL_FLUID));
+            pour(&mut grid, &mut sim, IVec3::Y, top, FULL_FLUID);
+            react(&mut grid, &mut sim, 100);
+            let lava = if top == LAVA { IVec3::Y } else { IVec3::ZERO };
+            assert_eq!(
+                grid.placed.get(&lava),
+                Some(&STONE),
+                "{top:?} on {bottom:?}"
+            );
+            assert_eq!(grid.total(LAVA), 0);
+            assert_eq!(grid.total(WATER), (FULL_FLUID - FULL_FLUID / 4) as u64);
+        }
+    }
+
+    /// Fluid in a block's room reacts like any other. Lava in a slab's half
+    /// of a cell, beside water, turns the cell to stone. And water in a
+    /// slab's half beside lava turns the lava to stone, using up its share
+    /// of the water there, and stays in its slab.
+    #[test]
+    fn fluid_in_a_blocks_room_reacts() {
+        let half = FULL_FLUID / 2;
+        let mut grid = reacting();
+        grid.cells
+            .insert(IVec3::ZERO, Cell::Fluid(LAVA, half, half));
+        grid.cells.insert(IVec3::X, Cell::OPEN);
+        let mut sim = Simulation::default();
+        pour(&mut grid, &mut sim, IVec3::X, WATER, FULL_FLUID);
+        let reacted = react(&mut grid, &mut sim, 100);
+        assert_eq!(grid.placed.get(&IVec3::ZERO), Some(&STONE));
+        assert_eq!(grid.amount(IVec3::X), FULL_FLUID - half / 4);
+        assert_eq!(reacted, (half + half / 4) as u64);
+
+        let mut grid = reacting();
+        grid.cells
+            .insert(IVec3::ZERO, Cell::Fluid(LAVA, FULL_FLUID, FULL_FLUID));
+        grid.cells.insert(IVec3::X, Cell::Fluid(WATER, 300, half));
+        let mut sim = Simulation::default();
+        sim.wake_around(&grid, IVec3::X);
+        react(&mut grid, &mut sim, 100);
+        assert_eq!(grid.placed.get(&IVec3::ZERO), Some(&STONE));
+        assert_eq!(grid.cell(IVec3::X), Some(Cell::Fluid(WATER, 50, half)));
+    }
+
+    /// A long boundary between lava and water reacts once along its
+    /// length, turning into a wall of stone, and then everything settles:
+    /// nothing stays active for it.
+    #[test]
+    fn a_long_boundary_turns_to_stone_and_settles() {
+        let mut grid = reacting();
+        grid.open(IVec3::ZERO, IVec3::new(31, 0, 1));
+        let mut sim = Simulation::default();
+        for x in 0..32 {
+            grid.set(
+                IVec3::new(x, 0, 1),
+                Cell::Fluid(LAVA, FULL_FLUID, FULL_FLUID),
+            );
+            pour(&mut grid, &mut sim, IVec3::new(x, 0, 0), WATER, FULL_FLUID);
+        }
+        react(&mut grid, &mut sim, 200);
+        for x in 0..32 {
+            assert_eq!(grid.placed.get(&IVec3::new(x, 0, 1)), Some(&STONE), "{x}");
+        }
+        assert_eq!(grid.total(WATER), 32 * (FULL_FLUID - FULL_FLUID / 4) as u64);
+        // Woken again, it's still settled: the stone doesn't react.
+        for x in 0..32 {
+            sim.wake_around(&grid, IVec3::new(x, 0, 1));
+        }
+        let reacted = react(&mut grid, &mut sim, 20);
+        assert_eq!(reacted, 0);
+    }
+
+    /// A lava pool two deep beside a channel of shallower water: the lava
+    /// below the water's surface turns to stone, and the lava above it
+    /// stays at its edge rather than creeping out over the water an
+    /// eighth at a time, each eighth cooling away. It settles after a
+    /// handful of reactions, not draining the pool.
+    #[test]
+    fn lava_doesnt_bleed_out_over_water() {
+        let mut grid = reacting();
+        grid.open(IVec3::new(0, 0, 0), IVec3::new(7, 3, 1));
+        grid.open(IVec3::new(8, 0, -2), IVec3::new(16, 3, 3));
+        for x in 8..=16 {
+            for y in 0..=1 {
+                for z in -2..=3 {
+                    grid.set(
+                        IVec3::new(x, y, z),
+                        Cell::Fluid(LAVA, FULL_FLUID, FULL_FLUID),
+                    );
+                }
+            }
+        }
+        let mut sim = Simulation::default();
+        for x in 0..=4 {
+            for y in 0..=1 {
+                for z in 0..=1 {
+                    pour(&mut grid, &mut sim, IVec3::new(x, y, z), WATER, FULL_FLUID);
+                }
+            }
+        }
+        let reacted = react(&mut grid, &mut sim, 3000);
+        // The two lava cells against the water's floor layer, at most the
+        // two above them too, and the water they used up.
+        assert!(
+            reacted <= 4 * (FULL_FLUID + FULL_FLUID / 4) as u64,
+            "{reacted}"
+        );
+        assert!(grid.placed.len() >= 2, "{:?}", grid.placed);
+        assert!(grid.total(LAVA) >= 104 * FULL_FLUID as u64);
+    }
+
+    /// A sliver of lava cooling away uses up water in proportion: a
+    /// twentieth of a block of lava, a quarter of that of water.
+    #[test]
+    fn slivers_use_up_little_water() {
+        let mut grid = reacting();
+        grid.open(IVec3::ZERO, IVec3::Y);
+        let mut sim = Simulation::default();
+        grid.set(IVec3::ZERO, Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID));
+        pour(&mut grid, &mut sim, IVec3::Y, LAVA, 50);
+        let reacted = react(&mut grid, &mut sim, 100);
+        assert!(grid.placed.is_empty());
+        assert_eq!(grid.amount(IVec3::ZERO), FULL_FLUID - 13);
+        assert_eq!(reacted, 50 + 13);
+    }
+
+    /// Water poured onto a spreading pool of lava: however it goes,
+    /// everything that's gone was used up by a reaction, and it settles.
+    #[test]
+    fn reactions_lose_only_what_they_count() {
+        let mut grid = reacting();
+        grid.open(IVec3::new(-6, 0, -6), IVec3::new(6, 4, 6));
+        let mut sim = Simulation::default();
+        for x in -1..=1 {
+            pour(&mut grid, &mut sim, IVec3::new(x, 0, 0), LAVA, FULL_FLUID);
+        }
+        for z in [-4, 4] {
+            pour(&mut grid, &mut sim, IVec3::new(0, 4, z), WATER, FULL_FLUID);
+        }
+        let reacted = react(&mut grid, &mut sim, 2000);
+        assert!(reacted > 0);
     }
 
     /// Fluid waits at the edge of what's loaded, and flows on once the

@@ -1,6 +1,6 @@
 //! Parses the definition files and resolves the references between them,
 //! in dependency order: categories, network kinds, materials, textures,
-//! models, blocks, items, recipes.
+//! models, blocks, items, recipes, reactions.
 //!
 //! Each definition that fails is reported once, naming its file, and left
 //! out; definitions referring to it then fail with "no such …".
@@ -40,6 +40,7 @@ use super::{
     AIR, Block, Content, FULL_FLUID, ModInfo, State,
     load::LoadedMod,
     machine::{check_machine_items, check_tank_fluids},
+    reaction::bake_reaction,
     recipe::bake_recipe,
     schema::*,
     support,
@@ -78,6 +79,7 @@ struct Defs {
     blocks: Vec<Def<BlockDef>>,
     items: Vec<Def<ItemDef>>,
     recipes: Vec<Def<RecipeDef>>,
+    reactions: Vec<Def<ReactionDef>>,
 }
 
 pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
@@ -137,6 +139,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         categories: Vec::new(),
         networks: Vec::new(),
         recipes: Vec::new(),
+        reactions: Vec::new(),
         errors: Vec::new(),
         category_index: HashMap::new(),
         network_index: HashMap::new(),
@@ -146,6 +149,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         recipe_index: HashMap::new(),
         recipe_types: HashMap::new(),
         recipe_items: HashMap::new(),
+        reaction_index: HashMap::new(),
     };
     content.block_index.insert(AIR.into(), 0);
 
@@ -242,6 +246,11 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
                 check_machine_items(machine, &def.namespace, &content),
             );
         }
+    }
+    for def in &defs.reactions {
+        let result = bake_reaction(&def.id, &def.namespace, &def.def, &content)
+            .and_then(|reaction| content.add_reaction(reaction));
+        report(&def.file, result);
     }
     content
 }
