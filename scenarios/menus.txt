@@ -9,29 +9,29 @@ wait 3
 screenshot target/scenarios/menus/0-paused.png
 wait 1
 cursor 640 398                     # Main menu: the world is saved and left
-wait 1
+wait 30
 hold MouseLeft 1
 wait 3
 screenshot target/scenarios/menus/1-main-menu.png
 wait 1
 cursor 640 352                     # Singleplayer: the (empty) world list
-wait 1
+wait 30
 hold MouseLeft 1
 wait 3
 screenshot target/scenarios/menus/2-no-worlds.png
 wait 1
 cursor 640 367                     # New world
-wait 1
+wait 30
 hold MouseLeft 1
 wait 3
 cursor 640 301                     # name it
-wait 1
+wait 30
 hold MouseLeft 1
 wait 1
 type Alps
 wait 1
 cursor 640 377                     # seed it
-wait 1
+wait 30
 hold MouseLeft 1
 wait 1
 type 42
@@ -39,7 +39,7 @@ wait 2
 screenshot target/scenarios/menus/3-new-world.png
 wait 1
 cursor 640 433                     # Create, and play it
-wait 1
+wait 30
 hold MouseLeft 1
 wait 3
 settle
@@ -50,11 +50,11 @@ wait 1
 hold Escape 1                      # and back out: the list has it
 wait 3
 cursor 640 398
-wait 1
+wait 30
 hold MouseLeft 1
 wait 3
 cursor 640 352
-wait 1
+wait 30
 hold MouseLeft 1
 wait 3
 screenshot target/scenarios/menus/5-world-list.png

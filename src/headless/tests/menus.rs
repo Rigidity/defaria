@@ -38,11 +38,13 @@ fn at(app: &mut App, name: &str) -> Vec2 {
         .translation
 }
 
+/// Clicks the button named `name`, a moment after its page opened (menu
+/// buttons don't take clicks before: see `menu::MenuClick`).
 fn click(app: &mut App, name: &str) {
     let at = at(app, name);
     run_more(
         app,
-        &format!("cursor {} {}\nwait 1\nhold MouseLeft 1\nwait 3", at.x, at.y),
+        &format!("cursor {} {}\nwait 30\nhold MouseLeft 1\nwait 3", at.x, at.y),
     );
 }
 
@@ -168,6 +170,29 @@ fn the_menus_stay_usable() {
         &format!(
             "cursor {} {}\nwait 1\nhold MouseLeft 1\nwait 2\nhold MouseLeft 1\nwait 3",
             main_menu.x, main_menu.y
+        ),
+    );
+    assert_eq!(page(&mut app), Some(MenuPage::Main));
+    // Singleplayer twice, quickly: the second lands on a world, which
+    // doesn't take it.
+    let singleplayer = at(&mut app, "Singleplayer");
+    run_more(
+        &mut app,
+        &format!(
+            "cursor {} {}\nwait 30\nhold MouseLeft 1\nwait 2\nhold MouseLeft 1\nwait 3",
+            singleplayer.x, singleplayer.y
+        ),
+    );
+    assert_eq!(state(&app), GameState::Menu);
+    assert_eq!(page(&mut app), Some(MenuPage::Worlds));
+    click(&mut app, "Back");
+    // The right button does nothing.
+    let singleplayer = at(&mut app, "Singleplayer");
+    run_more(
+        &mut app,
+        &format!(
+            "cursor {} {}\nwait 30\nhold MouseRight 1\nwait 3",
+            singleplayer.x, singleplayer.y
         ),
     );
     assert_eq!(page(&mut app), Some(MenuPage::Main));

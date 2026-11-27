@@ -5,9 +5,15 @@
 //!
 //! Playing a world puts its folder in [`WorldFolder`] and starts playing;
 //! whoever runs the server (`defaria::integrated`) opens it from there.
-//! Each page is a screen of its own ([`MenuPage`]), replaced by the next.
+//! Each page is a screen of its own ([`MenuPage`]), replaced by the next;
+//! Escape doesn't close it. Its buttons take a left click once it's been
+//! open a moment ([`MenuClick`]).
 
-use bevy::{prelude::*, ui_widgets::Activate};
+use bevy::{
+    ecs::system::SystemParam,
+    picking::{events::PointerClick, pointer::PointerButton},
+    prelude::*,
+};
 use defaria_core::save::{self, SavedWorld, WorldFolder};
 
 use crate::{
@@ -87,23 +93,34 @@ fn open_main_menu(
     );
 }
 
-/// How long a page has to be open before **Quit** takes a click, so a
-/// second click on the pause menu's **Main menu** (right where **Quit**
-/// opens) doesn't quit.
-const QUIT_AFTER: f32 = 0.4;
+/// How long a page has to be open before its buttons take a click, so a
+/// quick second click on the button that opened it doesn't land on what's
+/// now in its place (the pause menu's **Main menu** is where **Quit**
+/// opens, and **Singleplayer** where the worlds are listed).
+const CLICKS_AFTER: f32 = 0.4;
 
 /// When the page that's open opened, in real time.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 struct PageOpened(f32);
 
-fn quit(
-    _: On<Activate>,
-    opened: Option<Res<PageOpened>>,
-    time: Res<Time<Real>>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let open_for = time.elapsed_secs() - opened.map_or(0.0, |opened| opened.0);
-    if open_for >= QUIT_AFTER {
+/// Whether a click on a menu button counts: with the left button (Bevy's
+/// buttons take any), once its page has been open a moment.
+#[derive(SystemParam)]
+pub struct MenuClick<'w> {
+    opened: Option<Res<'w, PageOpened>>,
+    time: Res<'w, Time<Real>>,
+}
+
+impl MenuClick<'_> {
+    pub fn counts(&self, click: &PointerClick) -> bool {
+        let open_for =
+            self.time.elapsed_secs() - self.opened.as_ref().map_or(0.0, |opened| opened.0);
+        click.button == PointerButton::Primary && open_for >= CLICKS_AFTER
+    }
+}
+
+fn quit(click: On<PointerClick>, menu: MenuClick, mut exit: MessageWriter<AppExit>) {
+    if menu.counts(&click) {
         exit.write(AppExit::Success);
     }
 }
@@ -174,12 +191,16 @@ fn open_page(
 }
 
 fn show_worlds(
-    _: On<Activate>,
+    click: On<PointerClick>,
+    menu: MenuClick,
     mut commands: Commands,
     theme: Res<UiTheme>,
     folder: Option<Res<WorldsFolder>>,
     pages: Query<Entity, With<MenuPage>>,
 ) {
+    if !menu.counts(&click) {
+        return;
+    }
     let worlds = folder.map_or_else(Vec::new, |folder| save::list_worlds(&folder.0));
     open_page(
         &mut commands,
@@ -187,7 +208,8 @@ fn show_worlds(
         &pages,
         MenuPage::Worlds,
         |panel, theme| {
-            if worlds.is_empty() {
+            let none = worlds.is_empty();
+            if none {
                 panel.spawn((
                     Text::new("No worlds yet"),
                     theme.text_font(),
@@ -202,16 +224,18 @@ fn show_worlds(
                 flex_grow: 1.0,
                 ..default()
             };
-            scroll_panel(panel, theme, list, 46.0, Name::new("World list"), |list| {
-                for world in worlds {
-                    list.spawn((
-                        Name::new(format!("World: {}", world.name)),
-                        WorldEntry(world.clone()),
-                        button(theme, world.name.clone()),
-                    ))
-                    .observe(play_world);
-                }
-            });
+            if !none {
+                scroll_panel(panel, theme, list, 46.0, Name::new("World list"), |list| {
+                    for world in worlds {
+                        list.spawn((
+                            Name::new(format!("World: {}", world.name)),
+                            WorldEntry(world.clone()),
+                            button(theme, world.name.clone()),
+                        ))
+                        .observe(play_world);
+                    }
+                });
+            }
             panel
                 .spawn((Name::new("New world"), button(theme, "New world")))
                 .observe(show_new_world);
@@ -223,20 +247,27 @@ fn show_worlds(
 }
 
 fn back_to_main(
-    _: On<Activate>,
+    click: On<PointerClick>,
+    menu: MenuClick,
     commands: Commands,
     theme: Res<UiTheme>,
     pages: Query<Entity, With<MenuPage>>,
 ) {
-    open_main_menu(commands, theme, pages);
+    if menu.counts(&click) {
+        open_main_menu(commands, theme, pages);
+    }
 }
 
 fn show_new_world(
-    _: On<Activate>,
+    click: On<PointerClick>,
+    menu: MenuClick,
     mut commands: Commands,
     theme: Res<UiTheme>,
     pages: Query<Entity, With<MenuPage>>,
 ) {
+    if !menu.counts(&click) {
+        return;
+    }
     open_page(
         &mut commands,
         &theme,
@@ -280,7 +311,8 @@ fn show_new_world(
 
 /// Creates the world the new world screen describes, and plays it.
 fn create_world(
-    _: On<Activate>,
+    click: On<PointerClick>,
+    menu: MenuClick,
     mut commands: Commands,
     folder: Option<Res<WorldsFolder>>,
     names: Query<&TextField, With<NameField>>,
@@ -288,6 +320,9 @@ fn create_world(
     mut errors: Query<&mut Text, With<MenuError>>,
     mut next: ResMut<NextState<GameState>>,
 ) {
+    if !menu.counts(&click) {
+        return;
+    }
     let name = names.iter().next().map_or("", |field| field.value.as_str());
     let seed = save::seed_from_text(seeds.iter().next().map_or("", |field| field.value.as_str()));
     let created = match folder {
@@ -310,12 +345,16 @@ fn create_world(
 
 /// Plays the world a world list entry names.
 fn play_world(
-    activate: On<Activate>,
+    click: On<PointerClick>,
+    menu: MenuClick,
     mut commands: Commands,
     entries: Query<&WorldEntry>,
     mut next: ResMut<NextState<GameState>>,
 ) {
-    if let Ok(WorldEntry(world)) = entries.get(activate.entity) {
+    if !menu.counts(&click) {
+        return;
+    }
+    if let Ok(WorldEntry(world)) = entries.get(click.entity) {
         commands.insert_resource(WorldFolder(world.folder.clone()));
         next.set(GameState::Playing);
     }

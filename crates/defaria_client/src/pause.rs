@@ -7,7 +7,10 @@
 //! server in the game's own process pauses the game while every player
 //! is (see `defaria_core::server::PauseWithPlayers`).
 
-use bevy::{prelude::*, ui_widgets::Activate};
+use bevy::{
+    picking::{events::PointerClick, pointer::PointerButton},
+    prelude::*,
+};
 use defaria_core::net::ClientMessage;
 
 use crate::{
@@ -107,14 +110,20 @@ pub fn spawn_pause_menu(commands: &mut Commands, theme: &UiTheme) {
         });
 }
 
-fn resume(_: On<Activate>, mut commands: Commands, menus: Query<Entity, With<PauseMenu>>) {
+fn resume(click: On<PointerClick>, mut commands: Commands, menus: Query<Entity, With<PauseMenu>>) {
+    // The left button only (Bevy's buttons take any).
+    if click.button != PointerButton::Primary {
+        return;
+    }
     for menu in &menus {
         commands.entity(menu).try_despawn();
     }
 }
 
-fn leave(_: On<Activate>, mut next: ResMut<NextState<GameState>>) {
-    next.set(GameState::Menu);
+fn leave(click: On<PointerClick>, mut next: ResMut<NextState<GameState>>) {
+    if click.button == PointerButton::Primary {
+        next.set(GameState::Menu);
+    }
 }
 
 /// The player's paused while the pause menu's open; the server is told
