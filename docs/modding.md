@@ -419,6 +419,7 @@ blocks (1 is a full block):
     ripple: 0.002,     // the smallest difference that flows sideways
     move_speed: 0.5,   // how fast you move in it, as a fraction of walking
     view: { color: "#1d3f73", distance: 14 }, // the fog with your eyes in it
+    evaporation: 0.001, // how fast a film of it dries up under open sky
   },
   textures: { all: "water" },
 }
@@ -441,6 +442,13 @@ blocks (1 is a full block):
   1 of walking speed. It also scales swimming up and sinking.
 - **`view`**: the fog's `color` (`#rrggbb`) and how far you can see
   (`distance`, in blocks) with your eyes under its surface.
+- **`evaporation`**: how fast a film of it (thinner than `film`, so it no
+  longer spreads) dries up under open sky, in blocks a second, from 0 to
+  1. Left out, it's 0 and it never does: lava. Water's 0.001 dries a
+  sixteenth of a block in about a minute. Open sky means full sky light
+  just above it, so a roof, or water above, stops it. A film in a
+  block's room (a slab's half) dries too, leaving the block. It's gone
+  for good: nothing brings it back as rain.
 
 #### Room for fluid
 

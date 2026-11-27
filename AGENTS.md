@@ -119,10 +119,10 @@ changes.
    fluid in a voxel) and `fluids` (each fluid's total in a fixed box, or
    the chunks the camera's position loads, and in pipes and tanks, so two
    counts compare; how much of it is active; and what was lost to
-   blocks placed into it and to reactions), `network` (the network
-   the conduit at a voxel is part of: kind, size, frozen or running, its
-   ports and their roles, on an energy network what it stored, produced
-   and consumed, and what a fluid network holds),
+   blocks placed into it, to reactions and to evaporation), `network`
+   (the network the conduit at a voxel is part of: kind, size, frozen or
+   running, its ports and their roles, on an energy network what it
+   stored, produced and consumed, and what a fluid network holds),
    `put` (put items in a machine's slot group or fluid in its tank, as a
    tube or pipe would), `hotbar` (put an item, such as `wrench`, in a
    hotbar slot and in hand), `give` (put items in the player's
@@ -399,8 +399,10 @@ documented in `docs/modding.md`; keep that file, the serde types in
 - `src/fluid.rs` (and `src/fluid/`): fluid flow. A voxel holds a fluid
   and its amount beside its block (`Chunk::fluid_at`, as much as the
   block's `fluid_room` leaves), and `src/fluid/flow.rs` moves amounts
-  between voxels, never making or losing any. Also what the player
-  swims in and the fog inside fluid.
+  between voxels, losing fluid only to blocks placed into it with
+  nowhere to push it and to reactions (`reactions/` in a mod), which it
+  counts. `src/fluid/evaporation.rs` dries up films under open sky, also
+  counted. Also what the player swims in and the fog inside fluid.
 - `src/streaming.rs`: loading, unloading and saving chunks around the
   camera. The world has no edges, up and down included.
 - `src/fog.rs`: distance fog that follows the edge of the drawn world.

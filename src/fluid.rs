@@ -7,9 +7,10 @@
 //! full block. Flow only moves those amounts between voxels, and
 //! fluid is never made, and only destroyed when a block
 //! is placed into it and nothing around has room for what no longer fits
-//! (see [`fluid_displaced`]), or when two fluids react where they meet
+//! (see [`fluid_displaced`]), when two fluids react where they meet
 //! (`reactions/` in a mod: lava meeting water turns to stone, which is the
-//! one way flow sets a block). How it moves, and which voxels step when,
+//! one way flow sets a block), or when a film of it evaporates
+//! ([`evaporation`]). How it moves, and which voxels step when,
 //! is in [`flow`]; this plugin runs that on the loaded chunks, in
 //! [`FixedUpdate`].
 //!
@@ -42,6 +43,7 @@
 //! block placed at the bottom of a full, sealed shaft) is deleted, and
 //! counted.
 
+pub mod evaporation;
 pub mod flow;
 
 use bevy::{ecs::system::SystemParam, prelude::*};
@@ -64,11 +66,18 @@ impl Plugin for FluidPlugin {
         app.init_resource::<FluidSettings>()
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
+            .init_resource::<evaporation::Films>()
             .add_systems(
                 Update,
-                (note_displaced_fluid, wake_around_edits, wake_loaded_chunks).chain(),
+                (
+                    note_displaced_fluid,
+                    wake_around_edits,
+                    wake_loaded_chunks,
+                    evaporation::note_films,
+                )
+                    .chain(),
             )
-            .add_systems(FixedUpdate, run_flow)
+            .add_systems(FixedUpdate, (run_flow, evaporation::evaporate).chain())
             .add_systems(PostUpdate, fog_inside_fluid.after(FogSystems));
     }
 }
@@ -114,6 +123,12 @@ pub struct FluidStats {
     /// Fluid used up by reactions since the start, in thousandths of a
     /// block.
     pub reacted: u64,
+    /// Fluid evaporated since the start, in thousandths of a block (see
+    /// [`evaporation`]).
+    pub evaporated: u64,
+    /// Films waiting to evaporate: [`evaporation::Films`]'s length, kept
+    /// here too so `inspect FluidStats` shows it.
+    pub films: usize,
 }
 
 /// The flow simulation over the loaded world.

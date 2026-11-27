@@ -833,6 +833,7 @@ pub(crate) mod tests {
             move_speed: 0.5,
             view_color: Color::BLACK,
             view_distance: 10.0,
+            evaporation: 0.0,
         }
     }
 
