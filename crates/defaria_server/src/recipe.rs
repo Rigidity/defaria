@@ -49,7 +49,10 @@ impl Plugin for RecipePlugin {
                 .in_set(RecipeSystems)
                 .run_if(on_network_tick),
         );
-        // What a machine asks its network for: only the server's.
+        // What a machine asks its network for: only the server's, so it's
+        // required here rather than on the core type. It holds only in
+        // apps with this plugin, and must be registered before anything
+        // with a `RecipeProgress` is spawned (Bevy panics otherwise).
         app.register_required_components::<RecipeProgress, EnergyNeed>()
             .register_block_entity_part::<RecipeProgress>()
             .add_message::<RecipeFinished>()
