@@ -26,7 +26,8 @@ use bevy::{
 use super::{
     END_TIMEOUT_FRAMES, FRAME_TIME, SETTLE_TIMEOUT_FRAMES,
     capture::{
-        Capture, HeadlessTarget, create_render_target, observe, record_frame_time, render_to_image,
+        Capture, HeadlessTarget, create_render_target, observe, record_frame_time,
+        record_system_times, render_to_image,
     },
     input::{key_for, logical_key, pointer_target},
     pipelines::{PipelineStatus, share_pipeline_status},
@@ -67,7 +68,12 @@ impl Plugin for HeadlessPlugin {
             )
             .add_systems(
                 Last,
-                (record_frame_time, observe, exit_when_done)
+                (
+                    record_frame_time,
+                    record_system_times,
+                    observe,
+                    exit_when_done,
+                )
                     .chain()
                     .after(crate::world::ChunkCompaction),
             );
@@ -75,6 +81,16 @@ impl Plugin for HeadlessPlugin {
             app.add_systems(PreStartup, create_render_target)
                 .add_observer(render_to_image);
             share_pipeline_status(app);
+        }
+    }
+
+    fn finish(&self, app: &mut App) {
+        // Once every plugin has added its systems, before any has run, and
+        // while the render world is still a sub-app (pipelined rendering
+        // takes it away in `cleanup`).
+        let timed = (self.script.commands.iter()).any(|c| matches!(c, Command::Systems(_)));
+        if timed {
+            super::system_timing::time_systems(app);
         }
     }
 }
@@ -106,6 +122,8 @@ pub(super) struct ScriptRunner {
     pub(super) filled: (usize, Duration),
     /// `network` reports due at the end of this frame.
     pub(super) network_reports: Vec<IVec3>,
+    /// `systems` reports due at the end of this frame, by how many systems.
+    pub(super) system_reports: Vec<usize>,
     /// Wall-clock frame times since the last `timing`.
     pub(super) frame_times: Vec<Duration>,
     /// Captures requested but not yet delivered by the renderer.
@@ -133,6 +151,7 @@ impl ScriptRunner {
             && self.fluid_reports.is_empty()
             && !self.memory_report
             && self.network_reports.is_empty()
+            && self.system_reports.is_empty()
     }
 }
 
@@ -329,6 +348,7 @@ fn run_script(
                 }
             }
             Command::Timing => runner.timing = true,
+            Command::Systems(count) => runner.system_reports.push(count),
             Command::Settle => {
                 runner.settling = Some(0);
                 break;

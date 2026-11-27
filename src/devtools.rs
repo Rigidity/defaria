@@ -81,6 +81,9 @@ pub struct Cli {
     /// player instead of the default. CI runs scenarios with a small one,
     /// so they don't spend most of their time loading the world.
     pub radius: Option<i32>,
+    /// `--size <width>x<height>`: render headless frames this many pixels
+    /// big instead of 1280×720.
+    pub size: Option<UVec2>,
 }
 
 impl Cli {
@@ -93,6 +96,7 @@ impl Cli {
         let mut world = None;
         let mut no_vsync = false;
         let mut radius = None;
+        let mut size = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -125,6 +129,17 @@ impl Cli {
                             .expect("--radius needs a positive number of chunks"),
                     );
                 }
+                "--size" => {
+                    size = Some(
+                        args.next()
+                            .and_then(|size| {
+                                let (w, h) = size.split_once('x')?;
+                                Some(UVec2::new(w.parse().ok()?, h.parse().ok()?))
+                            })
+                            .filter(|size| size.min_element() > 0)
+                            .expect("--size needs a size like 2560x1440"),
+                    );
+                }
                 other => panic!("unknown argument: {other}"),
             }
         }
@@ -137,6 +152,10 @@ impl Cli {
             "--no-render only works with --headless"
         );
         assert!(
+            size.is_none() || headless.is_some(),
+            "--size only works with --headless"
+        );
+        assert!(
             !no_vsync || headless.is_none(),
             "--no-vsync only works with a window; headless runs are never synced"
         );
@@ -147,6 +166,7 @@ impl Cli {
             world,
             no_vsync,
             radius,
+            size,
         }
     }
 }
@@ -223,6 +243,25 @@ mod tests {
         assert_eq!(Cli::from_args(args(&[])).radius, None);
         let cli = Cli::from_args(args(&["--headless", "a.txt", "--radius", "4"]));
         assert_eq!(cli.radius, Some(4));
+    }
+
+    #[test]
+    fn parses_size() {
+        assert_eq!(Cli::from_args(args(&[])).size, None);
+        let cli = Cli::from_args(args(&["--headless", "a.txt", "--size", "2560x1440"]));
+        assert_eq!(cli.size, Some(UVec2::new(2560, 1440)));
+    }
+
+    #[test]
+    #[should_panic(expected = "--size needs a size like 2560x1440")]
+    fn size_must_be_two_numbers() {
+        Cli::from_args(args(&["--headless", "a.txt", "--size", "2560"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "--size only works with --headless")]
+    fn size_needs_headless() {
+        Cli::from_args(args(&["--size", "640x360"]));
     }
 
     #[test]

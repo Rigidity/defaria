@@ -19,6 +19,31 @@ use crate::{
     world::{Chunk, ChunkCoord, ChunkMap},
 };
 
+/// A script with `systems` times the game's systems, and the report
+/// names them: the meshing runs every frame, if only to find nothing
+/// changed. Systems that only run other schedules aren't listed.
+#[test]
+fn systems_reports_the_games_systems() {
+    let (mut app, exit) = run_game("wait 3\nsystems 3\nwait 2\n");
+    assert_eq!(exit, AppExit::Success);
+    let lines = super::system_timing::report(app.world_mut(), usize::MAX);
+    assert!(lines[0].starts_with("systems over "), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("remesh_changed_chunks")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.ends_with("::run_main")),
+        "{lines:?}"
+    );
+    // Without `systems` in the script, nothing is timed.
+    let (mut app, _) = run_game("wait 3\n");
+    assert_eq!(
+        super::system_timing::report(app.world_mut(), 5),
+        ["systems: not timed"]
+    );
+}
+
 /// `settle` waits for the world around a new camera position to load,
 /// so a `fill` right after it lands in loaded chunks.
 #[test]

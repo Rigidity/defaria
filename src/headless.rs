@@ -5,6 +5,8 @@
 //! game the input the script describes, and exits when the script ends. Time
 //! advances a fixed 1/60 s per frame, so runs are deterministic.
 //!
+//! Frames are 1280×720 unless `--size <width>x<height>` says otherwise
+//! (blending costs per pixel, so a full-screen window can cost more).
 //! Add `--no-render` to run without a GPU at all: everything works except
 //! `screenshot` and `grain`, which are skipped. `--radius <chunks>` loads
 //! a smaller world than the default, so the script starts sooner. CI runs
@@ -34,9 +36,10 @@
 //! | `fluids [<x0> <y0> <z0> <x1> <y1> <z1>]` | Print how much of each fluid there is in a fixed part of the world, in thousandths of a block: the voxels and machines' tanks in the box between the two corners (both included), or without corners in the chunks the camera's position loads (its window, without the margin chunks stay loaded for after it moves on). A fluid network with a pipe in the region counts whole, as far as it's loaded, since its fluid is one shared amount, not kept per pipe. It says how many chunks that is and how many of them aren't loaded (and so weren't counted), and, for a fluid that's in pipes or tanks too, where it is, so two counts of the same box compare. Also how many voxels of fluid are active in the whole world (see `fluid`). |
 //! | `camera <x> <y> <z> <yaw> <pitch>` | Put the camera (the player's eyes) at a position, turned `yaw` degrees left of north (−Z) and tilted `pitch` degrees up. The player stops there, flying, so the view stays put until input moves it. |
 //! | `timing` | Print the mean and worst wall-clock frame time since the last `timing` (or the start), and if any `fill` ran since, how many voxels they changed (not ones already that block, nor ones in unloaded chunks) and how long the fills took (setting them, not relighting or remeshing, which come in the frames after). |
+//! | `systems [<count>]` | Print, for the frames since the last `systems` (or the start), the busiest frame (the one whose systems used the most CPU time) and the `count` systems (12 by default) that used the most CPU in it, each with its CPU time there, its mean and worst per frame over all those frames, and its wall-clock time there; render-world systems are marked `render:`. CPU time is barely changed by other work on the machine, where wall-clock time can be. Systems run in parallel, and work they hand to other threads and their commands aren't counted, so the times don't add up to the frame's. The runner's own systems count too (an `inspect` of thousands of entities can make its frame the busiest). Only a script that uses `systems` times them (see `system_timing`). |
 //! | `type <text>` | Type the text (the rest of the line), a key press and release per character, into whatever has the keyboard. |
 //! | `random-ticks <n>` | Pick `n` voxels in each loaded chunk for random ticks each tick (1 by default), so blocks that grow or spread on random ticks (see `script::random_tick`) do it quickly enough to watch. |
-//! | `settle` | Wait until the world around the camera has loaded and been meshed and the fog has opened up to the draw distance, and print how many frames and seconds that took. |
+//! | `settle` | Wait until the world around the camera has loaded and been meshed, what has gone out of reach has unloaded, and the fog has opened up to the draw distance, and print how many frames and seconds that took. |
 //! | `memory` | Print what the loaded chunks hold, counted from their data rather than the process's memory, so it's the same every run: how many chunks, how many are air or one other block throughout and how many have one light level throughout, the bytes of block states, light and partial fluid, how much of that (in KiB) is in chunks that are one value throughout but still kept a value per voxel, and how many such chunks there are (0 once compaction has caught up), and the chunk meshes and the bytes of vertices and indices they keep in the main world. |
 //! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`](crate::world::Voxels::get), a hash and a query per voxel), then a chunk at a time, and print both. A box of more than 16,777,216 voxels (256 a side) fails the run. |
 //!
@@ -98,6 +101,7 @@ mod memory;
 mod pipelines;
 mod runner;
 mod script;
+mod system_timing;
 #[cfg(test)]
 mod test_app;
 #[cfg(test)]
@@ -111,8 +115,9 @@ pub use test_app::{run_more, settle, test_game};
 
 /// Fixed time step for every headless frame.
 pub(crate) const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);
-/// Size of the offscreen image the camera renders into.
-const RESOLUTION: UVec2 = UVec2::new(1280, 720);
+/// Size of the offscreen image the camera renders into, unless
+/// `--size` gives another.
+pub const RESOLUTION: UVec2 = UVec2::new(1280, 720);
 /// Give up if captures are still pending or pipelines still compiling this
 /// many frames after the script ended, so a broken capture or a shader that
 /// never loads can't hang an agent forever.
@@ -127,6 +132,11 @@ pub const SETTLE_TIMEOUT_FRAMES: u32 = 12_000;
 /// [`DefaultPlugins`] set up to run without a window. With `rendering` off
 /// there's no GPU at all (for CI); screenshots are then skipped.
 pub fn default_plugins(rendering: bool) -> PluginGroupBuilder {
+    sized_plugins(rendering, RESOLUTION)
+}
+
+/// [`default_plugins`], rendering frames `size` pixels big.
+pub fn sized_plugins(rendering: bool, size: UVec2) -> PluginGroupBuilder {
     let mut wgpu = WgpuSettings::default();
     if !rendering {
         wgpu.backends = None;
@@ -138,7 +148,7 @@ pub fn default_plugins(rendering: bool) -> PluginGroupBuilder {
             // A primary window entity still exists so cursor grabbing and
             // window-targeted input work, but nothing creates an OS window.
             primary_window: Some(Window {
-                resolution: WindowResolution::new(RESOLUTION.x, RESOLUTION.y),
+                resolution: WindowResolution::new(size.x, size.y),
                 ..default()
             }),
             exit_condition: ExitCondition::DontExit,

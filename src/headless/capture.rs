@@ -19,6 +19,7 @@ use bevy::{
 use super::{
     RESOLUTION, memory,
     runner::ScriptRunner,
+    system_timing,
     world_commands::{FluidRegion, fluid_report, network_report},
 };
 
@@ -26,13 +27,17 @@ use super::{
 #[derive(Resource)]
 pub(super) struct HeadlessTarget(pub(super) Handle<Image>);
 
-pub(super) fn create_render_target(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    let mut image = Image::new_target_texture(
-        RESOLUTION.x,
-        RESOLUTION.y,
-        TextureFormat::Rgba8UnormSrgb,
-        None,
-    );
+/// As big as the primary window says, which is what
+/// [`sized_plugins`](super::sized_plugins) set.
+pub(super) fn create_render_target(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+) {
+    let size = window
+        .single()
+        .map_or(RESOLUTION, |window| window.physical_size());
+    let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
     // Screenshots copy out of the texture.
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     commands.insert_resource(HeadlessTarget(images.add(image)));
@@ -63,6 +68,13 @@ pub(super) fn record_frame_time(
     if let Some(last) = last.replace(now) {
         runner.frame_times.push(now - last);
     }
+}
+
+/// Reads the systems' clocks at the end of the frame, for `systems`.
+pub(super) fn record_system_times(world: &mut World) {
+    let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
+    let took = (world.resource::<ScriptRunner>().frame_times.last().copied()).unwrap_or_default();
+    system_timing::record(world, frame, took);
 }
 
 /// Prints the frame times since the last report, and starts over.
@@ -124,6 +136,11 @@ pub(super) fn observe(world: &mut World) {
     }
     if std::mem::take(&mut world.resource_mut::<ScriptRunner>().memory_report) {
         println!("[frame {frame}] {}", memory::ChunkMemory::measure(world));
+    }
+    for count in std::mem::take(&mut world.resource_mut::<ScriptRunner>().system_reports) {
+        for line in system_timing::report(world, count) {
+            println!("[frame {frame}] {line}");
+        }
     }
     for pos in std::mem::take(&mut world.resource_mut::<ScriptRunner>().network_reports) {
         println!("[frame {frame}] {}", network_report(world, pos));

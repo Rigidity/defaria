@@ -1,0 +1,78 @@
+# Flying north over open sea at x 3000, where every chunk crossed has
+# water to mesh and sort (#77). `timing` every 20 frames shows the
+# chunk-crossing spikes; `systems` breaks the slowest frame of the flight
+# down by system.
+# Run: cargo headless scenarios/ocean-flight.txt
+camera 3000 40 0 0 -20
+settle
+screenshot target/scenarios/ocean-flight/0-start.png
+wait 1
+hold MouseLeft 1                  # lock the cursor
+press KeyW
+wait 60                           # up to speed
+timing
+systems                           # starts the count over (this one covers startup)
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+wait 20
+timing
+systems 20
+screenshot target/scenarios/ocean-flight/1-flying.png
+wait 1
+release KeyW

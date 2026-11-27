@@ -2505,6 +2505,7 @@ dependencies = [
  "json5",
  "miniz_oxide 0.8.9",
  "mlua",
+ "rustix 1.1.6",
  "serde",
  "tracing",
 ]

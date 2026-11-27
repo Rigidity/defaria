@@ -71,6 +71,8 @@ pub enum Command {
         pitch: f32,
     },
     Timing,
+    /// Report this many of the busiest frame's systems.
+    Systems(usize),
     Settle,
     Memory,
     Lookups {
@@ -276,6 +278,14 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             expect(0)?;
             commands.push(Command::Timing);
         }
+        "systems" => {
+            let count = match args {
+                [] => 12,
+                [count] => parse_number(count)?,
+                _ => return Err(format!("`systems` takes a count or nothing: {line}")),
+            };
+            commands.push(Command::Systems(count));
+        }
         "settle" => {
             expect(0)?;
             commands.push(Command::Settle);
@@ -349,6 +359,8 @@ mod tests {
              fill 3 9 -2 1 4 5 red_lamp\n\
              camera 1 2.5 3 90 -45\n\
              timing\n\
+             systems\n\
+             systems 5\n\
              settle\n\
              pour 4 -5 6 water 0.25\n\
              fluids\n\
@@ -389,6 +401,8 @@ mod tests {
                     pitch: -45.0,
                 },
                 Command::Timing,
+                Command::Systems(12),
+                Command::Systems(5),
                 Command::Settle,
                 Command::Pour {
                     pos: IVec3::new(4, -5, 6),
@@ -448,6 +462,8 @@ mod tests {
         assert!(Script::parse("pour 1 2 3 water").is_err());
         assert!(Script::parse("pour 1 2 3 water lots").is_err());
         assert!(Script::parse("fluids all").is_err());
+        assert!(Script::parse("systems all").is_err());
+        assert!(Script::parse("systems 1 2").is_err());
         assert!(Script::parse("fluids 1 2 3").is_err());
         assert!(Script::parse("fluids 1 2 3 4 5 six").is_err());
         assert!(Script::parse("random-ticks").is_err());

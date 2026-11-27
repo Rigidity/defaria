@@ -32,7 +32,7 @@ fn main() -> AppExit {
         };
         let rendering = !cli.no_render;
         app.add_plugins((
-            headless::default_plugins(rendering),
+            headless::sized_plugins(rendering, cli.size.unwrap_or(headless::RESOLUTION)),
             // No window means no winit event loop; run frames back to back.
             ScheduleRunnerPlugin::run_loop(Duration::ZERO),
             GamePlugin,

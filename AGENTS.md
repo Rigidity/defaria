@@ -127,9 +127,11 @@ changes.
    hotbar slot and in hand), `give` (put items in the player's
    inventory, a fluid container filled if a fluid is named), `camera` (put the
    camera, the player's eyes, at a position and angle; the player stops
-   there, flying) and `timing` (mean and worst wall-clock
+   there, flying), `timing` (mean and worst wall-clock
    frame time since the last `timing`, for performance comparisons, and
-   how many voxels the `fill`s since then changed and how long they took) and
+   how many voxels the `fill`s since then changed and how long they took),
+   `systems` (the busiest frame since the last `systems`, broken down by
+   the CPU time of each system in it, render world's too) and
    `settle` (wait for the world around the camera to load and clear of fog,
    after a `camera` jump somewhere new, and print how many frames and
    seconds that took) and `memory` (what the loaded chunks hold: how many,
@@ -150,7 +152,8 @@ changes.
    `MouseMiddle`. Add `--no-render` to run without a GPU (`screenshot` and
    `grain` are skipped), and `--radius <chunks>` to load a smaller world
    (the default is 16); CI runs every scenario in `scenarios/` that way,
-   with `--radius 4`, so they must keep working with a small world. Write screenshots under `target/`. Keep reusable scenarios in
+   with `--radius 4`, so they must keep working with a small world.
+   `--size <width>x<height>` renders frames bigger than 1280×720. Write screenshots under `target/`. Keep reusable scenarios in
    `scenarios/`; put one-off ones in your scratch directory.
 
    **Don't run every scenario locally to check they pass.** CI runs them
