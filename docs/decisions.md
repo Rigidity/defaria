@@ -1395,21 +1395,21 @@ holds about 205 blocks once level; 40 seconds) and
 `scenarios/fluid-flow.txt`, branch and base run back to back. `main`
 is the same build with reservoirs turned off (`reservoir_columns: 0`),
 which runs exactly the old flow; on the sea it matched a build of
-`main` itself (flow 2.3 s against 2.4 s, worst tick 7 ms against 9 ms).
+`main` itself, run by a reviewer (flow 2.3 s against 2.4 s).
 "Flow" is the wall-clock time flow itself took, all told
 (`FluidStats::millis`); frames are the whole frame, rendered.
 
 | sea-breach | in the cut at 1 s / 5 s / 20 s | active at 20 s | flow in all, worst tick | frames in the first 5 s, mean and worst | frames over 20 s |
 |---|---|---|---|---|---|
-| `main` | 361 / 717 / 1,364 blocks | 6,431 | 2.3 s, 7 ms | 4.6 ms, 11 ms | 5.4 ms, 13 ms |
-| reservoirs | 4,533 / 23,239 / 23,328 blocks: full, level with the sea | 0, settled 7 s after the breach | 1.4 s, 27 ms | 10.9 ms, 46 ms | 5.3 ms, 46 ms |
+| `main` | 361 / 717 / 1,364 blocks | 6,431 | 2.4 s, 11 ms | 5.9 ms, 14 ms | 7.0 ms, 21 ms |
+| reservoirs | 4,533 / 23,239 / 23,328 blocks: full, level with the sea | 0, settled 7 s after the breach | 1.5 s, 28 ms | 12.1 ms, 50 ms | 6.5 ms, 50 ms |
 
 | pond-channel | in the channel at 1 s / 40 s | settled | flow in all, worst tick |
 |---|---|---|---|
-| `main` | 6 / 66 blocks | no: 380 active at 40 s | 347 ms, 0.8 ms |
-| reservoirs | 114 / 204 blocks: full, level | 3.2 s after the gate opens | 9 ms, 0.3 ms |
+| `main` | 6 / 66 blocks | no: 380 active at 40 s | 384 ms, 1.0 ms |
+| reservoirs | 114 / 204 blocks: full, level | 3.2 s after the gate opens | 15 ms, 1.0 ms |
 
-On `fluid-flow.txt` flow took 13 ms with reservoirs against 123 ms, and
+On `fluid-flow.txt` flow took 12 ms with reservoirs against 63 ms, and
 settled at the same time: what's left trickling there is the lava and the
 films, which no reservoir takes. Frame means with nothing moving differed
 by up to 2 ms between identical runs, so they don't tell the two apart.
@@ -1419,8 +1419,8 @@ takes in some of the shore's water.)
 So reservoirs do the same work for less in all, and finish it: the sea's
 cut fills in 5 seconds rather than not at all, and then nothing's left
 moving. What they cost is concentrated: while the sea pours in, the
-frames are twice as long on average, and a tick that levels or merges
-reservoirs of tens of thousands of columns takes up to 27 ms (#197).
+frames are twice as long on average (12 ms against 6), and a tick that levels or merges
+reservoirs of tens of thousands of columns takes up to 28 ms (#197).
 
 The ideas weighed: **a higher `rate`** buys little (water's `rate` at 40
 rather than 20, measured earlier against the same `main` on a busier
@@ -1475,7 +1475,7 @@ a lake joined to a basin by a one-voxel gap evens out as fast as by a
 wide one, as communicating vessels would at rest but not on the way (#196).
 A sea bigger than one reservoir becomes a patchwork of them, levelled
 against each other a pair at a time as they're found touching; evening
-out the sea after a big breach costs ticks of up to 27 ms, against 7 ms
+out the sea after a big breach costs ticks of up to 28 ms, against 11 ms
 for `main`'s flow there (#197). Reservoirs aren't saved: one forms
 again the first time its fluid moves after loading. Its columns are
 looked up by `(x, z)`, so two bodies stacked in one column (a pond above a
