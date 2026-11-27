@@ -19,7 +19,7 @@ use super::{CHUNK_VOLUME, Chunk};
 use crate::light::ChunkLight;
 
 /// [`CHUNK_VOLUME`] values in [`Chunk::index_of`] order.
-#[derive(Reflect, Debug, Clone)]
+#[derive(Reflect, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ChunkArray<T> {
     /// Every voxel has this value; nothing else is kept.
     Uniform(T),

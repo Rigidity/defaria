@@ -33,7 +33,7 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 /// `block_entity`), by voxel index. Once it's spawned they're entities
 /// under it instead, and are written back into a copy of it when it's
 /// saved.
-#[derive(Component, Reflect, Debug, Clone, PartialEq, Eq)]
+#[derive(Component, Reflect, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[reflect(Component)]
 #[require(ChunkLight)]
 pub struct Chunk {
@@ -42,7 +42,9 @@ pub struct Chunk {
     /// amount in the low [`AMOUNT_BITS`] bits with the height it's drawn at
     /// above them (see [`sticky_step`]).
     fluid: ChunkArray<(BlockState, u16)>,
-    /// Block entities, by voxel index, while the chunk isn't spawned.
+    /// Block entities, by voxel index, while the chunk isn't spawned. Not
+    /// sent to clients, which don't keep them.
+    #[serde(skip)]
     block_entities: HashMap<u16, BlockEntityData>,
 }
 

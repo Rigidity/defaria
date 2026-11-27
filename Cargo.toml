@@ -29,6 +29,8 @@ miniz_oxide = "0.8.9"
 # statically, so shipping builds stay one binary (see docs/decisions.md).
 mlua = { version = "0.12.3", features = ["luau", "send"] }
 serde = { version = "1.0.229", features = ["derive"] }
+# The messages between server and client, encoded for the network.
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 # Compile out verbose log calls (including Bevy's own) at build time.
 # Debug builds keep up to `debug`; release builds keep only `warn` and `error`.
 tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_warn"] }

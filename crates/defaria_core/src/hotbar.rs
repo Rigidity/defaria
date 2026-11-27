@@ -36,7 +36,7 @@ impl Plugin for HotbarPlugin {
 }
 
 /// The kind of item in each hotbar slot, slot 1 first.
-#[derive(Component, Reflect, Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Component, Reflect, Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[reflect(Component)]
 pub struct Hotbar(pub [Option<ItemState>; HOTBAR_SLOTS]);
 
@@ -68,7 +68,7 @@ impl Hotbar {
 }
 
 /// The hotbar slot in hand, from 0: whose item right click uses.
-#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[reflect(Component)]
 pub struct ActiveSlot(pub usize);
 
