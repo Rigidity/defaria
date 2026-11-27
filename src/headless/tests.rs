@@ -126,7 +126,7 @@ fn moving_on_doesnt_bring_the_fog_in() {
             // Loading and meshing run on other threads. Let them finish
             // before the next frame, so this checks the fog against a
             // world that keeps up, however slow the machine (CI) is.
-            defaria_core::streaming::finish_loads(app.world_mut());
+            defaria_core::streaming::finish_loads(crate::headless::server(&mut app));
             defaria_client::meshing::testing::finish_mesh_tasks(app.world_mut());
             let fog = *app.world().resource::<ChunkFog>();
             assert_eq!(fog.scale, 1.0, "{moves:?}, frame {frames}");

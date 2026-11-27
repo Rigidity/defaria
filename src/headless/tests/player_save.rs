@@ -88,6 +88,6 @@ fn an_unreadable_player_file_is_kept() {
             break;
         }
     }
-    assert!(app.world().contains_resource::<KeepPlayerFile>());
+    assert!(crate::headless::server_world(&app).contains_resource::<KeepPlayerFile>());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
 }

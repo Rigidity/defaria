@@ -1,4 +1,5 @@
-//! The local player's inventory and hotbar.
+//! The player's inventory and hotbar. (One player's, saved in the
+//! world's `player.json5`, until players have ids: #216.)
 //!
 //! The inventory is limited only by weight, [`PLAYER_MAX_WEIGHT`] (in
 //! survival; see `game_mode`). A new player starts in creative, with [`DEFAULT_HOTBAR`] in their hotbar and
@@ -18,7 +19,7 @@ use crate::{
     fluid_container::saved_data,
     game_mode::GameMode,
     hotbar::{ActiveSlot, HOTBAR_SLOTS, Hotbar},
-    player::LocalPlayer,
+    player::Player,
     save::{
         WorldFolder,
         player::{self as file, ItemNames, PLAYER_FORMAT, PlayerFile, SavedFluid, SavedStack},
@@ -84,7 +85,7 @@ pub fn new_player(content: &Content) -> (Inventory, Hotbar) {
 /// Gives the local player their inventory, hotbar and active slot as they
 /// appear: the saved ones in a world that has them, or a new player's.
 fn equip_new_player(
-    add: On<Add<LocalPlayer>>,
+    add: On<Add<Player>>,
     content: Res<Content>,
     folder: Option<Res<WorldFolder>>,
     mut commands: Commands,
@@ -208,7 +209,7 @@ fn save_player(
     folder: Option<Res<WorldFolder>>,
     keep: Option<Res<KeepPlayerFile>>,
     content: Res<Content>,
-    player: Option<Single<(&Inventory, &Hotbar, &ActiveSlot, &GameMode), With<LocalPlayer>>>,
+    player: Option<Single<(&Inventory, &Hotbar, &ActiveSlot, &GameMode), With<Player>>>,
     mut since_save: Local<f32>,
 ) {
     if keep.is_some() {

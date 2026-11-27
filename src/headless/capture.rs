@@ -132,7 +132,9 @@ pub(super) fn observe(world: &mut World) {
             Some((min, max)) => FluidRegion::Box { min, max },
             None => FluidRegion::Window,
         };
-        println!("[frame {frame}] {}", fluid_report(world, region));
+        let report = crate::integrated::with_server(world, |server| fluid_report(server, region))
+            .unwrap_or_else(|| fluid_report(world, region));
+        println!("[frame {frame}] {report}");
     }
     if std::mem::take(&mut world.resource_mut::<ScriptRunner>().memory_report) {
         println!("[frame {frame}] {}", memory::ChunkMemory::measure(world));
@@ -143,10 +145,31 @@ pub(super) fn observe(world: &mut World) {
         }
     }
     for pos in std::mem::take(&mut world.resource_mut::<ScriptRunner>().network_reports) {
-        println!("[frame {frame}] {}", network_report(world, pos));
+        let report = crate::integrated::with_server(world, |server| network_report(server, pos))
+            .unwrap_or_else(|| network_report(world, pos));
+        println!("[frame {frame}] {report}");
     }
     for name in inspections {
-        match inspect(world, &name) {
+        // The client's first; what only the server has (block entities,
+        // networks, the simulation's state), the server's.
+        let found = match inspect(world, &name) {
+            Ok(lines) if lines.is_empty() => None,
+            Ok(lines) => Some(Ok(lines)),
+            Err(error) => Some(Err(error)),
+        };
+        let result = match found {
+            Some(Ok(lines)) => Ok(lines),
+            // A type only the server registered.
+            Some(Err(error)) => {
+                match crate::integrated::with_server(world, |server| inspect(server, &name)) {
+                    Some(Ok(lines)) => Ok(lines),
+                    _ => Err(error),
+                }
+            }
+            None => crate::integrated::with_server(world, |server| inspect(server, &name))
+                .unwrap_or(Ok(Vec::new())),
+        };
+        match result {
             Ok(lines) if lines.is_empty() => println!("[frame {frame}] no entity has {name}"),
             Ok(lines) => {
                 for line in lines {

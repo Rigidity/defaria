@@ -12,6 +12,13 @@
 //! a smaller world than the default, so the script starts sooner. CI runs
 //! every scenario with both (`--no-render --radius 4`).
 //!
+//! The game is a client and a server (see `crate::integrated`); the script
+//! drives the client. Commands that set up the world (`fill`, `pour`,
+//! `put`, `hotbar`, `give`, `random-ticks`, `evaporation`, `lookups`) and
+//! the `fluids` and `network` reports act on the server's world; `camera`
+//! moves the client's player, as the mouse and keys do; `inspect` looks in
+//! the client's world, then the server's.
+//!
 //! # Script format
 //!
 //! One command per line. Blank lines and `#` comments are ignored.
@@ -64,7 +71,9 @@
 //!
 //! `fill` and `camera` set up exact situations (a sealed room, a lamp, a
 //! view) without steering there with input. Edits go through the same path
-//! as the player's, so they relight and remesh on the frame they're made.
+//! as the player's: they're made on the server at the end of their frame,
+//! and the client draws them from the next (so a `screenshot` on the same
+//! frame as a `fill` doesn't show it yet).
 //! `timing` is for comparing performance between runs on the same machine;
 //! put a `timing` just before the stretch to measure, to leave startup out.
 //!
@@ -113,7 +122,7 @@ mod world_commands;
 pub use runner::HeadlessPlugin;
 pub use script::Script;
 #[cfg(test)]
-pub use test_app::{run_more, settle, test_game};
+pub use test_app::{run_more, server, server_world, settle, test_game};
 
 /// Fixed time step for every headless frame.
 pub(crate) const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);

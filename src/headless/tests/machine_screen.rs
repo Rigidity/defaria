@@ -50,10 +50,9 @@ fn game() -> App {
     assert_eq!(cursor(&mut app), CursorGrabMode::Locked);
     let ore = ore(&app);
     let content = app.world().resource::<Content>().clone();
-    let mut players = app
-        .world_mut()
-        .query_filtered::<&mut Inventory, With<LocalPlayer>>();
-    let mut inventory = players.single_mut(app.world_mut()).unwrap();
+    let server = crate::headless::server(&mut app);
+    let mut players = server.query_filtered::<&mut Inventory, With<defaria_core::player::Player>>();
+    let mut inventory = players.single_mut(server).unwrap();
     assert!(inventory.add(&content, ItemStack::new(ore, 64)).is_none());
     run_more(&mut app, "wait 2");
     app
@@ -104,12 +103,13 @@ fn carried(app: &mut App, item: ItemState) -> u32 {
 
 /// The furnace's `input` slot.
 fn input(app: &App) -> Option<ItemStack> {
-    let entity = app
-        .world()
+    let entity = crate::headless::server_world(app)
         .resource::<BlockEntities>()
         .get(FURNACE)
         .unwrap();
-    let slots = app.world().get::<Slots>(entity).unwrap();
+    let slots = crate::headless::server_world(app)
+        .get::<Slots>(entity)
+        .unwrap();
     slots.group("input").unwrap().slots[0].clone()
 }
 
@@ -321,12 +321,13 @@ fn dropping_on_a_group_puts_items_there() {
         )
     };
     let held = |app: &App| {
-        let entity = app
-            .world()
+        let entity = crate::headless::server_world(app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .unwrap();
-        let slots = app.world().get::<Slots>(entity).unwrap();
+        let slots = crate::headless::server_world(app)
+            .get::<Slots>(entity)
+            .unwrap();
         slots.0[catalyst].slots[0].clone()
     };
     // On the machine's name, above its slots: nothing takes stone.
@@ -361,7 +362,7 @@ fn the_screen_closes_when_the_machine_goes() {
         "camera 64.5 70.5 2092.5 0 0\nwait 2\nsettle\nwait 2",
     );
     assert!(
-        app.world()
+        crate::headless::server_world(&app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .is_none()
@@ -662,20 +663,27 @@ fn a_scripted_machine_is_used_rather_than_opened() {
     };
     let content = Content::from_mods(scripted_machine_mods());
     assert!(content.errors.is_empty(), "{:?}", content.errors);
-    let sources = ScriptSources::from_mods(&order(scripted_machine_mods(), &mut Vec::new()));
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let runtime = || {
+        let sources = ScriptSources::from_mods(&order(scripted_machine_mods(), &mut Vec::new()));
+        ScriptRuntime::new(sources, ScriptSettings::untimed())
+    };
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
-    app.insert_resource(ScriptIndex::new(&content, &runtime))
-        .insert_resource(runtime)
-        .insert_resource(content);
+    // The server runs the scripts (it starts on the first frame); both
+    // sides have the content.
+    app.update();
+    let server = crate::headless::server(&mut app);
+    let runtime = runtime();
+    server.insert_resource(ScriptIndex::new(&content, &runtime));
+    server.insert_resource(runtime);
+    server.insert_resource(content.clone());
+    app.insert_resource(content);
     settle(&mut app);
     let used = |app: &mut App| {
-        let entity = app
-            .world()
+        let entity = crate::headless::server_world(app)
             .resource::<BlockEntities>()
             .get(FURNACE)
             .unwrap();
-        app.world()
+        crate::headless::server_world(app)
             .get::<BlockData>(entity)
             .and_then(|data| data.0.get("used").cloned())
     };
@@ -750,12 +758,20 @@ fn a_scripted_item_comes_after_the_block_it_is_used_on() {
     let state = |id: &str| content.default_state(id).unwrap();
     let [stone, crate_, scripted, marker] =
         ["defaria:stone", "test:crate", "test:box", "test:marker"].map(state);
-    let sources = ScriptSources::from_mods(&order(scripted_item_mods(), &mut Vec::new()));
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let runtime = || {
+        let sources = ScriptSources::from_mods(&order(scripted_item_mods(), &mut Vec::new()));
+        ScriptRuntime::new(sources, ScriptSettings::untimed())
+    };
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
-    app.insert_resource(ScriptIndex::new(&content, &runtime))
-        .insert_resource(runtime)
-        .insert_resource(content);
+    // The server runs the scripts (it starts on the first frame); both
+    // sides have the content.
+    app.update();
+    let server = crate::headless::server(&mut app);
+    let runtime = runtime();
+    server.insert_resource(ScriptIndex::new(&content, &runtime));
+    server.insert_resource(runtime);
+    server.insert_resource(content.clone());
+    app.insert_resource(content);
     settle(&mut app);
     let front = FURNACE + IVec3::Z;
     run_more(
@@ -791,22 +807,22 @@ fn a_scripted_item_comes_after_the_block_it_is_used_on() {
     );
     assert!(!is_open(&mut app));
     assert_eq!(voxel(&mut app, FURNACE), scripted, "the item wasn't used");
-    let entity = app
-        .world()
+    let entity = crate::headless::server_world(&app)
         .resource::<BlockEntities>()
         .get(FURNACE)
         .unwrap();
-    let used = app
-        .world()
+    let used = crate::headless::server_world(&app)
         .get::<BlockData>(entity)
         .and_then(|data| data.0.get("used").cloned());
     assert_eq!(used, Some(Value::Int(1)), "the machine was used");
     assert!(voxel(&mut app, front).is_air(), "nothing was placed");
 }
 
-/// The view doesn't turn on the frame a use opens a machine's screen,
-/// though the mouse moved then too, and the use is gone by the end of the
-/// frame; a right click on air leaves no use behind either.
+/// Once a use has opened a machine's screen the mouse doesn't turn the
+/// view, and the use is gone by the end of the frame it was made; a right
+/// click on air leaves no use behind either. (The screen opens when the
+/// server says so, a frame after the click, so the mouse can still turn
+/// the view on the click's own frame.)
 #[test]
 fn opening_a_screen_stops_the_view_turning() {
     use defaria_core::{player::Look, use_action::UseAction};
@@ -818,9 +834,10 @@ fn opening_a_screen_stops_the_view_turning() {
         let (look, action) = looks.single(app.world()).unwrap();
         (look.yaw, action.pending())
     };
-    let (before, _) = look(&mut app);
-    run_more(&mut app, "mouse 200 0\nhold MouseRight 1\nwait 3");
+    run_more(&mut app, "hold MouseRight 1\nwait 3");
     assert!(is_open(&mut app));
+    let (before, _) = look(&mut app);
+    run_more(&mut app, "mouse 200 0\nwait 2");
     assert_eq!(look(&mut app), (before, None));
 
     run_more(
@@ -828,4 +845,28 @@ fn opening_a_screen_stops_the_view_turning() {
         "hold KeyE 1\nwait 3\nfill 64 70 89 64 70 89 air\nwait 2\nhold MouseRight 1\nwait 1",
     );
     assert_eq!(look(&mut app).1, None, "no use outlasts its frame");
+}
+
+/// Two right clicks too quick for the first's screen to have opened open
+/// it once, and it stays the server's: what goes into the machine shows.
+#[test]
+fn a_double_click_opens_one_screen_that_stays_live() {
+    let mut app = game();
+    run_more(
+        &mut app,
+        "press MouseRight\nwait 1\nrelease MouseRight\npress MouseRight\nwait 1\nrelease MouseRight\nwait 3",
+    );
+    assert!(is_open(&mut app));
+    let mut screens = app.world_mut().query::<&MachineScreen>();
+    assert_eq!(screens.iter(app.world()).count(), 1);
+    run_more(
+        &mut app,
+        "put 64 70 89 input 3 stone[ore=defaria:iron]\nwait 3",
+    );
+    let mut views = app
+        .world_mut()
+        .query_filtered::<&defaria_core::machine::Slots, With<MachineView>>();
+    let slots = views.single(app.world()).unwrap();
+    let input = slots.group("input").unwrap().slots[0].clone();
+    assert_eq!(input.map(|stack| stack.count), Some(3));
 }

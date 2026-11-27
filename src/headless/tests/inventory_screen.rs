@@ -539,10 +539,10 @@ fn lists_stay_in_order_as_the_inventory_changes() {
         item(&app, "defaria:stone_slab"),
     );
     let change = |app: &mut App, change: &dyn Fn(&mut Inventory)| {
-        let mut players = app
-            .world_mut()
-            .query_filtered::<&mut Inventory, With<LocalPlayer>>();
-        change(&mut players.single_mut(app.world_mut()).unwrap());
+        let server = crate::headless::server(app);
+        let mut players =
+            server.query_filtered::<&mut Inventory, With<defaria_core::player::Player>>();
+        change(&mut players.single_mut(server).unwrap());
         run_more(app, "wait 2");
     };
     change(&mut app, &|inventory| {

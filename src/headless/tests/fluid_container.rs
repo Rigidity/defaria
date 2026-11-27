@@ -85,13 +85,9 @@ fn player_inventory(app: &mut App) -> Inventory {
 }
 
 fn give(app: &mut App, stack: ItemStack) {
-    let mut players = app
-        .world_mut()
-        .query_filtered::<&mut Inventory, With<LocalPlayer>>();
-    players
-        .single_mut(app.world_mut())
-        .unwrap()
-        .add(base(), stack);
+    let server = crate::headless::server(app);
+    let mut players = server.query_filtered::<&mut Inventory, With<defaria_core::player::Player>>();
+    players.single_mut(server).unwrap().add(base(), stack);
 }
 
 fn water_in(app: &mut App, from: IVec3, to: IVec3) -> u64 {
@@ -231,8 +227,14 @@ fn a_bucket_fills_and_empties_a_machine_tank() {
     ));
     give(&mut app, buckets(1, WATER, FULL));
     let tank_water = |app: &mut App| {
-        let entity = app.world().resource::<BlockEntities>().get(tank).unwrap();
-        app.world().get::<Tanks>(entity).unwrap().total(WATER)
+        let entity = crate::headless::server_world(app)
+            .resource::<BlockEntities>()
+            .get(tank)
+            .unwrap();
+        crate::headless::server_world(app)
+            .get::<Tanks>(entity)
+            .unwrap()
+            .total(WATER)
     };
     let click = format!(
         "{}hotbar 1 bucket\nhold MouseLeft 1\nwait 1\nhold MouseRight 1\nwait 1\n",

@@ -35,7 +35,9 @@ fn a_pool_draining_into_a_hole_relights() {
             app.update();
         }
         assert!(
-            app.world().resource::<LightQueue>().is_empty(),
+            crate::headless::server_world(app)
+                .resource::<LightQueue>()
+                .is_empty(),
             "light caught up"
         );
     };
@@ -81,7 +83,8 @@ fn stale_light(app: &mut App) -> Vec<(IVec3, Light, Light)> {
             self.0.contains_key(&coord)
         }
     }
-    let world = app.world_mut();
+    // The server lights the world; the client's light is its copy.
+    let world = crate::headless::server(app);
     let mut chunks = world.query::<(&ChunkCoord, &Chunk, &ChunkLight)>();
     let loaded: Vec<(IVec3, Chunk, ChunkLight)> = chunks
         .iter(world)

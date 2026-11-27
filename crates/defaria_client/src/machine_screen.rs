@@ -47,6 +47,7 @@ use crate::{
         list::{ItemList, ListEntry, ListSource, Owner, item_list},
         screen::{INVENTORY_ROWS, WeightLabel},
     },
+    net::{FromServer, ToServer},
     ui::slot::slot_fluid,
     ui::{
         Bar, ItemSlot, NO_FLUID, PointerTravel, Tooltip, UiScreen, UiTheme, bar, fluid_color,
@@ -54,19 +55,11 @@ use crate::{
     },
 };
 use defaria_core::{
-    block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content},
     game_mode::item_for_block,
-    inventory::Inventory,
-    machine::{
-        EnergyBuffer, Slots, Tanks,
-        exchange::{input_groups, into_machine_from, out_of_machine},
-        has_screen,
-    },
-    player::LocalPlayer,
+    machine::{EnergyBuffer, MachineActive, Slots, Tanks, exchange::input_groups},
+    net::{ClientMessage, MachineContents, ServerMessage, Transfer},
     recipe::{RecipeProgress, RecipeStatus},
-    use_action::{UseAction, UseStep},
-    world::Voxels,
 };
 
 /// Space between the panel and the hotbar, in logical pixels.
@@ -95,13 +88,16 @@ impl Plugin for MachineScreenPlugin {
             .add_observer(click_machine_slot)
             .add_observer(click_player_entry)
             .add_observer(drop_on_machine)
+            .add_observer(tell_the_server_it_closed)
             .add_systems(
                 Update,
                 (
-                    open_machine_screen.in_set(UseStep::Screen),
+                    // The view a screen opens with is there for its contents.
+                    (open_machine_screen, show_machine_contents, close_on_server).chain(),
                     close_machine_screen.run_if(not(typing)),
                     (show_slots, show_tanks, show_energy, show_progress),
-                ),
+                )
+                    .chain(),
             );
     }
 }
@@ -112,7 +108,7 @@ impl Plugin for MachineScreenPlugin {
 #[reflect(Component)]
 #[require(UiScreen)]
 pub struct MachineScreen {
-    /// The machine's block entity.
+    /// What the server sends of the machine: a [`MachineView`].
     pub machine: Entity,
     pub pos: IVec3,
     /// The machine's state when the screen opened, for its definition
@@ -165,60 +161,133 @@ pub struct MachinePanel;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct SendsToMachine;
 
-/// Opens the screen of the machine the local player uses, claiming the
-/// use, unless they sneak.
+/// The client's copy of the machine whose screen is open: the parts the
+/// server sends of it ([`Slots`], [`Tanks`], [`EnergyBuffer`],
+/// [`RecipeProgress`], [`MachineActive`]), as it sends them.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct MachineView;
+
+/// Opens the screen of the machine the server says the local player used
+/// (`defaria_core::server` claims the use).
 pub fn open_machine_screen(
     mut commands: Commands,
-    action: Single<&mut UseAction, With<LocalPlayer>>,
+    mut messages: MessageReader<FromServer>,
     content: Res<Content>,
-    voxels: Voxels,
-    index: Res<BlockEntities>,
     theme: Res<UiTheme>,
+    open: Query<Entity, With<MachineScreen>>,
 ) {
-    let mut action = action.into_inner();
-    let Some(using) = action.pending() else {
-        return;
-    };
-    if using.sneak {
-        return;
+    for FromServer(message) in messages.read() {
+        let ServerMessage::OpenScreen { pos, state } = *message else {
+            continue;
+        };
+        for screen in &open {
+            // Replaced, not closed: the server's sending the new one.
+            commands.entity(screen).insert(Replaced).despawn();
+        }
+        let view = commands
+            .spawn((Name::new("Machine view"), MachineView))
+            .id();
+        let screen = MachineScreen {
+            machine: view,
+            pos,
+            state,
+        };
+        spawn_machine_screen(&mut commands, &theme, &content, screen);
     }
-    let Some(hit) = using.target else {
-        return;
-    };
-    let Some(state) = voxels.get(hit.block) else {
-        return;
-    };
-    let (Some(machine), Some(entity)) = (content.machine(state), index.get(hit.block)) else {
-        return;
-    };
-    if !has_screen(machine) {
-        return;
-    }
-    // Used: nothing is placed against it.
-    action.claim();
-    let screen = MachineScreen {
-        machine: entity,
-        pos: hit.block,
-        state,
-    };
-    spawn_machine_screen(&mut commands, &theme, &content, screen);
 }
 
-/// E closes the screen, as it does the inventory, and the screen closes
-/// itself when its machine's block entity is gone.
+/// Puts what the server sends of the open machine on its view.
+pub fn show_machine_contents(
+    mut commands: Commands,
+    mut messages: MessageReader<FromServer>,
+    views: Query<Entity, With<MachineView>>,
+) {
+    for FromServer(message) in messages.read() {
+        let ServerMessage::MachineContents(contents) = message else {
+            continue;
+        };
+        let MachineContents {
+            slots,
+            tanks,
+            energy,
+            progress,
+            active,
+        } = contents.clone();
+        for view in &views {
+            let mut view = commands.entity(view);
+            match slots.clone() {
+                Some(slots) => view.insert(slots),
+                None => view.remove::<Slots>(),
+            };
+            match tanks.clone() {
+                Some(tanks) => view.insert(tanks),
+                None => view.remove::<Tanks>(),
+            };
+            match energy {
+                Some(energy) => view.insert(energy),
+                None => view.remove::<EnergyBuffer>(),
+            };
+            match progress.clone() {
+                Some(progress) => view.insert(progress),
+                None => view.remove::<RecipeProgress>(),
+            };
+            match active {
+                Some(active) => view.insert(active),
+                None => view.remove::<MachineActive>(),
+            };
+        }
+    }
+}
+
+/// The screen closes when the server says so: its machine went.
+pub fn close_on_server(
+    mut commands: Commands,
+    mut messages: MessageReader<FromServer>,
+    screens: Query<Entity, With<MachineScreen>>,
+) {
+    if messages
+        .read()
+        .any(|FromServer(message)| matches!(message, ServerMessage::CloseScreen))
+    {
+        for screen in &screens {
+            commands.entity(screen).try_despawn();
+        }
+    }
+}
+
+/// E closes the screen, as it does the inventory.
 pub fn close_machine_screen(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    screens: Query<(Entity, &MachineScreen)>,
-    machines: Query<(), With<BlockEntity>>,
+    screens: Query<Entity, With<MachineScreen>>,
 ) {
-    for (root, screen) in &screens {
-        // A block entity never moves: it's gone, or still the machine's.
-        let gone = !machines.contains(screen.machine);
-        if gone || keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::KeyE) {
+        for root in &screens {
             // Escape may close it this frame too.
             commands.entity(root).try_despawn();
         }
+    }
+}
+
+/// A screen despawned because another machine's (or the same one's
+/// again) is opening in its place.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Replaced;
+
+/// However the screen closed, its view goes, and unless another took its
+/// place, the server stops sending the machine.
+fn tell_the_server_it_closed(
+    closed: On<Remove<MachineScreen>>,
+    mut commands: Commands,
+    screens: Query<(&MachineScreen, Has<Replaced>)>,
+    mut to_server: MessageWriter<ToServer>,
+) {
+    let Ok((screen, replaced)) = screens.get(closed.entity) else {
+        return;
+    };
+    commands.entity(screen.machine).try_despawn();
+    if !replaced {
+        to_server.write(ToServer(ClientMessage::CloseScreen(screen.pos)));
     }
 }
 
@@ -711,12 +780,11 @@ pub fn shift(keys: &ButtonInput<KeyCode>) -> bool {
 pub fn click_machine_slot(
     click: On<PointerClick>,
     keys: Res<ButtonInput<KeyCode>>,
-    content: Res<Content>,
     travel: Res<PointerTravel>,
     slots: Query<&MachineSlot>,
     screen: Option<Single<&MachineScreen>>,
-    mut machines: Query<&mut Slots>,
-    player: Option<Single<&mut Inventory, With<LocalPlayer>>>,
+    machines: Query<&Slots>,
+    mut to_server: MessageWriter<ToServer>,
 ) {
     let Ok(&MachineSlot { group, index }) = slots.get(click.entity) else {
         return;
@@ -724,38 +792,37 @@ pub fn click_machine_slot(
     if click.button == PointerButton::Middle || !travel.is_click() {
         return;
     }
-    let (Some(screen), Some(mut inventory)) = (screen, player) else {
+    let Some(screen) = screen else {
         return;
     };
-    let Ok(mut held) = machines.get_mut(screen.machine) else {
+    let Ok(held) = machines.get(screen.machine) else {
         return;
     };
     let Some(Some(stack)) = held.0.get(group).and_then(|g| g.slots.get(index)) else {
         return;
     };
     let count = amount(stack.count, click.button, shift(&keys));
-    out_of_machine(&content, &mut inventory, &mut held, group, index, count);
+    to_server.write(ToServer(ClientMessage::Transfer(Transfer::OutOfMachine {
+        group,
+        index,
+        count,
+    })));
 }
 
-/// Moves up to `count` of `entry`'s kind from the player into the machine
-/// `screen` shows: into slot group `first` first, if one's chosen.
+/// Asks to move up to `count` of `entry`'s kind from the player into the
+/// machine whose screen is open: into slot group `first` first, if one's
+/// chosen.
 pub fn send_to_machine(
-    content: &Content,
-    screen: &MachineScreen,
-    machines: &mut Query<&mut Slots>,
-    inventory: &mut Inventory,
+    to_server: &mut MessageWriter<ToServer>,
     entry: &ListEntry,
     count: u32,
     first: Option<usize>,
-) -> u32 {
-    let (Ok(mut held), Some(machine)) = (
-        machines.get_mut(screen.machine),
-        content.machine(screen.state),
-    ) else {
-        return 0;
-    };
-    let stack = &entry.stack;
-    into_machine_from(content, inventory, &mut held, machine, stack, count, first)
+) {
+    to_server.write(ToServer(ClientMessage::Transfer(Transfer::IntoMachine {
+        kind: entry.stack.clone(),
+        count,
+        first,
+    })));
 }
 
 /// A click on an entry of the player's inventory, in a machine screen,
@@ -763,13 +830,11 @@ pub fn send_to_machine(
 pub fn click_player_entry(
     click: On<PointerClick>,
     keys: Res<ButtonInput<KeyCode>>,
-    content: Res<Content>,
     travel: Res<PointerTravel>,
     entries: Query<(&ListEntry, &ChildOf)>,
     lists: Query<(), With<SendsToMachine>>,
     screen: Option<Single<&MachineScreen>>,
-    mut machines: Query<&mut Slots>,
-    player: Option<Single<&mut Inventory, With<LocalPlayer>>>,
+    mut to_server: MessageWriter<ToServer>,
 ) {
     let Ok((entry, parent)) = entries.get(click.entity) else {
         return;
@@ -780,19 +845,11 @@ pub fn click_player_entry(
     {
         return;
     }
-    let (Some(screen), Some(mut inventory)) = (screen, player) else {
+    if screen.is_none() {
         return;
-    };
+    }
     let count = amount(entry.stack.count, click.button, shift(&keys));
-    send_to_machine(
-        &content,
-        &screen,
-        &mut machines,
-        &mut inventory,
-        entry,
-        count,
-        None,
-    );
+    send_to_machine(&mut to_server, entry, count, None);
 }
 
 /// An entry of the player's inventory dropped on the machine's half of the
@@ -800,14 +857,12 @@ pub fn click_player_entry(
 /// one of its slots, it goes into that slot's group first.
 pub fn drop_on_machine(
     drop: On<PointerDragDrop>,
-    content: Res<Content>,
     entries: Query<&ListEntry>,
     panels: Query<(), With<MachinePanel>>,
     machine_slots: Query<&MachineSlot>,
     parents: Query<&ChildOf>,
     screen: Option<Single<&MachineScreen>>,
-    mut machines: Query<&mut Slots>,
-    player: Option<Single<&mut Inventory, With<LocalPlayer>>>,
+    mut to_server: MessageWriter<ToServer>,
 ) {
     // A drop bubbles up; only the node it landed on counts.
     if drop.entity != drop.original_event_target() {
@@ -826,21 +881,13 @@ pub fn drop_on_machine(
     let group = under
         .iter()
         .find_map(|&entity| machine_slots.get(entity).ok().map(|slot| slot.group));
-    let (true, Some(screen), Some(mut inventory)) = (on_machine, screen, player) else {
+    if !on_machine || screen.is_none() {
         return;
-    };
+    }
     let count = amount(
         entry.stack.count,
         drop.button,
         drop.button == PointerButton::Primary,
     );
-    send_to_machine(
-        &content,
-        &screen,
-        &mut machines,
-        &mut inventory,
-        entry,
-        count,
-        group,
-    );
+    send_to_machine(&mut to_server, entry, count, group);
 }

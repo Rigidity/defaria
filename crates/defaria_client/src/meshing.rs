@@ -55,8 +55,7 @@ pub struct MeshingPlugin;
 
 impl Plugin for MeshingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(scroll::ScrollPlugin)
-            .add_systems(Startup, set_sky_color)
+        app.add_systems(Startup, set_sky_color)
             .add_systems(
                 PostUpdate,
                 unsettle_while_meshing.after(StreamingStatusSystems),

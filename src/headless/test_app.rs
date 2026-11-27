@@ -98,3 +98,22 @@ pub(super) fn camera(app: &mut App) -> (Look, Transform) {
         .unwrap();
     (*look, eyes(transform, player, look))
 }
+
+/// The world of the server a [`test_game`] plays on: where the world's
+/// state is decided (block entities, networks, fluid flow, scripts). The
+/// client's world has copies of the chunks and its player.
+pub fn server(app: &mut App) -> &mut World {
+    app.world_mut()
+        .non_send_mut::<crate::IntegratedServer>()
+        .into_inner()
+        .app
+        .world_mut()
+}
+
+/// [`server`], to read.
+pub fn server_world(app: &App) -> &World {
+    app.world()
+        .non_send::<crate::IntegratedServer>()
+        .app
+        .world()
+}

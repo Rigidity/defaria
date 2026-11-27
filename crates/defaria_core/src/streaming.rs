@@ -55,7 +55,7 @@ use crate::{
     block_entity::{BlockEntityChanged, BlockEntitySystems, ChunkSaver},
     content::Content,
     light::{ChunkLight, LightTable, Prelit, light_alone, sky::Sky},
-    player::{EYE_HEIGHT, LocalPlayer},
+    player::{EYE_HEIGHT, Player},
     save::{self, WorldFolder, WorldStore, region},
     world::{
         AwaitingNeighbours, Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated,
@@ -74,6 +74,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingStatus>()
             .init_resource::<ChunksSaving>()
             .add_message::<BlockEntityChanged>()
+            .add_message::<ChunkUnloaded>()
             .add_observer(load_around_the_player)
             .add_systems(Startup, open_world)
             .add_systems(
@@ -189,7 +190,7 @@ impl StreamingSettings {
 
     /// Whether a chunk `offset` from a loader's chunk is within reach,
     /// `extra` chunks further out than what's loaded.
-    fn reaches(&self, offset: IVec3, extra: i32) -> bool {
+    pub fn reaches(&self, offset: IVec3, extra: i32) -> bool {
         // In i64: a long jump makes the offset too big to square in i32.
         let radius = (self.radius + extra) as i64;
         let (x, z) = (offset.x as i64, offset.z as i64);
@@ -237,16 +238,20 @@ pub fn loader_chunk(transform: &GlobalTransform) -> IVec3 {
         .0
 }
 
+/// A chunk was unloaded (saved first, if it needed to be).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkUnloaded(pub ChunkCoord);
+
 /// Loads the world around itself, using its [`GlobalTransform`].
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
 #[reflect(Component)]
 #[require(Transform)]
 pub struct ChunkLoader;
 
-/// The local player loads the world around its eyes (not its feet, so the
+/// Each player loads the world around its eyes (not its feet, so the
 /// levels above and below are counted from what it sees), with a loader
 /// that's its child at eye height.
-fn load_around_the_player(add: On<Add<LocalPlayer>>, mut commands: Commands) {
+fn load_around_the_player(add: On<Add<Player>>, mut commands: Commands) {
     commands.spawn((
         Name::new("Chunk Loader"),
         ChunkLoader,
@@ -496,6 +501,7 @@ fn plan_saves(
 /// Saves and despawns the chunks that have gone out of reach.
 fn unload_chunks(
     mut commands: Commands,
+    mut unloaded: MessageWriter<ChunkUnloaded>,
     source: Res<WorldSource>,
     saving: Res<ChunksSaving>,
     mut chunks: ResMut<Chunks>,
@@ -513,6 +519,7 @@ fn unload_chunks(
         loaded.save(coord, &source.store, &data, false);
         map.remove(ChunkCoord(coord));
         commands.entity(loaded.entity).despawn();
+        unloaded.write(ChunkUnloaded(ChunkCoord(coord)));
     }
     let around: HashSet<IVec3> = gone.iter().flat_map(|&c| around(c)).collect();
     update_completeness(&mut commands, &mut chunks, around);
@@ -1197,7 +1204,7 @@ mod tests {
         app.update();
         let world = app.world_mut();
         let eyes = world
-            .query_filtered::<Eyes, With<LocalPlayer>>()
+            .query_filtered::<Eyes, With<crate::player::LocalPlayer>>()
             .single(world)
             .unwrap()
             .transform();

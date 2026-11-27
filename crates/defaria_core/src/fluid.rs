@@ -45,6 +45,7 @@
 
 pub mod evaporation;
 pub mod flow;
+pub mod quiet;
 
 use bevy::{ecs::system::SystemParam, prelude::*};
 
@@ -61,7 +62,8 @@ pub struct FluidPlugin;
 
 impl Plugin for FluidPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FluidSettings>()
+        app.add_plugins(quiet::QuietPlugin)
+            .init_resource::<FluidSettings>()
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .init_resource::<evaporation::Films>()
