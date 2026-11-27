@@ -79,7 +79,15 @@ pub struct VoxelMaterial {
     /// Opaque, cut out (alpha to coverage, with holes where the texture is
     /// transparent) or blended.
     pub alpha_mode: AlphaMode,
+    /// Draws after every other blended mesh, whatever their distances: the
+    /// translucent faces near the eyes (see `meshing::near`), which are in
+    /// front of every other chunk's.
+    pub draws_last: bool,
 }
+
+/// What [`VoxelMaterial::draws_last`] adds to a mesh's distance when Bevy
+/// sorts blended meshes: more than any distance in the loaded world.
+const DRAW_LAST_BIAS: f32 = 1.0e9;
 
 /// The light that isn't baked into chunk meshes. Kept up to date by
 /// `dynamic_light`.
@@ -114,6 +122,12 @@ pub struct GpuDynamicLight {
 impl Material for VoxelMaterial {
     fn alpha_mode(&self) -> AlphaMode {
         self.alpha_mode
+    }
+
+    /// Bevy sorts blended meshes by their distance plus this, drawing the
+    /// nearest (the largest) last.
+    fn depth_bias(&self) -> f32 {
+        if self.draws_last { DRAW_LAST_BIAS } else { 0.0 }
     }
 
     fn vertex_shader() -> ShaderRef {
@@ -167,14 +181,18 @@ const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 7] = [
 ];
 
 /// The materials chunk meshes are drawn with, one per
-/// [`Render`](crate::content::Render), and the images behind them. They
-/// differ only in how they blend: whatever changes one's texture or
-/// lighting changes all three (see [`BlockMaterial::all`]).
+/// [`Render`](crate::content::Render) and one for the translucent faces
+/// near the eyes, and the images behind them. They differ only in how they
+/// blend and sort: whatever changes one's texture or lighting changes them
+/// all (see [`BlockMaterial::all`]).
 #[derive(Resource, Debug, Clone)]
 pub struct BlockMaterial {
     pub material: Handle<VoxelMaterial>,
     pub cutout: Handle<VoxelMaterial>,
     pub translucent: Handle<VoxelMaterial>,
+    /// The translucent faces near the eyes, merged into one mesh (see
+    /// `meshing::near`): blended, and drawn after every other chunk's.
+    pub near_translucent: Handle<VoxelMaterial>,
     /// The grayscale layer images as loaded, by asset path. The material's
     /// texture is built from them.
     pub layers: HashMap<String, Handle<Image>>,
@@ -203,27 +221,34 @@ impl FromWorld for BlockMaterial {
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
         let animations = world.resource::<Assets<ShaderBuffer>>().reserve_handle();
         let mut materials = world.resource_mut::<Assets<VoxelMaterial>>();
-        let mut add = |alpha_mode| {
+        let mut add = |alpha_mode, draws_last| {
             materials.add(VoxelMaterial {
                 blocks: blocks.clone(),
                 lighting: default(),
                 animations: animations.clone(),
                 alpha_mode,
+                draws_last,
             })
         };
         Self {
-            material: add(AlphaMode::Opaque),
-            cutout: add(AlphaMode::AlphaToCoverage),
-            translucent: add(AlphaMode::Blend),
+            material: add(AlphaMode::Opaque, false),
+            cutout: add(AlphaMode::AlphaToCoverage, false),
+            translucent: add(AlphaMode::Blend, false),
+            near_translucent: add(AlphaMode::Blend, true),
             layers,
         }
     }
 }
 
 impl BlockMaterial {
-    /// Every material: opaque, cut-out and translucent.
-    pub fn all(&self) -> [&Handle<VoxelMaterial>; 3] {
-        [&self.material, &self.cutout, &self.translucent]
+    /// Every material: opaque, cut-out, translucent and near translucent.
+    pub fn all(&self) -> [&Handle<VoxelMaterial>; 4] {
+        [
+            &self.material,
+            &self.cutout,
+            &self.translucent,
+            &self.near_translucent,
+        ]
     }
 
     /// Materials with nothing behind them, for tests that don't draw.
@@ -233,6 +258,7 @@ impl BlockMaterial {
             material,
             cutout: Handle::default(),
             translucent: Handle::default(),
+            near_translucent: Handle::default(),
             layers: default(),
         }
     }
@@ -611,8 +637,9 @@ mod tests {
         assert_eq!(tiles[water][..4], water_palette.color(2).to_u8_array());
     }
 
-    /// The three chunk materials blend as their names say: opaque, cut out
-    /// with alpha to coverage, and blended.
+    /// The chunk materials blend as their names say: opaque, cut out with
+    /// alpha to coverage, and blended, twice; the near translucent one
+    /// sorts after every other blended mesh.
     #[test]
     fn each_material_draws_its_way() {
         let app = app();
@@ -624,9 +651,13 @@ mod tests {
             [
                 AlphaMode::Opaque,
                 AlphaMode::AlphaToCoverage,
-                AlphaMode::Blend
+                AlphaMode::Blend,
+                AlphaMode::Blend,
             ]
         );
+        let biases = block.all().map(|h| materials.get(h).unwrap().depth_bias());
+        assert_eq!(biases[..3], [0.0; 3]);
+        assert!(biases[3] > 1.0e6, "near faces sort by {}", biases[3]);
     }
 
     /// Once built, nothing is rebuilt until a layer changes.

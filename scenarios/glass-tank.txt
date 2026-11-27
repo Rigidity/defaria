@@ -1,0 +1,49 @@
+# Translucent faces in different chunks blending in the right order (#81),
+# on a grass platform in the air.
+#
+# A tank of red stained glass full of water straddles the corner where
+# four chunks meet (x 32, z 32), with a pillar of yellow glass standing
+# in the water across the border: seen at an angle, close up, from above
+# and from inside the water looking out, it must look the same as glass
+# and water inside one chunk, with no band along the borders.
+#
+# Farther north, a column of blue glass stands just in front of a column
+# of red glass, the two on either side of the border at x 32. One more
+# block of each, at the far ends of their chunks, puts the blue chunk's
+# middle farther from the camera than the red one's: sorted a chunk at a
+# time, the red column would draw over the blue one in front of it.
+# Run: cargo headless scenarios/glass-tank.txt
+wait 5
+fill 22 45 22 42 45 82 soil[turf=defaria:grass]
+# The tank: sand floor, red glass walls, water three deep.
+fill 26 46 26 38 46 38 soil[soil=defaria:sand]
+fill 26 47 26 38 50 38 stained_glass[color=defaria:red_glass]
+fill 27 47 27 37 50 37 water
+fill 27 50 27 37 50 37 air
+# A pillar of yellow glass through the water, across the border along x 32.
+fill 31 47 30 32 51 34 stained_glass[color=defaria:yellow_glass]
+# Blue in front of red, across the border at x 32, in the chunks at z 64
+# and y 48, floating above the grass so they stay in them.
+fill 32 48 71 32 50 72 stained_glass[color=defaria:blue_glass]
+fill 32 48 79 32 48 79 stained_glass[color=defaria:blue_glass]
+fill 31 48 72 31 50 74 stained_glass[color=defaria:red_glass]
+fill 31 48 64 31 48 64 stained_glass[color=defaria:red_glass]
+camera 46 55 48 41 -20          # the tank at an angle from the south-east
+wait 2
+screenshot target/scenarios/glass-tank/0-angle.png
+wait 1
+camera 40 51 41 45 -18          # close, at the corner
+wait 2
+screenshot target/scenarios/glass-tank/1-close.png
+wait 1
+camera 32 62 44 0 -60           # from above
+wait 2
+screenshot target/scenarios/glass-tank/2-above.png
+wait 1
+camera 35.5 48 36.5 30 -5       # in the water, looking out through the glass
+wait 2
+screenshot target/scenarios/glass-tank/3-underwater.png
+wait 1
+camera 40 49.5 63 137 0         # blue in front of red, across the border
+wait 2
+screenshot target/scenarios/glass-tank/4-blue-before-red.png

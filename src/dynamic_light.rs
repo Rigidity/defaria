@@ -207,24 +207,26 @@ mod tests {
         .init_resource::<SkyLight>()
         .init_asset::<VoxelMaterial>();
         let mut materials = app.world_mut().resource_mut::<Assets<VoxelMaterial>>();
-        let mut add = |alpha_mode| {
+        let mut add = |alpha_mode, draws_last| {
             materials.add(VoxelMaterial {
                 blocks: Handle::default(),
                 lighting: default(),
                 animations: Handle::default(),
                 alpha_mode,
+                draws_last,
             })
         };
         let block = BlockMaterial {
-            cutout: add(AlphaMode::AlphaToCoverage),
-            translucent: add(AlphaMode::Blend),
-            ..BlockMaterial::unloaded(add(AlphaMode::Opaque))
+            cutout: add(AlphaMode::AlphaToCoverage, false),
+            translucent: add(AlphaMode::Blend, false),
+            near_translucent: add(AlphaMode::Blend, true),
+            ..BlockMaterial::unloaded(add(AlphaMode::Opaque, false))
         };
         app.insert_resource(block);
         app
     }
 
-    /// The chunk materials' lighting: the same in all three (opaque,
+    /// The chunk materials' lighting: the same in all of them (opaque,
     /// cut-out and translucent), so see-through blocks are lit alike.
     fn lighting(app: &App) -> LightingUniform {
         let block = app.world().resource::<BlockMaterial>();

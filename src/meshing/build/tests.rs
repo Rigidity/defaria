@@ -1087,15 +1087,15 @@ fn only_faces_in_several_planes_need_sorting() {
 /// surfaces at different heights, need sorting too.
 #[test]
 fn parallel_planes_need_sorting() {
-    let face = |y: f32, first: u32| SortFace {
-        center: Vec3::new(0.5, y, 0.5),
-        sort_at: Vec3::new(0.5, y, 0.5),
-        normal: Vec3::Y,
-        first,
-        indices: &[0, 1, 2, 0, 2, 3],
-    };
-    assert!(!TranslucentFaces::new(vec![face(5.0, 0), face(5.0, 4)]).needs_sorting());
-    assert!(TranslucentFaces::new(vec![face(5.0, 0), face(7.0, 4)]).needs_sorting());
+    let plane = |y: f32| Planes::of(Vec3::new(0.5, y, 0.5), Vec3::Y);
+    let faces = |planes| TranslucentFaces::new(Vec::new(), planes);
+    assert!(!faces(plane(5.0).and(plane(5.0))).needs_sorting());
+    assert!(faces(plane(5.0).and(plane(7.0))).needs_sorting());
+    assert!(!faces(Planes::None.and(plane(7.0))).needs_sorting());
+    // A face and its back share their plane.
+    assert!(
+        !faces(plane(5.0).and(Planes::of(Vec3::new(3.5, 5.0, 0.5), Vec3::NEG_Y))).needs_sorting()
+    );
     // A face and its back share their plane.
     assert_eq!(either_way(Vec3::NEG_Y), Vec3::Y);
     assert_eq!(

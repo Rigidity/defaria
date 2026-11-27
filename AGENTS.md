@@ -324,7 +324,9 @@ documented in `docs/modding.md`; keep that file, the serde types in
   ones that changed (`RemeshChunks`, `MeshTask`, `AwaitingNeighbours`) and
   showing the meshes: opaque faces on the chunk's entity, cut-out and
   translucent ones on child entities (`ChunkParts`), with the translucent
-  faces sorted back to front. `meshing/build.rs` builds the meshes from a
+  faces sorted back to front; `meshing/near.rs` draws the translucent
+  faces of the chunks around the eyes as one mesh, sorted across chunk
+  borders (`NearFaces`, `NearRadius`). `meshing/build.rs` builds the meshes from a
   `Neighborhood` (culling, face shading, the vertex attributes).
 - `src/worldgen.rs` (and `src/worldgen/`): terrain generation (`Terrain`,
   `TerrainSettings`), with the land's shape and the splines it's made of,

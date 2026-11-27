@@ -483,7 +483,10 @@ impl Neighborhood {
             }
         }
         let [opaque, cutout, mut translucent] = builders;
-        let faces = TranslucentFaces::new(std::mem::take(&mut translucent.sort_faces));
+        let faces = TranslucentFaces::new(
+            std::mem::take(&mut translucent.sort_faces),
+            translucent.planes,
+        );
         ChunkMeshes {
             opaque: opaque.build(),
             cutout: cutout.build(),
@@ -628,53 +631,103 @@ impl ChunkMeshes {
 #[derive(Component, Debug, Clone, Default, PartialEq)]
 pub(super) struct TranslucentFaces {
     faces: Vec<SortFace>,
-    /// Whether the order can matter: false when every face lies in one
-    /// plane (open water's surface, front and back), where no face is ever
-    /// behind another.
-    needs_sorting: bool,
+    planes: Planes,
 }
 
 /// One face of a translucent mesh.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct SortFace {
-    /// The middle of the face, chunk-local.
-    center: Vec3,
-    /// Where it sorts from: its middle, or a back's a little inside its
-    /// block.
+pub(super) struct SortFace {
+    /// Where it sorts from, mesh-local: its middle, or a back's a little
+    /// inside its block.
     sort_at: Vec3,
-    /// Its plane's normal, either way round (pointing toward +X, or +Y,
-    /// or +Z, whichever it has first), so a face and its back match.
-    normal: Vec3,
     /// Its first vertex in the mesh.
     first: u32,
     /// Its triangles, from its first vertex.
     indices: &'static [u32],
 }
 
-impl TranslucentFaces {
-    fn new(faces: Vec<SortFace>) -> Self {
-        let plane = |face: &SortFace| (face.normal, face.normal.dot(face.center));
-        let needs_sorting = faces.first().is_some_and(|first| {
-            let (normal, offset) = plane(first);
-            faces.iter().any(|face| {
-                let (n, d) = plane(face);
-                n.distance(normal) > 1e-4 || (d - offset).abs() > 1e-4
-            })
-        });
-        Self {
-            // Open water would keep hundreds of faces it never sorts.
-            faces: if needs_sorting { faces } else { Vec::new() },
-            needs_sorting,
+/// The planes a mesh's faces lie in, as far as sorting them cares: when
+/// they all lie in one (open water's surface, front and back), no face is
+/// ever behind another and their order can't matter.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) enum Planes {
+    /// There are no faces.
+    #[default]
+    None,
+    /// Every face is in the plane of points `p` with `normal.dot(p) ==
+    /// offset`. The normal points toward +X, or +Y, or +Z, whichever it
+    /// has first, so a face and its back match.
+    One { normal: Vec3, offset: f32 },
+    /// The faces lie in more than one plane.
+    Many,
+}
+
+impl Planes {
+    /// The plane of a face through `center` facing along `normal`.
+    pub fn of(center: Vec3, normal: Vec3) -> Self {
+        let normal = either_way(normal);
+        Self::One {
+            normal,
+            offset: normal.dot(center),
         }
     }
 
-    /// Whether the faces' order can matter: see `needs_sorting`.
+    /// The planes of both `self`'s faces and `other`'s.
+    pub fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::None, planes) | (planes, Self::None) => planes,
+            (
+                Self::One { normal, offset },
+                Self::One {
+                    normal: other,
+                    offset: other_offset,
+                },
+            ) if normal.distance(other) <= 1e-4 && (offset - other_offset).abs() <= 1e-4 => self,
+            _ => Self::Many,
+        }
+    }
+
+    /// The same planes with their faces moved by `by`.
+    fn moved(self, by: Vec3) -> Self {
+        match self {
+            Self::One { normal, offset } => Self::One {
+                normal,
+                offset: offset + normal.dot(by),
+            },
+            planes => planes,
+        }
+    }
+}
+
+impl TranslucentFaces {
+    fn new(faces: Vec<SortFace>, planes: Planes) -> Self {
+        Self { faces, planes }
+    }
+
+    /// Several meshes' faces as the faces of one mesh made of them all:
+    /// each part's moved by its offset, and its vertices numbered on from
+    /// its first in the whole (see `near::merged_mesh`).
+    pub fn merged<'a>(parts: impl IntoIterator<Item = (&'a TranslucentFaces, Vec3, u32)>) -> Self {
+        let mut merged = Self::default();
+        for (part, offset, first) in parts {
+            merged.planes = merged.planes.and(part.planes.moved(offset));
+            merged.faces.extend(part.faces.iter().map(|face| SortFace {
+                sort_at: face.sort_at + offset,
+                first: face.first + first,
+                indices: face.indices,
+            }));
+        }
+        merged
+    }
+
+    /// Whether the faces' order can matter: they don't all lie in one
+    /// plane (see [`Planes`]).
     pub fn needs_sorting(&self) -> bool {
-        self.needs_sorting
+        self.planes == Planes::Many
     }
 
     /// The mesh's indices with its faces ordered farthest first from
-    /// `eye`, chunk-local.
+    /// `eye`, mesh-local.
     pub fn indices_from(&self, eye: Vec3) -> Vec<u32> {
         let mut order: Vec<(f32, &SortFace)> = self
             .faces
@@ -710,9 +763,11 @@ struct MeshBuilder {
     faces: Vec<[u32; 2]>,
     flows: Vec<[i16; 2]>,
     indices: Vec<u32>,
-    /// Whether to record `sort_faces`, for a translucent mesh.
+    /// Whether to record `sort_faces` and `planes`, for a translucent
+    /// mesh.
     sorted: bool,
     sort_faces: Vec<SortFace>,
+    planes: Planes,
 }
 
 impl MeshBuilder {
@@ -770,8 +825,8 @@ impl MeshBuilder {
         self.indices.extend(face.indices().iter().map(|i| base + i));
         if self.sorted {
             let center = center / count as f32;
+            self.planes = self.planes.and(Planes::of(center, face.normal));
             self.sort_faces.push(SortFace {
-                center,
                 // A back sorts as if a little inside its block, nearer than
                 // a neighbour's face in its plane, as the block's inside is
                 // to someone in it: water blends over the glass it touches.
@@ -780,7 +835,6 @@ impl MeshBuilder {
                 } else {
                     center
                 },
-                normal: either_way(face.normal),
                 first: base,
                 indices: face.indices(),
             });

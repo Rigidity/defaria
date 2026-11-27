@@ -231,6 +231,8 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     app.add_plugins(MinimalPlugins)
         .insert_resource(base().clone())
         .add_plugins((AssetPlugin::default(), WorldPlugin, MeshingPlugin))
+        // Sorting each chunk on its own, as chunks away from the eyes are.
+        .insert_resource(NearRadius(None))
         .init_asset::<Mesh>()
         .init_asset::<VoxelMaterial>();
     let reserve = || {
