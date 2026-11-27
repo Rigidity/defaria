@@ -234,6 +234,12 @@ bandwidth for light or chunks shows up in the `net` report.
   server keeps. The server answers a use's edit after the chunks it
   changed, on the same stream, so the client takes what the server has
   once it's answered.
+- A use carries the client's last input; the server queues uses and acts
+  on one a frame, each once it's stepped the player that far (or two
+  seconds have passed), so it checks a placement against the body where
+  the client had it, and none is lost when several arrive at once. A
+  voxel placed into twice before the server answers (a slab, then its
+  other half) is one pending edit: the newest, over what the server had.
 - Replicated entities: each client is told (reliably) of those in the
   chunks it has, and sent snapshots of all of them, twenty a second, in
   one message (a datagram when it fits). Clients draw them a tenth of a
