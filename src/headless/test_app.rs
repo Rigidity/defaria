@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use super::{HeadlessPlugin, SETTLE_TIMEOUT_FRAMES, Script, default_plugins, runner::ScriptRunner};
-use crate::{
+use defaria_core::{
     light::{ChunkLight, Light},
     player::{LocalPlayer, Look, Player, eyes},
     world::{ChunkCoord, ChunkMap},
@@ -15,8 +15,8 @@ pub fn test_game(script: Script) -> App {
     let mut app = App::new();
     // Before the game's plugins, so its scripts load with them: what a
     // script may do then doesn't depend on how busy the machine is.
-    app.insert_resource(crate::script::ScriptSettings::untimed())
-        .insert_resource(crate::script::hooks::HookSettings::untimed());
+    app.insert_resource(defaria_core::script::ScriptSettings::untimed())
+        .insert_resource(defaria_core::script::hooks::HookSettings::untimed());
     app.add_plugins((
         default_plugins(false).disable::<bevy::log::LogPlugin>(),
         crate::GamePlugin,
@@ -25,7 +25,7 @@ pub fn test_game(script: Script) -> App {
             rendering: false,
         },
     ))
-    .insert_resource(crate::streaming::StreamingSettings {
+    .insert_resource(defaria_core::streaming::StreamingSettings {
         radius: 4,
         ..default()
     });
@@ -52,7 +52,7 @@ pub fn run_more(app: &mut App, script: &str) {
     panic!("the script never finished");
 }
 
-pub use crate::testing::settle;
+pub use defaria_core::testing::settle;
 
 /// Runs the whole game with no GPU until the script ends, and returns
 /// how it exited.

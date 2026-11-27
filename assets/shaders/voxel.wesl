@@ -1,7 +1,7 @@
 // Chunk shader: the block texture array, lit by the light baked into the
 // mesh and by the dynamic lights.
 //
-// Bindings must match `VoxelMaterial` in src/voxel_material.rs, and the
+// Bindings must match `VoxelMaterial` in crates/defaria_client/src/voxel_material.rs, and the
 // vertex attributes the locations its `specialize` gives them. Every vertex
 // of a face carries all four of the face's corners' light and ambient
 // occlusion, and where it sits on the face (`corner`), so the fragment stage
@@ -12,19 +12,19 @@
 // Animated textures: a texture's first frame is the array layer of its own
 // index, and its other frames come after every texture's first. The
 // `animations` table (see `block_texture::Animations` in
-// src/block_texture.rs) says, per texture, how many frames it has, where
+// crates/defaria_client/src/block_texture.rs) says, per texture, how many frames it has, where
 // the rest are, and how it moves; the time comes from Bevy's globals, so
 // animating needs no remeshing or uploads.
 //
 // Fluid faces take their texture coordinates from where they are, wrapping
 // every block (WRAPPED), and flowing ones (FLOWING) move their texture by a
 // flow map: a flow vector at each vertex, which the mesher averages over
-// the voxels sharing the corner (see src/fluid/scroll.rs), blended across
+// the voxels sharing the corner (see crates/defaria_core/src/fluid/scroll.rs), blended across
 // the face, so the flow runs on continuously from tile to tile. Two
 // samples half a cycle apart, each pushed along the flow and pulled back
 // once a cycle, cross-fade so neither's reset or stretching shows.
 //
-// Distance fog comes from the camera's `DistanceFog` (see src/fog.rs), in the
+// Distance fog comes from the camera's `DistanceFog` (see crates/defaria_client/src/fog.rs), in the
 // view's bindings, when it has one. It's a cylinder around the camera, like
 // the loaded world: `be` holds how far it reaches sideways, up and down, and
 // `bi.x` where it starts thickening, as a fraction of that.
@@ -52,7 +52,7 @@ struct Lighting {
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var<uniform> lighting: Lighting;
 
 // One texture's entry in the animation table. Must match
-// `Animations::words` in src/block_texture.rs.
+// `Animations::words` in crates/defaria_client/src/block_texture.rs.
 struct Animation {
     // How many frames it steps through: 1 for a still texture.
     frames: u32,
@@ -78,12 +78,12 @@ const AMBIENT: f32 = 0.025;
 // is open and fully bright.
 const OCCLUDED: f32 = 0.3;
 // Set on the layer of a double-sided block's back face (see BACK_FACE in
-// src/meshing/build.rs). A back is drawn this much farther away, as a share of its
+// crates/defaria_client/src/meshing/build.rs). A back is drawn this much farther away, as a share of its
 // distance, so a neighbour's face in the same plane (a slab's side beside
 // water or lava) wins the depth test instead of flickering with it.
 const BACK_FACE: u32 = 0x80000000u;
 const BACK_DEPTH_BIAS: f32 = 2e-5;
-// The rest of a face's layer (see src/fluid/scroll.rs): the texture's index
+// The rest of a face's layer (see crates/defaria_core/src/fluid/scroll.rs): the texture's index
 // in the low bits, WRAPPED on a fluid face and FLOWING on one that flows.
 const TEXTURE_BITS: u32 = 0x00ffffffu;
 const FLOWING: u32 = 0x10000000u;
@@ -222,7 +222,7 @@ fn frame_layer(texture: u32, animation: Animation, frame: u32) -> u32 {
 
 // What texture `texture` shows `time` seconds in: frame after frame, each
 // for its frame time, fading into the next if it blends. As
-// `Animations::frame_at` in src/block_texture.rs.
+// `Animations::frame_at` in crates/defaria_client/src/block_texture.rs.
 fn animated_frame(texture: u32, animation: Animation, time: f32) -> Frame {
     var out: Frame;
     out.layer = texture;

@@ -2502,10 +2502,30 @@ name = "defaria"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "defaria_client",
+ "defaria_core",
+ "rustix 1.1.6",
+ "tracing",
+]
+
+[[package]]
+name = "defaria_client"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "defaria_core",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "defaria_core"
+version = "0.1.0"
+dependencies = [
+ "bevy",
  "json5",
  "miniz_oxide 0.8.9",
  "mlua",
- "rustix 1.1.6",
  "serde",
  "tracing",
 ]

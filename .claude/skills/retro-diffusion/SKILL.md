@@ -18,7 +18,7 @@ directly.
 ## How the art works
 
 Block textures are stacks of **grayscale layer images**, colored at runtime
-(see `src/block_texture.rs` and `src/block_texture/layer.rs`):
+(see `crates/defaria_client/src/block_texture.rs` and `crates/defaria_client/src/block_texture/layer.rs`):
 
 - Each layer is a 16×16 PNG in a mod's `images/` folder; the base game's
   are in `assets/mods/defaria/images/`.

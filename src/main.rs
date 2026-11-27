@@ -4,6 +4,8 @@ use bevy::{app::ScheduleRunnerPlugin, prelude::*, window::PresentMode};
 use defaria::{
     Cli, DevToolsPlugin, GamePlugin,
     headless::{self, HeadlessPlugin, Script},
+};
+use defaria_core::{
     save::{self, WorldFolder},
     streaming::StreamingSettings,
 };

@@ -3,7 +3,7 @@
 grass tuft, an ingot, moss, a bucket and a dead bush.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
-src/block_texture/layer.rs checks) into OUT_DIR:
+crates/defaria_client/src/block_texture/layer.rs checks) into OUT_DIR:
 
 - glass.png: a pane. A solid one-pixel frame, faint highlight streaks
   running diagonally, and a nearly clear middle. Partly transparent, so

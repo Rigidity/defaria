@@ -2,7 +2,7 @@
 """Draw the ten crack stages shown on a block being mined.
 
 Writes OUT_DIR/stage_0.png .. stage_9.png: 16x16 layer images (8-level
-grayscale with alpha, as src/block_texture/layer.rs checks), transparent
+grayscale with alpha, as crates/defaria_client/src/block_texture/layer.rs checks), transparent
 where there's no crack. The game multiplies the block under them by the
 gray, so dark pixels are deep cracks and lighter ones shallow chips.
 

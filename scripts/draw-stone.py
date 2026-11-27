@@ -2,7 +2,7 @@
 """Draw the procedural rock building layers: cobblestone and smooth stone.
 
 Writes 16x16 layer images (8-level grayscale, fully opaque, as
-src/block_texture/layer.rs checks) into OUT_DIR:
+crates/defaria_client/src/block_texture/layer.rs checks) into OUT_DIR:
 
 - cobblestone.png: rounded stones of different sizes packed together,
   with dark gaps between them. The stones are the cells of a jittered
