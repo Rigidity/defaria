@@ -904,7 +904,7 @@ mod tests {
             .world_mut()
             .spawn((connection, UseAction::default(), PlayerInputs::default()))
             .id();
-        let mut frame = |app: &mut App| {
+        let frame = |app: &mut App| {
             app.update();
             let world = app.world_mut();
             let action = world.get_mut::<UseAction>(player).unwrap().0.take();
