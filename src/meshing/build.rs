@@ -264,20 +264,31 @@ impl Neighborhood {
                 continue;
             }
             let top = *top.get_or_insert_with(|| self.fluid_top(content, fluid, pos));
-            let face = if side == Direction::Up && !top.is_full() {
-                // A lowered top lies inside the voxel, so it's shaded from
-                // the voxel itself, and nothing beside it can hide it.
-                BakedFace {
-                    cull: None,
-                    ..cut_face(face, &top)
-                }
+            let (face, shading) = if side == Direction::Up && !top.is_full() {
+                // A lowered top lies inside the voxel, so nothing beside it
+                // can hide it. It's still the surface the light above falls
+                // on, so it's shaded from the voxel above, as a full top is
+                // (the fluid's own voxel is darker by its light filter, and
+                // the surface would darken the moment it dropped a step),
+                // unless that voxel is solid.
+                let cut = cut_face(face, &top);
+                let shading = if opaque(next) {
+                    BakedFace {
+                        cull: None,
+                        ..cut.clone()
+                    }
+                } else {
+                    cut.clone()
+                };
+                (BakedFace { cull: None, ..cut }, shading)
             } else {
                 if self.hides(content, fluid, next, side) {
                     continue;
                 }
-                cut_face(face, &top)
+                let cut = cut_face(face, &top);
+                (cut.clone(), cut)
             };
-            let shading = self.shade_face(pos, &face, state.emits_light(), opaque);
+            let shading = self.shade_face(pos, &shading, state.emits_light(), opaque);
             builder.push(pos.as_vec3(), &face, &shading, false);
             if state.double_sided {
                 builder.push(pos.as_vec3(), &face, &shading, true);
