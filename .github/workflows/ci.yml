@@ -19,8 +19,10 @@ env:
 # .github/actions/setup.
 #
 # Each job caches its own build: clippy only type-checks Bevy while the tests
-# compile it fully (with the unoptimized `ci` profile from Cargo.toml), so they
-# can't share one cache. Cache keys change only with the toolchain or the
+# compile it fully (with the `ci` profile from Cargo.toml), so they can't share
+# one cache. The test cache's key names the `ci` profile's opt-level for
+# dependencies (`o1`): change it with the profile, or the old cache restores
+# and every run rebuilds Bevy without saving. Cache keys change only with the toolchain or the
 # lockfile; on a miss, the restore keys fall back to the newest cache for the
 # same job and toolchain, which still has nearly every dependency built.
 # (Swatinem/rust-cache hashes Cargo.toml and .cargo/config.toml into the part of
@@ -78,9 +80,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          key: test-ci-o1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+            test-ci-o1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
       - run: cargo test --profile ci --locked
 
   # No GPU on CI runners: run every scenario without rendering. This catches
@@ -109,9 +111,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          key: test-ci-o1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            test-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+            test-ci-o1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
       - name: Run scenarios
         run: |
           i=0

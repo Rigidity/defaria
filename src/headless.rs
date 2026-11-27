@@ -39,6 +39,7 @@
 //! | `systems [<count>]` | Print, for the frames since the last `systems` (or the start), the busiest frame (the one whose systems used the most CPU time) and the `count` systems (12 by default) that used the most CPU in it, each with its CPU time there, its mean and worst per frame over all those frames, and its wall-clock time there; render-world systems are marked `render:`. CPU time is barely changed by other work on the machine, where wall-clock time can be. Systems run in parallel, and work they hand to other threads and their commands aren't counted, so the times don't add up to the frame's. The runner's own systems count too (an `inspect` of thousands of entities can make its frame the busiest). Only a script that uses `systems` times them (see `system_timing`). |
 //! | `type <text>` | Type the text (the rest of the line), a key press and release per character, into whatever has the keyboard. |
 //! | `random-ticks <n>` | Pick `n` voxels in each loaded chunk for random ticks each tick (1 by default), so blocks that grow or spread on random ticks (see `script::random_tick`) do it quickly enough to watch. |
+//! | `evaporation <speed>` | Make films of fluid evaporate `speed` times as fast as their fluid's rate (1 by default, 0 stops them), so puddles dry up in seconds rather than minutes (see `fluid::evaporation`). |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed, what has gone out of reach has unloaded, and the fog has opened up to the draw distance, and print how many frames and seconds that took. |
 //! | `memory` | Print what the loaded chunks hold, counted from their data rather than the process's memory, so it's the same every run: how many chunks, how many are air or one other block throughout and how many have one light level throughout, the bytes of block states, light and partial fluid, how much of that (in KiB) is in chunks that are one value throughout but still kept a value per voxel, and how many such chunks there are (0 once compaction has caught up), and the chunk meshes and the bytes of vertices and indices they keep in the main world. |
 //! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`](crate::world::Voxels::get), a hash and a query per voxel), then a chunk at a time, and print both. A box of more than 16,777,216 voxels (256 a side) fails the run. |
@@ -89,6 +90,7 @@ use std::time::Duration;
 
 use bevy::{
     app::PluginGroupBuilder,
+    audio::AudioPlugin,
     prelude::*,
     render::{RenderPlugin, settings::WgpuSettings},
     window::{ExitCondition, WindowResolution},
@@ -126,11 +128,13 @@ const END_TIMEOUT_FRAMES: u32 = 600;
 /// `settle` (or the start). Only a guard against a hang: loading is on
 /// other threads, so how many frames it takes depends on the machine. The
 /// mountains at the full render distance take about 1,900 here, and CI's
-/// unoptimized build takes two to four times as many.
+/// less optimized build, on fewer cores, takes more.
 pub const SETTLE_TIMEOUT_FRAMES: u32 = 12_000;
 
 /// [`DefaultPlugins`] set up to run without a window. With `rendering` off
-/// there's no GPU at all (for CI); screenshots are then skipped.
+/// there's no GPU at all (for CI); screenshots are then skipped. There's no
+/// audio either: opening an output device is slow, and on a machine without
+/// a sound card (CI) ALSA prints a screenful of errors for every app.
 pub fn default_plugins(rendering: bool) -> PluginGroupBuilder {
     sized_plugins(rendering, RESOLUTION)
 }
@@ -144,6 +148,7 @@ pub fn sized_plugins(rendering: bool, size: UVec2) -> PluginGroupBuilder {
     DefaultPlugins
         .build()
         .disable::<WinitPlugin>()
+        .disable::<AudioPlugin>()
         .set(WindowPlugin {
             // A primary window entity still exists so cursor grabbing and
             // window-targeted input work, but nothing creates an OS window.

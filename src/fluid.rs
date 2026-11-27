@@ -67,6 +67,8 @@ impl Plugin for FluidPlugin {
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .init_resource::<evaporation::Films>()
+            .init_resource::<evaporation::EvaporationSpeed>()
+            .register_type::<evaporation::EvaporationSpeed>()
             .add_systems(
                 Update,
                 (

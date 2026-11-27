@@ -322,6 +322,7 @@ fn run_script(
             | Command::Hotbar { .. }
             | Command::Give { .. }
             | Command::RandomTicks(_)
+            | Command::Evaporation(_)
             | Command::Lookups { .. } => runner.world_commands.push(command),
             Command::Fluids(region) => runner.fluid_reports.push(region),
             Command::Memory => runner.memory_report = true,

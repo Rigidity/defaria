@@ -83,6 +83,8 @@ pub enum Command {
     Type(String),
     /// Voxels picked for random ticks in each chunk each tick.
     RandomTicks(u32),
+    /// How many times faster than their rate films evaporate.
+    Evaporation(f32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -254,6 +256,14 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             expect(1)?;
             commands.push(Command::RandomTicks(parse_number(args[0])?));
         }
+        "evaporation" => {
+            expect(1)?;
+            let speed: f32 = parse_number(args[0])?;
+            if !(speed.is_finite() && speed >= 0.0) {
+                return Err(format!("`{}` isn't a speed", args[0]));
+            }
+            commands.push(Command::Evaporation(speed));
+        }
         "network" => {
             expect(3)?;
             commands.push(Command::Network(IVec3::new(
@@ -369,6 +379,7 @@ mod tests {
              put 1 2 3 input 4 stone[ore=defaria:iron]
              type  Iron ore 2 \n\
              random-ticks 64\n\
+             evaporation 20\n\
              memory\n\
              lookups 5 0 -1 1 2 3\n\
              give bucket 2\n\
@@ -420,6 +431,7 @@ mod tests {
                 },
                 Command::Type("Iron ore 2".into()),
                 Command::RandomTicks(64),
+                Command::Evaporation(20.0),
                 Command::Memory,
                 Command::Lookups {
                     min: IVec3::new(1, 0, -1),
@@ -468,6 +480,9 @@ mod tests {
         assert!(Script::parse("fluids 1 2 3 4 5 six").is_err());
         assert!(Script::parse("random-ticks").is_err());
         assert!(Script::parse("random-ticks many").is_err());
+        assert!(Script::parse("evaporation").is_err());
+        assert!(Script::parse("evaporation -1").is_err());
+        assert!(Script::parse("evaporation NaN").is_err());
         assert!(Script::parse("memory all").is_err());
         assert!(Script::parse("lookups 1 2 3 4 5").is_err());
         assert!(Script::parse("give bucket").is_err());
