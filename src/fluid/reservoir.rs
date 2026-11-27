@@ -90,6 +90,10 @@ struct Column {
     rim: bool,
     /// Every cell under its top is full, as levelling leaves it.
     even: bool,
+    /// It's beside another reservoir's column: written exactly when
+    /// levelled, so the two meet at their levels and flow between them
+    /// stops once those are the same.
+    seam: bool,
 }
 
 impl Column {
@@ -262,6 +266,7 @@ fn run_at(cells: &impl CellView, kind: BlockState, pos: IVec3) -> Option<Column>
         stale: false,
         rim: false,
         even: false,
+        seam: false,
     };
     read(cells, kind, x, z, &mut column);
     Some(column)
@@ -383,7 +388,9 @@ impl Reservoirs {
     /// Merges the reservoirs noted touching, the smaller into the bigger,
     /// as long as the two fit in one. If they don't, it moves fluid from
     /// the higher one's balance to the lower one's, as much as brings them
-    /// to one level, and both are levelled.
+    /// to one level: two side by side at different levels would keep fluid
+    /// moving between them, pooled on both sides, for good. Both are
+    /// levelled then, their seam exactly.
     fn merge_touching(&mut self) {
         let mut touching = std::mem::take(&mut self.touching);
         touching.sort_unstable();
@@ -399,8 +406,10 @@ impl Reservoirs {
                 let (Some(high), Some(low)) = (first.level, second.level) else {
                     continue;
                 };
-                // Levels closer than levelling writes are left be.
-                if (high - low).abs() < LAZY {
+                // A unit apart is as close as two levels of whole units
+                // over different columns come; evening that out would only
+                // swap which is higher.
+                if (high - low).abs() <= 1 {
                     continue;
                 }
                 // Over two bodies of n and m columns, a difference d in
@@ -572,6 +581,8 @@ impl Reservoirs {
             refresh(cells, reservoir, wake);
             let due = reservoir.balance.abs() >= LAZY * reservoir.columns.len() as i64;
             if reservoir.level.is_none() || due || (flush && reservoir.balance != 0) {
+                self.mark_seams(id);
+                let reservoir = self.list.get_mut(&id).expect("listed");
                 level(cells, reservoir, flush, wake);
                 self.grow_from_rim(&*cells, id);
             }
@@ -672,6 +683,21 @@ impl Reservoirs {
                     frontier.push_back((next, column.top));
                 }
             }
+        }
+    }
+
+    /// Marks which of reservoir `id`'s rim columns are beside another
+    /// reservoir's.
+    fn mark_seams(&mut self, id: u32) {
+        let owners = &self.owners;
+        let reservoir = self.list.get_mut(&id).expect("listed");
+        for (&(x, z), column) in reservoir.columns.iter_mut() {
+            column.seam = column.rim
+                && SIDES.iter().any(|&side| {
+                    owners
+                        .get(&IVec2::new(x + side.x, z + side.y))
+                        .is_some_and(|&other| other != id)
+                });
         }
     }
 
@@ -945,18 +971,29 @@ fn level(cells: &mut impl Cells, reservoir: &mut Reservoir, flush: bool, wake: &
         }
     }
     let level = low;
-    let mut extra = if flush { total - held_at(level) } else { 0 };
+    // The units left over go a unit a column to columns the level is
+    // inside, so a column it's below doesn't get one: seams last, since
+    // they stay at the level itself to match the reservoir beside them.
+    let extra = if flush { total - held_at(level) } else { 0 };
+    let takes = |c: &Column| c.at_level(level + 1) > c.at_level(level);
+    let others = (reservoir.columns.values())
+        .filter(|c| !c.seam && takes(c))
+        .count() as i64;
+    let (mut extra, mut seam_extra) = (extra.min(others), (extra - others).max(0));
     reservoir.level = Some(level);
     for (&(x, z), column) in reservoir.columns.iter_mut() {
         let mut want = column.at_level(level);
-        // The units left over go to columns the level is inside, so a
-        // column it's below doesn't get a unit.
-        if extra > 0 && column.at_level(level + 1) > want {
+        let left = if column.seam {
+            &mut seam_extra
+        } else {
+            &mut extra
+        };
+        if *left > 0 && takes(column) {
             want += 1;
-            extra -= 1;
+            *left -= 1;
         }
         let off = (want - column.amount).abs();
-        if off == 0 || !(flush || off >= LAZY || want == 0 || column.amount == 0) {
+        if off == 0 || !(flush || column.seam || off >= LAZY || want == 0 || column.amount == 0) {
             continue;
         }
         let before = column.amount;
