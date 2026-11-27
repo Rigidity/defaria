@@ -718,7 +718,7 @@ mod tests {
             chunk.set(x, 1, 1, BlockState::AIR);
         }
         for x in 1..=3 {
-            chunk.set_to_fluid(IVec3::new(x as i32, 1, 1), block("water"));
+            chunk.set_to_fluid(IVec3::new(x, 1, 1), block("water"));
         }
         chunk.set(4, 1, 1, block("stone_slab"));
         chunk.set(5, 1, 1, block("tuft"));
