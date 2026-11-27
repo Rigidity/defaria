@@ -338,14 +338,37 @@ frame; the messages between them are `defaria_core::net`. So:
   one instead of starting a server (windowed or headless:
   `cargo headless <script> --connect 127.0.0.1:25575`). The messages
   cross the network as bytes over QUIC (`src/quic.rs`); a server and
-  clients in one test are `headless::test_multiplayer` (in memory) or a
+  clients in one test are `headless::test_multiplayer` (in memory;
+  `test_multiplayer_over` with `Conditions` delays the messages a number
+  of frames and loses a share of those that may be lost, the same every
+  run, and round-trips each through the codec) or a
   `quic::listen` the server takes clients from
   (`dedicated::take_clients_from`). Every message type derives serde;
   `net::encode`/`decode` round-trip them. Give a scenario's server a
   world folder in your scratch directory, never the default
   `server-world`.
-- Other players show as `others::OtherPlayerView` figures where the
-  server's `ServerMessage::Players` puts them.
+- The client moves its own player at once and the server checks it: the
+  client sends its inputs, numbered, each physics step; the server steps
+  the player on them with the same `player::step` and says where the
+  last left it; on a difference the client takes the server's, steps
+  again through the inputs since and glides to it
+  (`crates/defaria_client/src/prediction.rs`,
+  `crates/defaria_core/src/server/movement.rs`). Anything that moves the
+  local player on the client (a scenario's `camera`) inserts
+  `player::Teleported`, so the server does too. Gameplay that changes
+  where a player is, on the server, needs nothing more: the client
+  follows.
+- A block placed shows at once: the client places it if the server would
+  (`block_edit::placing_for`, `claimed_before_placing`) and keeps it over
+  what the server sends until the server answers the use; a refused one
+  goes (`crates/defaria_client/src/edit_prediction.rs`).
+- Entities the server shows clients are marked `replication::Replicated`
+  (players now; mobs and dropped items should be too, rather than a
+  message of their own): each client is told of those in the chunks it
+  has and sent snapshots of them, and draws them as `Replica`s a little
+  behind, between snapshots
+  (`crates/defaria_core/src/server/replication.rs`,
+  `crates/defaria_client/src/replication.rs`).
 - The client is in a `session::GameState`: `Menu` (the main menu, the
   world list and the new world screen, `crates/defaria_client/src/menu.rs`)
   or `Playing` a world. The windowed game starts at the menu
@@ -378,11 +401,12 @@ relative path.
 - `crates/defaria_core/src/net.rs`: the messages between server and
   client, and the link in memory that carries them.
   `crates/defaria_core/src/server.rs`: the server's side: each client a
-  player with a `Connection`, its pose and intents applied, and the chunks
-  in its range, its state and its open machine sent.
+  player with a `Connection`, its inputs and intents applied, and the
+  chunks in its range, its state, the entities it sees and its open
+  machine sent.
   `crates/defaria_client/src/net.rs`: the client's side: the chunks
   spawned, changed and dropped, the player's state applied, and its
-  pose, uses, mining and hotbar sent.
+  uses, mining and hotbar sent.
 - `crates/<crate>/src/<feature>.rs` (or a folder): one plugin per
   gameplay feature, with its components, systems and tests, in the crate
   it belongs to (game logic in core; drawing, UI and input in the

@@ -43,7 +43,9 @@ pub enum ClientMessage {
     /// loses nothing.
     Inputs(Vec<Input>),
     /// The player used something (right click), as `use_action` acts on.
-    Use(Use),
+    /// `edit` numbers the block the client placed at once, predicting
+    /// the server would ([`ServerMessage::EditDone`] answers it).
+    Use { using: Use, edit: Option<u32> },
     /// Whether the player holds the break button ([`Mining::holding`]).
     Mining(bool),
     /// The player's hotbar slots.
@@ -139,6 +141,11 @@ pub enum ServerMessage {
     },
     /// Whether everything in the client's range is loaded and sent.
     Settled(bool),
+    /// The server has acted on the use that carried this edit and the
+    /// ones before it, and the chunks it changed were sent before this:
+    /// the client's world is the server's there now. Sent with the chunks,
+    /// so it comes after them.
+    EditDone(u32),
     /// Where the server has the client's player after the last of its
     /// inputs it's applied (tick 0 for none yet): what the client predicted
     /// from it is checked against this. Not reliable: it's sent again as

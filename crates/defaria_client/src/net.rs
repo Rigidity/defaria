@@ -36,6 +36,7 @@ impl Plugin for ClientNetPlugin {
             .init_resource::<ServerSettled>()
             .add_message::<ToServer>()
             .add_message::<FromServer>()
+            .add_message::<ChunkReceived>()
             .add_observer(give_the_player_mining)
             .add_systems(OnExit(GameState::Playing), forget_the_server)
             .add_systems(
@@ -66,6 +67,11 @@ pub struct ServerConnection(pub ClientLink);
 /// A message for the server, sent at the end of the frame.
 #[derive(Message, Debug, Clone)]
 pub struct ToServer(pub ClientMessage);
+
+/// A chunk arrived or changed from the server this frame (once its
+/// `Chunk` is in place).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct ChunkReceived(pub IVec3);
 
 /// A message from the server that features act on (screens): everything
 /// but chunks and the player's state, which this module applies.
@@ -134,6 +140,7 @@ fn receive(
         With<LocalPlayer>,
     >,
     mut forward: MessageWriter<FromServer>,
+    mut received: MessageWriter<ChunkReceived>,
 ) {
     let Some(mut connection) = connection else {
         return;
@@ -156,10 +163,12 @@ fn receive(
                     (light, DespawnOnExit(GameState::Playing)),
                 );
                 touched.insert(coord.0);
+                received.write(ChunkReceived(coord.0));
             }
             ServerMessage::ChunkChanged { coord, chunk } => {
                 if let Some(entity) = map.get(coord) {
                     commands.entity(entity).insert(chunk);
+                    received.write(ChunkReceived(coord.0));
                 }
             }
             ServerMessage::LightChanged { coord, light } => {
@@ -269,6 +278,7 @@ fn update_awaiting(mut commands: Commands, map: Res<ChunkMap>, touched: Option<R
 fn send_intents(
     mut connection: Option<ResMut<ServerConnection>>,
     joined: Res<Joined>,
+    mut edits: Option<ResMut<crate::edit_prediction::PredictedEdits>>,
     mut player: Query<
         (
             &mut UseAction,
@@ -286,7 +296,8 @@ fn send_intents(
         return;
     };
     if let Some(using) = action.pending() {
-        connection.0.send(ClientMessage::Use(using));
+        let edit = edits.as_mut().and_then(|edits| edits.this_use.take());
+        connection.0.send(ClientMessage::Use { using, edit });
         action.claim();
     }
     let holding = mining.is_some_and(|mining| mining.holding);
@@ -493,7 +504,7 @@ mod tests {
         app.world_mut().get_mut::<Mining>(player).unwrap().holding = true;
         app.update();
         let sent = server.receive();
-        assert!(sent.contains(&ClientMessage::Use(using)));
+        assert!(sent.contains(&ClientMessage::Use { using, edit: None }));
         assert!(sent.contains(&ClientMessage::Mining(true)));
         assert_eq!(
             app.world().get::<UseAction>(player).unwrap().pending(),

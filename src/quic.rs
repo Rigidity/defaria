@@ -9,9 +9,10 @@
 //! content's fingerprint); the server answers on it, accepting or refusing.
 //! Then:
 //!
-//! - chunks, their changes and drops, and whether the client's settled go
-//!   on a stream of their own from the server ([`bulk`]), so a lost
-//!   packet of chunks doesn't hold up the rest;
+//! - chunks, their changes and drops, whether the client's settled, and
+//!   which of its predicted edits are done (after the chunks they
+//!   changed) go on a stream of their own from the server ([`bulk`]), so
+//!   a lost packet of chunks doesn't hold up the rest;
 //! - messages that needn't arrive (a client's inputs, which it sends
 //!   again until they're applied, and where the server has its player:
 //!   `reliable()` says) go as datagrams, when they fit in one;
@@ -93,6 +94,7 @@ fn bulk(message: &ServerMessage) -> bool {
             | ServerMessage::LightChanged { .. }
             | ServerMessage::Unload(_)
             | ServerMessage::Settled(_)
+            | ServerMessage::EditDone(_)
     )
 }
 

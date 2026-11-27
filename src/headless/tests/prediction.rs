@@ -1,10 +1,20 @@
-//! A client moves its player at once and the server checks it: through a
-//! slow connection that loses messages, the two agree, and when the
-//! server moves the player itself the client follows, gliding.
+//! A client moves its player and places blocks at once, and the server
+//! checks: through a slow connection that loses messages, the two agree;
+//! when the server moves the player itself the client follows, gliding;
+//! and a block the server won't place goes again.
 
-use bevy::prelude::*;
-use defaria_client::prediction::{Correction, Prediction};
-use defaria_core::{physics::Body, player::LocalPlayer, server::PlayerInputs};
+use bevy::{ecs::system::RunSystemOnce, prelude::*};
+use defaria_client::{
+    edit_prediction::PredictedEdits,
+    prediction::{Correction, Prediction},
+};
+use defaria_core::{
+    content::{BlockState, block},
+    physics::Body,
+    player::LocalPlayer,
+    server::PlayerInputs,
+    world::Voxels,
+};
 
 use crate::headless::{Conditions, Multiplayer, test_multiplayer, test_multiplayer_over};
 
@@ -94,4 +104,70 @@ fn the_client_follows_where_the_server_puts_its_player() {
     game.run(0, "wait 30");
     let last = glide(&mut game);
     assert!(last.length() < 0.01, "and then where it is: {last}");
+}
+
+fn voxel(app: &mut App, pos: IVec3) -> Option<BlockState> {
+    app.world_mut()
+        .run_system_once(move |voxels: Voxels| voxels.get(pos))
+        .unwrap()
+}
+
+fn edits(game: &Multiplayer, client: usize) -> (usize, u32) {
+    let edits = game.clients[client].world().resource::<PredictedEdits>();
+    (edits.pending(), edits.rolled_back)
+}
+
+/// Two players a tenth of a second from the server, a stone in the air,
+/// and the first player over it looking down, cursor locked.
+fn over_a_stone() -> (Multiplayer, IVec3) {
+    let mut game = test_multiplayer_over(
+        2,
+        Conditions {
+            delay: 6,
+            loss: 0.0,
+        },
+    );
+    game.settle();
+    let below = IVec3::new(64, 60, 88);
+    game.server
+        .world_mut()
+        .run_system_once(move |mut voxels: Voxels| {
+            voxels.set(below, block("stone"));
+        })
+        .unwrap();
+    game.run(0, "camera 64.5 66 88.5 0 -90\nwait 2\nsettle");
+    game.run(1, "camera 70.5 66 88.5 0 0\nwait 2");
+    game.run(0, "hold MouseLeft 1\nwait 30");
+    (game, below + IVec3::Y)
+}
+
+/// A block placed shows at once, long before the server has it, and the
+/// server's answer leaves it there.
+#[test]
+fn a_placed_block_shows_at_once() {
+    let (mut game, placed) = over_a_stone();
+    game.run(0, "hold MouseRight 1\nwait 1");
+    assert_eq!(voxel(&mut game.clients[0], placed), Some(block("stone")));
+    assert_eq!(voxel(&mut game.server, placed), Some(BlockState::AIR));
+    assert_eq!(edits(&game, 0).0, 1, "waiting for the server");
+    game.run(0, "wait 30");
+    assert_eq!(voxel(&mut game.server, placed), Some(block("stone")));
+    assert_eq!(voxel(&mut game.clients[0], placed), Some(block("stone")));
+    assert_eq!(edits(&game, 0), (0, 0));
+}
+
+/// A block placed where the server won't have it (another player stands
+/// there, which the client doesn't check) shows at once, and goes when the
+/// server answers.
+#[test]
+fn a_refused_edit_is_rolled_back() {
+    let (mut game, placed) = over_a_stone();
+    // The second player in the voxel the stone would go in.
+    game.run(1, "camera 64.5 62.62 88.5 0 0\nwait 30");
+    game.run(0, "hold MouseRight 1\nwait 1");
+    assert_eq!(voxel(&mut game.clients[0], placed), Some(block("stone")));
+    game.run(0, "wait 30");
+    assert_eq!(voxel(&mut game.server, placed), Some(BlockState::AIR));
+    assert_eq!(voxel(&mut game.clients[0], placed), Some(BlockState::AIR));
+    assert_eq!(edits(&game, 0), (0, 1));
 }

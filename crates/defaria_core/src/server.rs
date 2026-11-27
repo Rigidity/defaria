@@ -56,6 +56,7 @@ impl Plugin for ServerNetPlugin {
                         apply_intents,
                         apply_transfers,
                         note_pauses,
+                        note_edits,
                     ),
                     close_screens,
                     pause_with_players,
@@ -68,6 +69,7 @@ impl Plugin for ServerNetPlugin {
                 Last,
                 (
                     send_chunks,
+                    answer_edits,
                     movement::send_moves,
                     send_player_state,
                     send_mining,
@@ -114,6 +116,8 @@ pub struct Connection {
     center: Option<IVec3>,
     /// Whether the player is paused.
     paused: bool,
+    /// The edits the client predicted with uses this frame, to answer.
+    edits: Vec<u32>,
 }
 
 impl Connection {
@@ -128,6 +132,7 @@ impl Connection {
             settled: None,
             center: None,
             paused: false,
+            edits: Vec::new(),
         }
     }
 
@@ -182,7 +187,7 @@ fn apply_intents(
     for (connection, mut action, mut mining, mut hotbar, mut active, mut mode) in &mut players {
         for message in &connection.inbox {
             match message {
-                ClientMessage::Use(using) => *action = UseAction(Some(*using)),
+                ClientMessage::Use { using, .. } => *action = UseAction(Some(*using)),
                 ClientMessage::Mining(holding) => {
                     if let Some(mining) = &mut mining
                         && mining.holding != *holding
@@ -276,6 +281,32 @@ fn apply_transfers(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Notes the edits the client predicted with its uses, to answer once
+/// they're acted on.
+fn note_edits(mut connections: Query<&mut Connection>) {
+    for mut connection in &mut connections {
+        let edits: Vec<u32> = connection
+            .inbox
+            .iter()
+            .filter_map(|message| match message {
+                ClientMessage::Use { edit, .. } => *edit,
+                _ => None,
+            })
+            .collect();
+        connection.edits.extend(edits);
+    }
+}
+
+/// Answers the edits whose uses were acted on this frame, after the chunks
+/// they changed were sent.
+fn answer_edits(mut connections: Query<&mut Connection>) {
+    for mut connection in &mut connections {
+        if let Some(last) = connection.edits.drain(..).max() {
+            connection.send(ServerMessage::EditDone(last));
         }
     }
 }

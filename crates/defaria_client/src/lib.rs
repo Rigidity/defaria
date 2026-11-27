@@ -6,6 +6,7 @@ pub mod block_texture;
 pub mod cracks;
 pub mod crosshair;
 pub mod dynamic_light;
+pub mod edit_prediction;
 pub mod fly_camera;
 pub mod fog;
 pub mod fov;
