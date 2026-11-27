@@ -41,8 +41,8 @@ use bevy::{
 
 use crate::{
     content::{BakedFace, BlockState, Content, Direction, MAX_LIGHT, Render, Vertex},
-    light::{ChunkLight, Light},
-    world::{CHUNK_SIZE, Chunk, FluidTop, VoxelFluid, axis_of, fluid_surface},
+    light::{CHANNELS, ChunkLight, Light, part_full_dim},
+    world::{CHUNK_SIZE, Chunk, FLUID_STEPS, FluidTop, VoxelFluid, axis_of, fluid_surface},
 };
 
 /// Where a vertex sits on its face, for blending the corners: `(0, 0)` at
@@ -204,6 +204,29 @@ impl Neighborhood {
         self.light[Self::index(pos)]
     }
 
+    /// The light a block face in front of `pos` is shaded with: the
+    /// voxel's, less what fluid that doesn't fill it dims by how full it is
+    /// drawn (see [`part_full_dim`]). Light leaves a part-full voxel's own
+    /// light alone, so what sticks out of the fluid is lit as the air, but
+    /// a face under it is under that much fluid; and it's as dim under a
+    /// voxel nearly full as under a full one.
+    fn face_light(&self, content: &Content, pos: IVec3) -> Light {
+        let mut light = self.light(pos);
+        let (Some(fluid), step) = self.fluids[Self::index(pos)] else {
+            return light;
+        };
+        let room = content.state(self.block(pos)).fluid_room;
+        if fluid.amount >= room {
+            return light;
+        }
+        let filter = content.state(fluid.kind).light_filter;
+        let dim = part_full_dim(filter, step, FLUID_STEPS);
+        for channel in 0..CHANNELS {
+            light.set(channel, light.get(channel).saturating_sub(dim));
+        }
+        light
+    }
+
     /// Which fluid is at `pos`, if any.
     pub fn fluid(&self, pos: IVec3) -> Option<BlockState> {
         self.fluids[Self::index(pos)].0.map(|fluid| fluid.kind)
@@ -288,7 +311,7 @@ impl Neighborhood {
                 let cut = cut_face(face, &top);
                 (cut.clone(), cut)
             };
-            let shading = self.shade_face(pos, &shading, state.emits_light(), opaque);
+            let shading = self.shade_face(content, pos, &shading, state.emits_light(), opaque);
             builder.push(pos.as_vec3(), &face, &shading, false);
             if state.double_sided {
                 builder.push(pos.as_vec3(), &face, &shading, true);
@@ -333,7 +356,7 @@ impl Neighborhood {
                 if face.hidden_by(|side| self.hides(content, voxel, pos + side.normal(), side)) {
                     continue;
                 }
-                let shading = self.shade_face(pos, face, glows, &opaque_at);
+                let shading = self.shade_face(content, pos, face, glows, &opaque_at);
                 builder.push(pos.as_vec3(), face, &shading, false);
                 if state.double_sided {
                     builder.push(pos.as_vec3(), face, &shading, true);
@@ -360,6 +383,7 @@ impl Neighborhood {
     /// vertex attributes.
     fn shade_face(
         &self,
+        content: &Content,
         pos: IVec3,
         face: &BakedFace,
         glows: bool,
@@ -382,8 +406,10 @@ impl Neighborhood {
                 i
             };
             corners[corner] = if axis_aligned {
-                self.shade_corner(front, normal, vertex.pos, opaque)
+                self.shade_corner(content, front, normal, vertex.pos, opaque)
             } else {
+                // Inside its voxel at an angle, as a plant's quads are: lit
+                // as the voxel, even where fluid stands part way up it.
                 CornerShading::from_light(self.light(pos), 1, OPEN)
             };
         }
@@ -410,6 +436,7 @@ impl Neighborhood {
     /// block.
     fn shade_corner(
         &self,
+        content: &Content,
         front: IVec3,
         normal: IVec3,
         vertex: Vec3,
@@ -440,7 +467,7 @@ impl Neighborhood {
         let mut sum = [0u32; 4];
         let mut count = 0;
         for (voxel, _) in lit.iter().filter(|(_, open)| *open) {
-            let light = self.light(*voxel);
+            let light = self.face_light(content, *voxel);
             for (channel, total) in sum.iter_mut().enumerate() {
                 *total += light.get(channel) as u32;
             }
@@ -448,7 +475,7 @@ impl Neighborhood {
         }
         if count == 0 {
             // Every voxel around the corner is opaque: use the one in front.
-            return CornerShading::from_light(self.light(front), 1, occlusion);
+            return CornerShading::from_light(self.face_light(content, front), 1, occlusion);
         }
         CornerShading::from_sum(sum, count, occlusion)
     }

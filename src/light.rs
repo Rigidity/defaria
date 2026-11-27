@@ -59,7 +59,7 @@ use crate::{
         Chunk, ChunkCoord, ChunkMap, FluidChanged, PropertiesUpdated, VoxelChanged, VoxelFluid,
     },
 };
-pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone};
+pub use propagate::{ChunkStore, LightQueue, LightTable, light_alone, part_full_dim};
 use sky::Sky;
 
 /// The sky's channel in a [`Light`]; red, green and blue follow it.
@@ -228,17 +228,36 @@ fn queue_changed_voxels(
     mut updates: MessageReader<PropertiesUpdated>,
     mut fluid_changes: MessageReader<FluidChanged>,
     table: Res<LightTable>,
+    map: Res<ChunkMap>,
+    chunks: Query<&Chunk>,
     mut queue: ResMut<LightQueue>,
 ) {
+    // A property update keeps the block, so its `fluid_room`, which is
+    // the block's and the same in every state: whether fluid fills the
+    // voxel can't change with it. If room ever varies by state, compare
+    // `same_fluid_light` for the voxel's fluid here too.
     let updated = updates
         .read()
         .filter(|update| !table.same_light(update.before, update.after))
         .map(|update| update.pos);
-    // Only another fluid matters to light, not more or less of one.
-    let kind = |fluid: Option<VoxelFluid>| fluid.map_or(BlockState::AIR, |fluid| fluid.kind);
+    // Only another fluid matters to light, or the fluid filling its voxel
+    // or no longer filling it, not every unit more or less of one.
+    let block = |pos: IVec3| {
+        let (coord, local) = ChunkCoord::split(pos);
+        map.get(coord)
+            .and_then(|entity| chunks.get(entity).ok())
+            .map_or(BlockState::AIR, |chunk| chunk.at(local))
+    };
+    let amount = |fluid: Option<VoxelFluid>| fluid.map(|fluid| (fluid.kind, fluid.amount));
     let fluids = fluid_changes
         .read()
-        .filter(|change| !table.same_light(kind(change.before), kind(change.after)))
+        .filter(|change| {
+            !table.same_fluid_light(
+                block(change.pos),
+                amount(change.before),
+                amount(change.after),
+            )
+        })
         .map(|change| change.pos);
     for pos in changes
         .read()
@@ -370,8 +389,10 @@ mod tests {
     }
 
     /// Only a change of fluid that light sees queues light work: another
-    /// fluid, or water coming or going, since it dims light (its
-    /// `light_filter`), but not more or less of one.
+    /// fluid, water coming or going, since it dims light (its
+    /// `light_filter`), water filling its voxel or no longer filling it,
+    /// or part-full water crossing a step of how much it dims the light
+    /// it passes on; not every unit more or less of one.
     #[test]
     fn fluid_changes_queue_light_only_for_another_fluid() {
         let mut app = App::new();
@@ -401,8 +422,28 @@ mod tests {
         assert!(send(Some(("lava", 300)), Some(("water", 300))));
         assert!(send(Some(("lava", 300)), None));
         assert!(!send(Some(("lava", 300)), Some(("lava", 900))));
-        assert!(!send(Some(("water", 300)), Some(("water", 900))));
+        assert!(
+            !send(Some(("water", 300)), Some(("water", 600))),
+            "both dim one"
+        );
+        assert!(
+            !send(Some(("water", 100)), Some(("water", 200))),
+            "both films"
+        );
+        assert!(
+            send(Some(("water", 300)), Some(("water", 900))),
+            "dims one more"
+        );
         assert!(send(None, Some(("water", 1000))), "water dims light");
+        assert!(send(Some(("water", 900)), Some(("water", 1000))), "filling");
+        assert!(
+            send(Some(("water", 1000)), Some(("water", 900))),
+            "no longer"
+        );
+        assert!(
+            !send(Some(("lava", 300)), Some(("lava", 1000))),
+            "lava doesn't dim"
+        );
     }
 
     /// A lamp's light reaching into a chunk its edit didn't touch remeshes

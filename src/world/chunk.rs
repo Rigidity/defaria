@@ -202,6 +202,17 @@ impl Chunk {
         self.fluid.get(index).0
     }
 
+    /// The fluid in the voxel at an index from [`Chunk::index_of`] and how
+    /// much of it there is: air and 0 for none.
+    pub fn fluid_at_index(&self, index: usize) -> (BlockState, u16) {
+        let (kind, kept) = self.fluid.get(index);
+        if kind.is_air() {
+            (kind, 0)
+        } else {
+            (kind, kept & AMOUNT_MASK)
+        }
+    }
+
     /// Every voxel with fluid in it, by index.
     pub fn fluids(&self) -> impl Iterator<Item = (usize, VoxelFluid)> + '_ {
         self.fluid

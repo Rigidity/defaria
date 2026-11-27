@@ -1651,16 +1651,69 @@ only through unfiltered blocks, as in Minecraft. The sky that comes into
 the loaded chunks from above (`OutsideSky`) is full strength; only loaded
 voxels filter it.
 
-**What's wrong with it.** The filter is the block's, not the state's or
-the fluid amount's: a thin film of water dims light as much as a full
-block. It dims red, green, blue and sky alike, so water doesn't tint what's
+**What's wrong with it.** The filter is the block's, not the state's. It
+dims red, green, blue and sky alike, so water doesn't tint what's
 under it blue. And a lake or forest above the loaded chunks doesn't shade
 what's below them, since the sky from outside doesn't know about it.
 
 **What should replace it.** A filter per channel (a tinted filter, so
-water passes more blue), scaled by how full a fluid voxel is, and an
-`OutsideSky` that knows the columns above the loaded area (see "Sky light
-comes in above whatever's loaded").
+water passes more blue), and an `OutsideSky` that knows the columns above
+the loaded area (see "Sky light comes in above whatever's loaded").
+
+## Part-full fluid dims the light it passes on, not its own voxel's (2026-11-27)
+
+**Context.** Any fluid in a voxel took its whole filter off the light
+coming in, so a film of water dimmed light as much as a full block
+(#199). A plant standing in a puddle was lit as if under water, and so
+was the floor of a drained pool and the bottom of its walls. Once plants
+took in water at any depth (#203), every plant water spread through
+went dark.
+
+**Decision.** Fluid that doesn't fill the room its block leaves doesn't
+dim the light coming into its voxel, so what sticks out of it is lit as
+the air. It dims the light the voxel passes on instead, by its filter in
+proportion to how full the voxel is, rounded (`part_full_dim`; for water,
+none below a quarter full, one level to three quarters, two above), so
+beyond a voxel nearly full light is what a full one leaves, and beyond a
+film it's as if there were none (`LightTable::entering`, `spreading` and
+`offered` in `src/light/propagate.rs`). Meshing shades a block face from
+a part-full voxel (the floor under it, a wall beside it, a slab in it) by
+the voxel's light less the same proportion of the filter, by the height
+the fluid is drawn at (`Neighborhood::face_light`), while faces at an
+angle inside the voxel, a plant's quads, take its light as it is. So a
+pool dropping from full to a step below doesn't brighten its floor, and a
+film doesn't darken it. Light only reruns when fluid fills its voxel,
+stops filling it, or crosses one of those steps, not on every unit flow
+moves (`LightTable::same_fluid_light`); the sea breach measured the same
+before and after (worst frame 12.6 ms against 11.9 ms, mean 5.7 against
+5.8).
+
+**What's wrong with it.** It's in steps: water dims what it passes on
+by 0, 1 or 2 levels, and the floor under water brightens a level at a
+time as it drains, not smoothly. Everything in a part-full voxel is lit as
+the air above the water, the part under the surface too (a plant's stem
+in a half-full voxel). The mesh's dimming follows the drawn height and
+light's the amount, so at a step's edge they can disagree by a level for
+a moment.
+
+It also gives up a rule the flood fill was built on: a voxel's stored
+light is the light it spreads. A part-full voxel stores more than it
+passes on, so every part of the fill that reads a voxel's stored level to
+judge its neighbours has to go through `LightTable::offered` instead, or
+leave stale light: the sky coming straight down (`cover`, the sky-column
+rule in removals), chunks loading and unloading, and anything added to the
+fill later. Removals still compare stored levels, which only clears more
+than it must and spreads it back, so it's safe but does extra work around
+part-full voxels. The tests check every incremental change against light
+worked out from scratch (`TestWorld::reference`, which uses `offered` too),
+part-full voxels included; that's what guards the rule, not the rule
+itself. A special case light features have to keep in mind, kept because
+the alternatives below are far bigger.
+
+**What should replace it.** Light at a finer resolution than a level a
+voxel, or lighting the parts of a voxel above and below its fluid's
+surface apart: either keeps stored and spread light the same, but changes
+the light layout and the save format.
 
 ## Translucent faces cull by the texture where they meet (2026-11-26)
 

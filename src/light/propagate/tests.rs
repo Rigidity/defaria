@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::{
-    content::{base, block},
+    content::{FULL_FLUID, base, block},
     light::sky::AssumeOpenSky,
 };
 
@@ -136,6 +136,16 @@ impl TestWorld {
         queue.voxel_changed(pos);
     }
 
+    /// Leaves `amount` of the fluid `kind` in the voxel at `pos`, as flow
+    /// does.
+    fn pour_some(&mut self, queue: &mut LightQueue, pos: IVec3, kind: BlockState, amount: u16) {
+        let (coord, local) = split(pos);
+        let chunk = &mut self.chunks.get_mut(&coord).unwrap().0;
+        let room = base().state(chunk.at(local)).fluid_room;
+        chunk.set_fluid_at(local, crate::world::VoxelFluid::of(kind, amount), room);
+        queue.voxel_changed(pos);
+    }
+
     /// Takes the fluid out of the voxel at `pos`, as flow draining it does.
     fn drain(&mut self, queue: &mut LightQueue, pos: IVec3) {
         let (coord, local) = split(pos);
@@ -198,13 +208,12 @@ impl TestWorld {
                         continue;
                     }
                     for (i, direction) in DIRECTIONS.into_iter().enumerate() {
-                        let next = if channel == SKY && i == DOWN && value == MAX_LIGHT {
-                            MAX_LIGHT
-                        } else {
-                            value - 1
-                        };
-                        let n = pos + direction;
                         let from = self.voxel(pos).unwrap();
+                        let next = table.offered(from, value, channel, i);
+                        if next == 0 {
+                            continue;
+                        }
+                        let n = pos + direction;
                         let next = self
                             .voxel(n)
                             .map_or(0, |to| table.passing(from, to, i, channel, next));
@@ -436,8 +445,35 @@ fn base_light_filters() {
     let slab_in_water = Lit {
         block: block("stone_slab"),
         fluid: block("water"),
+        amount: 500,
     };
     assert_eq!(table.entering(slab_in_water, MAX_LIGHT), MAX_LIGHT - 2);
+    // A quarter block in the slab's half doesn't fill it: the light
+    // comes in whole, and leaves dimmed as it would from a full one.
+    let part_full = Lit {
+        amount: 250,
+        ..slab_in_water
+    };
+    assert_eq!(table.entering(part_full, MAX_LIGHT), MAX_LIGHT);
+    assert_eq!(
+        table.offered(part_full, MAX_LIGHT, SKY, DOWN),
+        MAX_LIGHT - 2,
+        "half full, it passes on a level less"
+    );
+    // Nearly full, it passes on what a full one would; a film, all of it.
+    let nearly = Lit {
+        amount: 450,
+        ..slab_in_water
+    };
+    assert_eq!(
+        table.offered(nearly, MAX_LIGHT, SKY, DOWN),
+        table.offered(slab_in_water, MAX_LIGHT - 2, SKY, DOWN),
+    );
+    let film = Lit {
+        amount: 50,
+        ..slab_in_water
+    };
+    assert_eq!(table.offered(film, MAX_LIGHT, SKY, DOWN), MAX_LIGHT);
     assert!(
         !table.same_light(block("water"), block("glass")),
         "light treats them differently, by their filters alone"
@@ -465,6 +501,87 @@ fn sky_light_darkens_down_through_water() {
     for (y, expected) in [(18, 13), (17, 10), (16, 7), (15, 4), (14, 1), (13, 0)] {
         assert_eq!(world.light(column.with_y(y)).sky(), expected, "y {y}");
     }
+    world.assert_matches_reference();
+}
+
+/// Water that doesn't fill its voxel leaves that voxel's light alone, so
+/// what sticks out of it is lit as the air beside it, and dims everything
+/// beyond as a full voxel would: the lake under it is lit the same. Filling
+/// it again dims it again.
+#[test]
+fn part_full_water_lights_its_voxel_and_dims_beyond() {
+    let (mut world, mut queue) = (TestWorld::new(1), LightQueue::default());
+    let lake = |pos: IVec3| match pos.y {
+        ..=3 => block("stone"),
+        4..=18 => block("water"),
+        _ => BlockState::AIR,
+    };
+    for coord in [IVec3::ZERO, IVec3::Y] {
+        world.load(&mut queue, coord, lake);
+    }
+    world.run(&mut queue);
+    let column = IVec3::new(5, 0, 7);
+    let below = |world: &TestWorld| {
+        (4..=17)
+            .map(|y| world.light(column.with_y(y)))
+            .collect::<Vec<_>>()
+    };
+    let full = below(&world);
+    let surface = column.with_y(18);
+    world.pour_some(&mut queue, surface, block("water"), 900);
+    world.run(&mut queue);
+    assert_eq!(world.light(surface).sky(), MAX_LIGHT, "lit as the air");
+    assert_eq!(below(&world), full, "the lake under it is lit the same");
+    world.assert_matches_reference();
+    world.pour_some(&mut queue, surface, block("water"), FULL_FLUID);
+    world.run(&mut queue);
+    assert_eq!(world.light(surface).sky(), 13);
+    world.assert_matches_reference();
+}
+
+/// A plant standing in a film of water on the ground is lit as one on
+/// dry ground, and so is the film: two rows of plants each lit by a lamp
+/// at its end, one row in a film, are lit the same. Filling and draining
+/// a voxel of the film keeps the light right.
+#[test]
+fn a_plant_in_a_film_is_lit_as_on_dry_ground() {
+    let (mut world, mut queue) = (TestWorld::new(1), LightQueue::default());
+    let ground = |pos: IVec3| {
+        if pos.y <= 3 {
+            block("stone")
+        } else {
+            BlockState::AIR
+        }
+    };
+    world.load(&mut queue, IVec3::ZERO, ground);
+    world.run(&mut queue);
+    let (wet, dry) = (4, 12);
+    for z in [wet, dry] {
+        world.set(&mut queue, IVec3::new(2, 4, z), block("lamp"));
+        for x in (4..=9).step_by(2) {
+            world.set(&mut queue, IVec3::new(x, 4, z), block("tuft"));
+        }
+    }
+    for x in 4..=9 {
+        world.pour_some(&mut queue, IVec3::new(x, 4, wet), block("water"), 100);
+    }
+    world.run(&mut queue);
+    for x in 4..=9 {
+        assert_eq!(
+            world.light(IVec3::new(x, 4, wet)),
+            world.light(IVec3::new(x, 4, dry)),
+            "x {x}"
+        );
+    }
+    world.assert_matches_reference();
+    world.pour_some(
+        &mut queue,
+        IVec3::new(6, 4, wet),
+        block("water"),
+        FULL_FLUID,
+    );
+    world.drain(&mut queue, IVec3::new(8, 4, wet));
+    world.run(&mut queue);
     world.assert_matches_reference();
 }
 
@@ -1223,4 +1340,179 @@ fn draining_a_lake_relights_where_the_water_was() {
         MAX_LIGHT,
         "the sky comes down"
     );
+}
+
+/// Amounts of water a voxel is left with, from a film to a full voxel,
+/// around the steps that part-full water dims light by.
+const SOME_WATER: [u16; 10] = [30, 100, 250, 400, 470, 500, 700, 900, 960, FULL_FLUID];
+
+/// Caves of stone with lamps, leaves, slabs and tufts in them, and water
+/// in the air, slabs and tufts, much of it not filling its voxel: a block
+/// and how much water it holds, the same for a seed.
+fn random_wet_voxel(seed: u64) -> impl Fn(IVec3) -> (BlockState, u16) {
+    move |pos: IVec3| {
+        let mut rng = Rng(seed
+            ^ (pos.x as u64 * 73_856_093)
+            ^ (pos.y as u64 * 19_349_663)
+            ^ (pos.z as u64 * 83_492_791)
+            | 1);
+        rng.next();
+        let water = SOME_WATER[rng.below(SOME_WATER.len() as u64) as usize];
+        let maybe = |rng: &mut Rng| if rng.below(2) == 0 { 0 } else { water };
+        match rng.below(1000) {
+            0..=4 => (block("lamp"), 0),
+            5..=8 => (block("blue_lamp"), 0),
+            9..=60 => (block("stone_slab"), maybe(&mut rng)),
+            61..=200 => (BlockState::AIR, water),
+            201..=230 => (block("leaves"), 0),
+            231..=260 => (block("tuft"), maybe(&mut rng)),
+            n if n < 450 => (block("stone"), 0),
+            _ => (BlockState::AIR, 0),
+        }
+    }
+}
+
+impl TestWorld {
+    /// Adds a chunk filled by `fill` (world position to a block and how
+    /// much water it holds, as much as fits), dark or lit by itself as
+    /// loading tasks do, and queues its light. Doesn't run the fill.
+    fn load_wet(
+        &mut self,
+        queue: &mut LightQueue,
+        coord: IVec3,
+        fill: &impl Fn(IVec3) -> (BlockState, u16),
+        lit: bool,
+    ) {
+        let mut chunk = Chunk::default();
+        for index in 0..CHUNK_VOLUME {
+            let local = Chunk::position_of(index);
+            let (state, water) = fill(coord * CHUNK_SIZE as i32 + local);
+            chunk.put(local, state);
+            let room = base().state(state).fluid_room;
+            let fluid = crate::world::VoxelFluid::of(block("water"), water.min(room));
+            chunk.set_fluid_at(local, fluid, room);
+        }
+        let table = Self::table();
+        let neighbour = |c| self.chunks.get(&c).map(|(chunk, light)| (chunk, light));
+        let light = if lit {
+            let light = light_alone(&[(coord, &chunk)], &table, &*self.sky)
+                .pop()
+                .unwrap();
+            queue.lit_chunk_loaded(coord, &chunk, &light, &table, &*self.sky, neighbour);
+            light
+        } else {
+            queue.chunk_loaded(coord, &chunk, &table, &*self.sky, neighbour);
+            ChunkLight::default()
+        };
+        self.chunks.insert(coord, (chunk, light));
+    }
+
+    /// Sets the block at `pos`, keeping as much of its fluid as the new
+    /// block has room for, as placing and breaking do.
+    fn set_keeping_fluid(&mut self, queue: &mut LightQueue, pos: IVec3, state: BlockState) {
+        let (coord, local) = split(pos);
+        let chunk = &mut self.chunks.get_mut(&coord).unwrap().0;
+        let fluid = chunk.fluid_at(local);
+        chunk.put(local, state);
+        let room = base().state(state).fluid_room;
+        let kept = fluid
+            .and_then(|fluid| crate::world::VoxelFluid::of(fluid.kind, fluid.amount.min(room)));
+        chunk.start_fluid_at(local, kept, room);
+        queue.voxel_changed(pos);
+    }
+
+    /// Leaves `amount` of water in the voxel at `pos` (none for 0), as flow
+    /// does, and queues light work only if light sees the change, as the
+    /// game does (see [`LightTable::same_fluid_light`]).
+    fn flow(&mut self, queue: &mut LightQueue, pos: IVec3, amount: u16) {
+        let (coord, local) = split(pos);
+        let chunk = &mut self.chunks.get_mut(&coord).unwrap().0;
+        let block = chunk.at(local);
+        let room = base().state(block).fluid_room;
+        let water = |chunk: &Chunk| chunk.fluid_at(local).map(|f| (f.kind, f.amount));
+        let before = water(chunk);
+        let fluid = crate::world::VoxelFluid::of(self::block("water"), amount.min(room));
+        chunk.set_fluid_at(local, fluid, room);
+        if !Self::table().same_fluid_light(block, before, water(chunk)) {
+            queue.voxel_changed(pos);
+        }
+    }
+}
+
+/// Water that doesn't fill its voxel keeps the light right however the
+/// world changes around it: chunks with part-full water on their borders
+/// loading dark or lit by themselves and unloading, blocks placed and
+/// broken in it, and water flowing in and draining away, relit only when
+/// light sees the change, as the game does. The light always matches the
+/// light worked out from scratch, under open sky and under a fixed top.
+#[test]
+fn part_full_water_keeps_the_light_right() {
+    let size = IVec3::new(2, 2, 2);
+    let all = coords(size);
+    let blocks = [
+        BlockState::AIR,
+        block("stone"),
+        block("stone_slab"),
+        block("tuft"),
+        block("lamp"),
+    ];
+    for open in [true, false] {
+        for seed in 1..=8u64 {
+            let mut rng = Rng((seed * 0x9E37_79B9) | 1);
+            let fill = random_wet_voxel(seed);
+            let mut world = if open {
+                TestWorld::open()
+            } else {
+                TestWorld::new(1)
+            };
+            let mut queue = LightQueue::default();
+            let check = |world: &TestWorld, when: &str| {
+                let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    world.assert_matches_reference()
+                }));
+                assert!(checked.is_ok(), "open sky {open}, seed {seed}, {when}");
+            };
+            for step in 0..12 {
+                let coord = all[rng.below(all.len() as u64) as usize];
+                if !world.chunks.contains_key(&coord) {
+                    let lit = rng.below(2) == 0;
+                    world.load_wet(&mut queue, coord, &fill, lit);
+                } else if rng.below(6) == 0 {
+                    world.unload(&mut queue, coord);
+                } else {
+                    for _ in 0..4 {
+                        let local = IVec3::new(
+                            rng.below(16) as i32,
+                            [0, 1, 14, 15][rng.below(4) as usize],
+                            rng.below(16) as i32,
+                        );
+                        let pos = coord * CHUNK_SIZE as i32 + local;
+                        match rng.below(4) {
+                            0 => {
+                                let state = blocks[rng.below(blocks.len() as u64) as usize];
+                                world.set_keeping_fluid(&mut queue, pos, state);
+                            }
+                            1 => world.flow(&mut queue, pos, 0),
+                            _ => {
+                                let water = SOME_WATER[rng.below(SOME_WATER.len() as u64) as usize];
+                                world.flow(&mut queue, pos, water);
+                            }
+                        }
+                    }
+                }
+                if rng.below(2) == 0 {
+                    continue;
+                }
+                world.run(&mut queue);
+                check(&world, &format!("step {step}"));
+            }
+            for &coord in &all {
+                if !world.chunks.contains_key(&coord) {
+                    world.load_wet(&mut queue, coord, &fill, true);
+                }
+            }
+            world.run(&mut queue);
+            check(&world, "all loaded again");
+        }
+    }
 }

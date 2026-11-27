@@ -318,7 +318,11 @@ with no filter: coming into water it drops 2 levels, and from there 3
 levels a block, like any light that isn't at full strength, so a deep
 lake's floor is dark. The base game's water has 2 and leaves 1, so the
 ground under a tree is shaded; glass and plants have none. It's the
-block's, the same for all its states; variants can't change it.
+block's, the same for all its states; variants can't change it. A fluid
+that doesn't fill its voxel leaves the voxel's own light alone, so a plant
+standing in a puddle is lit as on dry ground, and dims the light it
+passes on, and the faces under and beside it, in proportion to how full
+it is: a film not at all, a voxel nearly full as a full one.
 
 ### Rendering
 
