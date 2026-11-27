@@ -41,6 +41,7 @@
 //! counted.
 
 pub mod flow;
+pub mod reservoir;
 
 use bevy::{ecs::system::SystemParam, prelude::*};
 
@@ -48,6 +49,7 @@ use crate::{
     content::{BlockState, Content, Fluid},
     fly_camera::EyeView,
     fog::{self, FogSystems},
+    streaming::{BeforeChunkSave, ChunksSaving, SaveOnExit},
     world::{
         CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, FluidChanged, FluidTop, VoxelChanged, VoxelFluid,
         Voxels, fluid_surface,
@@ -66,10 +68,24 @@ impl Plugin for FluidPlugin {
                 Update,
                 (note_displaced_fluid, wake_around_edits, wake_loaded_chunks).chain(),
             )
-            .add_systems(FixedUpdate, run_flow)
+            .add_systems(
+                FixedUpdate,
+                (touch_reservoirs, run_flow).chain().in_set(FlowSystems),
+            )
+            .add_systems(Update, flush_reservoirs_before_save.in_set(BeforeChunkSave))
+            .add_systems(
+                SaveOnExit,
+                flush_reservoirs_before_save.in_set(BeforeChunkSave),
+            )
             .add_systems(PostUpdate, fog_inside_fluid.after(FogSystems));
     }
 }
+
+/// Where flow runs, in `FixedUpdate`. Systems there that change fluid
+/// other than through flow (pumps, outlets, pipes spilling) run before it,
+/// so reservoirs hear of their changes before they're next levelled.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FlowSystems;
 
 /// How much flow may do.
 #[derive(Resource, Reflect, Debug, Clone)]
@@ -78,12 +94,22 @@ pub struct FluidSettings {
     /// The most voxels that step in one fixed tick. Past it, flow slows
     /// down rather than taking longer each frame.
     pub cells_per_tick: usize,
+    /// The most columns one reservoir (a body of fluid kept at one level,
+    /// see [`reservoir`]) has. 0 turns reservoirs off.
+    pub reservoir_columns: usize,
+    /// How many columns reservoirs may level in one fixed tick, all told:
+    /// past it, the rest wait for the next tick, so a big flood's
+    /// levelling is spread over frames. At least one reservoir is levelled
+    /// a tick, however big.
+    pub reservoir_work: usize,
 }
 
 impl Default for FluidSettings {
     fn default() -> Self {
         Self {
             cells_per_tick: 4096,
+            reservoir_columns: 16384,
+            reservoir_work: 12288,
         }
     }
 }
@@ -109,6 +135,12 @@ pub struct FluidStats {
     /// deleted since the start, where nothing around had room for it, in
     /// thousandths of a block.
     pub deleted: u64,
+    /// When flow last stepped anything, in seconds of fixed time since the
+    /// start: once that stops going up, the fluid has settled.
+    pub last_moved: f32,
+    /// Reservoirs now, and how many columns they have.
+    pub reservoirs: usize,
+    pub reservoir_columns: usize,
 }
 
 /// The flow simulation over the loaded world.
@@ -129,8 +161,25 @@ pub struct WorldCells<'w, 's> {
 
 impl CellView for WorldCells<'_, '_> {
     fn cell(&self, pos: IVec3) -> Option<Cell> {
+        VoxelCells {
+            voxels: &self.voxels,
+            content: &self.content,
+        }
+        .cell(pos)
+    }
+}
+
+/// The loaded world as cells for flow, read through [`Voxels`] borrowed
+/// from elsewhere, such as a pump's system.
+pub struct VoxelCells<'a, 'w, 's> {
+    pub voxels: &'a Voxels<'w, 's>,
+    pub content: &'a Content,
+}
+
+impl CellView for VoxelCells<'_, '_, '_> {
+    fn cell(&self, pos: IVec3) -> Option<Cell> {
         let (state, fluid) = self.voxels.get_with_fluid(pos)?;
-        Some(cell_of(&self.content, state, fluid))
+        Some(cell_of(self.content, state, fluid))
     }
 }
 
@@ -249,6 +298,8 @@ pub(crate) fn run_flow(
         stats.pushed_aside += (amount - deleted) as u64;
         stats.deleted += deleted as u64;
     }
+    sim.sim.reservoirs.max_columns = settings.reservoir_columns;
+    sim.sim.reservoirs.work = settings.reservoir_work;
     let start = std::time::Instant::now();
     let report = sim.sim.tick(
         &mut cells,
@@ -263,6 +314,35 @@ pub(crate) fn run_flow(
         stats.most_in_a_tick = stats.most_in_a_tick.max(report.stepped);
         stats.millis += millis;
         stats.worst_millis = stats.worst_millis.max(millis);
+        if report.stepped > 0 {
+            stats.last_moved = time.elapsed_secs();
+        }
+    }
+    stats.reservoirs = sim.sim.reservoirs.len();
+    stats.reservoir_columns = sim.sim.reservoirs.iter().map(|r| r.columns()).sum();
+}
+
+/// Tells reservoirs about every voxel something set since, or whose amount
+/// of fluid something other than flow set, so the columns they're in are
+/// read again before they're next levelled (see [`reservoir`]).
+fn touch_reservoirs(
+    mut changes: MessageReader<VoxelChanged>,
+    mut fluid_changes: MessageReader<FluidChanged>,
+    mut sim: ResMut<FluidSim>,
+    content: Res<Content>,
+) {
+    let reservoirs = &mut sim.sim.reservoirs;
+    for change in changes.read() {
+        // A block that leaves less room for fluid than the one before can
+        // cut a body of it in two.
+        let room = |state: BlockState| content.state(state).fluid_room;
+        if room(change.after) < room(change.before) {
+            reservoirs.walled(change.pos);
+        }
+        reservoirs.touch(change.pos);
+    }
+    for change in fluid_changes.read().filter(|change| !change.by_flow) {
+        reservoirs.touch(change.pos);
     }
 }
 
@@ -281,6 +361,28 @@ fn wake_around_edits(
         .map(|change| change.pos);
     for pos in changes.read().map(|change| change.pos).chain(set) {
         sim.sim.wake_around(&cells, pos);
+    }
+}
+
+/// Before chunks are saved: drops the reservoirs that reach into a chunk
+/// that's unloading, paying their balances out into the world, and when
+/// the loaded chunks are saved too, pays every balance out, so the saved
+/// chunks hold all their fluid.
+fn flush_reservoirs_before_save(
+    saving: Option<Res<ChunksSaving>>,
+    mut sim: ResMut<FluidSim>,
+    mut cells: WorldCells,
+) {
+    let Some(saving) = saving else {
+        return;
+    };
+    for &coord in &saving.unloading {
+        sim.sim.reservoirs.unloading(coord);
+    }
+    if saving.loaded {
+        sim.sim.flush_reservoirs(&mut cells);
+    } else if !saving.unloading.is_empty() {
+        sim.sim.drop_marked_reservoirs(&mut cells);
     }
 }
 
@@ -327,6 +429,8 @@ fn fluid_displaced(
 ) -> u16 {
     let (deleted, into) = flow::push_aside(cells, pos, fluid, amount);
     for at in into {
+        // Written as flow writes, so reservoirs must be told.
+        sim.reservoirs.touch(at);
         sim.wake_around(cells, at);
     }
     deleted
@@ -424,7 +528,7 @@ mod tests {
             .init_resource::<FluidStats>()
             .init_resource::<FluidSim>()
             .add_systems(Update, (wake_around_edits, wake_loaded_chunks).chain())
-            .add_systems(FixedUpdate, run_flow);
+            .add_systems(FixedUpdate, (touch_reservoirs, run_flow).chain());
         app
     }
 
@@ -763,7 +867,14 @@ mod tests {
                 }
             }
         }
-        assert_eq!(total, poured);
+        // With what reservoirs hold and haven't put back yet.
+        let pooled = app
+            .world()
+            .resource::<FluidSim>()
+            .sim
+            .reservoirs
+            .pooled_total();
+        assert_eq!(total as i64 + pooled, poured as i64);
         for corner in [
             IVec3::new(-3, -8, -3),
             IVec3::new(2, -8, 2),
@@ -781,7 +892,10 @@ mod tests {
     #[test]
     fn flow_keeps_to_its_budget() {
         let mut app = app();
-        app.insert_resource(FluidSettings { cells_per_tick: 7 });
+        app.insert_resource(FluidSettings {
+            cells_per_tick: 7,
+            ..default()
+        });
         let mut chunk = Chunk::default();
         for x in 0..16 {
             for z in 0..16 {
@@ -796,6 +910,18 @@ mod tests {
         let stats = app.world().resource::<FluidStats>();
         assert!(stats.stepped > 0);
         assert_eq!(stats.most_in_a_tick, 7);
+        // When flow last moved anything, which stops going up once it's
+        // settled.
+        let moved = stats.last_moved;
+        assert!(moved > 0.0);
+        run(&mut app, 30.0);
+        let moved = app.world().resource::<FluidStats>().last_moved;
+        run(&mut app, 1.0);
+        assert_eq!(
+            app.world().resource::<FluidStats>().last_moved,
+            moved,
+            "settled"
+        );
     }
 
     /// Fluid that a block or another fluid takes the place of is passed to
@@ -843,6 +969,55 @@ mod tests {
         assert_eq!(displaced, before, "the lava took the water's place");
         assert_eq!(set(&mut app, 2, BlockState::AIR).1, 0, "emptied");
         assert_eq!(set(&mut app, 3, block("water")).1, 0, "topped up");
+    }
+
+    /// A block put in a reservoir drops it, since it may cut it in two; a
+    /// block put above it, out of its reach, doesn't.
+    #[test]
+    fn a_block_put_in_a_reservoir_drops_it() {
+        let mut app = app();
+        // An 8 by 8 pond, one deep, in a stone basin, with air above.
+        let mut chunk = Chunk::filled(block("stone"));
+        for x in 2..10 {
+            for z in 2..10 {
+                chunk.set_to_fluid(IVec3::new(x as i32, 1, z as i32), block("water"));
+                for y in 2..16 {
+                    chunk.set(x, y, z, BlockState::AIR);
+                }
+            }
+        }
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        run(&mut app, 0.2);
+        let found = app
+            .world_mut()
+            .run_system_once(
+                |voxels: Voxels, content: Res<Content>, mut sim: ResMut<FluidSim>| {
+                    let cells = VoxelCells {
+                        voxels: &voxels,
+                        content: &content,
+                    };
+                    let water = content.state(block("water")).fluid.clone().unwrap();
+                    sim.sim
+                        .reservoirs
+                        .draw(&cells, &water, IVec3::new(5, 1, 5), 0)
+                },
+            )
+            .unwrap();
+        assert_eq!(found, Some(0));
+        let reservoirs = |app: &App| app.world().resource::<FluidSim>().sim.reservoirs.len();
+        assert_eq!(reservoirs(&app), 1);
+        let put = |app: &mut App, pos: IVec3| {
+            app.world_mut()
+                .run_system_once(move |mut voxels: Voxels| {
+                    voxels.set(pos, block("stone"));
+                })
+                .unwrap();
+            run(app, 0.2);
+        };
+        put(&mut app, IVec3::new(5, 6, 5));
+        assert_eq!(reservoirs(&app), 1, "a block well above it");
+        put(&mut app, IVec3::new(5, 1, 5));
+        assert_eq!(reservoirs(&app), 0, "a block in it");
     }
 
     /// Swimming and the fog find the surface where it's drawn: sloping

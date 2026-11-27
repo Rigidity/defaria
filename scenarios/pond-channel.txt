@@ -1,0 +1,62 @@
+# A pond draining into a long channel: a 12 by 12 pond, 4 deep, behind a
+# gate at the head of a channel 40 long and 2 wide. The gate opens and the
+# pond pours into the channel until the two are level, at about two and a
+# half blocks deep. `inspect FluidStats` every second shows how much is
+# active and, in `last_moved`, when flow last moved anything, so the time
+# to settle is that minus the time the gate opened (the first report's
+# `last_moved`). `fluids` on the channel's box shows how much has reached
+# it, about 205 blocks once level, and `fluids` on the camera's window
+# before and after shows none is made or lost.
+# Run: cargo headless scenarios/pond-channel.txt
+# Looking west down the channel, at the pond beyond its far end.
+camera 78 62 46 90 -45
+settle
+# A block of stone with the pond and the channel cut into it; the gate is
+# the stone left at x 32.
+fill 18 40 38 74 48 57 stone
+fill 20 41 40 31 48 51 air
+fill 33 41 45 72 48 46 air
+fill 20 41 40 31 44 51 water
+wait 60
+fluids
+screenshot target/scenarios/pond-channel/0-before.png
+wait 1
+timing
+# Open the gate.
+fill 32 41 45 32 44 46 air
+wait 1
+inspect FluidStats
+fluids 33 41 45 72 44 46
+wait 59
+timing
+inspect FluidStats
+fluids 33 41 45 72 44 46
+screenshot target/scenarios/pond-channel/1-pouring.png
+wait 60
+timing
+inspect FluidStats
+fluids 33 41 45 72 44 46
+wait 120
+timing
+inspect FluidStats
+fluids 33 41 45 72 44 46
+screenshot target/scenarios/pond-channel/2-filling.png
+wait 300
+timing
+inspect FluidStats
+fluids 33 41 45 72 44 46
+wait 600
+timing
+inspect FluidStats
+fluids 33 41 45 72 44 46
+wait 1200
+timing
+inspect FluidStats
+fluids 33 41 45 72 44 46
+fluids
+screenshot target/scenarios/pond-channel/3-settled.png
+# From above the pond: it has gone down evenly, to the channel's level.
+wait 1
+camera 26 60 46 90 -70
+wait 2
+screenshot target/scenarios/pond-channel/4-pond.png

@@ -86,6 +86,9 @@ impl Plugin for FluidNetworkPlugin {
                     .run_if(on_network_tick)
                     .in_set(FluidSystems),
             )
+            // So reservoirs hear of what pumps, outlets and spills change
+            // before they're next levelled.
+            .configure_sets(FixedUpdate, FluidSystems.before(crate::fluid::FlowSystems))
             .add_systems(
                 SaveOnExit,
                 pipes::record_before_save.in_set(BeforeChunkSave),

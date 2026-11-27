@@ -132,7 +132,8 @@ pub struct ChunksSaving {
 /// when the game exits. A system here that changes a block entity writes
 /// its [`SavedParts`](crate::block_entity::SavedParts) itself (the usual
 /// noting of changes has already run) and sends [`BlockEntityChanged`], so
-/// its chunk counts as edited and is saved.
+/// its chunk counts as edited and is saved. Voxels set here count as edits
+/// as they do anywhere else.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BeforeChunkSave;
 
@@ -679,6 +680,8 @@ fn plan_exit_save(mut exits: MessageReader<AppExit>, mut saving: ResMut<ChunksSa
 fn save_on_exit(
     saving: Res<ChunksSaving>,
     mut block_entity_changes: MessageReader<BlockEntityChanged>,
+    mut changes: MessageReader<VoxelChanged>,
+    mut fluid_changes: MessageReader<FluidChanged>,
     source: Option<Res<WorldSource>>,
     mut chunks: ResMut<Chunks>,
     data: ChunkSaver,
@@ -689,9 +692,15 @@ fn save_on_exit(
     let Some(source) = source else {
         return;
     };
-    // What changed just now, in `BeforeChunkSave`.
-    for change in block_entity_changes.read() {
-        let (coord, _) = ChunkCoord::split(change.pos);
+    // What changed just now, in `BeforeChunkSave`: block entities, and
+    // voxels written there (fluid reservoirs pay out what they hold).
+    let changed = block_entity_changes
+        .read()
+        .map(|change| change.pos)
+        .chain(changes.read().map(|change| change.pos))
+        .chain(fluid_changes.read().map(|change| change.pos));
+    for pos in changed {
+        let (coord, _) = ChunkCoord::split(pos);
         if let Some(chunk) = chunks.loaded.get_mut(&coord.0) {
             chunk.edited = true;
         }

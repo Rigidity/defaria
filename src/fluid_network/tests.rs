@@ -393,6 +393,214 @@ fn a_pump_draws_a_pond_into_a_tank() {
     );
 }
 
+/// What reservoirs have pooled and not yet put in the world.
+fn pooled(app: &App) -> i64 {
+    app.world()
+        .resource::<crate::fluid::FluidSim>()
+        .sim
+        .reservoirs
+        .pooled_total()
+}
+
+/// A 6×6 pond, two deep, at x and z 1 to 6 with its surface at `Y`, in a
+/// stone basin. Returns how much it holds.
+fn big_pond(app: &mut App) -> u64 {
+    let stone = block("defaria:stone");
+    fill(
+        app,
+        IVec3::new(-3, Y - 2, -1),
+        IVec3::new(8, Y + 4, 8),
+        BlockState::AIR,
+    );
+    fill(app, IVec3::new(0, Y - 2, 0), IVec3::new(7, Y, 7), stone);
+    fill(
+        app,
+        IVec3::new(1, Y - 1, 1),
+        IVec3::new(6, Y, 6),
+        block("defaria:water"),
+    );
+    72 * FULL_FLUID as u64
+}
+
+/// A pump on a pond big enough to be a reservoir lowers the whole surface
+/// evenly, rather than draining the water beside it, and nothing is made
+/// or lost on the way.
+#[test]
+fn a_pump_lowers_a_big_pond_evenly() {
+    let mut app = app(None);
+    let start = big_pond(&mut app);
+    let east = state("defaria:pump", &[("facing", "east")]);
+    set(
+        &mut app,
+        &[
+            (IVec3::new(0, Y, 3), east),
+            (IVec3::new(-1, Y, 3), block("defaria:pipe")),
+            (IVec3::new(-1, Y + 1, 3), block("defaria:pipe")),
+            (IVec3::new(-1, Y + 2, 3), block("defaria:tank")),
+        ],
+    );
+    assert_eq!(sum(totals(&mut app)) as i64 + pooled(&app), start as i64);
+    for _ in 0..8 {
+        run(&mut app, 0.5);
+        let now = totals(&mut app);
+        assert_eq!(sum(now) as i64 + pooled(&app), start as i64, "{now:?}");
+    }
+    let (_, _, tanks) = totals(&mut app);
+    assert!(tanks >= 3 * FULL_FLUID as u64, "the pump drew {tanks}");
+    assert!(
+        app.world()
+            .resource::<crate::fluid::FluidStats>()
+            .reservoirs
+            >= 1
+    );
+    let surface: Vec<u16> = app
+        .world_mut()
+        .run_system_once(|voxels: Voxels| {
+            let mut surface = Vec::new();
+            for x in 1..=6 {
+                for z in 1..=6 {
+                    surface.push(voxels.fluid_amount(IVec3::new(x, Y, z)));
+                }
+            }
+            surface
+        })
+        .unwrap();
+    let (low, high) = (surface.iter().min().unwrap(), surface.iter().max().unwrap());
+    assert!(*low > 0, "a voxel emptied: {surface:?}");
+    assert!(
+        (high - low) as i64 <= 2 * crate::fluid::reservoir::LAZY,
+        "the surface isn't flat: {surface:?}"
+    );
+    assert!(*high < FULL_FLUID, "it went down everywhere: {surface:?}");
+}
+
+/// What a reservoir has pooled and not yet written is in the world after
+/// the game exits and starts again.
+#[test]
+fn pooled_fluid_is_saved_when_the_game_exits() {
+    let folder = temp_folder("reservoir-exit");
+    let drawn = 500;
+    let start = {
+        let mut app = app(Some(&folder));
+        let start = big_pond(&mut app);
+        // Saved once already, so only what's changed since is saved on exit.
+        app.world_mut()
+            .resource_mut::<StreamingSettings>()
+            .autosave_seconds = 0.0;
+        for _ in 0..3 {
+            std::thread::sleep(Duration::from_millis(30));
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<StreamingSettings>()
+            .autosave_seconds = 1000.0;
+        app.update();
+        // Draw some out through a reservoir, too little to be written yet.
+        let got = app
+            .world_mut()
+            .run_system_once(
+                move |voxels: Voxels,
+                      content: Res<Content>,
+                      mut sim: ResMut<crate::fluid::FluidSim>| {
+                    let cells = crate::fluid::VoxelCells {
+                        voxels: &voxels,
+                        content: &content,
+                    };
+                    let water = content.state(block("defaria:water")).fluid.clone().unwrap();
+                    sim.sim
+                        .reservoirs
+                        .draw(&cells, &water, IVec3::new(3, Y, 3), drawn)
+                },
+            )
+            .unwrap();
+        assert_eq!(got, Some(drawn));
+        assert_eq!(pooled(&app), -(drawn as i64));
+        assert_eq!(sum(totals(&mut app)), start, "not written yet");
+        app.world_mut().write_message(AppExit::Success);
+        app.update();
+        start
+    };
+    let mut app = app(Some(&folder));
+    run(&mut app, 0.5);
+    assert_eq!(pooled(&app), 0);
+    assert_eq!(sum(totals(&mut app)), start - drawn);
+}
+
+/// Draws `amount` out of the reservoir the water at `pos` is in, through
+/// the reservoir alone, as a pump would.
+fn draw_through_reservoir(app: &mut App, pos: IVec3, amount: u64) -> Option<u64> {
+    app.world_mut()
+        .run_system_once(
+            move |voxels: Voxels,
+                  content: Res<Content>,
+                  mut sim: ResMut<crate::fluid::FluidSim>| {
+                let cells = crate::fluid::VoxelCells {
+                    voxels: &voxels,
+                    content: &content,
+                };
+                let water = content.state(block("defaria:water")).fluid.clone().unwrap();
+                sim.sim.reservoirs.draw(&cells, &water, pos, amount)
+            },
+        )
+        .unwrap()
+}
+
+/// What a reservoir has pooled is put in the world when a chunk it reaches
+/// into unloads, with no autosave, so the chunk is saved with it.
+#[test]
+fn pooled_fluid_is_paid_out_when_its_chunk_unloads() {
+    let folder = temp_folder("reservoir-unload");
+    let mut app = app(Some(&folder));
+    app.world_mut()
+        .resource_mut::<StreamingSettings>()
+        .autosave_seconds = 1000.0;
+    let start = big_pond(&mut app);
+    assert_eq!(
+        draw_through_reservoir(&mut app, IVec3::new(3, Y, 3), 0),
+        Some(0)
+    );
+    app.update();
+    // Water falling elsewhere keeps flow busy, so the pond isn't levelled
+    // as soon as it's quiet and its balance waits for the unload.
+    set(
+        &mut app,
+        &[
+            (IVec3::new(-3, Y + 3, 3), block("defaria:water")),
+            (IVec3::new(-3, Y + 3, 5), block("defaria:water")),
+            (IVec3::new(-3, Y + 3, 7), block("defaria:water")),
+        ],
+    );
+    let drawn = 300;
+    assert_eq!(
+        draw_through_reservoir(&mut app, IVec3::new(3, Y, 3), drawn),
+        Some(drawn)
+    );
+    assert_eq!(pooled(&app), -(drawn as i64));
+    walk_to(&mut app, HOME - Vec3::new(0.0, 0.0, 200.0));
+    settle(&mut app);
+    assert_eq!(pooled(&app), 0, "paid out as it unloaded");
+    walk_to(&mut app, HOME);
+    settle(&mut app);
+    run(&mut app, 5.0);
+    // The water falling elsewhere has gone where it goes; the pond's own
+    // is what it held less what was drawn.
+    let pond = app
+        .world_mut()
+        .run_system_once(|voxels: Voxels| {
+            let mut total = 0;
+            for x in 1..=6 {
+                for y in Y - 1..=Y + 1 {
+                    for z in 1..=6 {
+                        total += voxels.fluid_amount(IVec3::new(x, y, z)) as u64;
+                    }
+                }
+            }
+            total
+        })
+        .unwrap();
+    assert_eq!(pond as i64 + pooled(&app), (start - drawn) as i64);
+}
+
 /// An outlet pours a tank out into a pit, all of it, and the network
 /// refuses lava while it holds water.
 #[test]
@@ -1239,7 +1447,9 @@ fn random_edits_unloads_saves_and_restarts_keep_every_drop() {
     let start = 5999;
     let mut lost_before = 0;
     let check = |app: &mut App, lost_before: u64, step: usize, what: &str| {
-        let world = water_in(app, low, high);
+        // With what reservoirs hold and haven't put back yet.
+        let pooled = self::pooled(app);
+        let world = water_in(app, low, high).saturating_add_signed(pooled);
         let pipes = held_in_pipes(app.world_mut())
             .get(WATER)
             .copied()

@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use bevy::prelude::*;
 
+use super::reservoir::Reservoirs;
 use crate::content::{BlockState, FULL_FLUID, Fluid};
 
 /// A cell gives each lower side this fraction of the difference between
@@ -456,6 +457,9 @@ pub struct Simulation {
     /// so a flood of one fluid can't use up the budget every time before
     /// the others get any.
     first: usize,
+    /// Calm bodies of fluid kept as one level (see [`super::reservoir`]).
+    /// None form unless `max_columns` is set.
+    pub reservoirs: Reservoirs,
 }
 
 #[derive(Debug, Default)]
@@ -585,6 +589,41 @@ impl Simulation {
             .sum()
     }
 
+    /// Pays out and forgets the reservoirs marked to be dropped, as when
+    /// chunks they reach into unload.
+    pub fn drop_marked_reservoirs(&mut self, cells: &mut impl Cells) {
+        let mut wake = Vec::new();
+        self.reservoirs.drop_marked(cells, &mut wake);
+        self.wake_all(cells, wake);
+    }
+
+    /// Wakes each of the cells reservoirs say to.
+    fn wake_all(&mut self, cells: &impl CellView, wake: Vec<IVec3>) {
+        for pos in wake {
+            self.wake(cells, pos);
+        }
+    }
+
+    /// Pays every reservoir's balance out into the world in full, as before
+    /// saving, and drops those marked to be dropped.
+    pub fn flush_reservoirs(&mut self, cells: &mut impl Cells) {
+        let mut wake = Vec::new();
+        // All of it, before a save, whatever the tick's work.
+        let work = std::mem::replace(&mut self.reservoirs.work, usize::MAX);
+        // A column found changed when it's written is read again and
+        // written the next time round.
+        for _ in 0..3 {
+            for kind in self.reservoirs.kinds() {
+                self.reservoirs.settle(cells, kind, true, &mut wake);
+            }
+            if self.reservoirs.iter().all(|r| r.balance() == 0) {
+                break;
+            }
+        }
+        self.reservoirs.work = work;
+        self.wake_all(cells, wake);
+    }
+
     /// Runs `seconds` of flow, visiting at most `budget` cells, with
     /// `fluid` giving each fluid block's flow.
     pub fn tick<'a>(
@@ -596,6 +635,19 @@ impl Simulation {
     ) -> TickReport {
         let mut stepped = 0;
         let mut changed = Vec::new();
+        // Reservoirs write the cells steps read, so only between steps.
+        self.reservoirs.advance(seconds);
+        let mut wake = Vec::new();
+        for kind in self.reservoirs.kinds() {
+            match self.queues.get(&kind) {
+                // Gone quiet: level what's left exactly, once.
+                None => self.reservoirs.settle(cells, kind, true, &mut wake),
+                Some(queue) if queue.step.is_none() => {
+                    self.reservoirs.settle(cells, kind, false, &mut wake)
+                }
+                Some(_) => {}
+            }
+        }
         let mut kinds: Vec<BlockState> = self.queues.keys().copied().collect();
         if !kinds.is_empty() {
             let first = self.first % kinds.len();
@@ -646,7 +698,16 @@ impl Simulation {
                 stepped += 1;
                 if step.visited == step.visits() {
                     let step = queue.step.take().expect("started");
-                    finish_step(cells, flow, step, &mut queue.next, &mut changed);
+                    finish_step(
+                        cells,
+                        flow,
+                        step,
+                        &mut queue.next,
+                        &mut changed,
+                        &mut self.reservoirs,
+                    );
+                    // Between this step and the next.
+                    self.reservoirs.settle(cells, kind, false, &mut wake);
                 }
             }
         }
@@ -654,6 +715,7 @@ impl Simulation {
         for cell in changed.drain(..) {
             self.wake_around(cells, cell);
         }
+        self.wake_all(cells, wake);
         self.queues
             .retain(|_, queue| !queue.next.is_empty() || queue.step.is_some());
         TickReport {
@@ -682,6 +744,7 @@ fn finish_step(
     mut step: Step,
     next: &mut HashSet<IVec3>,
     changed: &mut Vec<IVec3>,
+    reservoirs: &mut Reservoirs,
 ) {
     let transfers = std::mem::take(&mut step.transfers);
     let mut landed: Vec<IVec3> = transfers.iter().map(|transfer| transfer.to).collect();
@@ -712,9 +775,31 @@ fn finish_step(
         next.extend(step.cells);
         return;
     }
-    for (pos, (was, now)) in step.changes {
+    let mut changes: Vec<_> = step.changes.into_iter().collect();
+    if reservoirs.max_columns > 0 {
+        // Reservoirs take changes in order, so runs come out the same.
+        changes.sort_unstable_by_key(|(pos, _)| (pos.y, pos.x, pos.z));
+        // Before anything moves, so what moves out of a new reservoir is
+        // pooled.
+        reservoirs.find_new(&*cells, fluid, &changes);
+    }
+    for (pos, (was, now)) in changes {
         if was != Some(now) {
+            // A reservoir takes what its members would give or get.
+            if let Some(was) = was
+                && reservoirs.pool(&*cells, pos, was, now)
+            {
+                continue;
+            }
             cells.set(pos, now);
+        } else if let Cell::Fluid(kind, _, _) = now
+            && reservoirs.member(pos, kind).is_some()
+        {
+            // A reservoir's member that gave as much as it got only passed
+            // fluid between other members; it rests on something, so it
+            // didn't fall and refill either. Waking around it would only
+            // have it pass the same again.
+            continue;
         }
         // Even fluid that ended as it began moved: it fell and was refilled,
         // say, and will again.
@@ -809,7 +894,7 @@ pub(crate) mod tests {
             }
         }
 
-        fn total(&self, kind: BlockState) -> u64 {
+        pub(crate) fn total(&self, kind: BlockState) -> u64 {
             self.cells
                 .values()
                 .map(|cell| match cell {
@@ -819,7 +904,7 @@ pub(crate) mod tests {
                 .sum()
         }
 
-        fn amount(&self, pos: IVec3) -> u16 {
+        pub(crate) fn amount(&self, pos: IVec3) -> u16 {
             match self.cells.get(&pos) {
                 Some(Cell::Fluid(_, amount, _)) => *amount,
                 _ => 0,
@@ -827,7 +912,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn fluids(state: BlockState) -> Option<&'static Fluid> {
+    pub(crate) fn fluids(state: BlockState) -> Option<&'static Fluid> {
         static WATER_FLOW: std::sync::LazyLock<Fluid> = std::sync::LazyLock::new(water);
         static LAVA_FLOW: std::sync::LazyLock<Fluid> = std::sync::LazyLock::new(lava);
         match state {
@@ -838,7 +923,13 @@ pub(crate) mod tests {
     }
 
     /// Pours `amount` at `pos` and wakes it.
-    fn pour(grid: &mut Grid, sim: &mut Simulation, pos: IVec3, kind: BlockState, amount: u16) {
+    pub(crate) fn pour(
+        grid: &mut Grid,
+        sim: &mut Simulation,
+        pos: IVec3,
+        kind: BlockState,
+        amount: u16,
+    ) {
         grid.set(pos, Cell::Fluid(kind, amount, FULL_FLUID));
         sim.wake_around(grid, pos);
     }
