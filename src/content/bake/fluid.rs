@@ -70,6 +70,12 @@ pub(super) fn bake_fluid(def: &FluidDef) -> Result<Fluid, String> {
             def.view.distance
         ));
     }
+    if !(0.0..=1.0).contains(&def.evaporation) {
+        return Err(format!(
+            "fluid `evaporation` is {}; it must be from 0 to 1 block a second",
+            def.evaporation
+        ));
+    }
     let ripple = units("ripple", def.ripple)?;
     if ripple < MIN_RIPPLE {
         return Err(format!(
@@ -88,6 +94,7 @@ pub(super) fn bake_fluid(def: &FluidDef) -> Result<Fluid, String> {
         move_speed: def.move_speed,
         view_color: color.into(),
         view_distance: def.view.distance,
+        evaporation: def.evaporation,
     })
 }
 
@@ -116,6 +123,31 @@ mod tests {
             (4.0, 0.3, 3.0)
         );
         assert_eq!(fluid.view_color, Srgba::hex("#102030").unwrap().into());
+        assert_eq!(fluid.evaporation, 0.0, "it doesn't, unless it says so");
+    }
+
+    /// `evaporation` is a rate from 0 to 1 block a second.
+    #[test]
+    fn evaporation_is_a_rate_within_a_block_a_second() {
+        let pool = |evaporation: &str| {
+            content(&[(
+                "blocks/pool.json5",
+                &format!(
+                    r##"{{ textures: {{ all: "a" }}, fluid: {{
+                        rate: 4, fall: 1, film: 0.25, ripple: 0.05, move_speed: 0.3,
+                        view: {{ color: "#102030", distance: 3 }}, evaporation: {evaporation},
+                    }} }}"##
+                ),
+            )])
+        };
+        let content = pool("0.002");
+        assert!(content.errors.is_empty(), "{}", errors(&content));
+        let state = content.state(content.default_state("test:pool").unwrap());
+        assert_eq!(state.fluid.as_ref().unwrap().evaporation, 0.002);
+        for bad in ["-0.1", "2"] {
+            let error = errors(&pool(bad));
+            assert!(error.contains("`evaporation`"), "{bad}: {error}");
+        }
     }
 
     /// `fluid_room` is baked to thousandths of a block, from 0 to 1, and

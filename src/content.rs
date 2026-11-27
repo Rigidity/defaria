@@ -536,6 +536,9 @@ pub struct Fluid {
     pub view_color: Color,
     /// How far you can see from inside it, in blocks.
     pub view_distance: f32,
+    /// Blocks a second a film of it loses under open sky (see
+    /// `fluid::evaporation`); 0 if it doesn't evaporate.
+    pub evaporation: f32,
 }
 
 impl State {

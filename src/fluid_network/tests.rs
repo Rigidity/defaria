@@ -212,8 +212,20 @@ fn app(folder: Option<&Path>) -> App {
     app_with(base().clone(), folder)
 }
 
+/// `content` with nothing evaporating: these tests count every drop the
+/// pipes and outlets move, and pits poured from outlets are open to the
+/// sky. Evaporation is tested on its own (`fluid::evaporation`).
+fn without_evaporation(mut content: Content) -> Content {
+    for state in &mut content.states {
+        if let Some(fluid) = &mut state.fluid {
+            fluid.evaporation = 0.0;
+        }
+    }
+    content
+}
+
 fn app_with(content: Content, folder: Option<&Path>) -> App {
-    world_app(content)
+    world_app(without_evaporation(content))
         .resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
             50,
         )))

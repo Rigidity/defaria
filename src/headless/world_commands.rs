@@ -399,12 +399,16 @@ pub(super) fn fluid_report(world: &mut World, region: FluidRegion) -> String {
     }
     // What's gone since the start, if any: what blocks placed into fluid
     // displaced with nowhere to go (what they pushed aside is still here),
-    // and what reactions used up.
-    let lost: Vec<String> = [("displaced", stats.deleted), ("reacted", stats.reacted)]
-        .into_iter()
-        .filter(|&(_, amount)| amount > 0)
-        .map(|(how, amount)| format!("{how} {amount}"))
-        .collect();
+    // what reactions used up and what evaporated.
+    let lost: Vec<String> = [
+        ("displaced", stats.deleted),
+        ("reacted", stats.reacted),
+        ("evaporated", stats.evaporated),
+    ]
+    .into_iter()
+    .filter(|&(_, amount)| amount > 0)
+    .map(|(how, amount)| format!("{how} {amount}"))
+    .collect();
     if !lost.is_empty() {
         line += &format!("; lost: {}", lost.join(", "));
     }

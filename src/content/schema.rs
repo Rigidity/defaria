@@ -719,6 +719,10 @@ pub struct FluidDef {
     pub move_speed: f32,
     /// What the view looks like with the eyes in it.
     pub view: FluidViewDef,
+    /// How fast a film of it evaporates under open sky, in blocks a
+    /// second, from 0 (it doesn't, the default) to 1.
+    #[serde(default)]
+    pub evaporation: f32,
 }
 
 /// `reactions/<name>.json5`: what two fluids do where they meet.

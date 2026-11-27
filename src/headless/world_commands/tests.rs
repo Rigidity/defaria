@@ -529,6 +529,24 @@ fn the_fluids_report_counts_what_reacted() {
     assert_eq!(water + reacted, 2000, "{report}");
 }
 
+/// A film of water on a platform high in the open air evaporates, and
+/// the `fluids` report counts it: what's left and what evaporated add up
+/// to what was poured.
+#[test]
+fn the_fluids_report_counts_what_evaporated() {
+    let (mut app, exit) = run_game(
+        "camera 5000.5 302.5 5000.5 0 -89\n\
+         settle\n\
+         fill 4995 299 4995 5005 299 5005 stone\n\
+         pour 5000 300 5000 water 0.002\n\
+         wait 900\n",
+    );
+    assert_eq!(exit, AppExit::Success);
+    let report = fluid_report(app.world_mut(), FluidRegion::Window);
+    assert!(report.ends_with("; lost: evaporated 2"), "{report}");
+    assert!(!report.contains("defaria:water"), "all gone: {report}");
+}
+
 /// The `fluids` report counts what's in machines' tanks too, and says
 /// where it is: a pump has drawn the poured water into a tank. The
 /// `network` report gives the pump and tank's roles.

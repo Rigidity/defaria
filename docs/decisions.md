@@ -171,6 +171,45 @@ stack), so a click uses that bucket, and an icon drawn per fluid and
 fill (the fluid's texture inside the bucket's mouth), once item icons
 can vary with item data.
 
+## Films evaporate under open sky, visited a share at a time (2026-11-26)
+
+**Context.** Films thinner than their fluid's `film` don't spread, so
+they stayed on dry ground for good. #98 chose evaporation over letting
+them creep toward a drop (#97).
+
+**Decision.** A fluid's `evaporation` (blocks a second, 0 by default;
+water 0.00025, lava none) dries up its films under open sky
+(`src/fluid/evaporation.rs`). Open sky is full sky light in the voxel
+above the film, which the light already works out. Films are queued as
+fluid changes and as chunks load (`Films`), and each fixed tick visits
+the share of the queue that sees each film about once every two seconds
+(`VISIT_SECONDS`), taking two seconds' worth from it. So the cost is a
+few voxel lookups a tick for every hundred films, never every film every
+tick. Evaporation thins the voxel's fluid, never its block: a film in a
+slab's room dries and leaves the slab. A film under a roof stays queued,
+in case the roof goes. Thinning
+a film doesn't wake flow (the films around it would only trickle into it
+a unit at a time as they all dry); a film drying to nothing does, so the
+fluid around can flow in. What
+evaporates is a counted loss (`FluidStats::evaporated`, in the headless
+`fluids` report), not a water cycle: nothing comes back as rain.
+
+**What's wrong with it.** Glass, and anything else that lets sky light
+through at full strength, counts as open sky, so a puddle in a
+greenhouse dries (provisional; leaves and water, which dim light, stop
+it). It's a fixed rate. It doesn't depend on
+weather, biome, heat, or how much water is around (a film beside a lake
+dries as fast as one in a desert), and a lit cave with a skylight is
+"open sky" only straight under the hole. The queue is rebuilt on load
+and isn't saved, so a film's clock restarts. Films that stay put in caves
+cost a visit every two seconds forever, which is cheap but not nothing in
+a world with many of them.
+
+**What should replace it.** If rain (#99) arrives, a weather-aware rate
+and a water cycle. If many cave films ever show up in a profile, drop
+roofed films from the queue and requeue them when the sky light above
+them changes.
+
 ## The player looks with yaw and pitch on itself; the camera only follows (2026-11-26)
 
 **Decision.** The player is its own entity (#67). Its `Transform` is at
@@ -1459,8 +1498,8 @@ one reservoir with a shared level: water leaving it lowers the whole
 surface evenly, without stepping each voxel. That also makes a dam break
 fast, and it's what pumps drawing from a lake or an oil pool will need
 (#96 looks at this and other ways to speed flow up). Films thinner than
-`film` stay on dry ground for good: see #97 (creeping toward a drop) and
-#98 (evaporation).
+`film` stay on dry ground until they evaporate (#98, under open sky; see
+its entry).
 
 ## Placing a block pushes fluid aside, sideways first within a bounded reach (2026-11-26)
 
