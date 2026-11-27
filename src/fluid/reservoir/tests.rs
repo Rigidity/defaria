@@ -540,3 +540,46 @@ fn a_pump_looks_again_after_a_while() {
         Some(500)
     );
 }
+
+/// Two basins joined over a sill are one body only while the level is over
+/// the sill: drawn below it, the other basin keeps what's below the sill.
+#[test]
+fn a_reservoir_drawn_below_a_sill_is_two() {
+    let mut grid = Grid::default();
+    for x in 0..17 {
+        for z in 0..8 {
+            // The sill, at x 8, is solid up to y 2.
+            let from = if x == 8 { 3 } else { 0 };
+            for y in from..4 {
+                grid.cells.insert(
+                    IVec3::new(x, y, z),
+                    Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID),
+                );
+            }
+            grid.cells.insert(IVec3::new(x, 4, z), Cell::OPEN);
+        }
+    }
+    let mut sim = sim(true);
+    let start = held(&grid, &sim);
+    let mut drawn = 0;
+    for _ in 0..3000 {
+        drawn += sim
+            .reservoirs
+            .draw(&grid, &water(), IVec3::new(0, 0, 0), 500)
+            .unwrap_or(0) as i64;
+        sim.tick(&mut grid, fluids, 0.02, usize::MAX);
+        assert_eq!(held(&grid, &sim), start - drawn);
+    }
+    run(&mut grid, &mut sim, 4000, |_, _| {});
+    let below_sill: u64 = (9..17)
+        .flat_map(|x| (0..8).flat_map(move |z| (0..3).map(move |y| IVec3::new(x, y, z))))
+        .map(|pos| grid.amount(pos) as u64)
+        .sum();
+    // All of it, but for the last levelling before the split, which can
+    // take it lower by up to a levelling's worth.
+    let full = 8 * 8 * 3 * FULL_FLUID as i64;
+    assert!(
+        below_sill as i64 >= full - 2 * 64 * LAZY,
+        "{below_sill} of {full}"
+    );
+}

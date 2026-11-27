@@ -145,6 +145,9 @@ pub struct Reservoir {
     dirty: Vec<(i32, i32)>,
     /// A chunk it's in is unloading: pay out and drop it.
     dropped: bool,
+    /// Levelling emptied a column since it was last checked for still
+    /// being one body.
+    emptied: bool,
     /// Its fluid's `film`: spread thinner than this on average, it's
     /// dropped and flows as before.
     film: u16,
@@ -163,6 +166,32 @@ impl Reservoir {
     /// Everything it holds, written and pooled.
     fn total(&self) -> i64 {
         self.held + self.balance
+    }
+
+    /// Whether its columns holding fluid are all joined, side to side, to
+    /// one another. (Two that both hold fluid overlap, since both are
+    /// filled to its level.)
+    fn is_one_body(&self) -> bool {
+        let wet: HashSet<(i32, i32)> = self
+            .columns
+            .iter()
+            .filter(|(_, column)| column.amount > 0)
+            .map(|(&key, _)| key)
+            .collect();
+        let Some(&start) = wet.iter().next() else {
+            return true;
+        };
+        let mut seen = HashSet::from([start]);
+        let mut queue = vec![start];
+        while let Some((x, z)) = queue.pop() {
+            for side in SIDES {
+                let next = (x + side.x, z + side.y);
+                if wet.contains(&next) && seen.insert(next) {
+                    queue.push(next);
+                }
+            }
+        }
+        seen.len() == wet.len()
     }
 
     /// Whether the cell at `pos` is in one of its columns.
@@ -398,6 +427,7 @@ impl Reservoirs {
             into.held += from.held;
             into.dirty.extend(from.dirty);
             into.level = None;
+            into.emptied |= from.emptied;
             let keys: Vec<(i32, i32)> = from.columns.keys().copied().collect();
             into.columns.extend(from.columns);
             for &(x, z) in &keys {
@@ -544,6 +574,14 @@ impl Reservoirs {
             if reservoir.level.is_none() || due || (flush && reservoir.balance != 0) {
                 level(cells, reservoir, flush, wake);
                 self.grow_from_rim(&*cells, id);
+            }
+            // The level dropping below where parts of it joined, such as
+            // over a sill, leaves two bodies: drop it, and each forms again
+            // on its own.
+            let reservoir = self.list.get_mut(&id).expect("listed");
+            if std::mem::take(&mut reservoir.emptied) && !reservoir.is_one_body() {
+                self.drop_reservoir(cells, id, wake);
+                continue;
             }
             // Columns that emptied, on ground the level is below, stay: the
             // level can rise over them again. One spread thinner than a film
@@ -794,6 +832,7 @@ impl Reservoirs {
             level: None,
             dirty: Vec::new(),
             dropped: false,
+            emptied: false,
             film,
         };
         let keys: Vec<IVec2> = reservoir
@@ -856,6 +895,7 @@ fn refresh(cells: &mut impl Cells, reservoir: &mut Reservoir, wake: &mut Vec<IVe
                 continue;
             }
             let moved = column.amount - before;
+            reservoir.emptied |= before > 0 && column.amount == 0;
             reservoir.held += moved;
             reservoir.balance -= moved;
             wake.extend(column.rim_cells(x, z));
@@ -925,6 +965,7 @@ fn level(cells: &mut impl Cells, reservoir: &mut Reservoir, flush: bool, wake: &
             reservoir.dirty.push((x, z));
             continue;
         }
+        reservoir.emptied |= before > 0 && column.amount == 0;
         reservoir.held += column.amount - before;
         wake.extend(column.rim_cells(x, z));
     }

@@ -55,3 +55,8 @@ inspect FluidStats
 fluids 33 41 45 72 44 46
 fluids
 screenshot target/scenarios/pond-channel/3-settled.png
+# From above the pond: it has gone down evenly, to the channel's level.
+wait 1
+camera 26 60 46 90 -70
+wait 2
+screenshot target/scenarios/pond-channel/4-pond.png

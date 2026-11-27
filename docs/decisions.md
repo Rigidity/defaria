@@ -1456,7 +1456,10 @@ fit in one; if not, fluid moves between their balances to bring them to
 one level, so a sea of several reservoirs ends level. A block put in a
 reservoir, or beside one of its columns, drops it, since it may have cut
 the body in two; it forms again, as one or two, when its fluid next
-moves. Levelling the whole of one waits until its balance comes to a
+moves. So does its level dropping below where parts of it joined,
+as over a sill: when levelling empties a column, it checks the columns
+still holding fluid are joined, and if they aren't it's dropped, and
+each part forms again on its own. Levelling the whole of one waits until its balance comes to a
 quarter of a drawn step a column (`LAZY`), and then writes only the
 columns that far off the level, so a big lake is written over every so
 often; joined and changed columns are filled to the level straight away.
