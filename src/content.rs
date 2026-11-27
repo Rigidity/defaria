@@ -229,6 +229,8 @@ pub struct Model {
     pub occludes: Vec<Direction>,
     /// What things bump into, in the block's own coordinates.
     pub collision: Vec<BlockBox>,
+    /// What the crosshair picks: its `target`, or else its collision.
+    pub target: Vec<BlockBox>,
     pub faces: Vec<ModelFace>,
 }
 
@@ -437,6 +439,11 @@ pub struct State {
     /// model: every part's, in part order. Empty for air and anything you
     /// walk through.
     pub collision: Vec<BlockBox>,
+    /// The boxes the crosshair picks, rotated with the model: every
+    /// part's `target`, or its collision boxes if it gives none, or the
+    /// whole block if that leaves none. Empty for air and fluids, which
+    /// the crosshair passes through.
+    pub target: Vec<BlockBox>,
     /// Bit per [`Direction`]: sides this state covers completely, which
     /// is the sides any of its parts covers.
     occludes: u8,
@@ -469,6 +476,9 @@ pub struct State {
     /// that doesn't fill its voxel, such as a slab (see `fluid_room` in
     /// `docs/modding.md`).
     pub fluid_room: u16,
+    /// Whether placing a block replaces it: air's (which may hold
+    /// fluid) and a plant's, from its `replaceable`.
+    pub replaceable: bool,
     /// Whether its faces show from behind too: from inside a glass block
     /// or under water.
     pub double_sided: bool,

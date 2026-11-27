@@ -2,11 +2,15 @@
 // two faces back to back, so it shows from both sides. They're inside the
 // block, so they're never hidden, and they're lit by the block's own voxel.
 // It covers no side, so light passes through and its neighbours' faces
-// show, and there's nothing to bump into.
+// show, and there's nothing to bump into. The crosshair picks a box
+// around the middle of the quads, as high as the plants on it grow (14/16),
+// so you can aim past one at what's behind it. `low_cross` is the same for
+// shorter plants.
 {
   slots: { all: null },
   occludes: [],
   collision: [],
+  target: [{ from: [0.125, 0, 0.125], to: [0.875, 0.875, 0.875] }],
   faces: [
     {
       texture: "all",

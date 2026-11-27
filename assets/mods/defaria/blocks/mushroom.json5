@@ -2,13 +2,15 @@
 // or not), stone and mossy stone.
 {
   name: "Mushroom",
-  model: "cross",
+  model: "low_cross",
   render: "cutout",
   textures: { all: "mushroom" },
   hardness: 0.05,
   weight: 0.05,
   // It takes up no room: water and lava fill its cell as they would air.
   fluid_room: 1,
+  // Building over it replaces it, as it would air.
+  replaceable: true,
   category: "natural",
   support: [
     { block: "soil", when: { soil: ["dirt", "loam"] } },

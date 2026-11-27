@@ -238,6 +238,11 @@ pub struct ModelDef {
     /// around every face; `[]` is a block you walk through.
     #[serde(default)]
     pub collision: Option<Vec<BoxDef>>,
+    /// The boxes the crosshair picks, within the block: smaller than the
+    /// block for a plant, so you can aim past it. Left out, its
+    /// `collision`, or the whole block if that's `[]`.
+    #[serde(default)]
+    pub target: Option<Vec<BoxDef>>,
     pub faces: Vec<FaceDef>,
 }
 
@@ -322,6 +327,11 @@ pub struct BlockDef {
     /// room it leaves. Left out, 0: it fills its voxel.
     #[serde(default)]
     pub fluid_room: Option<f32>,
+    /// Placing a block replaces it, as it would air or a fluid: a block
+    /// placed against it goes into its voxel instead of beside it, and
+    /// one placed beside something can go where it stands. For plants.
+    #[serde(default)]
+    pub replaceable: bool,
     /// Its faces show from behind as well as in front.
     #[serde(default)]
     pub double_sided: bool,

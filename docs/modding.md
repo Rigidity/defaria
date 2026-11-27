@@ -262,6 +262,8 @@ fills.
   // The boxes the player bumps into and the crosshair picks. Optional:
   // left out, it's the box around every face (here the whole block).
   collision: [{ from: [0, 0, 0], to: [1, 1, 1] }],
+  // The boxes the crosshair picks, if not the collision boxes. Optional.
+  // target: [{ from: [0.125, 0, 0.125], to: [0.875, 0.875, 0.875] }],
   faces: [
     {
       texture: "up",       // the slot whose texture this face shows
@@ -296,6 +298,14 @@ fills.
   nothing if the faces are all in one plane. `collision: []` makes a block
   you walk through; the crosshair still picks it, as a whole block. Boxes
   turn with the block's `rotate` (or the part's: see [Parts](#parts)).
+- **`target`** is the boxes the crosshair picks (to mine the block, use
+  it or place against it), in the same form, if they aren't the
+  collision boxes: a plant you walk through has a smaller box than its
+  whole block, so you can aim past it at what's behind. Left out, the
+  crosshair picks the `collision` boxes, or the whole block if there are
+  none. It can't be empty. `models/cross.json5` picks a box around the
+  middle of its crossed quads, 14/16 high; `models/low_cross.json5`, the
+  mushroom's, one 11/16 high.
 
 ## Blocks
 
@@ -673,11 +683,11 @@ a model for each of the 64 ways its arms can go:
   are for that part only and must name slots its model has.
 - **`model`** may use `{property}`, as anywhere else.
 - The state is the union of its parts: all their faces, all their
-  collision boxes, and every side any of them `occludes`. Each part's
-  faces cull against the neighbours as they would on their own; parts in
-  the same block don't hide each other's faces, so leave out faces one
-  part covers inside another (the pipe's arm has no face against the
-  core).
+  collision and target boxes, and every side any of them `occludes`.
+  Each part's faces cull against the neighbours as they would on their
+  own; parts in the same block don't hide each other's faces, so leave
+  out faces one part covers inside another (the pipe's arm has no face
+  against the core).
 - A fluid can't have parts.
 
 ### Material properties
@@ -790,6 +800,27 @@ properties: {
 
 `place` is for blocks' plain properties only, and not with `item: true`:
 the item doesn't carry a value that placing picks.
+
+### Replaceable blocks
+
+`replaceable: true` makes a block one that placing replaces, as it does
+air (with or without fluid in it): a block placed against it goes into
+its voxel instead of beside it, and a block placed beside another can go
+where it stands. The plants in the base game are, so you can build over
+a meadow.
+
+```json5
+// blocks/tuft.json5 (in part)
+replaceable: true,
+```
+
+- The crosshair still picks it, unlike a fluid, so you can mine it: give
+  its model a small [`target`](#models) so it's easy to aim past.
+- In survival, its item goes into the inventory of the player who builds
+  over it, if it fits; otherwise it's lost.
+- A block isn't placed over another state of the same block: a tuft
+  placed against a tuft goes beside it, as against any other block, so
+  a row of them can be planted.
 
 ### Connections
 

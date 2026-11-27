@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 
 use super::Def;
-use crate::content::{BlockBox, Model, ModelFace, Vertex, schema::ModelDef};
+use crate::content::{
+    BlockBox, Model, ModelFace, Vertex,
+    schema::{BoxDef, ModelDef},
+};
 
 pub(super) fn model(def: &Def<ModelDef>) -> Result<Model, String> {
     let model = &def.def;
@@ -52,23 +55,36 @@ pub(super) fn model(def: &Def<ModelDef>) -> Result<Model, String> {
         })
         .collect::<Result<Vec<ModelFace>, String>>()?;
     let collision = match &model.collision {
-        Some(boxes) => boxes
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                block_box(Vec3::from(b.from), Vec3::from(b.to))
-                    .map_err(|error| format!("collision box {}: {error}", i + 1))
-            })
-            .collect::<Result<_, String>>()?,
+        Some(boxes) => block_boxes(boxes, "collision")?,
         None => around_faces(&faces).into_iter().collect(),
+    };
+    let target = match &model.target {
+        Some(boxes) if boxes.is_empty() => {
+            return Err("`target` is empty; leave it out to pick the collision boxes".into());
+        }
+        Some(boxes) => block_boxes(boxes, "target")?,
+        None => collision.clone(),
     };
     Ok(Model {
         id: def.id.clone(),
         slots: model.slots.clone(),
         occludes: model.occludes.clone(),
         collision,
+        target,
         faces,
     })
+}
+
+/// A model's `collision` or `target` boxes, checked.
+fn block_boxes(boxes: &[BoxDef], what: &str) -> Result<Vec<BlockBox>, String> {
+    boxes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            block_box(Vec3::from(b.from), Vec3::from(b.to))
+                .map_err(|error| format!("{what} box {}: {error}", i + 1))
+        })
+        .collect()
 }
 
 /// The box between two opposite corners, which must be inside the block
@@ -210,6 +226,103 @@ mod tests {
         );
         let stone = base.default_state("defaria:stone").unwrap();
         assert_eq!(base.state(stone).collision, [BlockBox::FULL]);
+    }
+
+    /// The crosshair picks a model's `target` boxes, turned with the
+    /// block, or else its collision boxes, or else the whole block; a
+    /// fluid nothing. An empty `target` is an error.
+    #[test]
+    fn target_is_given_or_the_collision_or_the_whole_block() {
+        let content = content(&[
+            (
+                "models/sprout.json5",
+                r#"{ collision: [], target: [{ from: [0.25, 0, 0.25], to: [0.75, 0.5, 0.75] }], faces: [] }"#,
+            ),
+            (
+                "models/post.json5",
+                r#"{ collision: [{ from: [0.25, 0, 0.25], to: [0.75, 1, 0.75] }], faces: [] }"#,
+            ),
+            ("models/ghost.json5", r#"{ collision: [], faces: [] }"#),
+            ("models/empty.json5", r#"{ target: [], faces: [] }"#),
+            ("blocks/sprout.json5", r#"{ model: "sprout" }"#),
+            (
+                "blocks/hanging_sprout.json5",
+                r#"{ model: "sprout", rotate: [180, 0, 0] }"#,
+            ),
+            ("blocks/post.json5", r#"{ model: "post" }"#),
+            ("blocks/ghost.json5", r#"{ model: "ghost" }"#),
+        ]);
+        let target = |id: &str| {
+            let state = content.default_state(&format!("test:{id}")).unwrap();
+            content.state(state).target.clone()
+        };
+        let sprout = BlockBox {
+            min: Vec3::new(0.25, 0.0, 0.25),
+            max: Vec3::new(0.75, 0.5, 0.75),
+        };
+        assert_eq!(target("sprout"), [sprout]);
+        assert_eq!(
+            target("hanging_sprout"),
+            [BlockBox {
+                min: Vec3::new(0.25, 0.5, 0.25),
+                max: Vec3::new(0.75, 1.0, 0.75),
+            }]
+        );
+        assert_eq!(
+            target("post"),
+            [BlockBox {
+                max: Vec3::new(0.75, 1.0, 0.75),
+                ..sprout
+            }]
+        );
+        assert_eq!(target("ghost"), [BlockBox::FULL]);
+        assert!(
+            errors(&content).contains("`target` is empty"),
+            "{}",
+            errors(&content)
+        );
+        let base = crate::content::base();
+        let water = base.default_state("defaria:water").unwrap();
+        assert_eq!(base.state(water).target, []);
+        assert_eq!(base.state(crate::content::BlockState::AIR).target, []);
+        // The base game's plants are picked by a box smaller than their
+        // block.
+        let tuft = base.state(base.default_state("defaria:tuft").unwrap());
+        assert!(tuft.collision.is_empty());
+        assert_eq!(
+            tuft.target,
+            [BlockBox {
+                min: Vec3::new(0.125, 0.0, 0.125),
+                max: Vec3::splat(0.875),
+            }]
+        );
+        // The mushroom's is as low as it is.
+        let mushroom = base.state(base.default_state("defaria:mushroom").unwrap());
+        assert_eq!(mushroom.target[0].max.y, 0.6875);
+    }
+
+    /// Air and blocks marked `replaceable` (the base game's plants) are
+    /// replaced by placing; other blocks aren't. (Fluids sit beside a
+    /// voxel's block, which is air where there's only fluid.)
+    #[test]
+    fn replaceable_blocks_are_air_fluids_and_those_marked() {
+        let base = crate::content::base();
+        let replaceable = |id: &str| base.state(base.default_state(id).unwrap()).replaceable;
+        assert!(base.state(crate::content::BlockState::AIR).replaceable);
+        for id in [
+            "tuft",
+            "daisy",
+            "bluebell",
+            "tulip",
+            "fern",
+            "dead_bush",
+            "mushroom",
+        ] {
+            assert!(replaceable(&format!("defaria:{id}")), "{id}");
+        }
+        for id in ["stone", "stone_slab", "soil", "glass", "pipe", "water"] {
+            assert!(!replaceable(&format!("defaria:{id}")), "{id}");
+        }
     }
 
     #[test]
