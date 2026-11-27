@@ -44,7 +44,10 @@ fn click(app: &mut App, name: &str) {
     let at = at(app, name);
     run_more(
         app,
-        &format!("cursor {} {}\nwait 30\nhold MouseLeft 1\nwait 3", at.x, at.y),
+        &format!(
+            "cursor {} {}\nwait 30\nhold MouseLeft 1\nwait 3",
+            at.x, at.y
+        ),
     );
 }
 
