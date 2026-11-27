@@ -2,8 +2,9 @@ use super::*;
 use crate::{
     headless::{
         Script,
-        test_app::{camera, light_at, play, run_game},
+        test_app::{camera, light_at, play, run_game, run_more},
     },
+    streaming::StreamingStatus,
     world::{ChunkCoord, ChunkMap},
 };
 
@@ -355,7 +356,7 @@ fn putting_what_doesnt_fit_fails_the_run() {
     }
 }
 
-/// The `fluids` report counts each fluid in the loaded world: deep
+/// The `fluids` report counts each fluid in the camera's window: deep
 /// underground, where there's no other water, just what was poured.
 #[test]
 fn the_fluids_report_counts_what_was_poured() {
@@ -367,9 +368,94 @@ fn the_fluids_report_counts_what_was_poured() {
          wait 1\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(app.world_mut());
-    assert!(report.starts_with("fluids: "), "{report}");
+    let report = fluid_report(app.world_mut(), FluidRegion::Window);
+    // At radius 4: 49 chunks a layer, 25 layers.
+    assert!(
+        report.starts_with("fluids in the camera's window (1225 chunks, 0 not loaded): "),
+        "{report}"
+    );
     assert!(report.ends_with(" active, defaria:water 750"), "{report}");
+}
+
+/// A box counts only the voxels in it, and says how many of its chunks
+/// weren't loaded.
+#[test]
+fn the_fluids_report_counts_a_box() {
+    let (mut app, exit) = run_game(
+        "camera 5000.5 -1000.5 5000.5 0 0\n\
+         settle\n\
+         fill 4990 -1001 4990 5010 -1000 5010 air\n\
+         pour 5000 -1000 5000 water 0.75\n\
+         pour 5005 -1000 5000 water 0.5\n\
+         wait 1\n",
+    );
+    assert_eq!(exit, AppExit::Success);
+    let mut count =
+        |min: IVec3, max: IVec3| fluid_report(app.world_mut(), FluidRegion::Box { min, max });
+    let both = count(IVec3::new(4995, -1001, 4995), IVec3::new(5010, -1000, 5005));
+    assert!(
+        both.starts_with(
+            "fluids in box 4995 -1001 4995 to 5010 -1000 5005 (2 chunks, 0 not loaded): "
+        ),
+        "{both}"
+    );
+    assert!(both.ends_with(" active, defaria:water 1250"), "{both}");
+    // One of them; the other is a voxel outside, in the same chunk.
+    let one = count(IVec3::new(4995, -1001, 4995), IVec3::new(5004, -1000, 5005));
+    assert!(one.ends_with(" active, defaria:water 750"), "{one}");
+    // Reaching from there into chunks too far off to be loaded.
+    let far = count(
+        IVec3::new(4992, -1000, 5000),
+        IVec3::new(4992 + 16 * 10 - 1, -1000, 5000),
+    );
+    assert!(far.contains("(10 chunks, 5 not loaded)"), "{far}");
+    assert!(far.ends_with(" active, defaria:water 1250"), "{far}");
+}
+
+/// Counting the camera's window gives the same answer before and after
+/// a trip, though the chunks loaded differ: right after the first jump
+/// the margin around the starting position, with some of the sea in it,
+/// is still loaded, and after coming back only the window is. The
+/// window holds only a block of water poured in a sealed box in the sky.
+#[test]
+fn the_fluids_window_compares_across_a_trip() {
+    let (mut app, exit) = run_game(
+        "camera 30 210 45 0 -30\n\
+         settle\n\
+         fill 28 100 43 32 102 47 stone\n\
+         fill 29 101 44 31 101 46 air\n\
+         pour 30 101 45 water 1\n\
+         wait 5\n",
+    );
+    assert_eq!(exit, AppExit::Success);
+    // Sea in chunks outside the window, below it, kept by the margin.
+    let sea = FluidRegion::Box {
+        min: IVec3::new(0, -32, 112),
+        max: IVec3::new(47, 15, 127),
+    };
+    let margin = fluid_report(app.world_mut(), sea);
+    assert!(margin.contains("defaria:water"), "{margin}");
+    let before = fluid_report(app.world_mut(), FluidRegion::Window);
+    let loaded_before = app.world().resource::<StreamingStatus>().loaded_chunks;
+    run_more(
+        &mut app,
+        "camera 3000 210 29 0 -30\n\
+         settle\n\
+         wait 60\n\
+         camera 30 210 45 0 -30\n\
+         settle\n\
+         wait 5\n",
+    );
+    let after = fluid_report(app.world_mut(), FluidRegion::Window);
+    let loaded_after = app.world().resource::<StreamingStatus>().loaded_chunks;
+    assert!(
+        loaded_before > loaded_after,
+        "the start's margin was loaded: {loaded_before} then {loaded_after}"
+    );
+    for report in [&before, &after] {
+        assert!(report.contains("(1225 chunks, 0 not loaded)"), "{report}");
+        assert!(report.ends_with(" active, defaria:water 1000"), "{report}");
+    }
 }
 
 /// The `fluids` report counts what's in machines' tanks too, and says
@@ -389,11 +475,18 @@ fn the_fluids_report_counts_tanks_and_pipes() {
          wait 180\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(app.world_mut());
+    let report = fluid_report(app.world_mut(), FluidRegion::Window);
     assert!(
         report.ends_with(" active, defaria:water 1000 (world 0, pipes 0, machines 1000)"),
         "{report}"
     );
+    // A box beside them leaves the tank and the pipes' network out.
+    let beside = FluidRegion::Box {
+        min: IVec3::new(4990, -1002, 4990),
+        max: IVec3::new(4995, -999, 4995),
+    };
+    let report = fluid_report(app.world_mut(), beside);
+    assert!(report.ends_with(" active"), "{report}");
     let network = network_report(app.world_mut(), IVec3::new(4998, -1001, 5000));
     assert!(
         network.contains("4999 -1001 5000 west (output)")

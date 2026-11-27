@@ -179,6 +179,20 @@ impl StreamingSettings {
             && (-self.below - extra..=self.above + extra).contains(&offset.y)
     }
 
+    /// The chunks a loader in chunk `center` loads: its window, without
+    /// the margin chunks stay loaded in once it moves on.
+    pub fn window(&self, center: IVec3) -> impl Iterator<Item = IVec3> + '_ {
+        let (radius, levels) = (self.radius, -self.below..=self.above);
+        (-radius..=radius)
+            .flat_map(move |x| {
+                let levels = levels.clone();
+                (-radius..=radius)
+                    .flat_map(move |z| levels.clone().map(move |y| IVec3::new(x, y, z)))
+            })
+            .filter(|&offset| self.reaches(offset, 0))
+            .map(move |offset| center + offset)
+    }
+
     /// Whether a chunk `offset` from a loader's chunk is one chunk in from
     /// the edge of what's loaded, where chunks are drawn: a chunk is only
     /// drawn once all its neighbours are loaded (see
@@ -196,6 +210,13 @@ impl StreamingSettings {
     pub fn drawn_levels(&self) -> std::ops::RangeInclusive<i32> {
         1 - self.below..=self.above - 1
     }
+}
+
+/// The chunk a [`ChunkLoader`] at `transform` loads around.
+pub fn loader_chunk(transform: &GlobalTransform) -> IVec3 {
+    ChunkCoord::split(transform.translation().floor().as_ivec3())
+        .0
+        .0
 }
 
 /// Loads the world around itself, using its [`GlobalTransform`].
@@ -384,34 +405,16 @@ fn plan_chunks(
     settings: Res<StreamingSettings>,
     mut chunks: ResMut<Chunks>,
 ) {
-    let mut centers: Vec<IVec3> = loaders
-        .iter()
-        .map(|transform| {
-            ChunkCoord::split(transform.translation().floor().as_ivec3())
-                .0
-                .0
-        })
-        .collect();
+    let mut centers: Vec<IVec3> = loaders.iter().map(loader_chunk).collect();
     centers.sort_by_key(|c| c.to_array());
     centers.dedup();
     if centers == chunks.centers {
         return;
     }
     chunks.centers = centers;
-    let (radius, above, below) = (settings.radius, settings.above, settings.below);
-    let mut queue = Vec::new();
-    for &center in &chunks.centers {
-        for x in -radius..=radius {
-            for z in -radius..=radius {
-                for y in -below..=above {
-                    let offset = IVec3::new(x, y, z);
-                    if settings.reaches(offset, 0) {
-                        queue.push(center + offset);
-                    }
-                }
-            }
-        }
-    }
+    let mut queue: Vec<IVec3> = (chunks.centers.iter())
+        .flat_map(|&center| settings.window(center))
+        .collect();
     queue.sort_by_key(|c| c.to_array());
     queue.dedup();
     queue.retain(|&c| !chunks.has(c));

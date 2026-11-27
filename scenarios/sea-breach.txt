@@ -12,7 +12,8 @@ timing
 inspect FluidStats
 fluids
 screenshot target/scenarios/sea-breach/0-before.png
-# `fluids` scans the whole loaded world, so start timing again after it.
+# `fluids` scans every chunk in the camera's window, so start timing
+# again after it.
 wait 1
 timing
 # Cut through the land, from the shore to well inland, down to the

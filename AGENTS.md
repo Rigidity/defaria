@@ -116,8 +116,9 @@ changes.
    `scroll` (point at and wheel over UI, such as the inventory; they drive
    Bevy's picking as a real mouse does), `type` (type text into whatever
    has the keyboard, such as a text field), `pour` (put an amount of a
-   fluid in a voxel) and `fluids` (each fluid's total in the loaded world,
-   pipes and tanks, and how much of it is active), `network` (the network
+   fluid in a voxel) and `fluids` (each fluid's total in a fixed box, or
+   the chunks the camera's position loads, and in pipes and tanks, so two
+   counts compare; and how much of it is active), `network` (the network
    the conduit at a voxel is part of: kind, size, frozen or running, its
    ports and their roles, on an energy network what it stored, produced
    and consumed, and what a fluid network holds),

@@ -27,7 +27,7 @@ pub mod world;
 use bevy::prelude::*;
 
 pub use contents::{FluidAmount, FluidNet};
-pub use pipes::{PipeFluid, held_in_pipes};
+pub use pipes::{PipeFluid, held_in_pipes, held_in_pipes_within};
 
 use crate::{
     block_entity::RegisterBlockEntityPart,
