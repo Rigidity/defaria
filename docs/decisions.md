@@ -1566,7 +1566,7 @@ states by the number of fluids, flow would have to rewrite blocks to
 move fluid, and it leaves no room for voxels made of parts (double slabs
 #80, Chisel & Bits). A voxel of water is air with water in it. Blocks say
 how much of their voxel fluid can share with them, `fluid_room` in the
-mod format (a slab 0.5, a tuft 0.9, a full block 0); flow sees that room
+mod format (a slab 0.5, a plant 1, a full block 0); flow sees that room
 as the cell's capacity and compares levels by how high the fluid stands,
 the block's share of the voxel counting as filled. Sloped tops
 (`FluidTop`) count a voxel's fluid by how high it stands up the room its

@@ -851,7 +851,7 @@ fn water_in_a_slab_slopes_with_the_water_beside_it() {
 /// whole, its surface unbroken.
 #[test]
 fn a_tuft_in_water_keeps_the_surface_whole() {
-    let row = waterlogged("tuft", 900);
+    let row = waterlogged("tuft", FULL_FLUID);
     assert!(faces(&row.cutout) > 0, "the tuft shows");
     // Three tops, three bottoms, two ends and six sides.
     assert_eq!(faces(&row.translucent), 2 * 14);

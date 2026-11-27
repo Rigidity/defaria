@@ -152,7 +152,7 @@ mod tests {
 
     /// `fluid_room` is baked to thousandths of a block, from 0 to 1, and
     /// a fluid can't have one. Air has a whole block's; the base game's
-    /// slabs half and its tuft 0.9.
+    /// slabs half and its plants all of it.
     #[test]
     fn fluid_room_is_baked_and_checked() {
         let content = content(&[
@@ -183,7 +183,17 @@ mod tests {
         let room = |id: &str| base.state(base.default_state(id).unwrap()).fluid_room;
         assert_eq!(room("defaria:stone_slab"), 500);
         assert_eq!(room("defaria:planks_slab"), 500);
-        assert_eq!(room("defaria:tuft"), 900);
+        for plant in [
+            "tuft",
+            "daisy",
+            "tulip",
+            "bluebell",
+            "fern",
+            "mushroom",
+            "dead_bush",
+        ] {
+            assert_eq!(room(&format!("defaria:{plant}")), FULL_FLUID, "{plant}");
+        }
         assert_eq!(room("defaria:stone"), 0);
     }
 }
