@@ -232,6 +232,10 @@ fn queue_changed_voxels(
     chunks: Query<&Chunk>,
     mut queue: ResMut<LightQueue>,
 ) {
+    // A property update keeps the block, so its `fluid_room`, which is
+    // the block's and the same in every state: whether fluid fills the
+    // voxel can't change with it. If room ever varies by state, compare
+    // `same_fluid_light` for the voxel's fluid here too.
     let updated = updates
         .read()
         .filter(|update| !table.same_light(update.before, update.after))
