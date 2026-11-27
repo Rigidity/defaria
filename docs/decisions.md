@@ -3,6 +3,145 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Multiplayer: a server app and client apps, even in single player (2026-11-27)
+
+**Context.** The game is one app: the world, streaming, saving, the
+simulation, input and rendering all run together, around one local
+player (#49). Multiplayer (#50, #51, #52) needs a split between what the
+world owns and what one player sees. It should do this once, in a shape
+that later work (mobs, chunk loaders, public servers, client-side mod
+scripts) builds on rather than rewrites. The goals: mods and scripts work
+on both sides, it performs well, servers and clients are easy to run,
+it's tested headlessly, code is shared rather than duplicated, and
+incremental builds stay cheap.
+
+**Decision.**
+
+- *Two apps, always.* The server is its own Bevy app: terrain
+  generation, streaming around every player, saving, light, fluids,
+  networks, machines, recipes, support, inventories and the gameplay
+  script hooks. A client app does input, the camera, meshing, rendering,
+  UI and menus. Single player runs the server app on its own thread in
+  the game's process (an integrated server) and connects to it through
+  an in-memory transport; a dedicated server is the same app on a
+  network transport. Every single-player session takes the multiplayer
+  path, and the simulation stops competing with the frame. Not a
+  "listen server" sharing one world: there the host takes a path remote
+  players don't, and multiplayer bugs hide from single player.
+- *Crates.* A Cargo workspace: `defaria_core` (content and mod loading,
+  `world`, physics and the movement model, the protocol, the script
+  runtime, the gameplay rules both sides run), `defaria_server`,
+  `defaria_client`, and `defaria`, the one binary (the game, `defaria
+  server`, headless mode) and the multiplayer test harness. The crate
+  boundaries keep server code off rendering at compile time. Every crate
+  takes `bevy = { workspace = true }`, its features declared once, so
+  building or testing any crate alone shares the one compiled Bevy; CI
+  checks it. One binary, not a second `[[bin]]`, so a change links once.
+- *Intents.* Gameplay systems act on components of a player entity,
+  never on input. On a client, input fills the local player's
+  (`Controls` and `Look`, `UseAction`, mining, the hotbar, inventory and
+  machine-slot gestures) and they're sent as requests; on the server,
+  each request fills the same component on that player's entity and the
+  same systems run. That's how most gameplay code is shared: features
+  split into "the client asks" and "the server does", not rewritten.
+- *Server authority, client prediction.* The server decides everything.
+  Physics already steps at a fixed 60 Hz from `Controls` and `Look`, so
+  movement is input-driven: a client sends `(tick, Controls, Look)`
+  every step and moves its own player at once; the server steps the same
+  systems on those inputs and returns the true state with the last input
+  it applied; on a mismatch the client rewinds, replays the inputs after
+  it and smooths the correction. Block edits are applied on the client
+  at once with a sequence number, and the server acknowledges or sends
+  the real block. Every moving entity marked `Replicated` (players now,
+  mobs and dropped items later) is sent to clients as snapshots and
+  interpolated there: one mechanism, not one per kind. One interest set
+  per client decides which chunks and which entities it's sent.
+- *What clients are sent.* Chunks whole when they come into range
+  (blocks, fluid and light; uniform chunks in a few bytes), then each
+  tick a batch of what changed per chunk (blocks, fluid amounts, light),
+  the chunk resent whole when most of it changed. Light comes from the
+  server, not recomputed by clients: scripts and evaporation read it on
+  the server, and sky light depends on which chunks are loaded
+  (`light::sky`), which differs between the server and any one client.
+  A client is also sent its own inventory and game mode, and a machine's
+  slots and tanks while its screen is open.
+- *Protocol and transports.* A `protocol` module of serde messages,
+  each with a delivery class: reliable and ordered on its own stream
+  (edits, inventory, screens), reliable bulk (chunks), or unreliable
+  latest-only (entity snapshots), so chunks never hold up movement. A
+  `Transport` trait with two implementations: in memory (messages pass
+  as Rust values; tests can force encoding through the codec, and add
+  delay and drops deterministically) and QUIC through `quinn` (a stream
+  per class, datagrams for snapshots, congestion control and encryption
+  built in, over UDP). Frames are `postcard`; chunk data is compressed
+  with `miniz_oxide` on the task pool, off the main thread. No Bevy
+  networking crates: one built against another Bevy version would build
+  a second Bevy.
+- *Identity.* Each install makes a key pair once and presents it as a
+  self-signed TLS client certificate; a player's id is its public key's
+  hash, and the name is display only. Worlds keep players by id
+  (`players/<id>`). A server's certificate is self-signed too: a client
+  trusts it on first connect and remembers its fingerprint with the
+  saved server, as SSH does.
+- *Mods.* Content bakes deterministically, so the same mods give the
+  same state indices on both sides. On connecting, the server sends a
+  manifest of its mods (id, version, hash of their files); the client
+  fetches the ones it doesn't have into a cache in the game's data
+  folder, keyed by hash, and builds `Content` from exactly the server's
+  set, then both compare a hash of the baked state table. `mod.json5`
+  says each mod's `side`: `both` (the default), `server` (never sent:
+  gameplay or admin scripts) or `client` (cosmetic, kept local and
+  optional). Only data, images and sandboxed Luau are ever sent, with
+  size limits. In single player both apps share one `Arc<Content>`.
+- *Scripts on both sides.* Both apps load every `both` mod's `scripts/`
+  with the same runtime, so modules are shared. Each hook belongs to a
+  side: today's (`on_used`, `on_placed`, `on_tick`, random ticks, ...)
+  run only on the server; client hooks (display effects, screens) come
+  as features need them. Each side's API is built from shared read-only
+  parts (blocks, light, data) and its own writes; on a client the world
+  is read-only. A mod's client and server scripts talk through a mod
+  message channel (`net.send`, `on_message`).
+- *Sessions.* A client has states: the menus, connecting, playing.
+  Everything about a world is created on entering playing and removed on
+  leaving it, so a client can join and leave worlds over and over; the
+  server owns opening and saving the world. Headless runs and tests go
+  straight into playing. The integrated server pauses when every client
+  connected to it is paused (just you, today; still right once others can
+  join); a dedicated one never pauses. Escape closes an open screen, and
+  otherwise opens the pause menu and frees the cursor.
+- *Testing.* A lockstep harness: one server app and any number of
+  client apps on the in-memory transport, stepped together each frame,
+  for deterministic end-to-end tests (an edit by one client reaching
+  another; prediction under delay and loss). Every message round-trips
+  through the codec in a test, and one test runs over a real socket on
+  `127.0.0.1`. Headless scenarios gain `--clients N`, a `client <n>`
+  command picking which client takes input and screenshots, `inspect
+  server|client`, and a `net` report of bytes and messages per second
+  per class; the commands that build a scene (`fill`, `pour`, `put`,
+  `give`, ...) become server commands sent over the protocol, which a
+  server console reuses. `defaria server` and `cargo headless --connect
+  <address>` run real processes, for agents as well as people.
+
+**What's wrong with it.** Single player keeps two copies of the loaded
+chunks' blocks, fluid and light (about 21 MiB at the default radius
+today; keeping meshes only in the render world, #161, saves more than
+that). Prediction and reconciliation cost more up front than trusting the
+client, and their corrections need tuning in play. Movement checks only
+catch what the shared physics rejects; there's no wider anti-cheat. QUIC
+brings tokio and rustls into the build (once, not per change). There are
+no accounts: losing an install's key loses that player's identity on
+every server. A client can't join with different mods from the server's
+beyond its `client` ones.
+
+**What should replace it.** Accounts, if ever, map onto the install keys
+rather than replace them. Recomputing light on clients if its bandwidth
+ever matters more than its consistency. Mod download over a CDN or
+mirror for big mods, rather than from the server.
+
+**When to revisit.** When single-player memory matters (the two
+copies), when public servers need anti-cheat or accounts, or when
+bandwidth for light or chunks shows up in the `net` report.
+
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 
 **Context.** Placing a slab on a slab made two slabs in two voxels, and
