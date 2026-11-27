@@ -462,7 +462,8 @@ documented in `docs/modding.md`; keep that file, the serde types in
   calls blocks' and items' scripts (`on_used`, `on_placed`, `on_broken`,
   `on_neighbour_changed`, items' `on_use`) and `random_tick.rs` gives
   blocks random ticks; `using.rs` is the steps of a use (see
-  `use_action`) for scripted blocks and items (after every block use). Documented in `docs/scripting.md`.
+  `use_action`) for scripted blocks and items (after every block use).
+  Documented in `docs/scripting.md`.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `src/content.rs` (and `src/content/`): mod loading and the `Content`
   registry.

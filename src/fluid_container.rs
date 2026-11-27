@@ -437,46 +437,33 @@ fn use_container(
         let Some(hit) = fluid_target(&using.eyes, &content, &voxels) else {
             continue;
         };
-        let used = use_at(
-            &content,
-            scripts.as_deref(),
-            &mut voxels,
-            &index,
-            &mut tanks,
-            inventory.as_mut(),
-            (item, capacity),
-            hit,
-            using.sneak,
-        );
+        let pour_only = using.sneak;
+        let inventory = inventory.as_mut();
+        let used = if let Some(mut tanks) = index.get(hit.block).and_then(|e| tanks.get_mut(e).ok())
+        {
+            use_on_tanks(&content, inventory, item, capacity, &mut tanks, pour_only)
+        } else {
+            let usable = |state| {
+                content.machine(state).is_some_and(has_screen)
+                    || scripts
+                        .as_ref()
+                        .is_some_and(|scripts| scripts.is_usable(&content, state))
+            };
+            use_on_world(
+                &content,
+                &mut voxels,
+                inventory,
+                item,
+                capacity,
+                hit,
+                pour_only,
+                usable,
+            )
+        };
         if used {
             action.claim();
         }
     }
-}
-
-/// Takes or pours with `item` (holding `capacity`) at `hit`, pouring only
-/// if `pour_only`: whether the use was the container's.
-fn use_at(
-    content: &Content,
-    scripts: Option<&ScriptIndex>,
-    voxels: &mut Voxels,
-    index: &BlockEntities,
-    tanks: &mut Query<&mut Tanks>,
-    inventory: &mut Inventory,
-    (item, capacity): (ItemState, u64),
-    hit: Hit,
-    pour_only: bool,
-) -> bool {
-    if let Some(mut tanks) = index.get(hit.block).and_then(|e| tanks.get_mut(e).ok()) {
-        return use_on_tanks(content, inventory, item, capacity, &mut tanks, pour_only);
-    }
-    let usable = |state| {
-        content.machine(state).is_some_and(has_screen)
-            || scripts.is_some_and(|scripts| scripts.is_usable(content, state))
-    };
-    use_on_world(
-        content, voxels, inventory, item, capacity, hit, pour_only, usable,
-    )
 }
 
 #[cfg(test)]

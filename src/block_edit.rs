@@ -66,9 +66,12 @@ impl Plugin for BlockEditPlugin {
             .add_systems(
                 Update,
                 (
+                    // With a sync point before the fly camera, so a screen
+                    // a use opened stops it turning the view this frame.
                     edit_blocks
                         .in_set(BlockEditSystems)
                         .in_set(UseStep::Place)
+                        .before(FlyCameraSystems)
                         .before(RemeshChunks),
                     // After the camera moves, so the outline matches the
                     // frame being drawn.
@@ -270,7 +273,8 @@ pub fn crosshair_target(transform: &Transform, content: &Content, voxels: &Voxel
 }
 
 /// Places the block in hand against the face aimed at, for each use no
-/// earlier step claimed.
+/// earlier step claimed, if it can go there and, in survival, the player
+/// has one.
 fn edit_blocks(
     mut players: Query<(
         &UseAction,
@@ -287,80 +291,60 @@ fn edit_blocks(
         let Some(using) = action.pending() else {
             continue;
         };
-        place(
-            &content,
-            &bodies,
-            &mut voxels,
-            using.eyes,
-            using.target,
-            (hotbar, *active),
-            inventory.map(Mut::into_inner),
-            mode.copied().unwrap_or_default(),
-        );
+        let camera = using.eyes;
+        let Some(hit) = using.target else {
+            continue;
+        };
+        let Some(item) = hotbar.item(*active) else {
+            continue;
+        };
+        let Some(block) = hotbar.block(*active, &content) else {
+            continue;
+        };
+        let Some((pos, face)) = placement(&content, &voxels, hit, block) else {
+            continue;
+        };
+        // Properties such as a log's axis follow the face clicked or the
+        // view.
+        let block = content.placed(block, face, *camera.forward());
+        // Not into the camera, outside the world, over another block (but
+        // over one placing replaces: air, which may hold fluid, or a
+        // plant), or where it would overlap someone.
+        let overlaps = content.state(block).collision.iter().any(|b| {
+            let b = Aabb::of_block(pos, b);
+            bodies.iter().any(|body| body.aabb().intersects(&b))
+        });
+        let Some(replaced) = voxels.get(pos) else {
+            continue;
+        };
+        let replaceable = replaces(&content, replaced, block);
+        // Nor where it can't stand (a flower off the grass).
+        let supported = !content.needs_support(block)
+            || voxels
+                .get(pos - IVec3::Y)
+                .is_some_and(|below| content.supports(block, below));
+        if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps || !supported {
+            continue;
+        }
+        // In survival, only what you have, and placing uses it up. A fluid
+        // block is creative only: placing one would make fluid from
+        // nothing, so in survival fluid comes only from containers (a
+        // bucket).
+        let mode = mode.copied().unwrap_or_default();
+        if !mode.is_creative() && content.state(block).is_fluid() {
+            continue;
+        }
+        let mut inventory = inventory.map(Mut::into_inner);
+        if !use_up(mode, inventory.as_deref_mut(), item) {
+            continue;
+        }
+        // A plant built over goes into the inventory in survival, if it
+        // fits (otherwise it's lost, as when it loses its support).
+        if let Some(inventory) = inventory {
+            harvest(mode, inventory, &content, replaced);
+        }
+        voxels.set(pos, block);
     }
-}
-
-/// Places the block in `hand` against `hit` from a camera at `camera`, if
-/// it can go there and, in survival, the player has one.
-fn place(
-    content: &Content,
-    bodies: &Query<&Body>,
-    voxels: &mut Voxels,
-    camera: Transform,
-    hit: Option<Hit>,
-    (hotbar, active): (&Hotbar, ActiveSlot),
-    inventory: Option<&mut Inventory>,
-    mode: GameMode,
-) {
-    let Some(hit) = hit else {
-        return;
-    };
-    let Some(item) = hotbar.item(active) else {
-        return;
-    };
-    let Some(block) = hotbar.block(active, content) else {
-        return;
-    };
-    let Some((pos, face)) = placement(content, voxels, hit, block) else {
-        return;
-    };
-    // Properties such as a log's axis follow the face clicked or the view.
-    let block = content.placed(block, face, *camera.forward());
-    // Not into the camera, outside the world, over another block (but
-    // over one placing replaces: air, which may hold fluid, or a plant),
-    // or where it would overlap someone.
-    let overlaps = content.state(block).collision.iter().any(|b| {
-        let b = Aabb::of_block(pos, b);
-        bodies.iter().any(|body| body.aabb().intersects(&b))
-    });
-    let Some(replaced) = voxels.get(pos) else {
-        return;
-    };
-    let replaceable = replaces(content, replaced, block);
-    // Nor where it can't stand (a flower off the grass).
-    let supported = !content.needs_support(block)
-        || voxels
-            .get(pos - IVec3::Y)
-            .is_some_and(|below| content.supports(block, below));
-    if pos == camera.translation.floor().as_ivec3() || !replaceable || overlaps || !supported {
-        return;
-    }
-    // In survival, only what you have, and placing uses it up. A fluid
-    // block is creative only: placing one would make fluid from nothing,
-    // so in survival fluid comes only from containers (a bucket).
-    if !mode.is_creative() && content.state(block).is_fluid() {
-        return;
-    }
-    let mut inventory = inventory;
-    if !use_up(mode, inventory.as_deref_mut(), item) {
-        return;
-    }
-    // A plant built over goes into the inventory in survival, if it fits
-    // (otherwise it's lost, as when it loses its support).
-    if let Some(inventory) = inventory {
-        harvest(mode, inventory, content, replaced);
-    }
-    voxels.set(pos, block);
 }
 
 /// Whether placing `placed` where `replaced` is replaces it: air (which

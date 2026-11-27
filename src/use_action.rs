@@ -38,11 +38,12 @@ impl Plugin for UseActionPlugin {
         app.register_type::<UseAction>()
             .configure_sets(
                 Update,
-                // Without sync points, so a screen a step opens applies at
-                // the end of the frame, as one a key opens does. Before the
-                // fly camera, so the click that locks the cursor finds it
-                // still unlocked. After the hotbar, so a slot picked this
-                // frame is the one used.
+                // Before the fly camera, so the click that locks the cursor
+                // finds it still unlocked, with no sync point between the
+                // steps (placing, last, has one before the fly camera, so a
+                // screen a step opens stops the view turning this frame).
+                // After the hotbar, so a slot picked this frame is the one
+                // used.
                 UseSystems
                     .run_if(playing)
                     .after(HotbarInput)
@@ -50,28 +51,16 @@ impl Plugin for UseActionPlugin {
             )
             .configure_sets(
                 Update,
-                (
-                    UseStep::Wrench,
-                    UseStep::Container,
-                    UseStep::Block,
-                    UseStep::Screen,
-                    UseStep::Item,
-                    UseStep::Place,
-                )
-                    // Checked as each step comes up, so a step after a
-                    // claim doesn't run.
-                    .distributive_run_if(pending),
-            )
-            .configure_sets(
-                Update,
+                // Each step after the input only while a use is unclaimed,
+                // checked as the step comes up, so none runs after a claim.
                 (
                     UseStep::Input,
-                    UseStep::Wrench,
-                    UseStep::Container,
-                    UseStep::Block,
-                    UseStep::Screen,
-                    UseStep::Item,
-                    UseStep::Place,
+                    UseStep::Wrench.run_if(pending),
+                    UseStep::Container.run_if(pending),
+                    UseStep::Block.run_if(pending),
+                    UseStep::Screen.run_if(pending),
+                    UseStep::Item.run_if(pending),
+                    UseStep::Place.run_if(pending),
                 )
                     .chain_ignore_deferred()
                     .in_set(UseSystems),
