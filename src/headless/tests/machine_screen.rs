@@ -846,3 +846,27 @@ fn opening_a_screen_stops_the_view_turning() {
     );
     assert_eq!(look(&mut app).1, None, "no use outlasts its frame");
 }
+
+/// Two right clicks too quick for the first's screen to have opened open
+/// it once, and it stays the server's: what goes into the machine shows.
+#[test]
+fn a_double_click_opens_one_screen_that_stays_live() {
+    let mut app = game();
+    run_more(
+        &mut app,
+        "press MouseRight\nwait 1\nrelease MouseRight\npress MouseRight\nwait 1\nrelease MouseRight\nwait 3",
+    );
+    assert!(is_open(&mut app));
+    let mut screens = app.world_mut().query::<&MachineScreen>();
+    assert_eq!(screens.iter(app.world()).count(), 1);
+    run_more(
+        &mut app,
+        "put 64 70 89 input 3 stone[ore=defaria:iron]\nwait 3",
+    );
+    let mut views = app
+        .world_mut()
+        .query_filtered::<&defaria_core::machine::Slots, With<MachineView>>();
+    let slots = views.single(app.world()).unwrap();
+    let input = slots.group("input").unwrap().slots[0].clone();
+    assert_eq!(input.map(|stack| stack.count), Some(3));
+}

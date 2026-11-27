@@ -181,7 +181,8 @@ pub fn open_machine_screen(
             continue;
         };
         for screen in &open {
-            commands.entity(screen).despawn();
+            // Replaced, not closed: the server's sending the new one.
+            commands.entity(screen).insert(Replaced).despawn();
         }
         let view = commands
             .spawn((Name::new("Machine view"), MachineView))
@@ -268,18 +269,26 @@ pub fn close_machine_screen(
     }
 }
 
-/// However the screen closed, its view goes, and the server stops sending
-/// the machine.
+/// A screen despawned because another machine's (or the same one's
+/// again) is opening in its place.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Replaced;
+
+/// However the screen closed, its view goes, and unless another took its
+/// place, the server stops sending the machine.
 fn tell_the_server_it_closed(
     closed: On<Remove<MachineScreen>>,
     mut commands: Commands,
-    screens: Query<&MachineScreen>,
+    screens: Query<(&MachineScreen, Has<Replaced>)>,
     mut to_server: MessageWriter<ToServer>,
 ) {
-    if let Ok(screen) = screens.get(closed.entity) {
-        commands.entity(screen.machine).try_despawn();
+    let Ok((screen, replaced)) = screens.get(closed.entity) else {
+        return;
+    };
+    commands.entity(screen.machine).try_despawn();
+    if !replaced {
+        to_server.write(ToServer(ClientMessage::CloseScreen(screen.pos)));
     }
-    to_server.write(ToServer(ClientMessage::CloseScreen));
 }
 
 /// `name` with its first letter in capitals: `input` is `Input`.

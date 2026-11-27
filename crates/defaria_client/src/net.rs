@@ -145,21 +145,20 @@ fn receive(
             }
             ServerMessage::Settled(now) => settled.0 = now,
             ServerMessage::PlayerState(state) => {
-                let Ok((entity, mining, hotbar, active)) = player.single_mut() else {
+                let Ok((entity, _, hotbar, active)) = player.single_mut() else {
                     continue;
                 };
                 let sent = (state.hotbar.clone(), state.active);
                 let changed = joined.1.as_ref() != Some(&sent);
-                apply_state(
-                    &mut commands,
-                    entity,
-                    state,
-                    mining,
-                    hotbar,
-                    active,
-                    changed,
-                );
+                apply_state(&mut commands, entity, state, hotbar, active, changed);
                 *joined = Joined(true, Some(sent));
+            }
+            ServerMessage::Mining { target, progress } => {
+                if let Ok((_, Some(mut mining), _, _)) = player.single_mut() {
+                    // Holding the button is the client's own.
+                    mining.target = target;
+                    mining.progress = progress;
+                }
             }
             other => {
                 forward.write(FromServer(other));
@@ -176,13 +175,11 @@ fn receive(
 struct Touched(HashSet<IVec3>);
 
 /// Puts the server's state of the player on the local player: what it
-/// carries, its game mode, its mining's target and progress (holding the
-/// button is the client's), and its hotbar if the server changed it.
+/// carries, its game mode, and its hotbar if the server changed it.
 fn apply_state(
     commands: &mut Commands,
     entity: Entity,
     state: PlayerState,
-    mining: Option<Mut<Mining>>,
     hotbar: Option<Mut<Hotbar>>,
     active: Option<Mut<ActiveSlot>>,
     hotbar_changed: bool,
@@ -192,19 +189,20 @@ fn apply_state(
         hotbar: new_hotbar,
         active: new_active,
         game_mode,
-        mining: new_mining,
     } = state;
     commands.entity(entity).insert((inventory, game_mode));
-    if let Some(mut mining) = mining {
-        if mining.target != new_mining.target {
-            mining.target = new_mining.target;
+    match (hotbar, active) {
+        // Taken quietly: it's the server's change, not the client's to
+        // send back.
+        (Some(mut hotbar), Some(mut active)) => {
+            if hotbar_changed {
+                *hotbar.bypass_change_detection() = new_hotbar;
+                *active.bypass_change_detection() = new_active;
+            }
         }
-        if mining.progress != new_mining.progress {
-            mining.progress = new_mining.progress;
+        _ => {
+            commands.entity(entity).insert((new_hotbar, new_active));
         }
-    }
-    if hotbar_changed || hotbar.is_none() || active.is_none() {
-        commands.entity(entity).insert((new_hotbar, new_active));
     }
 }
 
@@ -388,7 +386,6 @@ mod tests {
             hotbar,
             active: ActiveSlot(active),
             game_mode,
-            mining: Mining::default(),
         })
     }
 
@@ -433,10 +430,21 @@ mod tests {
                 .contains(&ClientMessage::ActiveSlot(ActiveSlot(3)))
         );
 
-        // The server moves it (a command): that's the slot now.
+        // The server moves it (a command): that's the slot now, and the
+        // client doesn't send it back as its own.
+        server.receive();
         server.send(state(hotbar, 5, GameMode::Creative));
         app.update();
         assert_eq!(local::<ActiveSlot>(&mut app), ActiveSlot(5));
+        app.update();
+        let echoes = server.receive();
+        assert!(
+            !echoes.iter().any(|message| matches!(
+                message,
+                ClientMessage::ActiveSlot(_) | ClientMessage::Hotbar(_)
+            )),
+            "{echoes:?}"
+        );
     }
 
     /// A use goes to the server, and is claimed on the client so no step

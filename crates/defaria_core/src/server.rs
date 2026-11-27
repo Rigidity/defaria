@@ -13,7 +13,7 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::{
     block_entity::BlockEntities,
-    content::Content,
+    content::{BlockState, Content},
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
     inventory::{Inventory, transfer::transfer},
@@ -55,6 +55,7 @@ impl Plugin for ServerNetPlugin {
                 (
                     send_chunks,
                     send_player_state,
+                    send_mining,
                     send_machine_contents,
                     send_status,
                 )
@@ -81,6 +82,8 @@ pub struct Connection {
     sent: HashSet<IVec3>,
     /// The player's state as last sent.
     state: Option<PlayerState>,
+    /// Its mining's target and progress as last sent.
+    mining: Option<(Option<(IVec3, BlockState)>, f32)>,
     /// The machine whose screen the client has open, and what it was last
     /// sent of it.
     machine: Option<(IVec3, MachineContents)>,
@@ -97,6 +100,7 @@ impl Connection {
             inbox: Vec::new(),
             sent: HashSet::new(),
             state: None,
+            mining: None,
             machine: None,
             settled: None,
             center: None,
@@ -289,13 +293,19 @@ fn apply_transfers(
 }
 
 /// A client that closed its machine screen isn't sent the machine any
-/// more.
+/// more (unless it's since opened another, or the same one again).
 fn close_screens(mut connections: Query<&mut Connection>) {
     for mut connection in &mut connections {
+        let closed: Vec<IVec3> = (connection.inbox.iter())
+            .filter_map(|message| match message {
+                ClientMessage::CloseScreen(pos) => Some(*pos),
+                _ => None,
+            })
+            .collect();
         if connection
-            .inbox
-            .iter()
-            .any(|message| matches!(message, ClientMessage::CloseScreen))
+            .machine
+            .as_ref()
+            .is_some_and(|(open, _)| closed.contains(open))
         {
             connection.machine = None;
         }
@@ -328,6 +338,15 @@ fn open_machine_screens(
         }
         // Used: nothing is placed against it.
         action.claim();
+        // Already open (a second click on its way before the first
+        // opened it): nothing more to do.
+        if connection
+            .machine
+            .as_ref()
+            .is_some_and(|(open, _)| *open == hit.block)
+        {
+            continue;
+        }
         connection.machine = Some((hit.block, MachineContents::default()));
         connection.send(ServerMessage::OpenScreen {
             pos: hit.block,
@@ -448,24 +467,44 @@ fn send_chunks(
 fn send_player_state(
     mut players: Query<(
         &mut Connection,
-        &Inventory,
-        &Hotbar,
-        &ActiveSlot,
-        &GameMode,
-        &Mining,
+        Ref<Inventory>,
+        Ref<Hotbar>,
+        Ref<ActiveSlot>,
+        Ref<GameMode>,
     )>,
 ) {
-    for (mut connection, inventory, hotbar, active, game_mode, mining) in &mut players {
+    for (mut connection, inventory, hotbar, active, game_mode) in &mut players {
+        let changed = inventory.is_changed()
+            || hotbar.is_changed()
+            || active.is_changed()
+            || game_mode.is_changed();
+        if !changed && connection.state.is_some() {
+            continue;
+        }
         let state = PlayerState {
-            inventory: inventory.clone(),
-            hotbar: hotbar.clone(),
+            inventory: (*inventory).clone(),
+            hotbar: (*hotbar).clone(),
             active: *active,
             game_mode: *game_mode,
-            mining: *mining,
         };
         if connection.state.as_ref() != Some(&state) {
             connection.state = Some(state.clone());
             connection.send(ServerMessage::PlayerState(state));
+        }
+    }
+}
+
+/// Sends each client the block its player is mining and how far along,
+/// when that changes.
+fn send_mining(mut players: Query<(&mut Connection, &Mining)>) {
+    for (mut connection, mining) in &mut players {
+        let now = (mining.target, mining.progress);
+        if connection.mining != Some(now) {
+            connection.mining = Some(now);
+            connection.send(ServerMessage::Mining {
+                target: now.0,
+                progress: now.1,
+            });
         }
     }
 }

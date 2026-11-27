@@ -24,7 +24,6 @@ use crate::{
     inventory::{Inventory, ItemStack},
     light::ChunkLight,
     machine::{EnergyBuffer, MachineActive, Slots, Tanks},
-    mining::Mining,
     player::{Look, Player},
     recipe::RecipeProgress,
     use_action::Use,
@@ -49,8 +48,9 @@ pub enum ClientMessage {
     /// Move items between the player and the creative catalog, or between
     /// the player and the machine whose screen is open.
     Transfer(Transfer),
-    /// The player closed the machine screen it had open.
-    CloseScreen,
+    /// The player closed the machine screen it had open, of the machine
+    /// at this voxel.
+    CloseScreen(IVec3),
 }
 
 /// A player's place, what it's doing and which way it looks.
@@ -111,8 +111,14 @@ pub enum ServerMessage {
     /// A chunk left the client's range.
     Unload(ChunkCoord),
     /// The client's player, as the server keeps it: what it carries, its
-    /// game mode and how far its mining is.
+    /// hotbar and game mode.
     PlayerState(PlayerState),
+    /// The block the client's player is mining and how far along it is,
+    /// when that changes (every frame, while it mines).
+    Mining {
+        target: Option<(IVec3, BlockState)>,
+        progress: f32,
+    },
     /// Whether everything in the client's range is loaded and sent.
     Settled(bool),
     /// Open the screen of the machine at this voxel, in this state.
@@ -130,7 +136,6 @@ pub struct PlayerState {
     pub hotbar: Hotbar,
     pub active: ActiveSlot,
     pub game_mode: GameMode,
-    pub mining: Mining,
 }
 
 /// What a machine holds, for its screen: each part it has.
@@ -231,7 +236,7 @@ mod tests {
         drop(server);
         assert!(client.receive().is_empty());
         assert!(client.is_closed());
-        client.send(ClientMessage::CloseScreen);
+        client.send(ClientMessage::CloseScreen(IVec3::ZERO));
         assert!(client.is_closed());
     }
 }

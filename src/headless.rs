@@ -71,7 +71,9 @@
 //!
 //! `fill` and `camera` set up exact situations (a sealed room, a lamp, a
 //! view) without steering there with input. Edits go through the same path
-//! as the player's, so they relight and remesh on the frame they're made.
+//! as the player's: they're made on the server at the end of their frame,
+//! and the client draws them from the next (so a `screenshot` on the same
+//! frame as a `fill` doesn't show it yet).
 //! `timing` is for comparing performance between runs on the same machine;
 //! put a `timing` just before the stretch to measure, to leave startup out.
 //!
