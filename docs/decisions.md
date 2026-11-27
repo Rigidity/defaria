@@ -1696,9 +1696,24 @@ in a half-full voxel). The mesh's dimming follows the drawn height and
 light's the amount, so at a step's edge they can disagree by a level for
 a moment.
 
+It also gives up a rule the flood fill was built on: a voxel's stored
+light is the light it spreads. A part-full voxel stores more than it
+passes on, so every part of the fill that reads a voxel's stored level to
+judge its neighbours has to go through `LightTable::offered` instead, or
+leave stale light: the sky coming straight down (`cover`, the sky-column
+rule in removals), chunks loading and unloading, and anything added to the
+fill later. Removals still compare stored levels, which only clears more
+than it must and spreads it back, so it's safe but does extra work around
+part-full voxels. The tests check every incremental change against light
+worked out from scratch (`TestWorld::reference`, which uses `offered` too),
+part-full voxels included; that's what guards the rule, not the rule
+itself. A special case light features have to keep in mind, kept because
+the alternatives below are far bigger.
+
 **What should replace it.** Light at a finer resolution than a level a
 voxel, or lighting the parts of a voxel above and below its fluid's
-surface apart.
+surface apart: either keeps stored and spread light the same, but changes
+the light layout and the save format.
 
 ## Translucent faces cull by the texture where they meet (2026-11-26)
 
