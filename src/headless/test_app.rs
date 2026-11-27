@@ -126,6 +126,28 @@ pub struct Multiplayer {
     pub clients: Vec<App>,
 }
 
+/// A client with no server of its own and no script yet, loading a small
+/// world: give it a `ServerConnection` to play.
+pub fn test_client() -> App {
+    let mut client = App::new();
+    client
+        .add_plugins((
+            default_plugins(false).disable::<bevy::log::LogPlugin>(),
+            crate::ClientPlugin,
+            HeadlessPlugin {
+                script: Script::default(),
+                rendering: false,
+            },
+        ))
+        .insert_resource(defaria_core::streaming::StreamingSettings {
+            radius: 4,
+            ..default()
+        });
+    client.finish();
+    client.cleanup();
+    client
+}
+
 /// A [`Multiplayer`] with `clients` clients, each with no script of its
 /// own yet (see [`Multiplayer::run`]), loading a small world.
 pub fn test_multiplayer(clients: usize) -> Multiplayer {
@@ -143,22 +165,7 @@ pub fn test_multiplayer(clients: usize) -> Multiplayer {
     ));
     let clients = (0..clients)
         .map(|_| {
-            let mut client = App::new();
-            client
-                .add_plugins((
-                    default_plugins(false).disable::<bevy::log::LogPlugin>(),
-                    crate::ClientPlugin,
-                    HeadlessPlugin {
-                        script: Script::default(),
-                        rendering: false,
-                    },
-                ))
-                .insert_resource(defaria_core::streaming::StreamingSettings {
-                    radius: 4,
-                    ..default()
-                });
-            client.finish();
-            client.cleanup();
+            let mut client = test_client();
             let (to_server, at_server) = defaria_core::net::link();
             client.insert_resource(defaria_client::net::ServerConnection(to_server));
             server

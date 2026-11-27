@@ -55,3 +55,66 @@ fn an_edit_by_one_client_reaches_the_other() {
         at.translation
     );
 }
+
+/// A client plays on a server over the network (QUIC on this machine):
+/// every kind of message it's sent crosses as bytes, it loads the world
+/// around it, and its edit reaches the server.
+#[test]
+fn a_client_plays_over_the_network() {
+    use std::{net::SocketAddr, time::Duration};
+
+    let mut game = test_multiplayer(0);
+    let content = game
+        .server
+        .world()
+        .resource::<defaria_core::content::Content>()
+        .fingerprint();
+    let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listener = crate::quic::listen(local, content).unwrap();
+    let address = listener.address.to_string();
+    crate::dedicated::take_clients_from(&mut game.server, listener);
+    let link = crate::quic::connect(&address, content).unwrap();
+    let mut client = crate::headless::test_client();
+    client.insert_resource(defaria_client::net::ServerConnection(link));
+    game.clients.push(client);
+    // The network's on other threads: give it a moment each frame.
+    let mut settled = false;
+    for _ in 0..6000 {
+        game.update();
+        std::thread::sleep(Duration::from_millis(1));
+        if game.clients[0]
+            .world()
+            .resource::<defaria_core::streaming::StreamingStatus>()
+            .settled
+        {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "never settled over the network");
+    let loaded = game.clients[0]
+        .world()
+        .resource::<defaria_core::world::ChunkMap>()
+        .len();
+    assert!(loaded > 100, "{loaded} chunks");
+
+    let below = IVec3::new(64, 60, 88);
+    game.server
+        .world_mut()
+        .run_system_once(move |mut voxels: Voxels| {
+            voxels.set(below, block("stone"));
+        })
+        .unwrap();
+    game.run(0, "camera 64.5 66 88.5 0 -90\nwait 30");
+    game.run(0, "hold MouseLeft 1\nwait 1\nhold MouseRight 1\nwait 30");
+    let placed = below + IVec3::Y;
+    for _ in 0..1000 {
+        if voxel(&mut game.clients[0], placed) == Some(block("stone")) {
+            break;
+        }
+        game.update();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(voxel(&mut game.server, placed), Some(block("stone")));
+    assert_eq!(voxel(&mut game.clients[0], placed), Some(block("stone")));
+}

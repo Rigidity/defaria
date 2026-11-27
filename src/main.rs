@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use bevy::{app::ScheduleRunnerPlugin, prelude::*, window::PresentMode};
 use defaria::{
-    Cli, DevToolsPlugin, GamePlugin,
+    Cli, DevToolsPlugin, GamePlugin, dedicated,
     headless::{self, HeadlessPlugin, Script},
+    integrated::RemoteServer,
 };
 use defaria_client::session::{StartAtMenu, WorldsFolder};
 use defaria_core::{
@@ -13,7 +14,17 @@ use defaria_core::{
 
 fn main() -> AppExit {
     let cli = Cli::from_args(std::env::args().skip(1));
+    if cli.server {
+        return dedicated::run(dedicated::DedicatedSettings {
+            port: cli.port,
+            world: cli.world,
+            radius: cli.radius,
+        });
+    }
     let mut app = App::new();
+    if let Some(address) = cli.connect.clone() {
+        app.insert_resource(RemoteServer(address));
+    }
     // `--world` plays that world at once. Otherwise the game opens at the
     // main menu, and headless runs play a world in memory, so every run of
     // a scenario starts from the same world; their world list (reached
@@ -23,7 +34,7 @@ fn main() -> AppExit {
             app.insert_resource(WorldFolder(folder));
         }
         // A windowed screenshot (`cargo shot`) is of a world, in memory.
-        None if cli.headless.is_none() && cli.screenshot.is_none() => {
+        None if cli.headless.is_none() && cli.screenshot.is_none() && cli.connect.is_none() => {
             app.insert_resource(StartAtMenu);
         }
         None => {}

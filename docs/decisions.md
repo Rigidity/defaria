@@ -147,6 +147,25 @@ incremental builds stay cheap.
 - Everything that isn't drawing, UI or input is still in `defaria_core`;
   carving out `defaria_server` is #222.
 
+*As built in #51*, the network:
+
+- QUIC through `quinn` on async-io (which Bevy already builds), with
+  rustls on ring. Each connection's control stream carries the handshake
+  (the protocol's version and the content's fingerprint, refused on a
+  mismatch) and then the messages in order; chunks, their changes and
+  drops, and the settled flag go on a stream of their own from the
+  server; a client's pose goes as a datagram. Frames are a length, a
+  flag and `postcard` bytes, deflated past 512 bytes.
+- A background thread at each end moves messages between the network and
+  the game's link in memory, checking the link every millisecond: simple,
+  at up to a millisecond of latency each way.
+- The server's certificate is made afresh at each start, and clients
+  accept any (#216 remembers servers and gives players keys).
+- Other players are drawn as boxes where the server's latest positions
+  put them, with no smoothing between updates (#214).
+- A client that quits without saying so (its process ends) leaves when
+  QUIC's idle timeout runs out.
+
 **What's wrong with it.** Single player keeps two copies of the loaded
 chunks' blocks, fluid and light (about 21 MiB at the default radius
 today; keeping meshes only in the render world, #161, saves more than

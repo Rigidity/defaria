@@ -6,6 +6,7 @@
 //! and `defaria_client` (how it's shown and played). Each feature is its
 //! own plugin in its own module there, registered in [`GamePlugin`].
 
+pub mod dedicated;
 mod devtools;
 pub mod headless;
 pub mod integrated;

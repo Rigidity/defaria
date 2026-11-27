@@ -10,7 +10,11 @@ use crate::ServerPlugin;
 /// to update.
 pub fn build_server(app: &mut App) {
     app.add_plugins((
-        MinimalPlugins,
+        // Sixty frames a second, run on its own (a dedicated server); the
+        // server in the game's own process is stepped by the client.
+        MinimalPlugins.set(bevy::app::ScheduleRunnerPlugin::run_loop(
+            std::time::Duration::from_secs_f64(1.0 / 60.0),
+        )),
         TransformPlugin,
         AssetPlugin::default(),
         ServerPlugin,

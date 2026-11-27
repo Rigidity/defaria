@@ -11,6 +11,9 @@
 //! already loaded) is copied over when the server starts, as play starts
 //! (`GameState::Playing`), so settings given after the plugins count. When
 //! play ends (back to the main menu), the server saves the world and goes.
+//!
+//! With a [`RemoteServer`] (`--connect`), play is on that server instead,
+//! over the network (`quic`), and no server starts here.
 
 use std::time::Duration;
 
@@ -55,8 +58,30 @@ pub struct IntegratedServer {
     pub app: App,
 }
 
-/// Builds the server, connects to it, and lets its first frame run.
+/// The server to play on, over the network, instead of one in the game's
+/// own process: a host and port (`--connect`).
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct RemoteServer(pub String);
+
+/// Builds the server, connects to it, and lets its first frame run; or,
+/// with a [`RemoteServer`], connects to that.
 fn start_server(world: &mut World) {
+    if let Some(RemoteServer(address)) = world.get_resource::<RemoteServer>().cloned() {
+        let content = world.resource::<Content>().fingerprint();
+        match crate::quic::connect(&address, content) {
+            Ok(link) => {
+                info!("playing on {address}");
+                world.insert_resource(ServerConnection(link));
+            }
+            Err(error) => {
+                error!("{error}");
+                world
+                    .resource_mut::<NextState<GameState>>()
+                    .set(GameState::Menu);
+            }
+        }
+        return;
+    }
     let mut app = App::new();
     forward::<Content>(world, &mut app);
     forward::<WorldFolder>(world, &mut app);

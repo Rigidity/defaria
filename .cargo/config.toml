@@ -7,6 +7,8 @@ dist = "build --profile dist --no-default-features"
 shot = "run -- --screenshot target/screenshot.png"
 # No window: run a scripted scenario. Usage: cargo headless <script>
 headless = "run -- --headless"
+# A dedicated server, no window. Usage: cargo server [--port N] [--world DIR]
+server = "run -- server"
 
 # macOS: the default Apple linker (ld-prime) is already as fast as lld/sold,
 # so no linker override is needed here.

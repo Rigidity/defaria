@@ -12,6 +12,7 @@ A Bevy 0.20 game, developed mostly by agents. Rust is pinned in
 | Lint (must be clean) | `cargo clippy --all-targets -- -D warnings` |
 | Format | `cargo fmt` |
 | Play a scripted scenario, no window | `cargo headless <script>` |
+| Run a dedicated server, no window | `cargo server [--port N] [--world DIR] [--radius N]` |
 | Shipping build | `cargo dist` |
 
 `cargo run`, `cargo play` and `cargo shot` open the game window. They're for
@@ -332,6 +333,19 @@ frame; the messages between them are `defaria_core::net`. So:
 - What happens on a click shows the next frame: the server acts on it at
   the end of the frame, the client sees the result at the start of the
   next.
+- Multiplayer: `cargo server` runs a dedicated server (`src/dedicated.rs`;
+  type `stop` to save and stop it), and `--connect <host:port>` plays on
+  one instead of starting a server (windowed or headless:
+  `cargo headless <script> --connect 127.0.0.1:25575`). The messages
+  cross the network as bytes over QUIC (`src/quic.rs`); a server and
+  clients in one test are `headless::test_multiplayer` (in memory) or a
+  `quic::listen` the server takes clients from
+  (`dedicated::take_clients_from`). Every message type derives serde;
+  `net::encode`/`decode` round-trip them. Give a scenario's server a
+  world folder in your scratch directory, never the default
+  `server-world`.
+- Other players show as `others::OtherPlayerView` figures where the
+  server's `ServerMessage::Players` puts them.
 - The client is in a `session::GameState`: `Menu` (the main menu, the
   world list and the new world screen, `crates/defaria_client/src/menu.rs`)
   or `Playing` a world. The windowed game starts at the menu
@@ -357,7 +371,10 @@ relative path.
 - `src/main.rs`: CLI flags and `App` setup only.
 - `src/lib.rs`: `GamePlugin`, `ClientPlugin` and `ServerPlugin`, which
   register one plugin per feature on each side.
-- `src/integrated.rs`: the server in the game's own process.
+- `src/integrated.rs`: the server in the game's own process, or the
+  connection to a remote one (`RemoteServer`). `src/server.rs` builds a
+  server app; `src/dedicated.rs` runs one on its own; `src/quic.rs` is
+  the network.
 - `crates/defaria_core/src/net.rs`: the messages between server and
   client, and the link in memory that carries them.
   `crates/defaria_core/src/server.rs`: the server's side: each client a
