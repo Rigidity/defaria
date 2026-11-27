@@ -39,11 +39,11 @@ impl Plugin for UseActionPlugin {
             .configure_sets(
                 Update,
                 // Before the fly camera, so the click that locks the cursor
-                // finds it still unlocked, with no sync point between the
-                // steps (placing, last, has one before the fly camera, so a
-                // screen a step opens stops the view turning this frame).
-                // After the hotbar, so a slot picked this frame is the one
-                // used.
+                // finds it still unlocked. Without sync points, so a screen
+                // a step opens applies at the end of the frame, as one a
+                // key opens does (the fly camera's own chain applies it
+                // before it turns the view). After the hotbar, so a slot
+                // picked this frame is the one used.
                 UseSystems
                     .run_if(playing)
                     .after(HotbarInput)
@@ -89,7 +89,8 @@ pub enum UseStep {
     Screen,
     /// An item whose script has `on_use` (`script::using`).
     Item,
-    /// The block in hand is placed (`block_edit`).
+    /// The block in hand is placed (`block_edit`). It claims every use,
+    /// so none outlasts its frame.
     Place,
 }
 
@@ -134,13 +135,14 @@ fn pending(actions: Query<&UseAction>) -> bool {
 fn read_use(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    // Optional, so a frame with no window still clears the last use.
+    cursor: Option<Single<&CursorOptions, With<PrimaryWindow>>>,
     content: Res<Content>,
     voxels: Voxels,
     mut players: Query<(Eyes, &mut UseAction), With<LocalPlayer>>,
 ) {
-    let clicked =
-        cursor.grab_mode != CursorGrabMode::None && mouse.just_pressed(MouseButton::Right);
+    let locked = cursor.is_some_and(|cursor| cursor.grab_mode != CursorGrabMode::None);
+    let clicked = locked && mouse.just_pressed(MouseButton::Right);
     for (eyes, mut action) in &mut players {
         let using = clicked.then(|| {
             let eyes = eyes.transform();

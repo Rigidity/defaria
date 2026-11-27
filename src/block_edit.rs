@@ -66,12 +66,9 @@ impl Plugin for BlockEditPlugin {
             .add_systems(
                 Update,
                 (
-                    // With a sync point before the fly camera, so a screen
-                    // a use opened stops it turning the view this frame.
                     edit_blocks
                         .in_set(BlockEditSystems)
                         .in_set(UseStep::Place)
-                        .before(FlyCameraSystems)
                         .before(RemeshChunks),
                     // After the camera moves, so the outline matches the
                     // frame being drawn.
@@ -274,10 +271,11 @@ pub fn crosshair_target(transform: &Transform, content: &Content, voxels: &Voxel
 
 /// Places the block in hand against the face aimed at, for each use no
 /// earlier step claimed, if it can go there and, in survival, the player
-/// has one.
+/// has one. As the last step, it claims every use it sees, so none
+/// outlasts its frame.
 fn edit_blocks(
     mut players: Query<(
-        &UseAction,
+        &mut UseAction,
         &Hotbar,
         &ActiveSlot,
         Option<&mut Inventory>,
@@ -287,10 +285,11 @@ fn edit_blocks(
     bodies: Query<&Body>,
     mut voxels: Voxels,
 ) {
-    for (action, hotbar, active, inventory, mode) in &mut players {
+    for (mut action, hotbar, active, inventory, mode) in &mut players {
         let Some(using) = action.pending() else {
             continue;
         };
+        action.claim();
         let camera = using.eyes;
         let Some(hit) = using.target else {
             continue;

@@ -782,3 +782,29 @@ fn a_scripted_item_comes_after_the_block_it_is_used_on() {
     assert_eq!(used, Some(Value::Int(1)), "the machine was used");
     assert!(voxel(&mut app, front).is_air(), "nothing was placed");
 }
+
+/// The view doesn't turn on the frame a use opens a machine's screen,
+/// though the mouse moved then too, and the use is gone by the end of the
+/// frame; a right click on air leaves no use behind either.
+#[test]
+fn opening_a_screen_stops_the_view_turning() {
+    use crate::{player::Look, use_action::UseAction};
+    let mut app = game();
+    let look = |app: &mut App| {
+        let mut looks = app
+            .world_mut()
+            .query_filtered::<(&Look, &UseAction), With<LocalPlayer>>();
+        let (look, action) = looks.single(app.world()).unwrap();
+        (look.yaw, action.pending())
+    };
+    let (before, _) = look(&mut app);
+    run_more(&mut app, "mouse 200 0\nhold MouseRight 1\nwait 3");
+    assert!(is_open(&mut app));
+    assert_eq!(look(&mut app), (before, None));
+
+    run_more(
+        &mut app,
+        "hold KeyE 1\nwait 3\nfill 64 70 89 64 70 89 air\nwait 2\nhold MouseRight 1\nwait 1",
+    );
+    assert_eq!(look(&mut app).1, None, "no use outlasts its frame");
+}
