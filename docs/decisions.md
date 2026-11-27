@@ -3,6 +3,59 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Chunks that fluid changes are remeshed at once, uncapped (2026-11-26)
+
+**Context.** Moving fluid remeshes the chunks that show it on the frame
+it moves, with no cap of its own, while flow itself is budgeted per tick
+(#102, and "Fluid flows a voxel at a time" below). The worry was a flood
+across many chunks costing frame time in proportion to them.
+
+Measured with `systems`, on a machine busy with other builds, by CPU
+time, which held steady where wall-clock time didn't. Its figure for
+`meshing::remesh_changed_chunks` is the main thread's share: the meshes
+are built in parallel, and uploads happen in the render world. The
+wall-clock time of the busiest frames' remeshing was 4 to 10 ms.
+
+- A 16-block cube of water let go on a walled floor ten chunks across:
+  remeshing used about 1.1 ms a frame on average and 4 to 8 ms at worst,
+  against 7 to 12 ms at worst for `fluid::run_flow`. Only 6 to 10 chunks
+  changed a frame, all on the moving front, and every one of them was
+  also relit that frame (water dims light since #172), so it would have
+  been remeshed for the light anyway.
+- `scenarios/flood.txt`, water two deep over half that floor, its front
+  across ten chunk columns, which keeps flow at its `cells_per_tick`
+  budget: remeshing used 0.3 to 0.6 ms on average, 3.3 to 4.8 ms at
+  worst.
+- `scenarios/sea-breach.txt`, the sea pouring into a cut, its surface
+  lowering in a cone across the loaded sea: 0.5 to 0.8 ms on average, 2
+  to 4.5 ms at worst. At most 19 chunks a frame changed by fluid alone,
+  usually fewer than 16.
+
+What one frame changes is what one flow step changes (`finish_step`
+writes a step's changes together): the moving front, which advances a
+voxel a step, and where a body levels, the voxels whose drawn height
+moves. Amounts changing inside a body change no blocks and no light.
+
+**Decision.** No cap. A cap on chunks changed by flow alone (a line of
+chunks remeshed at most 16 a frame, nearest the player first, and any
+that waited 10 frames before nearer ones) was built and measured. It held
+nothing back in the floods, where light marked the same chunks, and
+almost nothing in the breach, so it bought nothing for its extra state
+and the water it would show at a stale height.
+
+**What's wrong with it.** A step that changes the drawn height across a
+wide body at once (a big lake levelling, or faster flow from #96) would
+remesh every chunk it shows on one frame. Remeshing for light isn't
+capped either.
+
+**What should replace it.** If such a case shows up in `systems`, cap
+the chunks remeshed for flow per frame as above, and do the same for
+chunks relit by flow. The attempt routed flow's changes through
+`Voxels::flow_fluid`, `flow_into` and a new `flow_out` (for emptying)
+into a waiting set that `remesh_changed_chunks` drew from. It also
+bypassed change detection for those chunks, so they were only compacted
+(#167) once something else changed them.
+
 ## Chunk crossings: unloads are spread, the rest of the cost is left (2026-11-26)
 
 **Context.** Flying over open sea, the frame that crosses into a new
@@ -1350,17 +1403,16 @@ over one is as fast as on `main`. Small scenes take a while to come to
 rest too: the last units trickle for up to half a minute after water
 poured down `scenarios/fluid-flow.txt`'s stairs has visibly stopped,
 though they cost little. Chunks whose fluid changed are remeshed
-on the frame it changes, with no cap of their own; the breach didn't need
-one, but a flood across many chunks at once might.
+on the frame it changes, with no cap of their own; measured floods didn't
+need one (see "Chunks that fluid changes are remeshed at once, uncapped").
 
 **What should replace it.** Treat a settled, connected body of a fluid as
 one reservoir with a shared level: water leaving it lowers the whole
 surface evenly, without stepping each voxel. That also makes a dam break
 fast, and it's what pumps drawing from a lake or an oil pool will need
-(#96 looks at this and other ways to speed flow up). If floods turn out to
-remesh too much at once, cap the chunks remeshed for fluid alone per
-frame. Films thinner than `film` stay on dry ground for good: see #97
-(creeping toward a drop) and #98 (evaporation).
+(#96 looks at this and other ways to speed flow up). Films thinner than
+`film` stay on dry ground for good: see #97 (creeping toward a drop) and
+#98 (evaporation).
 
 ## A fluid's kind is its block; only its amount is stored apart (2026-11-25)
 
