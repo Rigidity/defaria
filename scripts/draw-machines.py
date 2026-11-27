@@ -2,7 +2,7 @@
 """Draw the network and machine layer images: wires, pipes, tubes, casings.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
-src/block_texture/layer.rs checks) into OUT_DIR. Every machine face is the
+crates/defaria_client/src/block_texture/layer.rs checks) into OUT_DIR. Every machine face is the
 same casing (a two-pixel riveted frame, lit from the top left, around a
 recessed flat panel) with its feature drawn into the panel, so the set reads
 as one family. Arms (wire, pipe_side, tube_side) run left to right in a band

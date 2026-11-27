@@ -10,7 +10,7 @@ use std::{
 
 use bevy::prelude::*;
 
-use crate::{
+use defaria_core::{
     content::{BlockState, FULL_FLUID},
     light::ChunkLight,
     world::{CHUNK_SIZE, Chunk},
@@ -41,7 +41,7 @@ pub struct ChunkMemory {
     pub light: usize,
     /// Of those bytes of blocks and light, the ones held for chunks that
     /// are one value throughout (and so could hold none; see
-    /// [`crate::world::ChunkArray::compact`]).
+    /// [`defaria_core::world::ChunkArray::compact`]).
     pub uniform_dense: usize,
     /// Chunks whose blocks or light are one value throughout but still
     /// kept a value per voxel: 0 once compaction has caught up.
@@ -256,16 +256,16 @@ pub fn measure_lookups(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::light::Light;
+    use defaria_core::light::Light;
 
     fn world_with(chunks: Vec<(IVec3, Chunk)>) -> World {
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
-        world.insert_resource(crate::content::base().clone());
+        world.insert_resource(defaria_core::content::base().clone());
         world.init_resource::<ChunkMap>();
-        world.init_resource::<Messages<crate::world::VoxelChanged>>();
-        world.init_resource::<Messages<crate::world::FluidChanged>>();
-        world.init_resource::<Messages<crate::world::PropertiesUpdated>>();
+        world.init_resource::<Messages<defaria_core::world::VoxelChanged>>();
+        world.init_resource::<Messages<defaria_core::world::FluidChanged>>();
+        world.init_resource::<Messages<defaria_core::world::PropertiesUpdated>>();
         for (coord, chunk) in chunks {
             let entity = world.spawn((chunk, ChunkLight::default())).id();
             world

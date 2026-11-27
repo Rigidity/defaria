@@ -395,7 +395,7 @@ script file needs a restart. Shipping builds load scripts once.
 
 ## For engine code
 
-The runtime is `ScriptRuntime` (`src/script/`), a resource. Hooks are
+The runtime is `ScriptRuntime` (`crates/defaria_core/src/script/`), a resource. Hooks are
 called with `ScriptRuntime::call(caller, script_id, hook, args)`: `args`
 gets the call's `mlua::Scope` and wraps engine state as userdata in it
 (`scope.create_userdata_ref_mut(&mut tank)`, or `scope.create_userdata`
@@ -406,7 +406,7 @@ a block position, or anything else. Call hooks from `FixedUpdate`, with
 the rest of the simulation. `ScriptsReloaded` is sent after a reload.
 
 Blocks' and items' hooks are called in `script::hooks`, with
-`ScriptWorld::call` (`src/script/api/`): a system parameter with the
+`ScriptWorld::call` (`crates/defaria_core/src/script/api/`): a system parameter with the
 voxels, the content and blocks' data, which puts the world in reach of
 the script for the call and saves the `data` it changed after. Its
 `origin` is the block the call may change around. Handles are made with
@@ -437,6 +437,6 @@ machine make up to `n` joules (`on_tick` gives it the tick's share of
 `RecipeFinished` messages, from the recipe machines, run
 `on_recipe_finished`.
 
-Tests use the test mods in `tests/fixtures/script-mods/`, and the hooks'
-and machines' tests test mods of their own (`src/script/hooks/tests.rs`,
-`src/script/machine/tests.rs`).
+Tests use the test mods in `crates/defaria_core/tests/fixtures/script-mods/`, and the hooks'
+and machines' tests test mods of their own (`crates/defaria_core/src/script/hooks/tests.rs`,
+`crates/defaria_core/src/script/machine/tests.rs`).

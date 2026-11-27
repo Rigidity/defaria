@@ -1,0 +1,38 @@
+[package]
+name = "defaria_core"
+description = "What the game is: content, the world, simulation, scripts and saving."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy = { workspace = true }
+json5 = { workspace = true }
+miniz_oxide = { workspace = true }
+mlua = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[features]
+# The same Bevy features as the game's `dev` (see the root Cargo.toml), so
+# this crate built on its own shares the one compiled Bevy.
+default = ["dev"]
+dev = [
+    "bevy/dynamic_linking",
+    "bevy/dev",
+    "bevy/bevy_remote",
+]
+# Test helpers (`testing`, and the helpers in some modules' tests) for
+# other crates' tests.
+test-support = []
+
+[lib]
+# Doctests don't work with `bevy/dynamic_linking` (the dylib isn't on the
+# loader path), so keep examples in #[test] functions instead.
+doctest = false
+
+[lints]
+workspace = true

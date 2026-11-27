@@ -4,7 +4,7 @@
 Converts each pixel to gray by luminance, then stretches the image so its
 darkest pixel lands on level LOW and its brightest on level HIGH (1 and 6 by
 default), spreading the rest linearly and rounding to the nearest of the 8
-levels the game accepts (see `gray()` in src/block_texture/layer.rs).
+levels the game accepts (see `gray()` in crates/defaria_client/src/block_texture/layer.rs).
 This is the house processing step for Retro Diffusion output; see
 .claude/skills/retro-diffusion/SKILL.md.
 

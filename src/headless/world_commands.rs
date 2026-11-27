@@ -8,7 +8,8 @@ use std::{collections::HashSet, time::Instant};
 use bevy::prelude::*;
 
 use super::{memory, runner::ScriptRunner, script::Command};
-use crate::{
+use defaria_client::view_bob::ViewBob;
+use defaria_core::{
     block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content, FULL_FLUID, ItemState, PART_SEPARATOR, StateName},
     fluid::{FluidStats, evaporation::EvaporationSpeed},
@@ -20,7 +21,6 @@ use crate::{
     player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player, put_eyes},
     script::random_tick::RandomTicks,
     streaming::{ChunkLoader, StreamingSettings, loader_chunk},
-    view_bob::ViewBob,
     world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, VoxelFluid, Voxels},
 };
 
@@ -184,7 +184,7 @@ fn fill(
     content: Res<Content>,
     mut voxels: Voxels,
 ) -> Result<usize, String> {
-    let state = if id == crate::content::AIR {
+    let state = if id == defaria_core::content::AIR {
         BlockState::AIR
     } else {
         fill_state(&content, &id).map_err(|error| format!("fill: {error}"))?
@@ -279,7 +279,7 @@ fn put(
         if amount < 1.0 || amount.fract() != 0.0 {
             return Err(at(format!("{amount} isn't a whole number of items")));
         }
-        let stack = crate::inventory::ItemStack::new(item, amount as u32);
+        let stack = defaria_core::inventory::ItemStack::new(item, amount as u32);
         let room = group.room_for(&content, &stack);
         if room < stack.count {
             return Err(at(format!("only {room} of `{what}` fit in `{name}`")));
@@ -371,9 +371,9 @@ pub(super) fn fluid_report(world: &mut World, region: FluidRegion) -> String {
             *in_world.entry(name.clone()).or_default() += fluid.amount as u64;
         }
     }
-    let in_pipes = crate::fluid_network::held_in_pipes_within(world, contains);
+    let in_pipes = defaria_core::fluid_network::held_in_pipes_within(world, contains);
     let mut in_machines: BTreeMap<String, u64> = default();
-    let mut tanks = world.query::<(&crate::machine::Tanks, &BlockEntity)>();
+    let mut tanks = world.query::<(&defaria_core::machine::Tanks, &BlockEntity)>();
     for (tanks, block_entity) in tanks.iter(world) {
         if !contains(block_entity.pos) {
             continue;
@@ -430,24 +430,24 @@ pub(super) fn fluid_report(world: &mut World, region: FluidRegion) -> String {
 
 /// The `network` report for the conduit at `pos`.
 pub(super) fn network_report(world: &World, pos: IVec3) -> String {
-    let ports = world.resource::<crate::machine::MachinePorts>();
-    let networks = world.resource::<crate::network::Networks>();
+    let ports = world.resource::<defaria_core::machine::MachinePorts>();
+    let networks = world.resource::<defaria_core::network::Networks>();
     let mut line =
-        crate::network::describe(networks, world.resource::<Content>(), pos, |id, port| {
+        defaria_core::network::describe(networks, world.resource::<Content>(), pos, |id, port| {
             ports.role(id, port)
         });
     let energy = networks.at(pos).and_then(|id| {
         let kind = networks.get(id)?.kind();
-        let report = world.get_resource::<crate::network::energy::EnergyReport>()?;
-        (world.resource::<Content>().networks[kind].solver == crate::content::Solver::Energy)
-            .then(|| crate::network::energy::describe(report, id))
+        let report = world.get_resource::<defaria_core::network::energy::EnergyReport>()?;
+        (world.resource::<Content>().networks[kind].solver == defaria_core::content::Solver::Energy)
+            .then(|| defaria_core::network::energy::describe(report, id))
     });
     if let Some(energy) = energy {
         line += &format!("; {energy}");
     }
     let fluid = networks.at(pos).and_then(|id| {
         world
-            .get_resource::<crate::network::NetworkMap<crate::fluid_network::FluidNet>>()?
+            .get_resource::<defaria_core::network::NetworkMap<defaria_core::fluid_network::FluidNet>>()?
             .get(id)
     });
     if let Some(net) = fluid.filter(|net| net.total() > 0) {

@@ -1,52 +1,17 @@
 //! The game. `main.rs` only parses CLI flags and runs [`GamePlugin`].
 //!
-//! Each gameplay feature is its own plugin in its own module, registered in
-//! [`GamePlugin`], so parallel work rarely touches the same file.
+//! The game's code is in two crates: `defaria_core` (what the game is)
+//! and `defaria_client` (how it's shown and played). Each feature is its
+//! own plugin in its own module there, registered in [`GamePlugin`].
 
-mod block_edit;
-pub mod block_entity;
-mod block_texture;
-mod connections;
-pub mod content;
-mod cracks;
 mod devtools;
-mod dynamic_light;
-mod fluid;
-mod fluid_container;
-pub mod fluid_network;
-mod fly_camera;
-mod fog;
-mod fov;
-pub mod game_mode;
 pub mod headless;
-mod hotbar;
-pub mod inventory;
-mod light;
-pub mod machine;
-mod meshing;
-mod mining;
-pub mod network;
-mod perlin;
-mod physics;
-mod player;
-pub mod recipe;
-pub mod save;
-pub mod script;
-pub mod streaming;
-mod support;
-#[cfg(test)]
-mod testing;
-pub mod ui;
-mod use_action;
-mod view_bob;
-mod voxel_material;
-mod world;
-mod worldgen;
-mod wrench;
 
 pub use devtools::{Cli, DevToolsPlugin, ScreenshotMode};
 
 use bevy::prelude::*;
+use defaria_client::*;
+use defaria_core::*;
 
 /// Registers every gameplay plugin.
 pub struct GamePlugin;
@@ -77,6 +42,8 @@ impl Plugin for GamePlugin {
             fog::FogPlugin,
             fov::FovPlugin,
             mining::MiningPlugin,
+            input::InputPlugin,
+            crosshair::CrosshairPlugin,
             cracks::CracksPlugin,
             fluid::FluidPlugin,
             game_mode::GameModePlugin,
@@ -86,6 +53,8 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins((
             machine::MachinePlugin,
+            machine_screen::MachineScreenPlugin,
+            inventory_screen::InventoryScreenPlugin,
             recipe::RecipePlugin,
             script::ScriptPlugin,
             script::machine::MachineScriptPlugin,
@@ -93,6 +62,7 @@ impl Plugin for GamePlugin {
             fluid_container::FluidContainerPlugin,
             support::SupportPlugin,
             use_action::UseActionPlugin,
+            hotbar_ui::HotbarUiPlugin,
         ));
     }
 }

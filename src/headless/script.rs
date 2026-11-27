@@ -228,7 +228,7 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
         "hotbar" => {
             expect(2)?;
             let slot: usize = parse_number(args[0])?;
-            if !(1..=crate::hotbar::HOTBAR_SLOTS).contains(&slot) {
+            if !(1..=defaria_core::hotbar::HOTBAR_SLOTS).contains(&slot) {
                 return Err(format!("`hotbar` slots are 1 to 9: {line}"));
             }
             commands.push(Command::Hotbar {

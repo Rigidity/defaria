@@ -42,7 +42,7 @@
 //! | `evaporation <speed>` | Make films of fluid evaporate `speed` times as fast as their fluid's rate (1 by default, 0 stops them), so puddles dry up in seconds rather than minutes (see `fluid::evaporation`). |
 //! | `settle` | Wait until the world around the camera has loaded and been meshed, what has gone out of reach has unloaded, and the fog has opened up to the draw distance, and print how many frames and seconds that took. |
 //! | `memory` | Print what the loaded chunks hold, counted from their data rather than the process's memory, so it's the same every run: how many chunks, how many are air or one other block throughout and how many have one light level throughout, the bytes of block states, light and partial fluid, how much of that (in KiB) is in chunks that are one value throughout but still kept a value per voxel, and how many such chunks there are (0 once compaction has caught up), and the chunk meshes and the bytes of vertices and indices they keep in the main world. |
-//! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`](crate::world::Voxels::get), a hash and a query per voxel), then a chunk at a time, and print both. A box of more than 16,777,216 voxels (256 a side) fails the run. |
+//! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`](defaria_core::world::Voxels::get), a hash and a query per voxel), then a chunk at a time, and print both. A box of more than 16,777,216 voxels (256 a side) fails the run. |
 //!
 //! The mouse commands (`cursor`, mouse buttons, `scroll`) also drive
 //! `bevy_picking`'s mouse pointer, aimed at the image the frame renders
@@ -124,12 +124,7 @@ pub const RESOLUTION: UVec2 = UVec2::new(1280, 720);
 /// many frames after the script ended, so a broken capture or a shader that
 /// never loads can't hang an agent forever.
 const END_TIMEOUT_FRAMES: u32 = 600;
-/// Give up if the world hasn't finished loading this many frames into a
-/// `settle` (or the start). Only a guard against a hang: loading is on
-/// other threads, so how many frames it takes depends on the machine. The
-/// mountains at the full render distance take about 1,900 here, and CI's
-/// less optimized build, on fewer cores, takes more.
-pub const SETTLE_TIMEOUT_FRAMES: u32 = 12_000;
+pub use defaria_core::streaming::SETTLE_TIMEOUT_FRAMES;
 
 /// [`DefaultPlugins`] set up to run without a window. With `rendering` off
 /// there's no GPU at all (for CI); screenshots are then skipped. There's no

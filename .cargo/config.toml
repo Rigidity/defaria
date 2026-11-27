@@ -10,3 +10,8 @@ headless = "run -- --headless"
 
 # macOS: the default Apple linker (ld-prime) is already as fast as lld/sold,
 # so no linker override is needed here.
+
+# Bevy and the game find `assets/` here, whichever crate's tests or
+# binary cargo runs (each runs in its own crate's folder).
+[env]
+BEVY_ASSET_ROOT = { value = "", relative = true }

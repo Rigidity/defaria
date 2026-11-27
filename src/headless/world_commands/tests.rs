@@ -1,9 +1,9 @@
 use super::*;
-use crate::{
-    headless::{
-        Script,
-        test_app::{camera, light_at, play, run_game, run_more},
-    },
+use crate::headless::{
+    Script,
+    test_app::{camera, light_at, play, run_game, run_more},
+};
+use defaria_core::{
     streaming::StreamingStatus,
     world::{ChunkCoord, ChunkMap},
 };
@@ -23,8 +23,8 @@ fn fill_and_camera_set_up_a_scene() {
          timing\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let red = crate::content::base()
-        .state(crate::content::block("red_lamp"))
+    let red = defaria_core::content::base()
+        .state(defaria_core::content::block("red_lamp"))
         .light;
     for d in 1..4 {
         let light = light_at(&mut app, IVec3::new(55 - d, 25, 55));
@@ -61,7 +61,7 @@ fn scripted_blocks_run_in_the_game() {
          wait 60\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let base = crate::content::base();
+    let base = defaria_core::content::base();
     let mut at = |pos: IVec3| -> BlockState {
         use bevy::ecs::system::RunSystemOnce;
         app.world_mut()
@@ -69,7 +69,7 @@ fn scripted_blocks_run_in_the_game() {
             .unwrap()
             .unwrap()
     };
-    let mossy = crate::content::block("mossy_stone");
+    let mossy = defaria_core::content::block("mossy_stone");
     let wall = (50..=54).flat_map(|x| (20..=22).map(move |y| IVec3::new(x, y, 50)));
     let mossy_count = wall.filter(|&pos| at(pos) == mossy).count();
     assert!(mossy_count > 3, "{mossy_count}");
@@ -90,13 +90,16 @@ fn filled_pipes_join_each_other() {
          wait 1\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let content = crate::content::base();
-    use crate::content::Direction::{self, *};
+    let content = defaria_core::content::base();
+    use defaria_core::content::Direction::{self, *};
     let world = app.world_mut();
     let joined = |world: &mut World, pos: IVec3| {
         let (coord, local) = ChunkCoord::split(pos);
         let entity = world.resource::<ChunkMap>().get(coord).unwrap();
-        let state = world.get::<crate::world::Chunk>(entity).unwrap().at(local);
+        let state = world
+            .get::<defaria_core::world::Chunk>(entity)
+            .unwrap()
+            .at(local);
         Direction::ALL
             .into_iter()
             .filter(|&side| content.joined(state, side))
@@ -131,7 +134,7 @@ fn timing_counts_filled_voxels() {
 
 #[test]
 fn fill_names_a_block_and_some_of_its_properties() {
-    let content = crate::content::base();
+    let content = defaria_core::content::base();
     let log = content.block("defaria:log").unwrap();
     assert_eq!(fill_state(content, "log"), Ok(log.default_state()));
     assert_eq!(
@@ -164,7 +167,7 @@ fn fill_names_a_block_and_some_of_its_properties() {
 /// scenario run in CI.
 #[test]
 fn every_scenario_parses_and_fills_with_real_blocks() {
-    let content = crate::content::base();
+    let content = defaria_core::content::base();
     let mut scenarios = 0;
     for entry in std::fs::read_dir("scenarios").unwrap() {
         let path = entry.unwrap().path();
@@ -176,7 +179,7 @@ fn every_scenario_parses_and_fills_with_real_blocks() {
         let script = Script::parse(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         for command in script.commands {
             if let Command::Fill { block, .. } = &command
-                && block != crate::content::AIR
+                && block != defaria_core::content::AIR
             {
                 fill_state(content, block).unwrap_or_else(|e| panic!("{path:?}: {e}"));
             }
@@ -340,7 +343,7 @@ fn put_fills_machines_and_a_powered_furnace_smelts() {
     let output = machine_slots(&app, IVec3::new(50, 20, 52));
     assert_eq!(
         output.group("output").unwrap().slots[0],
-        Some(crate::inventory::ItemStack::new(gold, 1))
+        Some(defaria_core::inventory::ItemStack::new(gold, 1))
     );
     let entity = app
         .world()
@@ -405,7 +408,7 @@ fn fill_and_pour_keep_fluid_to_a_blocks_room() {
         (block(5002), fluid_at(&app, at(5002))),
         (BlockState::AIR, 0)
     );
-    let slab = crate::content::block("stone_slab");
+    let slab = defaria_core::content::block("stone_slab");
     assert_eq!((block(5004), fluid_at(&app, at(5004))), (slab, 500));
     assert_eq!((block(5006), fluid_at(&app, at(5006))), (slab, 500));
     assert_eq!(
@@ -645,7 +648,7 @@ fn blocks_push_fluid_aside_and_edits_wake_it() {
 /// after sneaking along the ground (lower eyes, a swaying view).
 #[test]
 fn camera_resets_sneaking_eyes_and_the_sway() {
-    use crate::view_bob::ViewBob;
+    use defaria_client::view_bob::ViewBob;
 
     let mut app = play(
         "fill 56 50 84 72 50 100 stone\n\

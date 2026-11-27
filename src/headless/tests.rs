@@ -1,4 +1,18 @@
-//! End-to-end tests: whole scripts run in the game with no GPU.
+//! End-to-end tests: whole scripts run in the game with no GPU. Tests
+//! of a feature that need the whole game are in a module for it here.
+
+mod cracks;
+mod editing;
+mod fluid_container;
+mod game_mode;
+mod inventory_screen;
+mod light;
+mod machine_screen;
+mod player_save;
+mod script;
+mod support;
+mod ui;
+mod wrench;
 
 use super::SETTLE_TIMEOUT_FRAMES;
 
@@ -11,10 +25,9 @@ use super::{
     test_app::{camera, light_at, play, run_game},
     test_game,
 };
-use crate::{
+use defaria_client::{fly_camera::FlyCamera, fog::ChunkFog};
+use defaria_core::{
     content::BlockState,
-    fly_camera::FlyCamera,
-    fog::ChunkFog,
     player::{LocalPlayer, Look, Player, eyes},
     world::{Chunk, ChunkCoord, ChunkMap},
 };
@@ -57,8 +70,8 @@ fn settle_waits_for_the_world_after_a_jump() {
     assert_eq!(exit, AppExit::Success);
     let runner = app.world().resource::<ScriptRunner>();
     assert_eq!(runner.settle_started, None, "the settle's timing ended");
-    let red = crate::content::base()
-        .state(crate::content::block("red_lamp"))
+    let red = defaria_core::content::base()
+        .state(defaria_core::content::block("red_lamp"))
         .light;
     let lamp = light_at(&mut app, IVec3::new(5000, -1000, 5000));
     assert_eq!(lamp.block()[0], red[0], "the lamp was placed and lit");
@@ -94,7 +107,7 @@ fn moving_on_doesnt_bring_the_fog_in() {
     // radius of 4 it's held at its one-chunk minimum, which doesn't
     // quite fit), and no more levels than that needs, so loading keeps
     // up on a slow machine whatever the game's defaults are.
-    app.insert_resource(crate::streaming::StreamingSettings {
+    app.insert_resource(defaria_core::streaming::StreamingSettings {
         radius: 6,
         above: 4,
         below: 4,
@@ -113,7 +126,8 @@ fn moving_on_doesnt_bring_the_fog_in() {
             // Loading and meshing run on other threads. Let them finish
             // before the next frame, so this checks the fog against a
             // world that keeps up, however slow the machine (CI) is.
-            crate::streaming::finish_background_work(app.world_mut());
+            defaria_core::streaming::finish_loads(app.world_mut());
+            defaria_client::meshing::testing::finish_mesh_tasks(app.world_mut());
             let fog = *app.world().resource::<ChunkFog>();
             assert_eq!(fog.scale, 1.0, "{moves:?}, frame {frames}");
             frames += 1;
@@ -131,7 +145,7 @@ fn moving_on_doesnt_bring_the_fog_in() {
 #[test]
 fn a_world_that_never_loads_fails_the_run() {
     let mut app = test_game(Script::parse("wait 1\n").unwrap());
-    app.insert_resource(crate::streaming::StreamingSettings {
+    app.insert_resource(defaria_core::streaming::StreamingSettings {
         max_loading: 0,
         ..default()
     });
@@ -201,7 +215,7 @@ fn memory_measures_the_loaded_world() {
         .unwrap();
     assert!(matches!(
         app.world().get::<Chunk>(dug).unwrap().voxels(),
-        crate::world::ChunkArray::Uniform(BlockState::AIR)
+        defaria_core::world::ChunkArray::Uniform(BlockState::AIR)
     ));
 }
 
@@ -219,7 +233,7 @@ fn script_points_the_cursor_and_turns_the_wheel() {
     assert_eq!(window.cursor_position(), Some(Vec2::new(100.0, 200.5)));
     let mut players = app
         .world_mut()
-        .query_filtered::<&crate::hotbar::ActiveSlot, With<crate::player::LocalPlayer>>();
+        .query_filtered::<&defaria_core::hotbar::ActiveSlot, With<defaria_core::player::LocalPlayer>>();
     assert_eq!(players.single(app.world()).unwrap().0, 3);
 }
 
@@ -269,7 +283,7 @@ fn script_drives_the_fly_camera() {
 fn the_game_draws_through_one_eye_view() {
     use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 
-    use crate::fly_camera::{EyeView, FOV, NEAR};
+    use defaria_client::fly_camera::{EyeView, FOV, NEAR};
 
     let mut app = play("wait 1\n");
     let world = app.world_mut();
@@ -317,7 +331,7 @@ fn the_game_draws_through_one_eye_view() {
 /// walks and widens as it sprints.
 #[test]
 fn walking_sways_and_sprinting_widens_the_eye_view() {
-    use crate::fly_camera::{EyeView, FOV};
+    use defaria_client::fly_camera::{EyeView, FOV};
 
     let mut app = play(
         "fill 56 50 84 72 50 100 stone\n\

@@ -34,7 +34,8 @@ use super::{
     script::{Button, Command, Script},
     world_commands::apply_world_commands,
 };
-use crate::{fog::ChunkFog, streaming::StreamingStatus};
+use defaria_client::fog::ChunkFog;
+use defaria_core::streaming::StreamingStatus;
 
 pub struct HeadlessPlugin {
     pub script: Script,
@@ -75,7 +76,7 @@ impl Plugin for HeadlessPlugin {
                     exit_when_done,
                 )
                     .chain()
-                    .after(crate::world::ChunkCompaction),
+                    .after(defaria_core::world::ChunkCompaction),
             );
         if self.rendering {
             app.add_systems(PreStartup, create_render_target)

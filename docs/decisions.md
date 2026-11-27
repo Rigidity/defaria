@@ -32,7 +32,11 @@ incremental builds stay cheap.
   `world`, physics and the movement model, the protocol, the script
   runtime, the gameplay rules both sides run), `defaria_server`,
   `defaria_client`, and `defaria`, the one binary (the game, `defaria
-  server`, headless mode) and the multiplayer test harness. The crate
+  server`, headless mode) and the multiplayer test harness. The split
+  came first (#213) as core and client only: everything that isn't
+  drawing, UI or input is in core until #50 moves what only the server
+  runs (worldgen, streaming, saving, the simulation) into
+  `defaria_server`, once replication says which types both sides share. The crate
   boundaries keep server code off rendering at compile time. Every crate
   takes `bevy = { workspace = true }`, its features declared once, so
   building or testing any crate alone shares the one compiled Bevy; CI
@@ -318,7 +322,7 @@ names a kind of item (an item state), not one copy, so with a bucket in
 hand a click has to pick which bucket acts, and whether it takes or
 pours.
 
-**Decision.** `src/fluid_container.rs`: right click takes if it can
+**Decision.** `crates/defaria_core/src/fluid_container.rs`: right click takes if it can
 (the crosshair is on fluid, or a machine's tank holds fluid, and some
 bucket can take it: one part-filled with that fluid first, else an empty
 one), and otherwise pours: onto fluid only a bucket of that fluid, onto a
@@ -373,7 +377,7 @@ them creep toward a drop (#97).
 
 **Decision.** A fluid's `evaporation` (blocks a second, 0 by default;
 water 0.00025, lava none) dries up its films under open sky
-(`src/fluid/evaporation.rs`). Open sky is full sky light in the voxel
+(`crates/defaria_core/src/fluid/evaporation.rs`). Open sky is full sky light in the voxel
 above the film, which the light already works out. Films are queued as
 fluid changes and as chunks load (`Films`), and each fixed tick visits
 the share of the queue that sees each film about once every two seconds
@@ -458,7 +462,7 @@ loading heavily (load average 40 to 80), so the times are rough:
   `ChunkMap` hash and query lookups spread across all of them.
 
 **Decision.** Blocks and light are kept in a `ChunkArray`
-(`src/world/chunk_array.rs`): one value while a chunk is one value throughout,
+(`crates/defaria_core/src/world/chunk_array.rs`): one value while a chunk is one value throughout,
 a dense array once a voxel differs, compacted back once a frame for the
 chunks that changed. Chunk storage at the default radius went from 336
 MiB to 21 MiB and peak memory from 914 MB to 416 MB. Frame times around
@@ -546,7 +550,7 @@ much of each fluid there was, or make a fluid.
 **Context.** #39 added shale (a `#rock`) and loam (a `#soil`) to the
 base mod. The terrain is made of one rock and one soil: every rock
 column is stone and every soil is dirt or, at the shore, sand, chosen in
-`TerrainBlocks` (`src/worldgen.rs`). Granite and slate don't generate
+`TerrainBlocks` (`crates/defaria_core/src/worldgen.rs`). Granite and slate don't generate
 either.
 
 **Decision.** Shale and loam are only placeable, like granite and slate.
@@ -873,7 +877,7 @@ a face blocked on either side is never joined, and every change to it
 (and a conduit loading with some blocked, or going with some) brings that
 voxel and its neighbours up to date, as an edit does. The networks follow
 the connection properties, so they split and join with no code of their
-own. The wrench (`src/wrench.rs`, an item with `action: "wrench"`)
+own. The wrench (`crates/defaria_core/src/wrench.rs`, an item with `action: "wrench"`)
 toggles the face aimed at: on an arm (a collision box that reaches one
 side of the block) that arm's side, otherwise the face clicked. Aimed at
 a conduit's open face toward another conduit that has blocked its face
@@ -1178,7 +1182,7 @@ network tick, producers offer (up to their `max_out` and what they
 hold), consumers ask (up to their `max_in` and their room), and storage
 does both: consumers are served from producers first, then from storage;
 what producers have left charges storage (`balance` in
-`src/network/energy.rs`). What consumers *need* to run this tick (their
+`crates/defaria_core/src/network/energy.rs`). What consumers *need* to run this tick (their
 `use`, and an `EnergyNeed` set by whatever runs them: a recipe's share
 of its energy), less what its buffer already holds, is served first;
 only what's left tops their buffers up, in proportion to the room each
@@ -1218,7 +1222,7 @@ holds 100 kJ. Energy is held only in machines' buffers: wires hold none
 unloading takes none with it.
 
 The network tick is fixed at **20 Hz** (`TICKS_PER_SECOND`, in
-`src/network/tick.rs`), counted out of `FixedUpdate`'s time by the
+`crates/defaria_core/src/network/tick.rs`), counted out of `FixedUpdate`'s time by the
 network clock (`NetworkClock`), which every solver runs on, fluid and
 item networks included. A rate per second is split into whole joules per tick that
 add up to exactly that rate over each second (`per_tick`). Energy enters
@@ -1522,7 +1526,7 @@ add data and save it.
 
 **Decision.** A block entity's kind is the id of the block that has it,
 and a block has one when its definition has `block_entity`. Features add
-*parts*: components implementing `BlockEntityPart` (`src/block_entity.rs`),
+*parts*: components implementing `BlockEntityPart` (`crates/defaria_core/src/block_entity.rs`),
 registered with `register_block_entity_part`, each saved under a key as a
 plain `Value` with its own version. The saved form of every part is
 written to a `SavedParts` component whenever the part changes, rather than
@@ -1566,7 +1570,7 @@ machine passed as userdata borrowed for the call (`Lua::scope`), as the
 engine will; 'static userdata made once is 0.22 ms. At 20 Hz that's
 under 1% of a core for 1,000 scripted machines. A Luau state with the
 script and 1,000 userdata uses about 650 KiB. The runtime as built
-(`src/script/`: a scope and a budget per call, a globals table per
+(`crates/defaria_core/src/script/`: a scope and a budget per call, a globals table per
 script, in a dev build) takes 0.58 ms mean and 1.0 ms worst for 1,000
 calls of a hook that fills a tank.
 
@@ -1582,7 +1586,7 @@ so `cargo dist` still makes one binary: on macOS it needs only
 prototype), on Linux `libstdc++` like any C++ program, and on Windows
 the MSVC runtime the Rust binary already uses. Each mod gets its own
 Luau state (own globals, own memory cap) and each script its own
-globals table within it. The runtime is `src/script/`; how it looks to
+globals table within it. The runtime is `crates/defaria_core/src/script/`; how it looks to
 modders is `docs/scripting.md`.
 
 Rhai is pure Rust but 2.5 times slower per tick and per call, with worse
@@ -1626,15 +1630,15 @@ or stack sizes: there are no stacks to arrange, any number of an item fits
 as long as the total weight does, and screens sort and filter what's
 there.
 
-**Decision.** An `Inventory` (`src/inventory/model.rs`) is a list of
+**Decision.** An `Inventory` (`crates/defaria_core/src/inventory/model.rs`) is a list of
 entries, each an item state, its `ItemData` (empty for now) and a count,
 with an optional weight limit. Equal entries merge; a `unique` item gets an
 entry per copy. It's a component, so it lives on an entity: the player's is
 on the player (with `LocalPlayer`). The hotbar (`Hotbar`) names kinds of
 items, persisting at 0 when they run out. The player can carry
-`PLAYER_MAX_WEIGHT`, 10,000 tonnes (`src/inventory/player.rs`), in
+`PLAYER_MAX_WEIGHT`, 10,000 tonnes (`crates/defaria_core/src/inventory/player.rs`), in
 survival; creative has no limit. There are no dropped items yet, so in
-survival a block too heavy to carry doesn't break (`src/game_mode.rs`).
+survival a block too heavy to carry doesn't break (`crates/defaria_core/src/game_mode.rs`).
 
 **What's wrong with it.** Blocks weigh what a cubic metre of their material
 does (stone 2,500 kg), so 10,000 tonnes is about 4,000 stone: a number picked
@@ -1657,7 +1661,7 @@ items, or with items that hold items or wear out.
 ## Fluid flows a voxel at a time (2026-11-25)
 
 **Context.** Fluid is volumetric: each voxel holds an amount, and flow
-moves amounts between neighbouring voxels (`src/fluid/flow.rs`). Only
+moves amounts between neighbouring voxels (`crates/defaria_core/src/fluid/flow.rs`). Only
 active voxels step, so settled fluid is free. Each fixed tick visits at
 most `FluidSettings::cells_per_tick` (4096) of them, a fluid's step is
 spread evenly over the ticks until its next one, and the step's changes
@@ -1787,7 +1791,7 @@ tight in fluid-heavy worlds, store the layer sparsely or as runs.
 **Context.** A voxel's fluid is drawn at one of 16 heights by its amount.
 Its top slopes: each corner is at the average height of the voxels of the
 same fluid around it, or a full block beside a column (`FluidTop`, in
-`src/world/fluid_top.rs`). Swimming and the fog inside fluid use the same
+`crates/defaria_core/src/world/fluid_top.rs`). Swimming and the fog inside fluid use the same
 corners.
 
 **Decision.** Only the same fluid counts toward a corner; air and other
@@ -1835,14 +1839,14 @@ there first.
 
 **Context.** Leaves, glass, water and plants are drawn see-through
 (`render` in `docs/modding.md`) and light ignores their covered sides
-(`State::blocks_light` in `src/content.rs`). Without anything more, under
+(`State::blocks_light` in `crates/defaria_core/src/content.rs`). Without anything more, under
 a tree was as bright as open ground and a deep lake's floor was in full
 sky light.
 
 **Decision.** A block's `light_filter` (water 2, leaves 1, glass and
 plants 0) is how many levels light loses coming into it, on top of the
 level per block, for block and sky light (`LightTable::entering` in
-`src/light/propagate.rs`). Sky light straight down keeps full strength
+`crates/defaria_core/src/light/propagate.rs`). Sky light straight down keeps full strength
 only through unfiltered blocks, as in Minecraft. The sky that comes into
 the loaded chunks from above (`OutsideSky`) is full strength; only loaded
 voxels filter it.
@@ -1872,7 +1876,7 @@ proportion to how full the voxel is, rounded (`part_full_dim`; for water,
 none below a quarter full, one level to three quarters, two above), so
 beyond a voxel nearly full light is what a full one leaves, and beyond a
 film it's as if there were none (`LightTable::entering`, `spreading` and
-`offered` in `src/light/propagate.rs`). Meshing shades a block face from
+`offered` in `crates/defaria_core/src/light/propagate.rs`). Meshing shades a block face from
 a part-full voxel (the floor under it, a wall beside it, a slab in it) by
 the voxel's light less the same proportion of the filter, by the height
 the fluid is drawn at (`Neighborhood::face_light`), while faces at an
@@ -1949,7 +1953,7 @@ them, so they must be drawn back to front.
 
 **Decision.** Each chunk's translucent faces are one mesh on a child
 entity, which Bevy sorts against other meshes by its centre. Inside it,
-`sort_translucent_faces` (`src/meshing.rs`) orders the faces farthest
+`sort_translucent_faces` (`crates/defaria_client/src/meshing.rs`) orders the faces farthest
 first from the camera by their centres, rewriting the index buffer when
 the camera has moved a block (near chunks) or a chunk (far ones).
 
@@ -1992,7 +1996,7 @@ face) doesn't fit layered textures. Each face would need a variable-length
 list of layers to color and blend per pixel, and filtering breaks: mips
 and linear filtering average gray levels and alpha before the palette
 lookup, giving the wrong colors at a distance, where the baked tiles' mips
-are averaged in linear color (`src/block_texture.rs`).
+are averaged in linear color (`crates/defaria_client/src/block_texture.rs`).
 
 **What's wrong with it.** It multiplies. A block's states are the product
 of its properties' values (4096 at most per block, 65536 block states in
@@ -2020,7 +2024,7 @@ or block states near the 16-bit limit, or items need open-ended data.
 
 ## The fog's cylinder rides in Bevy's atmospheric fog (2026-11-24)
 
-**Context.** The fog (`src/fog.rs`) is a cylinder: how far it reaches
+**Context.** The fog (`crates/defaria_client/src/fog.rs`) is a cylinder: how far it reaches
 sideways, up and down. Bevy's `DistanceFog` reaches every material's shader
 in the view's bindings, which is cheap to change every frame, but none of
 its falloffs is a cylinder.
@@ -2044,7 +2048,7 @@ chunk shader (held items, dropped items, mobs).
 
 ## The fog is the sky's colour everywhere (2026-11-24)
 
-**Context.** Distance fog (`src/fog.rs`) hides the edge of the drawn
+**Context.** Distance fog (`crates/defaria_client/src/fog.rs`) hides the edge of the drawn
 world: a cylinder around the camera, sized to fit inside what's loaded,
 that shrinks while chunks inside it are missing. It fades into the sky
 colour (`ClearColor`).
@@ -2074,7 +2078,7 @@ to see far across, or if flying high should keep the ground in view
 **Context.** Walking's top speed (4.317 blocks a second) and how quickly
 it's reached and lost come from a per-tick model, Minecraft's: each 50 ms
 tick adds a fixed push, moves, then applies ground friction of 0.546.
-`WALK` in `src/player.rs` turns that into a smooth response time, so it
+`WALK` in `crates/defaria_core/src/player.rs` turns that into a smooth response time, so it
 works the same at any physics step rate.
 
 **Decision.** Keep the smooth version.
@@ -2098,7 +2102,7 @@ sneaking under low gaps matters.
 ## Physics is precise far away, but drawing isn't (2026-11-24)
 
 **Context.** The player is a box that collides with block shapes
-(`src/physics.rs`, `src/player.rs`). Its position is an `f64` and boxes are
+(`crates/defaria_core/src/physics.rs`, `crates/defaria_core/src/player.rs`). Its position is an `f64` and boxes are
 compared with a tolerance, so walking, standing and sliding work the same
 millions of blocks out. The camera's `Transform`, the chunk meshes'
 positions and the shaders are `f32`, as Bevy's are.
@@ -2124,9 +2128,9 @@ that sends the player a long way (teleports, long travel).
 ## Sky light comes in above whatever's loaded (2026-11-24)
 
 **Context.** The world has no top or bottom: chunks are cubes, loaded in a
-cylinder around the player (`src/streaming.rs`). Sky light falls straight
+cylinder around the player (`crates/defaria_core/src/streaming.rs`). Sky light falls straight
 down at full strength until it hits an opaque block, then spreads and fades
-like block light (`src/light.rs`). Without a top to the world, something
+like block light (`crates/defaria_core/src/light.rs`). Without a top to the world, something
 has to say where sky light starts.
 
 **Decision.** Wherever a loaded chunk has no loaded chunk above it, full sky
@@ -2145,7 +2149,7 @@ them casts a sky shadow.
   what's under it is lit; when it loads again, it's shaded.
 
 **How it's built so it can be replaced.** One trait decides it:
-`OutsideSky::shines_into(chunk, x, z)` in `src/light/sky.rs`, asked only when
+`OutsideSky::shines_into(chunk, x, z)` in `crates/defaria_core/src/light/sky.rs`, asked only when
 the chunk above isn't loaded. The flood fill, the chunks lit on loading
 tasks and the light updates on loading, unloading and editing all go
 through it. The current answer is `AssumeOpenSky` (always yes). A
@@ -2171,7 +2175,7 @@ shading the ground start to matter, or when worlds get an atmosphere top.
 
 ## Trees are planted from cells of the seed, in code (2026-11-26)
 
-**Context.** The terrain grows trees (`src/worldgen/trees.rs`). A tree
+**Context.** The terrain grows trees (`crates/defaria_core/src/worldgen/trees.rs`). A tree
 near a chunk's edge reaches into the chunks around it, but chunks are
 generated one at a time, in any order, on loading tasks.
 
@@ -2216,7 +2220,7 @@ faces now cull by texture, would remove most of them.
 **Context.** The ground's height in each column comes from
 continentalness, erosion and ridged peaks noise, each mapped through a
 spline as Minecraft's terrain is, with the old rolling hills on top
-(`src/worldgen/shape.rs`). The land near the origin is kept to the old hills.
+(`crates/defaria_core/src/worldgen/shape.rs`). The land near the origin is kept to the old hills.
 
 **Decision.** Keep it a heightmap: one height per column, stone below,
 air above.
@@ -2238,7 +2242,7 @@ generator changes again for worlds anyone cares about.
 ## A fixed range of chunks is loaded around the player (2026-11-24)
 
 **Decision.** Chunks within 16 sideways, 12 above and 12 below the
-player's chunk are loaded (`StreamingSettings` in `src/streaming.rs`),
+player's chunk are loaded (`StreamingSettings` in `crates/defaria_core/src/streaming.rs`),
 wherever the player is.
 
 **What's wrong with it.** The mountains (see the terrain entry) stand
@@ -2262,7 +2266,7 @@ the surface tracker.
 ## Item icons are drawn on the CPU, unlit (2026-11-24)
 
 **Decision.** Each item's icon is drawn once on the CPU
-(`src/ui/icon/raster.rs`): a block's model in isometric view, each face
+(`crates/defaria_client/src/ui/icon/raster.rs`): a block's model in isometric view, each face
 shaded by a fixed amount, or an item's own tile, flat. They redraw only
 when the block texture is rebuilt.
 
@@ -2282,7 +2286,7 @@ animated textures), or for entity or held-item models, which will need a
 
 ## The HUD is kept from picking by a camera marker (2026-11-25)
 
-**Decision.** The UI uses `bevy_picking` (`src/ui/pointer.rs`). While no
+**Decision.** The UI uses `bevy_picking` (`crates/defaria_client/src/ui/pointer.rs`). While no
 screen is open, `UiPickingSettings::require_markers` is turned on, and no
 camera carries `UiPickingCamera`, so the UI backend finds nothing under the
 pointer and the HUD can't be hovered or clicked through a locked cursor.
@@ -2344,7 +2348,7 @@ in play.
 ## Plants say what they stand on in data; losing support drops nothing, and loading checks nothing (2026-11-26)
 
 **Decision.** A block's `support` (in its JSON5) lists what it can stand
-on, and the engine enforces it (`src/support.rs`, with the placement check
+on, and the engine enforces it (`crates/defaria_core/src/support.rs`, with the placement check
 in `block_edit` and the harvest in `mining`), rather than plant scripts
 (`on_placed`, `on_neighbour_changed`). A script can't refuse a placement:
 the item would be used up and the plant vanish a tick later. A plant that
