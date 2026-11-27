@@ -23,8 +23,9 @@ world/
     ...
 ```
 
-The code is in `crates/defaria_core/src/save.rs` (folders and the store), `crates/defaria_core/src/save/region.rs`,
-`crates/defaria_core/src/save/chunk.rs` and `crates/defaria_core/src/save/player.rs`. Every format here has a version
+The code is in `crates/defaria_core/src/save.rs` (folders and `world.json5`),
+`crates/defaria_server/src/save.rs` (the store), `crates/defaria_server/src/save/region.rs`,
+`crates/defaria_server/src/save/chunk.rs` and `crates/defaria_server/src/save/player.rs`. Every format here has a version
 number. When a format changes, bump its version and keep reading the old one. A build that finds a
 version newer than it knows leaves the file alone: a newer `world.json5` means
 the world is played without saving; a newer region file or chunk means that

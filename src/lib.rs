@@ -2,9 +2,13 @@
 //! client ([`ClientPlugin`]) and a server ([`ServerPlugin`]) in its own
 //! app, in this process, talking through messages (`defaria_core::net`).
 //!
-//! The game's code is in two crates: `defaria_core` (what the game is)
-//! and `defaria_client` (how it's shown and played). Each feature is its
-//! own plugin in its own module there, registered in [`GamePlugin`].
+//! The game's code is in three crates: `defaria_core` (what both sides
+//! know: content, the world, the player and the protocol),
+//! `defaria_server` (what only the server runs) and `defaria_client` (how
+//! it's shown and played). Each feature is its own plugin in its own
+//! module there, registered in [`ClientPlugin`] or [`ServerPlugin`]. The
+//! client builds from `defaria_core` and `defaria_client` alone, the
+//! server from `defaria_core` and `defaria_server`.
 
 pub mod dedicated;
 mod devtools;
@@ -17,8 +21,6 @@ pub use devtools::{Cli, DevToolsPlugin, ScreenshotMode};
 pub use integrated::{IntegratedServer, IntegratedServerPlugin};
 
 use bevy::prelude::*;
-use defaria_client::*;
-use defaria_core::*;
 
 /// The game as it's played: the client, drawing and playing what a server
 /// sends, and a server for it in this process ([`IntegratedServerPlugin`]).
@@ -36,6 +38,10 @@ pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
+        // Only core and the client: the client builds without the server.
+        use defaria_client::*;
+        use defaria_core::*;
+
         app.add_plugins((
             // First: the others read the content as they start.
             content::ContentPlugin,
@@ -78,6 +84,10 @@ pub struct ServerPlugin;
 
 impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
+        // Only core and the server: the server builds without the client.
+        use defaria_core::{content, hotbar, physics, player, use_action, world};
+        use defaria_server::*;
+
         app.register_type::<player::Player>()
             .register_type::<player::Look>()
             .add_plugins((
@@ -106,7 +116,7 @@ impl Plugin for ServerPlugin {
                 fluid_container::FluidContainerPlugin,
                 support::SupportPlugin,
                 use_action::UseActionPlugin,
-                defaria_core::server::ServerNetPlugin,
+                defaria_server::server::ServerNetPlugin,
             ));
     }
 }

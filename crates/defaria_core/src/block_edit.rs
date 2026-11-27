@@ -22,47 +22,30 @@
 //! - Nothing is edited while a screen (the inventory) is open: no use
 //!   happens then (see `use_action`).
 //! - Right click is a use (see `use_action`), and placing is its last
-//!   step ([`UseStep::Place`]): a block that does something when used (a
+//!   step ([`UseStep::Place`](crate::use_action::UseStep::Place)): a block that does something when used (a
 //!   machine opens its screen, a script's `on_used` runs) or an item that
 //!   does (the wrench, a script's `on_use`) claims the use first, so
 //!   nothing is placed.
 //!
-//! Edits go through [`Voxels`], and the terrain remeshes the changed chunks
-//! on the same frame.
+//! Placing itself runs on the server (`defaria_server::block_edit`), by
+//! [`placing_for`], which a client predicts by too. Edits go through
+//! [`Voxels`], and the terrain remeshes the changed chunks on the same
+//! frame.
 
 use bevy::prelude::*;
 
 use crate::{
     content::{BlockBox, BlockState, Content, Direction, ItemState},
-    game_mode::{GameMode, harvest, use_up},
+    game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
-    inventory::Inventory,
     machine::has_screen,
-    physics::{Aabb, Body},
-    use_action::{Use, UseAction, UseStep},
-    world::{FLUID_STEPS, RemeshChunks, VoxelFluid, Voxels, filled, fluid_step, fluid_surface},
+    physics::Aabb,
+    use_action::Use,
+    world::{FLUID_STEPS, VoxelFluid, Voxels, filled, fluid_step, fluid_surface},
 };
 
 /// How far away, in blocks, you can break or place.
 pub const REACH: f32 = 8.0;
-
-pub struct BlockEditPlugin;
-
-impl Plugin for BlockEditPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            edit_blocks
-                .in_set(BlockEditSystems)
-                .in_set(UseStep::Place)
-                .before(RemeshChunks),
-        );
-    }
-}
-
-/// Where blocks are placed.
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BlockEditSystems;
 
 /// A block a ray ran into.
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -254,54 +237,6 @@ pub fn crosshair_target(transform: &Transform, content: &Content, voxels: &Voxel
     raycast(camera_ray(transform), REACH, |pos| {
         target_shape(content, voxels.get(pos).unwrap_or(BlockState::AIR))
     })
-}
-
-/// Places the block in hand against the face aimed at, for each use no
-/// earlier step claimed, if it can go there and, in survival, the player
-/// has one. As the last step, it claims every use it sees, so none
-/// outlasts its frame.
-fn edit_blocks(
-    mut players: Query<(
-        &mut UseAction,
-        &Hotbar,
-        &ActiveSlot,
-        Option<&mut Inventory>,
-        Option<&GameMode>,
-    )>,
-    content: Res<Content>,
-    bodies: Query<&Body>,
-    mut voxels: Voxels,
-) {
-    for (mut action, hotbar, active, inventory, mode) in &mut players {
-        let Some(using) = action.pending() else {
-            continue;
-        };
-        action.claim();
-        let Some(item) = hotbar.item(*active) else {
-            continue;
-        };
-        let mode = mode.copied().unwrap_or_default();
-        let boxes = bodies.iter().map(Body::aabb);
-        let Some(Placing {
-            pos,
-            block,
-            replaced,
-            ..
-        }) = placing_for(&content, &voxels, &using, hotbar, *active, mode, boxes)
-        else {
-            continue;
-        };
-        let mut inventory = inventory.map(Mut::into_inner);
-        if !use_up(mode, inventory.as_deref_mut(), item) {
-            continue;
-        }
-        // A plant built over goes into the inventory in survival, if it
-        // fits (otherwise it's lost, as when it loses its support).
-        if let Some(inventory) = inventory {
-            harvest(mode, inventory, &content, replaced);
-        }
-        voxels.set(pos, block);
-    }
 }
 
 /// What placing the block in hand does for `using`, if it can: where it

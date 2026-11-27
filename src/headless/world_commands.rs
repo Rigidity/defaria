@@ -13,18 +13,21 @@ use bevy::prelude::*;
 use super::{memory, runner::ScriptRunner, script::Command};
 use defaria_client::view_bob::ViewBob;
 use defaria_core::{
-    block_entity::{BlockEntities, BlockEntity},
     content::{BlockState, Content, FULL_FLUID, ItemState, PART_SEPARATOR, StateName},
-    fluid::{FluidStats, evaporation::EvaporationSpeed},
     fluid_container,
     hotbar::{ActiveSlot, Hotbar},
     inventory::{Inventory, ItemStack},
     machine::{Slots, Tanks},
     physics::Body,
     player::{EYE_HEIGHT, LocalPlayer, Look, MAX_PITCH, Player, Teleported, put_eyes},
-    script::random_tick::RandomTicks,
-    streaming::{ChunkLoader, StreamingSettings, loader_chunk},
+    streaming::StreamingSettings,
     world::{CHUNK_SIZE, Chunk, ChunkCoord, ChunkMap, VoxelFluid, Voxels},
+};
+use defaria_server::{
+    block_entity::{BlockEntities, BlockEntity},
+    fluid::{FluidStats, evaporation::EvaporationSpeed},
+    script::random_tick::RandomTicks,
+    streaming::{ChunkLoader, loader_chunk},
 };
 
 /// Applies this frame's `fill` and `camera` commands. A mistake in one (an
@@ -394,7 +397,7 @@ pub(super) fn fluid_report(world: &mut World, region: FluidRegion) -> String {
             *in_world.entry(name.clone()).or_default() += fluid.amount as u64;
         }
     }
-    let in_pipes = defaria_core::fluid_network::held_in_pipes_within(world, contains);
+    let in_pipes = defaria_server::fluid_network::held_in_pipes_within(world, contains);
     let mut in_machines: BTreeMap<String, u64> = default();
     let mut tanks = world.query::<(&defaria_core::machine::Tanks, &BlockEntity)>();
     for (tanks, block_entity) in tanks.iter(world) {
@@ -453,24 +456,26 @@ pub(super) fn fluid_report(world: &mut World, region: FluidRegion) -> String {
 
 /// The `network` report for the conduit at `pos`.
 pub(super) fn network_report(world: &World, pos: IVec3) -> String {
-    let ports = world.resource::<defaria_core::machine::MachinePorts>();
-    let networks = world.resource::<defaria_core::network::Networks>();
-    let mut line =
-        defaria_core::network::describe(networks, world.resource::<Content>(), pos, |id, port| {
-            ports.role(id, port)
-        });
+    let ports = world.resource::<defaria_server::machine::MachinePorts>();
+    let networks = world.resource::<defaria_server::network::Networks>();
+    let mut line = defaria_server::network::describe(
+        networks,
+        world.resource::<Content>(),
+        pos,
+        |id, port| ports.role(id, port),
+    );
     let energy = networks.at(pos).and_then(|id| {
         let kind = networks.get(id)?.kind();
-        let report = world.get_resource::<defaria_core::network::energy::EnergyReport>()?;
+        let report = world.get_resource::<defaria_server::network::energy::EnergyReport>()?;
         (world.resource::<Content>().networks[kind].solver == defaria_core::content::Solver::Energy)
-            .then(|| defaria_core::network::energy::describe(report, id))
+            .then(|| defaria_server::network::energy::describe(report, id))
     });
     if let Some(energy) = energy {
         line += &format!("; {energy}");
     }
     let fluid = networks.at(pos).and_then(|id| {
         world
-            .get_resource::<defaria_core::network::NetworkMap<defaria_core::fluid_network::FluidNet>>()?
+            .get_resource::<defaria_server::network::NetworkMap<defaria_server::fluid_network::FluidNet>>()?
             .get(id)
     });
     if let Some(net) = fluid.filter(|net| net.total() > 0) {

@@ -88,10 +88,11 @@ changes.
    `TimeUpdateStrategy::ManualDuration`, and call `app.update()`. See the tests
    in `crates/defaria_client/src/fly_camera.rs`, and in `crates/defaria_core/src/player.rs` for systems in
    `FixedUpdate`. `Time<Virtual>` clamps each step to 250ms, so keep manual
-   steps below that. Build the usual setups from `crates/defaria_core/src/testing.rs` rather
-   than copying them: `world_app` (the world streaming around a loader,
+   steps below that. Build the usual setups from `crates/defaria_core/src/testing.rs`
+   and `crates/defaria_server/src/testing.rs` rather
+   than copying them: `world_app` (the server's: the world streaming around a loader,
    with the feature's plugins added, then `build()`, which waits for it to
-   `settle`), `patch_app` (the fixed test patch of terrain), `chunk_app`
+   `settle`), `patch_app` (the server's: the fixed test patch of terrain), `chunk_app`
    or `ChunkMapPlugin` with `insert_chunk` (chunks spawned by hand), and
    `test_content`/`test_mods` (the base game plus a `test` mod). When a
    plugin these add starts needing something, add it there once.
@@ -297,15 +298,27 @@ documented in `docs/modding.md`; keep that file, the serde types in
 
 ## Code layout
 
-The code is a Cargo workspace of three crates:
+The code is a Cargo workspace of four crates:
 
-- **`defaria_core`** (`crates/defaria_core/`): what the game is. Content
-  and mods, the world, terrain, light, fluids, networks, machines,
-  scripts, players and what they do, and saving. Nothing in it draws,
-  shows UI or reads the keyboard or mouse: gameplay acts on a player's
-  intents (`Controls`, `UseAction`, `Mining::holding`, the active slot),
-  so it works the same for any player. It can't depend on the client;
-  the compiler enforces that.
+- **`defaria_core`** (`crates/defaria_core/`): what both sides know.
+  Content and mods, the world's chunks and `Voxels`, physics and the
+  player model (`player::step`, which the client predicts by), the
+  protocol (`net`) and replication's types, and what the client is sent
+  (inventories, the hotbar, game modes, machines' parts, a recipe's
+  progress, `ChunkLight`), with the rules a client predicts by
+  (`block_edit::placing_for`). Nothing in it draws, shows UI or reads
+  the keyboard or mouse: gameplay acts on a player's intents
+  (`Controls`, `UseAction`, `Mining::holding`, the active slot), so it
+  works the same for any player.
+- **`defaria_server`** (`crates/defaria_server/`): what only the server
+  app runs. Terrain, streaming and saving, light propagation, fluid
+  flow, networks and their solvers, machines' and recipes' logic,
+  scripts and their hooks, mining, placing, support, the wrench, and
+  every player's connection (`server`). A module named as one in core
+  (`light`, `streaming`, `save`, `fluid`, `machine`, `recipe`,
+  `mining`, `block_edit`, `block_entity`, `game_mode`, `inventory`,
+  `fluid_container`) has that one's systems; the types stay in core,
+  and the server module imports them, never re-exports them.
 - **`defaria_client`** (`crates/defaria_client/`): how the game is shown
   and played. Meshing and materials, the camera and fog, the UI and its
   screens, and `input`, which turns the keys and mouse into the local
@@ -313,11 +326,17 @@ The code is a Cargo workspace of three crates:
 - **`defaria`** (the root: `src/`): the one binary. `GamePlugin`, headless
   mode, dev tools, and the end-to-end tests that need the whole game.
 
+The client and the server each depend on core and never on each other
+(the client's tests excepted: they dev-depend on the server to run its
+systems beside the client's); the compiler enforces that. When a type
+both sides need has systems only the server runs, keep the type in core
+and put the systems in the server's module of the same name.
+
 The game runs as a server and a client, even in single player: two Bevy
 apps in one process (see "Multiplayer" in `docs/decisions.md`).
 `ServerPlugin` (in `src/lib.rs`) is the server app: the world, its
 simulation, scripts, saving, and every player's connection
-(`defaria_core::server`). `ClientPlugin` is the client app: drawing the
+(`defaria_server::server`). `ClientPlugin` is the client app: drawing the
 chunks the server sends (copies, in its own `ChunkMap`), the UI, and the
 local player, which the client moves and whose intents it sends
 (`defaria_client::net`). `IntegratedServerPlugin` (`src/integrated.rs`)
@@ -353,7 +372,7 @@ frame; the messages between them are `defaria_core::net`. So:
   last left it; on a difference the client takes the server's, steps
   again through the inputs since and glides to it
   (`crates/defaria_client/src/prediction.rs`,
-  `crates/defaria_core/src/server/movement.rs`). Anything that moves the
+  `crates/defaria_server/src/server/movement.rs`). Anything that moves the
   local player on the client (a scenario's `camera`) inserts
   `player::Teleported`, so the server does too. Gameplay that changes
   where a player is, on the server, needs nothing more: the client
@@ -367,7 +386,7 @@ frame; the messages between them are `defaria_core::net`. So:
   message of their own): each client is told of those in the chunks it
   has and sent snapshots of them, and draws them as `Replica`s a little
   behind, between snapshots
-  (`crates/defaria_core/src/server/replication.rs`,
+  (`crates/defaria_server/src/server/replication.rs`,
   `crates/defaria_client/src/replication.rs`).
 - The client is in a `session::GameState`: `Menu` (the main menu, the
   world list and the new world screen, `crates/defaria_client/src/menu.rs`)
@@ -384,8 +403,8 @@ Each crate's `dev` feature turns on the same Bevy features, so building
 or testing any crate on its own (`cargo test -p defaria_core`) shares
 the one compiled Bevy; keep them identical. Tests in one crate use
 another's test helpers through its `test-support` feature (core's
-`testing`, `content::base` and the like; the client's
-`meshing::testing`): mark helpers other crates use
+`testing`, `content::base` and the like; the server's `testing`; the
+client's `meshing::testing`): mark helpers other crates use
 `#[cfg(any(test, feature = "test-support"))]`. Tests run in their own
 crate's folder, so find `assets/` with `content::assets_dir()` or
 `mods_dir()` (`.cargo/config.toml` sets `BEVY_ASSET_ROOT`), not a
@@ -400,7 +419,7 @@ relative path.
   the network.
 - `crates/defaria_core/src/net.rs`: the messages between server and
   client, and the link in memory that carries them.
-  `crates/defaria_core/src/server.rs`: the server's side: each client a
+  `crates/defaria_server/src/server.rs`: the server's side: each client a
   player with a `Connection`, its inputs and intents applied, and the
   chunks in its range, its state, the entities it sees and its open
   machine sent.
@@ -409,8 +428,8 @@ relative path.
   uses, mining and hotbar sent.
 - `crates/<crate>/src/<feature>.rs` (or a folder): one plugin per
   gameplay feature, with its components, systems and tests, in the crate
-  it belongs to (game logic in core; drawing, UI and input in the
-  client). Put new features in new modules so parallel work doesn't
+  it belongs to (what both sides need in core, what only the server runs
+  in the server; drawing, UI and input in the client). Put new features in new modules so parallel work doesn't
   collide. Touch `lib.rs` only to register the plugin.
 - `src/devtools.rs`: CLI flags, windowed screenshot mode and BRP.
 - `src/headless.rs` (and `src/headless/`): headless mode and the scenario
@@ -428,9 +447,11 @@ relative path.
   and `tests/` the tests of each feature that need the whole game
   (`test_game`), since only this crate has `GamePlugin`.
 - `crates/defaria_core/src/testing.rs`: helpers for tests (and for other
-  crates' tests, through `test-support`): world, patch and chunk apps,
-  settling streaming, and content with a `test` mod. They have no
-  meshing; client tests add `MeshingPlugin` themselves.
+  crates' tests, through `test-support`): chunk apps, content with a
+  `test` mod and a fresh folder to save in.
+  `crates/defaria_server/src/testing.rs`: the world and patch apps, and
+  settling streaming. They have no meshing; client tests add
+  `MeshingPlugin` themselves.
 - `crates/defaria_core/src/world.rs` (and `crates/defaria_core/src/world/`): the world's voxels, which
   everything else reads and writes: `Chunk` (`world/chunk.rs`, with the
   fluid amounts it keeps), `ChunkCoord`, the loaded chunks (`ChunkMap`,
@@ -447,7 +468,7 @@ relative path.
   translucent ones on child entities (`ChunkParts`), with the translucent
   faces sorted back to front. `meshing/build.rs` builds the meshes from a
   `Neighborhood` (culling, face shading, the vertex attributes).
-- `crates/defaria_core/src/worldgen.rs` (and `crates/defaria_core/src/worldgen/`): terrain generation (`Terrain`,
+- `crates/defaria_server/src/worldgen.rs` (and `crates/defaria_server/src/worldgen/`): terrain generation (`Terrain`,
   `TerrainSettings`), with the land's shape and the splines it's made of,
   and `worldgen/trees.rs` where trees grow and their shapes.
   Only `streaming`, which runs it, uses it outside tests.
@@ -472,23 +493,25 @@ relative path.
   that do something on right click add a step there, not another reader
   of the mouse.
 - `crates/defaria_core/src/block_edit.rs`: what the crosshair targets
-  (raycasts against block shapes) and placing blocks.
+  (raycasts against block shapes) and where a placed block goes;
+  `crates/defaria_server/src/block_edit.rs` places it.
   `crates/defaria_client/src/crosshair.rs`: the crosshair and the outline
-  of its target. `crates/defaria_core/src/mining.rs`: breaking blocks while
-  a player holds the button, for a time set by their hardness (`Mining`,
-  on the player, has whether it's held, the target and progress).
+  of its target. `crates/defaria_server/src/mining.rs`: breaking blocks
+  while a player holds the button, for a time set by their hardness
+  (`Mining`, in `crates/defaria_core/src/mining.rs`, on the player, has
+  whether it's held, the target and progress).
   `crates/defaria_client/src/cracks.rs`: the crack overlay on the block being mined.
-  `crates/defaria_core/src/support.rs`: blocks that need support (plants, a block's
+  `crates/defaria_server/src/support.rs`: blocks that need support (plants, a block's
   `support`) break when what's under them goes; `block_edit` places
   them only where they stand (`Content::supports`), and `mining` gives
   a survival player what breaks with the block mined.
-- `crates/defaria_core/src/connections.rs`: keeps blocks' connection properties (a pipe's
+- `crates/defaria_server/src/connections.rs`: keeps blocks' connection properties (a pipe's
   joined sides) in step with their neighbours, after edits and on chunk
   load, through `Voxels::update`. Whether a neighbour takes a connection
   is decided in one place, `Content::accepts` (`crates/defaria_core/src/content/connect.rs`).
   A conduit's faces blocked with a wrench (`BlockedFaces`, in its block
-  entity) never join; `crates/defaria_core/src/wrench.rs` is the wrench.
-- `crates/defaria_core/src/network.rs` (and `crates/defaria_core/src/network/`): networks of conduits (wires,
+  entity) never join; `crates/defaria_server/src/wrench.rs` is the wrench.
+- `crates/defaria_server/src/network.rs` (and `crates/defaria_server/src/network/`): networks of conduits (wires,
   pipes, tubes; blocks with a `conduit`): `Networks` keeps which conduits
   form which network, following the connection properties, merging and
   splitting as blocks change and chunks load and unload, and freezing a
@@ -497,27 +520,30 @@ relative path.
   splits with it. Network kinds are data (`networks/` in a mod).
   `NetworkPlugin` adds the solvers too (energy, fluid, items);
   `NetworkCorePlugin` is the networks and clock alone, for tests.
-  `crates/defaria_core/src/network/tick.rs`: the network clock (`NetworkClock`), 20 network
-  ticks a second counted out of `FixedUpdate`; every ticked system runs
+  `crates/defaria_server/src/network/tick.rs`: the network clock (`NetworkClock`), 20 network
+  ticks a second (`TICKS_PER_SECOND`, in `crates/defaria_core/src/network.rs`,
+  which recipes' times are baked in) counted out of `FixedUpdate`; every ticked system runs
   in a phase of `NetworkTick` (`Clock`, then `Solve` for the solvers,
   then `Machines` for recipes and machine scripts) under the
   `on_network_tick` run condition.
-  `crates/defaria_core/src/network/energy.rs`: the `energy` solver, first in
+  `crates/defaria_server/src/network/energy.rs`: the `energy` solver, first in
   `NetworkTick::Solve`: moves energy between machines' `EnergyBuffer`s
   by their ports' roles, capped by the network's weakest wire, makes it
   in generators and uses it up in machines with `use`, and reports each
   network's (`EnergyReport`).
-  `crates/defaria_core/src/network/item.rs` is the item solver: tubes move items instantly
+  `crates/defaria_server/src/network/item.rs` is the item solver: tubes move items instantly
   between machines' slot groups, round-robin, inputs before stores,
   through port filters, at the slowest tube's rate; and creative
   machines with `emits` (`ItemSource`) keep a slot group full.
 - `crates/defaria_core/src/game_mode.rs`: creative and survival (`GameMode` on the player,
-  C switches): whether breaking gives items and placing uses them up.
+  C switches): whether breaking gives items and placing uses them up;
+  `crates/defaria_server/src/game_mode.rs` keeps the weight limit with it.
 - `crates/defaria_core/src/inventory/`: inventories. `model.rs` has `Inventory` (how many of
   each item, limited only by weight), a component any entity can have;
-  `player.rs` a player's (what a new one starts with, saved in
-  `player.json5`); `transfer.rs` moving items between inventories and
-  the creative catalog.
+  `player.rs` what a new player starts with (the server's
+  `crates/defaria_server/src/inventory/player.rs` gives players theirs
+  and saves them in `player.json5`); `transfer.rs` moving items between
+  inventories and the creative catalog.
   `crates/defaria_client/src/inventory_screen/`: the inventory screen (E)
   and what other screens build on: `list.rs` sorted item lists on
   screen, grouped by category and filtered by the search; `search.rs`
@@ -537,44 +563,54 @@ relative path.
   body, pitch the head). Gameplay aims from the player's `Eyes`, never
   from the camera. `crates/defaria_client/src/fly_camera.rs`: the camera, a child of the local
   player at its eyes, and the mouse turning its `Look`.
-- `crates/defaria_core/src/fluid.rs` (and `crates/defaria_core/src/fluid/`): fluid flow. A voxel holds a fluid
+- `crates/defaria_server/src/fluid.rs` (and `crates/defaria_server/src/fluid/`): fluid flow. A voxel holds a fluid
   and its amount beside its block (`Chunk::fluid_at`, as much as the
-  block's `fluid_room` leaves), and `crates/defaria_core/src/fluid/flow.rs` moves amounts
+  block's `fluid_room` leaves), and `crates/defaria_server/src/fluid/flow.rs` moves amounts
   between voxels, losing fluid only to blocks placed into it with
   nowhere to push it and to reactions (`reactions/` in a mod), which it
-  counts. `crates/defaria_core/src/fluid/evaporation.rs` dries up films under open sky, also
-  counted. Also what the player swims in.
-  `crates/defaria_core/src/fluid/quiet.rs` redraws (and resends) a chunk
+  counts. `crates/defaria_server/src/fluid/evaporation.rs` dries up films under open sky, also
+  counted. `crates/defaria_core/src/fluid.rs` is what both sides see of
+  it: `FluidView`, what the player swims in, and `FluidAmount`.
+  `crates/defaria_server/src/fluid/quiet.rs` redraws (and resends) a chunk
   once the flow in it has gone quiet, and
   `crates/defaria_client/src/meshing/scroll.rs` works out which way a
   fluid's faces scroll their texture as it flows.
-- `crates/defaria_core/src/streaming.rs`: loading, unloading and saving chunks around the
-  camera. The world has no edges, up and down included.
+- `crates/defaria_server/src/streaming.rs`: loading, unloading and saving chunks around
+  each player. The world has no edges, up and down included.
+  `crates/defaria_core/src/streaming.rs`: how much is loaded
+  (`StreamingSettings`) and whether it all is (`StreamingStatus`), which
+  the client keeps too.
 - `crates/defaria_client/src/fog.rs`: distance fog that follows the edge of the drawn world.
-- `crates/defaria_core/src/light.rs` (and `crates/defaria_core/src/light/`): block and sky light. `crates/defaria_core/src/light/sky.rs`
+- `crates/defaria_server/src/light.rs` (and `crates/defaria_server/src/light/`): block and sky light
+  spreading; the levels (`Light`, `ChunkLight`) are
+  `crates/defaria_core/src/light.rs`. `crates/defaria_server/src/light/sky.rs`
   decides where sky light comes in above the loaded chunks; see
   `docs/decisions.md`.
-- `crates/defaria_core/src/block_entity.rs` (and `crates/defaria_core/src/block_entity/`): block entities, the
+- `crates/defaria_server/src/block_entity.rs` (and `crates/defaria_server/src/block_entity/`): block entities, the
   data a voxel keeps beyond its state (`BlockEntity`, under the chunk's
   entity while it's loaded). Features add parts with
   `register_block_entity_part`; `BlockEntities` finds the one at a voxel.
-- `crates/defaria_core/src/machine.rs` (and `crates/defaria_core/src/machine/`): machines (blocks with a
+  What parts are (`BlockEntityPart`, `Value`) and what a chunk keeps of
+  them (`BlockEntityData`) are `crates/defaria_core/src/block_entity.rs`.
+- `crates/defaria_server/src/machine.rs` (and `crates/defaria_server/src/machine/`): machines (blocks with a
   `machine`; baked per state in `crates/defaria_core/src/content/machine.rs`). Their block
   entities get `Ports`, `EnergyBuffer`, `Tanks`, `Slots` and
   `MachineActive` (which puts the voxel in its `active_state`), and
   `MachinePorts` lists each network's machine ports and their roles for
-  the solvers. `crates/defaria_client/src/machine_screen.rs`: the screen
+  the solvers. The parts but `Ports` are
+  `crates/defaria_core/src/machine.rs` (and `machine/`), since the
+  client is sent them. `crates/defaria_client/src/machine_screen.rs`: the screen
   using a machine opens, laid out from its definition;
   `crates/defaria_core/src/machine/exchange.rs`: moving items between the player and a
   machine. Using a block (right click) is
   its step of a use (`use_action::UseStep::Screen`), before placing.
-- `crates/defaria_core/src/recipe.rs` (and `crates/defaria_core/src/recipe/`): recipe machines (a `machine` with
+- `crates/defaria_server/src/recipe.rs` (and `crates/defaria_server/src/recipe/`): recipe machines (a `machine` with
   `recipes`), in `FixedUpdate` on network ticks: start a recipe on what's
   in their input slots and tanks, draw its energy (or make a generator's)
-  a tick at a time, and put out its outputs; `RecipeProgress` is the saved
-  part. Recipes are data (`recipes/` in a mod), baked in
+  a tick at a time, and put out its outputs; `RecipeProgress`
+  (`crates/defaria_core/src/recipe.rs`) is the saved part. Recipes are data (`recipes/` in a mod), baked in
   `crates/defaria_core/src/content/recipe.rs`, templated ones once per material combination.
-- `crates/defaria_core/src/fluid_network.rs` (and `crates/defaria_core/src/fluid_network/`): the fluid solver. A
+- `crates/defaria_server/src/fluid_network.rs` (and `crates/defaria_server/src/fluid_network/`): the fluid solver. A
   network is one shared tank (`FluidNet`, in a `NetworkMap`) moving fluid
   between machines' tanks by role, on network ticks (20 Hz); pumps and
   outlets (`pump_rate`, `outlet_rate` stats) draw from and pour into the
@@ -582,14 +618,18 @@ relative path.
   pipe spills its share; an unloading or saved chunk's pipes keep theirs
   in their block entity (`PipeFluid`), written in
   `streaming::BeforeChunkSave`.
-- `crates/defaria_core/src/fluid_container.rs`: fluid containers (items with a
+- `crates/defaria_server/src/fluid_container.rs`: fluid containers (items with a
   `fluid_container`, the bucket): what one holds is its `ItemData::fluid`
   (a `FluidAmount`); right click takes from or pours into the world or a
   machine's tanks, through `fluid_network::world`'s `take` and `pour`.
-- `crates/defaria_core/src/save.rs` (and `crates/defaria_core/src/save/`): the world's folder on disk and its region
-  and chunk formats, documented in `docs/world-format.md`. Keep the two in
-  step, and bump a format's version when it changes.
-- `crates/defaria_core/src/script/`: mod scripts (Luau, through `mlua`): loading each mod's
+  How much one holds is `crates/defaria_core/src/fluid_container.rs`.
+- `crates/defaria_core/src/save.rs`: the worlds' folders on disk, the
+  world list and `world.json5`; `crates/defaria_server/src/save.rs` (and
+  `crates/defaria_server/src/save/`): the store of saved chunks and the
+  region, chunk and player formats, documented in
+  `docs/world-format.md`. Keep the two in step, and bump a format's
+  version when it changes.
+- `crates/defaria_server/src/script/`: mod scripts (Luau, through `mlua`): loading each mod's
   `scripts/`, the sandbox, budgets and errors. `api/` is what hooks are
   handed (block handles, the `world` global, players, items, blocks'
   `data`) and `ScriptWorld::call`, which calls a hook with it; `hooks.rs`

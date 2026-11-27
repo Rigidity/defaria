@@ -1,9 +1,8 @@
 //! The wrench in the game.
 
 use bevy::prelude::*;
-use defaria_core::{
-    block_entity::BlockEntities, connections::BlockedFaces, content::Direction, network::Networks,
-};
+use defaria_core::content::Direction;
+use defaria_server::{block_entity::BlockEntities, connections::BlockedFaces, network::Networks};
 
 use crate::headless::{SETTLE_TIMEOUT_FRAMES, Script, test_game};
 

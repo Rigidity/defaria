@@ -1,0 +1,41 @@
+[package]
+name = "defaria_server"
+description = "What only the server runs: terrain, streaming and saving, light, fluid flow, networks, machines, scripts and players' connections."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy = { workspace = true }
+defaria_core = { workspace = true }
+json5 = { workspace = true }
+miniz_oxide = { workspace = true }
+mlua = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+defaria_core = { workspace = true, features = ["test-support"] }
+
+[features]
+# The same Bevy features as the game's `dev` (see the root Cargo.toml), so
+# this crate built on its own shares the one compiled Bevy.
+default = ["dev"]
+dev = [
+    "bevy/dynamic_linking",
+    "bevy/dev",
+    "bevy/bevy_remote",
+    "defaria_core/dev",
+]
+# Test helpers (`testing`, and the helpers in some modules' tests) for
+# other crates' tests.
+test-support = ["defaria_core/test-support"]
+
+[lib]
+# Doctests don't work with `bevy/dynamic_linking` (the dylib isn't on the
+# loader path), so keep examples in #[test] functions instead.
+doctest = false
+
+[lints]
+workspace = true

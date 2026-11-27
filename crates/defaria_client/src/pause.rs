@@ -5,7 +5,7 @@
 //!
 //! While it's open the player is [`Paused`], which the server is told: a
 //! server in the game's own process pauses the game while every player
-//! is (see `defaria_core::server::PauseWithPlayers`).
+//! is (see `defaria_server::server::PauseWithPlayers`).
 
 use bevy::{
     picking::{events::PointerClick, pointer::PointerButton},

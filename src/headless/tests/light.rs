@@ -3,9 +3,10 @@
 use bevy::prelude::*;
 use defaria_core::{
     content::Content,
-    light::{ChunkLight, ChunkStore, Light, LightQueue, LightTable, sky::Sky},
+    light::{ChunkLight, Light},
     world::{CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkCoord},
 };
+use defaria_server::light::{ChunkStore, LightQueue, LightTable, sky::Sky};
 
 /// Breaking a block under a pool of water, so it drains into a chamber
 /// below and its level drops, leaves the light around it as lighting

@@ -10,7 +10,8 @@ use defaria_client::{
 use defaria_core::{
     content::block,
     player::LocalPlayer,
-    save::{WorldFolder, tests::temp_folder},
+    save::WorldFolder,
+    testing::temp_folder,
     world::{ChunkMap, Voxels},
 };
 

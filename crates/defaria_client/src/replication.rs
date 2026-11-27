@@ -17,8 +17,7 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use defaria_core::{
     net::ServerMessage,
     player::{EYE_HEIGHT, SIZE, SNEAK_EYE_HEIGHT},
-    replication::{Kind, Pose},
-    server::SNAPSHOT_INTERVAL,
+    replication::{Kind, Pose, SNAPSHOT_INTERVAL},
 };
 
 use crate::{net::FromServer, session::GameState};

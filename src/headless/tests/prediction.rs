@@ -12,9 +12,9 @@ use defaria_core::{
     content::{BlockState, block},
     physics::Body,
     player::LocalPlayer,
-    server::PlayerInputs,
     world::Voxels,
 };
+use defaria_server::server::PlayerInputs;
 
 use crate::headless::{Conditions, Multiplayer, test_multiplayer, test_multiplayer_over};
 

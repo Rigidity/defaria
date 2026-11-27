@@ -2620,6 +2620,7 @@ dependencies = [
  "bytes",
  "defaria_client",
  "defaria_core",
+ "defaria_server",
  "miniz_oxide 0.8.9",
  "quinn",
  "rcgen",
@@ -2636,6 +2637,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "defaria_core",
+ "defaria_server",
  "serde",
  "tracing",
 ]
@@ -2646,9 +2648,20 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "json5",
+ "postcard",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "defaria_server"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "defaria_core",
+ "json5",
  "miniz_oxide 0.8.9",
  "mlua",
- "postcard",
  "serde",
  "tracing",
 ]

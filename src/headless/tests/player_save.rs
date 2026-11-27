@@ -6,9 +6,11 @@ use defaria_core::{
     hotbar::{ActiveSlot, Hotbar},
     inventory::{Inventory, player::*},
     player::LocalPlayer,
-    save::{WorldFolder, player as file, tests::temp_folder},
+    save::WorldFolder,
     streaming::StreamingSettings,
+    testing::temp_folder,
 };
+use defaria_server::{inventory::player::KeepPlayerFile, save::player as file};
 
 use crate::headless::{HeadlessPlugin, Script, default_plugins};
 

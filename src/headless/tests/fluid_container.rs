@@ -6,13 +6,13 @@ use defaria_client::ui::{
     slot::{hotbar_fluid, slot_fluid},
 };
 use defaria_core::{
-    block_entity::BlockEntities,
     content::{Content, FULL_FLUID, ItemState, base, block},
     inventory::{Inventory, ItemStack, model::ItemData},
     machine::Tanks,
     player::LocalPlayer,
     world::Voxels,
 };
+use defaria_server::block_entity::BlockEntities;
 
 use crate::headless::{Script, run_more, settle, test_game};
 

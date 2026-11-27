@@ -5,8 +5,8 @@ use defaria_core::{
     content::{BlockState, base, block, grass},
     mining::Mining,
     world::{Chunk, ChunkCoord},
-    worldgen::{Terrain, TerrainBlocks},
 };
+use defaria_server::worldgen::{Terrain, TerrainBlocks};
 
 use crate::headless::{Script, settle, test_game};
 

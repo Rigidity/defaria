@@ -8,7 +8,7 @@ use crate::{
         FULL_FLUID, Fluid, Model,
         schema::{BlockDef, FluidDef, ModelDef},
     },
-    fluid::flow::MIN_RIPPLE,
+    fluid::MIN_RIPPLE,
 };
 
 /// The box every fluid is drawn as (`fluid_box.json5`), built into the

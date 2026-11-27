@@ -19,7 +19,7 @@
 // Fluid faces take their texture coordinates from where they are, wrapping
 // every block (WRAPPED), and flowing ones (FLOWING) move their texture by a
 // flow map: a flow vector at each vertex, which the mesher averages over
-// the voxels sharing the corner (see crates/defaria_core/src/fluid/scroll.rs), blended across
+// the voxels sharing the corner (see crates/defaria_client/src/meshing/scroll.rs), blended across
 // the face, so the flow runs on continuously from tile to tile. Two
 // samples half a cycle apart, each pushed along the flow and pulled back
 // once a cycle, cross-fade so neither's reset or stretching shows.
@@ -83,7 +83,7 @@ const OCCLUDED: f32 = 0.3;
 // water or lava) wins the depth test instead of flickering with it.
 const BACK_FACE: u32 = 0x80000000u;
 const BACK_DEPTH_BIAS: f32 = 2e-5;
-// The rest of a face's layer (see crates/defaria_core/src/fluid/scroll.rs): the texture's index
+// The rest of a face's layer (see crates/defaria_client/src/meshing/scroll.rs): the texture's index
 // in the low bits, WRAPPED on a fluid face and FLOWING on one that flows.
 const TEXTURE_BITS: u32 = 0x00ffffffu;
 const FLOWING: u32 = 0x10000000u;

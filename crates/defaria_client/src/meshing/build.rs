@@ -44,7 +44,7 @@ use defaria_core::{
     content::{
         BakedFace, BlockState, Content, Direction, FULL_FLUID, Fluid, MAX_LIGHT, Render, Vertex,
     },
-    fluid::flow,
+    fluid,
     light::{CHANNELS, ChunkLight, Light, part_full_dim},
     world::{CHUNK_SIZE, Chunk, FLUID_STEPS, FluidTop, VoxelFluid, axis_of, fluid_surface},
 };
@@ -285,7 +285,7 @@ impl Neighborhood {
     /// little uneven for good): it falls while the voxel below has room
     /// for it, and flows across toward neighbours holding the same fluid
     /// (waterlogged blocks among them) whose level is lower by as much as
-    /// flow moves sideways (a `ripple`, and at least [`flow::SHARE`]
+    /// flow moves sideways (a `ripple`, and at least [`fluid::SHARE`]
     /// units). Flowing across, it runs down its drawn surface's slope, or
     /// toward those neighbours where the surface is level.
     fn fluid_flow(
@@ -301,7 +301,7 @@ impl Neighborhood {
             None => room_below > 0,
             Some(there) => there.kind == kind && there.amount < room_below,
         };
-        let level = fluid.ripple.max(flow::SHARE) as f32;
+        let level = fluid.ripple.max(fluid::SHARE) as f32;
         let here = self.fluid_level(content, pos) as f32;
         let toward: Vec3 = [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z]
             .into_iter()

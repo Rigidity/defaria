@@ -261,40 +261,7 @@ mod tests {
     use crate::{
         content::{FULL_FLUID, base, block},
         testing::{ChunkMapPlugin, insert_chunk},
-        world::WorldPlugin,
-        worldgen::{
-            Terrain, TerrainBlocks, TerrainSettings,
-            testing::{PATCH_SIZE, spawn_patch},
-        },
     };
-
-    #[test]
-    fn voxels_are_read_and_written_by_world_position() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(base().clone())
-            .add_plugins(WorldPlugin);
-        spawn_patch(app.world_mut());
-        let terrain = Terrain::new(
-            TerrainSettings::default(),
-            TerrainBlocks::from_content(base()),
-        );
-        app.world_mut()
-            .run_system_once(move |mut voxels: Voxels| {
-                for pos in [IVec3::new(5, 3, 70), IVec3::new(127, 0, 0)] {
-                    assert_eq!(voxels.get(pos), Some(terrain.voxel(pos)));
-                }
-                // Outside the loaded chunks there's nothing to read or write.
-                for pos in [IVec3::new(-1, 0, 0), IVec3::new(0, PATCH_SIZE.y, 0)] {
-                    assert_eq!(voxels.get(pos), None);
-                    assert!(!voxels.set(pos, block("stone")));
-                }
-                let pos = IVec3::new(20, 40, 33);
-                assert!(voxels.set(pos, block("planks")));
-                assert_eq!(voxels.get(pos), Some(block("planks")));
-            })
-            .unwrap();
-    }
 
     /// The bare systems [`Voxels`] needs, and one chunk with `chunk` in it
     /// at the origin.

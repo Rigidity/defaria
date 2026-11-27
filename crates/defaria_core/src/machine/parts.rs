@@ -1,7 +1,7 @@
-//! The components a machine's block entity has: [`Ports`], an
-//! [`EnergyBuffer`], [`Tanks`] and [`Slots`], each from its block's
-//! `machine`, and [`MachineActive`]. All but the ports and the active flag
-//! (which are worked out from the voxel's state) are saved with the block
+//! The components a machine's block entity has, besides the server's
+//! ports: an [`EnergyBuffer`], [`Tanks`] and [`Slots`], each from its
+//! block's `machine`, and [`MachineActive`]. All but the active flag
+//! (which is worked out from the voxel's state) are saved with the block
 //! entity.
 
 use std::collections::BTreeMap;
@@ -10,101 +10,17 @@ use bevy::prelude::*;
 
 use crate::{
     block_entity::{BlockEntityPart, Value},
-    content::{
-        BlockState, Content, Direction, EnergySpec, Machine, PortRole, SlotGroupSpec, TankSpec,
-    },
+    content::{BlockState, Content, EnergySpec, SlotGroupSpec, TankSpec},
     fluid_container::saved_data,
     inventory::{
         ItemStack,
         model::{ItemData, is_unique},
     },
-    network::NetworkId,
 };
 
 /// The most of one item a slot holds. A unique item (see
 /// `docs/modding.md`) takes a slot of its own, one to a slot.
 pub const SLOT_SIZE: u32 = 64;
-
-/// A machine's ports: its faces that conduits join, and the network each
-/// is on now. Worked out from the voxel's state, so not saved; kept up to
-/// date as the state and the networks change.
-#[derive(Component, Reflect, Debug, Clone, PartialEq, Default)]
-#[reflect(Component)]
-pub struct Ports(pub Vec<PortLink>);
-
-/// One of a machine's ports.
-#[derive(Reflect, Debug, Clone, PartialEq)]
-pub struct PortLink {
-    /// The side it's on, in the world.
-    pub face: Direction,
-    /// The network kind's id, such as `defaria:electric`.
-    pub kind: String,
-    pub role: PortRole,
-    /// For a fluid port, its tank: an index into [`Tanks`].
-    pub tank: Option<usize>,
-    /// For an item port, its slot group: an index into [`Slots`].
-    pub slots: Option<usize>,
-    /// The network of the conduit joined to it, if one is.
-    pub network: Option<NetworkId>,
-}
-
-impl Ports {
-    fn of(machine: &Machine, content: &Content) -> Self {
-        Self(
-            machine
-                .ports
-                .iter()
-                .map(|port| PortLink {
-                    face: port.face,
-                    kind: content.networks[port.network].id.clone(),
-                    role: port.role,
-                    tank: port.tank,
-                    slots: port.slots,
-                    network: None,
-                })
-                .collect(),
-        )
-    }
-
-    /// Takes the faces and roles of `machine`, keeping each port's network
-    /// where its face and kind are the same.
-    pub(super) fn follow(&mut self, machine: &Machine, content: &Content) {
-        let mut new = Self::of(machine, content);
-        for link in &mut new.0 {
-            link.network = self
-                .0
-                .iter()
-                .find(|old| old.face == link.face && old.kind == link.kind)
-                .and_then(|old| old.network);
-        }
-        *self = new;
-    }
-
-    /// The port on `face` of network kind `kind`, if there's one.
-    pub fn get(&self, face: Direction, kind: &str) -> Option<&PortLink> {
-        self.0
-            .iter()
-            .find(|link| link.face == face && link.kind == kind)
-    }
-}
-
-impl BlockEntityPart for Ports {
-    const KEY: &'static str = "ports";
-    const SAVED: bool = false;
-
-    fn new(state: BlockState, content: &Content) -> Option<Self> {
-        let machine = content.machine(state)?;
-        (!machine.ports.is_empty()).then(|| Self::of(machine, content))
-    }
-
-    fn save(&self, _: &Content) -> Value {
-        Value::Table(BTreeMap::new())
-    }
-
-    fn load(_: &Value, _: u32, state: BlockState, content: &Content) -> Option<Self> {
-        Self::new(state, content)
-    }
-}
 
 /// Whether a machine is working. Its solver or script sets it, and the
 /// engine puts the voxel in the block's `active_state` while it's true,
@@ -213,7 +129,7 @@ impl EnergyBuffer {
 
     /// Takes the sizes of `spec`, keeping what's stored (even over a
     /// smaller capacity: nothing's lost, it just takes no more).
-    pub(super) fn follow(&mut self, spec: &EnergySpec) {
+    pub fn follow(&mut self, spec: &EnergySpec) {
         let new = Self {
             stored: self.stored,
             ..Self::of(spec)
@@ -339,7 +255,7 @@ impl Tanks {
     }
 
     /// Takes the sizes and fluids of `specs`, keeping what's in each tank.
-    pub(super) fn follow(&mut self, specs: &[TankSpec]) {
+    pub fn follow(&mut self, specs: &[TankSpec]) {
         let mut new = Self::of(specs);
         for tank in &mut new.0 {
             if let Some(old) = self.get(&tank.name) {
