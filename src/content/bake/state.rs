@@ -21,7 +21,8 @@ use crate::content::{
 /// Bakes one state of `def`, block number `block`, called `name`, with these
 /// numbers: each part's faces rotated and textured, one after the other.
 /// Textures for slots a part's model doesn't have are left out of that
-/// part. A fluid has nothing to bump into, whatever its model's collision.
+/// part. A fluid has nothing to bump into or aim at, whatever its model's
+/// collision and target.
 pub(super) fn bake_state(
     look: &Look,
     parts: &[Part],
@@ -60,6 +61,7 @@ pub(super) fn bake_state(
         weight: numbers.weight,
         stats: numbers.stats,
         fluid_room,
+        replaceable: def.replaceable || fluid.is_some(),
         ..default()
     };
     for part in parts {
@@ -70,6 +72,11 @@ pub(super) fn bake_state(
             Some(_) => format!("part model `{}`: {error}", part.model.id),
             None => error,
         })?;
+    }
+    // Something to aim at, unless it's a fluid, which the crosshair
+    // passes through.
+    if state.target.is_empty() && fluid.is_none() {
+        state.target.push(BlockBox::FULL);
     }
     state.fluid = fluid;
     for side in Direction::ALL {
@@ -148,15 +155,18 @@ fn bake_part(
         .iter()
         .fold(0, |bits, &d| bits | rotate_direction(d).bit());
     state.occludes |= occludes;
+    let turn_box = |b: &BlockBox| {
+        let [a, c] = [b.min, b.max].map(turn);
+        BlockBox {
+            min: a.min(c),
+            max: a.max(c),
+        }
+    };
     let first_box = state.collision.len();
     if def.fluid.is_none() {
-        state.collision.extend(model.collision.iter().map(|b| {
-            let [a, c] = [b.min, b.max].map(turn);
-            BlockBox {
-                min: a.min(c),
-                max: a.max(c),
-            }
-        }));
+        state.collision.extend(model.collision.iter().map(turn_box));
+        let target = model.target.as_ref().unwrap_or(&model.collision);
+        state.target.extend(target.iter().map(turn_box));
     }
     state.parts.push(StatePart {
         model: model.id.clone(),

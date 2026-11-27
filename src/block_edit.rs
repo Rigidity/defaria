@@ -9,7 +9,12 @@
 //!   placement (a log's axis) comes from that face or your view. The click
 //!   that locks the cursor doesn't edit anything. The active block is the
 //!   active hotbar slot's (see `hotbar`); an item that places no block
-//!   places nothing. A block that needs support (a plant, see `support`)
+//!   places nothing.
+//! - A `replaceable` block (a plant) is replaced as air is: the crosshair
+//!   still picks it (by its model's smaller `target` box), so you can
+//!   break it, but a block placed against it goes into its voxel, and
+//!   one placed beside another block can go where it stands. In survival
+//!   its item goes into the inventory, if it fits. A block that needs support (a plant, see `support`)
 //!   is only placed on a block that supports it.
 //! - A crosshair marks the middle of the screen (hidden while a screen is
 //!   open), and an outline shows the targeted block.
@@ -31,7 +36,7 @@ use bevy::{
 use crate::{
     content::{BlockBox, BlockState, Content, Direction, ItemState},
     fly_camera::FlyCameraSystems,
-    game_mode::{GameMode, use_up},
+    game_mode::{GameMode, harvest, use_up},
     hotbar::{ActiveSlot, Hotbar, HotbarInput},
     inventory::Inventory,
     meshing::RemeshChunks,
@@ -220,19 +225,12 @@ pub(crate) fn ray_box(origin: Vec3, dir: Vec3, b: &BlockBox) -> Option<(f32, IVe
     Some((enter, normal))
 }
 
-/// What the crosshair picks in a block: its collision boxes, or the whole
-/// block for one you walk through. Nothing for air or a fluid, which the
-/// crosshair passes through.
+/// What the crosshair picks in a block: its target boxes (its model's
+/// `target`, or its collision boxes, or the whole block for one you walk
+/// through). Nothing for air or a fluid, which the crosshair passes
+/// through.
 pub fn target_shape(content: &Content, state: BlockState) -> &[BlockBox] {
-    if state.is_air() || content.state(state).is_fluid() {
-        return &[];
-    }
-    let boxes = &content.state(state).collision;
-    if boxes.is_empty() {
-        std::slice::from_ref(&BlockBox::FULL)
-    } else {
-        boxes
-    }
+    &content.state(state).target
 }
 
 /// Fluid as the crosshair picks it while aiming at fluid (with a fluid
@@ -337,18 +335,24 @@ fn edit_blocks(
     let Some(block) = hotbar.block(*active, &content) else {
         return;
     };
-    let Some((pos, face)) = hit.place_at() else {
+    let Some((pos, face)) = place_at(&content, &voxels, hit) else {
         return;
     };
     // Properties such as a log's axis follow the face clicked or the view.
     let block = content.placed(block, face, *camera.forward());
     // Not into the camera, outside the world, over another block (but
-    // over air, which may hold fluid), or where it would overlap someone.
+    // over one placing replaces: air, which may hold fluid, or a plant),
+    // or where it would overlap someone.
     let overlaps = content.state(block).collision.iter().any(|b| {
         let b = Aabb::of_block(pos, b);
         bodies.iter().any(|body| body.aabb().intersects(&b))
     });
-    let replaceable = voxels.get(pos).is_some_and(BlockState::is_air);
+    let Some(replaced) = voxels.get(pos) else {
+        return;
+    };
+    let replaceable = content.state(replaced).replaceable
+        // Not a plant over the same plant, which would change nothing.
+        && content.state(replaced).block != content.state(block).block;
     // Nor where it can't stand (a flower off the grass).
     let supported = !content.needs_support(block)
         || voxels
@@ -364,10 +368,33 @@ fn edit_blocks(
     if !mode.is_creative() && content.state(block).is_fluid() {
         return;
     }
-    if !use_up(mode, inventory.map(Mut::into_inner), item) {
+    let mut inventory = inventory.map(Mut::into_inner);
+    if !use_up(mode, inventory.as_deref_mut(), item) {
         return;
     }
+    // A plant built over goes into the inventory in survival, if it fits
+    // (otherwise it's lost, as when it loses its support).
+    if let Some(inventory) = inventory {
+        harvest(mode, inventory, &content, replaced);
+    }
     voxels.set(pos, block);
+}
+
+/// Where a block placed at `hit` goes, and the side of the block hit
+/// that it's placed against: into the block hit if placing replaces it
+/// (a plant), or else against the face hit. `None` for a ray that
+/// started inside a block it doesn't replace.
+pub fn place_at(content: &Content, voxels: &Voxels, hit: Hit) -> Option<(IVec3, Direction)> {
+    let into = voxels
+        .get(hit.block)
+        .is_some_and(|state| content.state(state).replaceable);
+    if !into {
+        return hit.place_at();
+    }
+    // As though placed against the face hit; from inside, the block
+    // below.
+    let face = Direction::from_normal(hit.normal).unwrap_or(Direction::Up);
+    Some((hit.block, face))
 }
 
 /// Outlines the block under the crosshair while the cursor is locked: or,
@@ -1030,6 +1057,134 @@ mod tests {
         assert_eq!(voxel(&app, left, 14, 2, 5), block("daisy"));
         let inventory = app.world().get::<Inventory>(owner).unwrap();
         assert_eq!(inventory.count(daisy), 0);
+    }
+
+    /// The player in survival, with `items` in the inventory and on the
+    /// hotbar from its first slot, the first in hand. The player's entity.
+    fn survival_with(app: &mut App, items: &[&str]) -> Entity {
+        let content = base();
+        let mut hotbar = player(app).0;
+        let mut players = app
+            .world_mut()
+            .query_filtered::<(Entity, &mut Inventory), With<LocalPlayer>>();
+        let (owner, mut inventory) = players.single_mut(app.world_mut()).unwrap();
+        for (slot, id) in items.iter().enumerate() {
+            let item = content.default_item(id).unwrap();
+            inventory.add(content, crate::inventory::ItemStack::new(item, 1));
+            hotbar.assign(slot, Some(item));
+        }
+        app.world_mut().entity_mut(owner).insert(GameMode::Survival);
+        set_hotbar(app, hotbar);
+        press_key(app, KeyCode::Digit1);
+        owner
+    }
+
+    fn count(app: &App, owner: Entity, id: &str) -> u32 {
+        let item = base().default_item(id).unwrap();
+        app.world().get::<Inventory>(owner).unwrap().count(item)
+    }
+
+    /// A tuft in front of the soil at (14, 1, 5), on a soil floor.
+    fn meadow(app: &mut App, left: Entity) {
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        for x in 12..15 {
+            chunk.set(x, 0, 5, block("soil"));
+        }
+        chunk.set(13, 1, 5, block("tuft"));
+    }
+
+    /// A block placed against a plant goes into the plant's voxel instead
+    /// of in front of it, and in survival the plant's item goes into the
+    /// inventory.
+    #[test]
+    fn a_block_placed_against_a_plant_replaces_it() {
+        let (mut app, left, _) = app();
+        meadow(&mut app, left);
+        let owner = survival_with(&mut app, &["defaria:stone"]);
+        // Straight at the tuft's middle.
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("stone"));
+        assert_eq!(voxel(&app, left, 12, 1, 5), BlockState::AIR);
+        assert_eq!(count(&app, owner, "defaria:stone"), 0);
+        assert_eq!(count(&app, owner, "defaria:tuft"), 1);
+    }
+
+    /// Aimed over a plant's small target, the crosshair picks the block
+    /// behind it, and a block placed against that goes where the plant
+    /// stands.
+    #[test]
+    fn a_block_placed_beside_another_replaces_the_plant_there() {
+        let (mut app, left, _) = app();
+        meadow(&mut app, left);
+        look_at(&mut app, Vec3::new(11.5, 1.95, 5.5), Vec3::X);
+        let mut voxels =
+            bevy::ecs::system::SystemState::<(Res<Content>, Voxels)>::new(app.world_mut());
+        let eyes = Transform::from_xyz(11.5, 1.95, 5.5).looking_to(Vec3::X, Vec3::Y);
+        let (content, voxels) = voxels.get_mut(app.world_mut()).unwrap();
+        let hit = crosshair_target(&eyes, &content, &voxels).unwrap();
+        assert_eq!(hit.block, IVec3::new(14, 1, 5), "past the tuft");
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("stone"));
+    }
+
+    /// A block that isn't replaceable stays: one placed against the soil
+    /// behind a slab isn't put over the slab, and uses nothing up. Nor is
+    /// a plant placed over the same plant, which would change nothing;
+    /// another plant replaces it.
+    #[test]
+    fn blocks_that_arent_replaceable_arent_placed_over() {
+        let (mut app, left, _) = app();
+        meadow(&mut app, left);
+        let mut chunk = app.world_mut().get_mut::<Chunk>(left).unwrap();
+        chunk.set(13, 1, 5, block("stone_slab"));
+        let owner = survival_with(
+            &mut app,
+            &["defaria:stone", "defaria:tuft", "defaria:daisy"],
+        );
+        // Over the slab, at the soil's face behind it.
+        look_at(&mut app, Vec3::new(11.5, 1.95, 5.5), Vec3::X);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("stone_slab"));
+        assert_eq!(count(&app, owner, "defaria:stone"), 1, "nothing used up");
+        // A tuft there, looked at from above.
+        app.world_mut()
+            .get_mut::<Chunk>(left)
+            .unwrap()
+            .set(13, 1, 5, block("tuft"));
+        look_at(&mut app, Vec3::new(13.5, 3.5, 5.5), Vec3::NEG_Y);
+        press_key(&mut app, KeyCode::Digit2);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("tuft"));
+        assert_eq!(count(&app, owner, "defaria:tuft"), 1, "nothing used up");
+        press_key(&mut app, KeyCode::Digit3);
+        click(&mut app, MouseButton::Right);
+        assert_eq!(voxel(&app, left, 13, 1, 5), block("daisy"));
+        assert_eq!(count(&app, owner, "defaria:daisy"), 0);
+        assert_eq!(count(&app, owner, "defaria:tuft"), 2);
+    }
+
+    /// The crosshair picks a plant by its small box: a ray through the
+    /// top of its voxel, or past its corner, goes on to the block behind.
+    #[test]
+    fn plants_are_picked_by_a_smaller_box() {
+        let content = base();
+        let tuft = block("tuft");
+        let at = |pos: IVec3| match pos.to_array() {
+            [2, 0, 0] => tuft,
+            [4, 0, 0] => block("stone"),
+            _ => BlockState::AIR,
+        };
+        let shape = |pos| target_shape(content, at(pos));
+        let hit = |origin: Vec3| raycast(ray(origin, Vec3::X), 8.0, shape).unwrap();
+        // Through its middle, it's hit on the face of its box.
+        let middle = hit(Vec3::new(0.5, 0.5, 0.5));
+        assert_eq!(
+            (middle.block, middle.normal),
+            (IVec3::new(2, 0, 0), IVec3::NEG_X)
+        );
+        // Over its top, and past its side, the stone behind.
+        assert_eq!(hit(Vec3::new(0.5, 0.95, 0.5)).block, IVec3::new(4, 0, 0));
+        assert_eq!(hit(Vec3::new(0.5, 0.5, 0.05)).block, IVec3::new(4, 0, 0));
     }
 
     /// An item that places no block (a tool, or an empty slot) does

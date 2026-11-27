@@ -133,6 +133,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         states: vec![State {
             name: "Air".into(),
             fluid_room: FULL_FLUID,
+            replaceable: true,
             ..default()
         }],
         items: Vec::new(),

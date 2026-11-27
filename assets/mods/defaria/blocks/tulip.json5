@@ -15,6 +15,8 @@
   weight: 0.05,
   // It takes up no room: water and lava fill its cell as they would air.
   fluid_room: 1,
+  // Building over it replaces it, as it would air.
+  replaceable: true,
   category: "natural",
   // Dirt or loam, grassy or bare, and any soil under grass.
   support: [
