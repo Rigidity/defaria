@@ -22,15 +22,16 @@ fn main() -> AppExit {
         Some(folder) => {
             app.insert_resource(WorldFolder(folder));
         }
-        None if cli.headless.is_none() => {
+        // A windowed screenshot (`cargo shot`) is of a world, in memory.
+        None if cli.headless.is_none() && cli.screenshot.is_none() => {
             app.insert_resource(StartAtMenu);
         }
         None => {}
     }
+    let run_worlds =
+        std::env::temp_dir().join(format!("defaria-headless-worlds-{}", std::process::id()));
     let worlds = match cli.headless {
-        Some(_) => Some(
-            std::env::temp_dir().join(format!("defaria-headless-worlds-{}", std::process::id())),
-        ),
+        Some(_) => Some(run_worlds.clone()),
         None => save::worlds_dir(),
     };
     if let Some(worlds) = worlds {
@@ -84,5 +85,8 @@ fn main() -> AppExit {
         });
     }
 
-    app.run()
+    let exit = app.run();
+    // A headless run's worlds are its own, and go with it.
+    let _ = std::fs::remove_dir_all(run_worlds);
+    exit
 }

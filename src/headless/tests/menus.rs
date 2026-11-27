@@ -148,3 +148,38 @@ fn worlds_are_created_left_and_played_again() {
         .unwrap();
     assert_eq!(there, Some(block("glass")));
 }
+
+/// Escape on a menu page leaves it open (its **Back** goes back), and a
+/// long world list scrolls rather than pushing its buttons off screen.
+/// (A second click right after **Main menu** lands on **Quit**, which
+/// ignores clicks for its first moments; a run can't tell that exit from
+/// its script's own end, so that's only exercised here.)
+#[test]
+fn the_menus_stay_usable() {
+    let (mut app, worlds) = game("menus-usable");
+    for n in 0..15 {
+        defaria_core::save::create_world(&worlds, &format!("World {n}"), n).unwrap();
+    }
+    run_more(&mut app, "hold Escape 1\nwait 2");
+    let main_menu = at(&mut app, "Main menu");
+    // Twice, quickly: the second lands on Quit.
+    run_more(
+        &mut app,
+        &format!(
+            "cursor {} {}\nwait 1\nhold MouseLeft 1\nwait 2\nhold MouseLeft 1\nwait 3",
+            main_menu.x, main_menu.y
+        ),
+    );
+    assert_eq!(page(&mut app), Some(MenuPage::Main));
+
+    run_more(&mut app, "hold Escape 1\nwait 3");
+    assert_eq!(page(&mut app), Some(MenuPage::Main));
+
+    click(&mut app, "Singleplayer");
+    run_more(&mut app, "hold Escape 1\nwait 3");
+    assert_eq!(page(&mut app), Some(MenuPage::Worlds));
+    let back = at(&mut app, "Back");
+    assert!(back.y < 720.0, "Back is off screen, at {back}");
+    click(&mut app, "Back");
+    assert_eq!(page(&mut app), Some(MenuPage::Main));
+}

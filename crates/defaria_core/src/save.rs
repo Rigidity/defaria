@@ -153,6 +153,10 @@ pub fn list_worlds(worlds: &Path) -> Vec<SavedWorld> {
             let path = folder.join(WORLD_FILE);
             let text = std::fs::read_to_string(&path).ok()?;
             let info: WorldInfo = json5::from_str(&text).ok()?;
+            // A newer build's: it couldn't be played as it is.
+            if info.format > WORLD_FORMAT {
+                return None;
+            }
             let last_played = std::fs::metadata(&path).ok()?.modified().ok()?;
             Some(SavedWorld {
                 name: folder.file_name()?.to_string_lossy().into_owned(),
@@ -178,7 +182,7 @@ pub fn create_world(worlds: &Path, name: &str, seed: u64) -> Result<PathBuf, Str
         })
         .collect();
     let clean = clean.trim().trim_start_matches('.');
-    let base = if clean.is_empty() { "World" } else { clean };
+    let base = if clean.is_empty() { "New World" } else { clean };
     let folder = (1..)
         .map(|n| match n {
             1 => worlds.join(base),
@@ -730,9 +734,12 @@ pub mod tests {
         assert_eq!(first, worlds.join("My World"));
         assert_eq!(second, worlds.join("My World (2)"));
         assert_eq!(odd, worlds.join("abc"));
-        assert_eq!(unnamed, worlds.join("World"));
-        // Not a world: left out.
+        assert_eq!(unnamed, worlds.join("New World"));
+        // Not a world, and a newer build's: left out.
         std::fs::create_dir_all(worlds.join("junk")).unwrap();
+        let newer = worlds.join("newer");
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::write(newer.join(WORLD_FILE), "{ format: 99, seed: 1 }").unwrap();
         // Played in this order, oldest first.
         let at = |seconds: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
         for (folder, seconds) in [(&odd, 100), (&first, 200), (&unnamed, 300), (&second, 400)] {
@@ -745,7 +752,7 @@ pub mod tests {
         }
         let listed = list_worlds(&worlds);
         let names: Vec<&str> = listed.iter().map(|world| world.name.as_str()).collect();
-        assert_eq!(names, ["My World (2)", "World", "My World", "abc"]);
+        assert_eq!(names, ["My World (2)", "New World", "My World", "abc"]);
         assert_eq!(listed[0].seed, 8);
         // Opening one makes it the most recent.
         assert_eq!(open_world(&first, 0), Ok(7));

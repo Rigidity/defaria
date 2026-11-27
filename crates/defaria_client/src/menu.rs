@@ -12,7 +12,7 @@ use defaria_core::save::{self, SavedWorld, WorldFolder};
 
 use crate::{
     session::{GameState, WorldsFolder},
-    ui::{TextField, UiScreen, UiTheme, button, text_field},
+    ui::{TextField, UiScreen, UiTheme, button, screen::StaysOnEscape, scroll_panel, text_field},
 };
 
 pub struct MenuPlugin;
@@ -29,12 +29,16 @@ impl Plugin for MenuPlugin {
 /// A page of the menu: its root. Opening another despawns it.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq)]
 #[reflect(Component)]
-#[require(UiScreen)]
+#[require(UiScreen, StaysOnEscape)]
 pub enum MenuPage {
     Main,
     Worlds,
     NewWorld,
 }
+
+/// How tall the world list is at most, in logical pixels, before it
+/// scrolls: about six worlds.
+const WORLD_LIST_HEIGHT: f32 = 270.0;
 
 /// The new world screen's name field.
 #[derive(Component, Debug, Clone, Copy)]
@@ -78,11 +82,30 @@ fn open_main_menu(
                 .observe(show_worlds);
             panel
                 .spawn((Name::new("Quit"), button(theme, "Quit")))
-                .observe(|_: On<Activate>, mut exit: MessageWriter<AppExit>| {
-                    exit.write(AppExit::Success);
-                });
+                .observe(quit);
         },
     );
+}
+
+/// How long a page has to be open before **Quit** takes a click, so a
+/// second click on the pause menu's **Main menu** (right where **Quit**
+/// opens) doesn't quit.
+const QUIT_AFTER: f32 = 0.4;
+
+/// When the page that's open opened, in real time.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+struct PageOpened(f32);
+
+fn quit(
+    _: On<Activate>,
+    opened: Option<Res<PageOpened>>,
+    time: Res<Time<Real>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let open_for = time.elapsed_secs() - opened.map_or(0.0, |opened| opened.0);
+    if open_for >= QUIT_AFTER {
+        exit.write(AppExit::Success);
+    }
 }
 
 /// Despawns the page that's open, and opens `page`: a panel with its
@@ -97,6 +120,10 @@ fn open_page(
     for open in pages {
         commands.entity(open).try_despawn();
     }
+    commands.queue(|world: &mut World| {
+        let now = world.resource::<Time<Real>>().elapsed_secs();
+        world.insert_resource(PageOpened(now));
+    });
     let title = match page {
         MenuPage::Main => "Defaria",
         MenuPage::Worlds => "Singleplayer",
@@ -167,15 +194,24 @@ fn show_worlds(
                     TextColor(theme.text_dim),
                 ));
             }
-            for world in worlds {
-                panel
-                    .spawn((
+            // As many as there are: the list scrolls.
+            let list = Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: px(10),
+                max_height: px(WORLD_LIST_HEIGHT),
+                flex_grow: 1.0,
+                ..default()
+            };
+            scroll_panel(panel, theme, list, 46.0, Name::new("World list"), |list| {
+                for world in worlds {
+                    list.spawn((
                         Name::new(format!("World: {}", world.name)),
                         WorldEntry(world.clone()),
                         button(theme, world.name.clone()),
                     ))
                     .observe(play_world);
-            }
+                }
+            });
             panel
                 .spawn((Name::new("New world"), button(theme, "New world")))
                 .observe(show_new_world);

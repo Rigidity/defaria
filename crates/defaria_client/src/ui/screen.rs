@@ -7,7 +7,8 @@
 //!
 //! - While any screen is open the cursor is free and shown; when the last
 //!   one closes it's locked again, back to playing.
-//! - Escape closes every open screen.
+//! - Escape closes every open screen, but those with [`StaysOnEscape`]
+//!   (the menus, which have their own way back).
 //! - Gameplay input (looking, moving, breaking and placing) runs only while
 //!   [`playing`]: no screen is open.
 
@@ -38,6 +39,11 @@ impl Plugin for ScreenPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CloseOnEscapeSystems;
 
+/// A screen Escape doesn't close.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct StaysOnEscape;
+
 /// Marks the root of an open screen. Despawning the root closes it.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
 #[reflect(Component)]
@@ -52,7 +58,7 @@ pub fn playing(screens: Query<(), With<UiScreen>>) -> bool {
 fn close_on_escape(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    screens: Query<Entity, With<UiScreen>>,
+    screens: Query<Entity, (With<UiScreen>, Without<StaysOnEscape>)>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         for screen in &screens {
