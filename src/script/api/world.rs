@@ -398,7 +398,8 @@ impl Call<'_, '_, '_> {
                     Some(values) => with_values(content, base, values)?,
                     None => base,
                 };
-                // Fluid the new block leaves no room for would be lost.
+                // Fluid the new block leaves no room for would be pushed
+                // aside, or deleted where there's no room around.
                 let fluid = self.voxels.get_with_fluid(pos).and_then(|(_, fluid)| fluid);
                 let spills =
                     fluid.is_some_and(|fluid| fluid.amount > content.state(after).fluid_room);

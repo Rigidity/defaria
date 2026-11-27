@@ -548,11 +548,11 @@ fn pouring_a_solid_or_nothing_fails_the_run() {
     assert!(exit.is_error());
 }
 
-/// Placing a block into water deletes the water in that voxel, and
-/// wakes the water around it: water held back by a wall flows on once
-/// the wall is gone.
+/// Placing a block into water pushes the water in that voxel aside,
+/// up into the trench's air here, and wakes the water around it: water
+/// held back by a wall flows on once the wall is gone. None is lost.
 #[test]
-fn blocks_delete_fluid_and_edits_wake_it() {
+fn blocks_push_fluid_aside_and_edits_wake_it() {
     let (app, exit) = run_game(
         "wait 2\n\
          fill 50 20 50 60 22 52 stone\n\
@@ -569,11 +569,14 @@ fn blocks_delete_fluid_and_edits_wake_it() {
         .map(|x| fluid_at(&app, IVec3::new(x, 21, 51)))
         .collect();
     assert_eq!(row[0], 0, "the stone took the water's place");
-    // What the stone took is counted, and the rest is all there.
-    let displaced = app.world().resource::<FluidStats>().displaced;
-    assert!(displaced > 0);
-    let total = row.iter().map(|&a| a as u64).sum::<u64>();
-    assert_eq!(total + displaced, 2000, "{row:?}");
+    // What the stone took went aside, and it's all there.
+    let stats = app.world().resource::<FluidStats>();
+    assert!(stats.pushed_aside > 0 && stats.deleted == 0, "{stats:?}");
+    let above: u64 = (51..=59)
+        .map(|x| fluid_at(&app, IVec3::new(x, 22, 51)) as u64)
+        .sum();
+    let total = row.iter().map(|&a| a as u64).sum::<u64>() + above;
+    assert_eq!(total, 2000, "{row:?}");
     assert!(row[8] > 0, "flowed past where the wall was: {row:?}");
 }
 

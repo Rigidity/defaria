@@ -1414,6 +1414,58 @@ fast, and it's what pumps drawing from a lake or an oil pool will need
 `film` stay on dry ground for good: see #97 (creeping toward a drop) and
 #98 (evaporation).
 
+## Placing a block pushes fluid aside, sideways first within a bounded reach (2026-11-26)
+
+**Context.** A block placed into fluid used to delete the fluid in its
+voxel: the one way, besides water meeting lava, that fluid disappeared
+(spike #83). Building in water drained it, and filling a pond with dirt
+lowered the water rather than raising it.
+
+**Decision.** What a block takes the place of is pushed aside: the
+amount that no longer fits (all of it for stone, half a block for a slab,
+see `fluid_room`) is handed to flow on its next tick and put where
+there's room (`flow::push_aside`), sideways wherever it can (the user's
+call, after playing the first version, which went up whenever the four
+voxels beside the block were full):
+
+1. Sideways, on the block's level: the nearest voxels with room, found by
+   searching outward from it through voxels of the same fluid (a voxel
+   with room but none of it, or another fluid, ends that way). Voxels the
+   same distance away share what's pushed. The search looks at no more
+   than `PUSH_REACH` (64) voxels, about 20 steps along a one-wide
+   channel, and fewer across open water.
+2. Only what nothing within that reach has room for goes into the voxel
+   above (a stone dropped in a full glass pushes the water over the rim),
+   then the one below.
+3. What none of those has room for is deleted and counted
+   (`FluidStats::deleted`), rather than the block being refused: placing
+   a block never fails because of fluid.
+
+Flow spreads it from there over the steps after. So a block dropped into
+a pond that isn't full raises the pond around it, with nothing piled on
+top, and one dropped into a trench raises the trench. The bound keeps the
+cost per block constant however big the body is, so placing many blocks
+at once (a fill tool) costs a constant amount each. In play
+(`scenarios/fluid-displacement.txt`): dirt dropped into a pond that isn't
+full raises its surface evenly; dirt dropped into one full to the brim,
+with no room on its level, raises it and runs out over the bank as a
+film; blocks placed deep in a full, sealed pool delete their water; a
+layer of 480 blocks placed across a deep pool at once doesn't change the
+frame time.
+
+**What's wrong with it.** A block placed deep in a full body of water
+still deletes its water, where in life it would raise the whole surface:
+a player building a pillar up from a lake's floor deletes the water of
+every block but the top one.
+Room further than the reach isn't found, so in a big pond full to the
+brim what's pushed up spreads only until it's thinner than the fluid's
+`film`, leaving a puddle standing on it rather than raising it evenly.
+
+**What should replace it.** If deep placements matter, follow the body
+of fluid up to its surface (a bounded search, such as the pump's) and add
+the amount there, spread over the surface. Bodies of fluid as one
+reservoir (#96) would make that cheap: the reservoir's level rises.
+
 ## A voxel's fluid is a layer beside its block, and room is one number (2026-11-26)
 
 **Context.** A slab placed in a pond replaced the water in its voxel,

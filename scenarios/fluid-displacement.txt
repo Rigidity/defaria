@@ -1,0 +1,89 @@
+# Blocks placed into fluid push it aside rather than delete it, sideways
+# first: dirt dropped into a pond whose top layer isn't full pushes its
+# water out through the pond on that level, raising the layer evenly, with
+# nothing piled on top. Only with no room on its level, as in a pond
+# filled to the brim, does the water go up, and it runs out over the
+# bank, a thin film, instead of the pond draining. A block
+# placed deep in a full, sealed pool has nowhere to push its water, so
+# that's deleted and counted (`deleted`). A stone in a trench that isn't
+# full pushes its water to the sides, raising the trench. And filling a wide stretch of a
+# deep pool at once only wakes the water around each block: the `timing`
+# after it stays close to the one before.
+# `fluids` shows the totals: the ponds' water is all there after the dirt.
+# (A `camera` jump loads and unloads chunks, which changes the totals.)
+# Run: cargo headless scenarios/fluid-displacement.txt
+camera 30 56 44 0 -38
+settle
+# A stone platform, clear sky above it, and a pond in it two deep, full
+# to the brim: its surface is level with the bank around it.
+fill 14 30 8 94 47 38 stone
+fill 14 48 8 94 70 44 air
+fill 24 46 22 32 47 30 water
+# A sealed pool, deep in the platform.
+fill 36 34 20 42 40 26 water
+# A pond with its top layer a third full: a full bottom layer, and three
+# rows of water poured into the top one that spread over it.
+fill 15 46 10 21 47 18 air
+fill 15 46 10 21 46 18 water
+fill 15 47 10 21 47 12 water
+# A trench in the bank, three wide, water half up it.
+fill 34 46 32 46 47 34 air
+fill 34 46 32 46 46 34 water
+wait 120
+fluids
+inspect FluidStats
+screenshot target/scenarios/fluid-displacement/0-brim-full.png
+wait 1
+# Dirt dropped into the shallow pond's top layer, two rows of it: its
+# water goes sideways through the layer, raising it.
+fill 15 47 14 21 47 15 soil
+wait 300
+fluids
+inspect FluidStats
+screenshot target/scenarios/fluid-displacement/0b-raised-sideways.png
+wait 1
+# Dirt dropped into the brim-full pond's surface, three rows of it: no
+# room on its level, so up.
+fill 24 47 22 32 47 24 soil
+wait 60
+screenshot target/scenarios/fluid-displacement/1-pushed-up.png
+wait 600
+fluids
+inspect FluidStats
+screenshot target/scenarios/fluid-displacement/2-over-the-bank.png
+wait 1
+# A stone in the trench pushes its water to the sides, raising the
+# trench, rather than up onto itself.
+fill 40 46 33 40 46 33 stone
+wait 300
+screenshot target/scenarios/fluid-displacement/2b-trench.png
+wait 1
+# A block in the middle of the sealed pool: nowhere for its water to go.
+fill 39 37 23 39 37 23 stone
+wait 30
+inspect FluidStats
+# A wide, deep pool: 40 by 24, 8 deep. Once it's settled, a layer of
+# stone 40 by 12 placed across it deep down, all at once, wakes only the
+# water around each block (and deletes the water, with nowhere to go),
+# then one across its surface pushes the water up onto it.
+fill 50 30 10 92 47 36 stone
+fill 51 40 11 90 47 34 water
+wait 300
+timing
+wait 120
+timing
+fill 51 42 11 90 42 22 stone
+wait 120
+timing
+inspect FluidStats
+fill 51 47 23 90 47 34 stone
+wait 120
+timing
+inspect FluidStats
+camera 70 60 46 0 -40
+wait 5
+screenshot target/scenarios/fluid-displacement/3-pool-filled.png
+wait 1
+camera 18 54 26 0 -45
+settle
+screenshot target/scenarios/fluid-displacement/4-shallow-pond-close.png

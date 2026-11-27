@@ -59,7 +59,8 @@ impl Voxels<'_, '_> {
     /// The voxel keeps as much of its fluid as the new block leaves room
     /// for (see `fluid_room`): all of it for air, half a block for a slab,
     /// none for stone. What doesn't fit is displaced
-    /// ([`VoxelChanged::displaced`]).
+    /// ([`VoxelChanged::displaced`]), and flow pushes it aside (see
+    /// `fluid`).
     ///
     /// Setting a voxel to a fluid (a block with `fluid` set) fills it with
     /// that fluid instead: as much as its block leaves room for, or a
