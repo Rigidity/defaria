@@ -41,6 +41,9 @@ use crate::{
     world::CHUNK_SIZE,
 };
 
+/// How many ticks running a reservoir is put off for the tick's work
+/// before it stops evening out with its neighbours until it's written.
+const STARVED: u32 = 4;
 /// The fewest columns a reservoir has: smaller bodies flow as before.
 pub const MIN_COLUMNS: usize = 16;
 
@@ -152,6 +155,8 @@ pub struct Reservoir {
     /// Levelling emptied a column since it was last checked for still
     /// being one body.
     emptied: bool,
+    /// How many ticks running it's been put off for the tick's work.
+    starved: u32,
     /// How many of its columns held fluid when it was last levelled.
     wet: i64,
     /// Its fluid's `film`: spread thinner than this on average, it's
@@ -172,6 +177,12 @@ impl Reservoir {
     /// Everything it holds, written and pooled.
     fn total(&self) -> i64 {
         self.held + self.balance
+    }
+
+    /// The room its columns have left, as last read or written: how much
+    /// more fluid they could take.
+    fn room(&self) -> i64 {
+        self.columns.values().map(Column::capacity).sum::<i64>() - self.held
     }
 
     /// Whether its columns holding fluid are all joined, side to side, to
@@ -429,6 +440,13 @@ impl Reservoirs {
                 let (Some(high), Some(low)) = (level(a, first), level(b, second)) else {
                     continue;
                 };
+                // Not while either has been put off for ticks running (see
+                // `settle`): evening out sets the level aside, and the writes
+                // put off with it, so on a starved budget two that kept
+                // touching would never finish writing or come to rest.
+                if first.starved >= STARVED || second.starved >= STARVED {
+                    continue;
+                }
                 // A unit apart is as close as two levels of whole units
                 // over different columns come; evening that out would only
                 // swap which is higher.
@@ -442,7 +460,7 @@ impl Reservoirs {
                 // so all of it at once can overshoot and swing back.
                 let (n, m) = (first.wet.max(1) as i128, second.wet.max(1) as i128);
                 let moved = ((high - low) as i128 * n * m / (n + m) / 2) as i64;
-                let moved = moved.clamp(-second.total(), first.total());
+                let moved = moved.clamp(-second.total().max(0), first.total().max(0));
                 levels.insert(a, high - moved / n as i64);
                 levels.insert(b, low + moved / m as i64);
                 for (id, change) in [(a, -moved), (b, moved)] {
@@ -614,29 +632,45 @@ impl Reservoirs {
             // column for a pass over them; past it, writing waits for the
             // next tick, pooling meanwhile, so a big flood's levelling is
             // spread over frames rather than landing on one.
-            let mut left = self.work.saturating_sub(self.spent);
+            //
+            // Except for one whose members have given away half of what it
+            // holds, or taken in half of the room it has left, since it was
+            // last written: they go on giving or taking what their unwritten
+            // cells show, so put off for long enough it would give more than
+            // it holds or take more than fits. That one is written out now,
+            // whatever the budget.
+            let overdrawn = match reservoir.balance.signum() {
+                -1 => -reservoir.balance * 2 > reservoir.held,
+                1 => reservoir.balance * 2 > reservoir.room(),
+                _ => false,
+            };
+            let work = if overdrawn { usize::MAX } else { self.work };
+            let mut left = work.saturating_sub(self.spent);
             let before = left;
             refresh(cells, reservoir, &mut left, wake);
-            self.spent += before - left;
+            self.spent = self.spent.saturating_add(before - left);
             if !reservoir.dirty.is_empty() {
                 // Still writing out its last level.
+                reservoir.starved += 1;
                 put_off.get_or_insert(id);
                 continue;
             }
+            let starved = std::mem::take(&mut reservoir.starved);
             let due = reservoir.balance.abs() >= LAZY * reservoir.columns.len() as i64;
             if reservoir.level.is_none() || due || (flush && reservoir.balance != 0) {
                 let pass = reservoir.columns.len() / 8;
-                if self.spent > 0 && self.spent.saturating_add(pass) > self.work {
+                if !overdrawn && self.spent > 0 && self.spent.saturating_add(pass) > work {
+                    reservoir.starved = starved + 1;
                     put_off.get_or_insert(id);
                     continue;
                 }
                 self.spent = self.spent.saturating_add(pass);
                 self.mark_seams(id);
                 let reservoir = self.list.get_mut(&id).expect("listed");
-                let mut left = self.work.saturating_sub(self.spent);
+                let mut left = work.saturating_sub(self.spent);
                 let before = left;
                 level(cells, reservoir, flush, &mut left, wake);
-                self.spent += before - left;
+                self.spent = self.spent.saturating_add(before - left);
                 self.grow_from_rim(&*cells, id);
             }
             // The level dropping below where parts of it joined, such as
@@ -780,6 +814,13 @@ impl Reservoirs {
         for &(x, z) in reservoir.columns.keys() {
             self.owners.remove(&IVec2::new(x, z));
         }
+        // Every column is read again first: once it was marked dropped,
+        // flow wrote its members directly, without saying so.
+        let keys: Vec<(i32, i32)> = reservoir.columns.keys().copied().collect();
+        for &key in &keys {
+            reservoir.columns.get_mut(&key).expect("listed").stale = true;
+        }
+        reservoir.dirty.extend(keys);
         // A column found changed when it's written is read again and
         // written the next time round.
         for _ in 0..3 {
@@ -916,6 +957,7 @@ impl Reservoirs {
             dirty: Vec::new(),
             dropped: false,
             emptied: false,
+            starved: 0,
             wet: 0,
             film,
         };

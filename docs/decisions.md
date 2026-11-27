@@ -1474,7 +1474,7 @@ columns a levelling didn't reach are filled to the level in the next
 ticks from the balance, which keeps their share till then, and the
 reservoirs not reached are levelled next tick, those put off first. So a
 big flood's levelling is spread over frames rather than landing on one;
-paying out before a save isn't limited. (Half the budget halved the worst
+paying out before a save isn't limited. Two guards keep a starved budget safe: one whose members have given away half of what it holds, or taken in half of the room it has left, since it was last written (they go on giving or taking what their unwritten cells show) is written out at once whatever the budget, so it never gives more than it holds or takes more than fits; and one put off four ticks running stops evening out with its neighbours until it's written, since evening out sets aside the writes it put off. Neither comes into play on `sea-breach.txt` at the default budget; tests run random scenes on budgets down to one column a tick. (Half the budget halved the worst
 frame's flow but more than doubled how long the breach took to settle;
 twice it settled no sooner.)
 Falling fluid (with room under its run) and bodies of fewer than 16

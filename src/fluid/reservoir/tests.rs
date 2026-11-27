@@ -894,3 +894,214 @@ fn members_passing_fluid_among_themselves_come_to_rest() {
     }
     assert_eq!(*active.last().unwrap(), 0, "{active:?}");
 }
+
+/// Four ponds of different depths opened into one another, too big to
+/// merge, come to rest whatever the work a tick: evening them out must
+/// not throw away what a levelling put off to later ticks.
+#[test]
+fn touching_reservoirs_settle_on_a_small_budget() {
+    for work in [usize::MAX, 100, 30] {
+        let origins = [(0, 0), (13, 0), (0, 13), (13, 13)];
+        let depths = [4, 1, 2, 3];
+        let mut grid = Grid::default();
+        for (&(ox, oz), &depth) in origins.iter().zip(&depths) {
+            for x in ox..ox + 12 {
+                for z in oz..oz + 12 {
+                    for y in 0..5 {
+                        let cell = if y < depth {
+                            Cell::Fluid(WATER, FULL_FLUID, FULL_FLUID)
+                        } else {
+                            Cell::OPEN
+                        };
+                        grid.cells.insert(IVec3::new(x, y, z), cell);
+                    }
+                }
+            }
+        }
+        let mut sim = sim(true);
+        sim.reservoirs.max_columns = 200;
+        sim.reservoirs.work = work;
+        let start = held(&grid, &sim);
+        for &(ox, oz) in &origins {
+            sim.reservoirs
+                .draw(&grid, &water(), IVec3::new(ox + 5, 0, oz + 5), 0)
+                .unwrap();
+        }
+        // Open the cross between them.
+        for x in 0..25 {
+            for z in 0..25 {
+                if !grid.cells.contains_key(&IVec3::new(x, 0, z)) {
+                    for y in 0..5 {
+                        grid.cells.insert(IVec3::new(x, y, z), Cell::OPEN);
+                        sim.wake_around(&grid, IVec3::new(x, y, z));
+                    }
+                }
+            }
+        }
+        let mut settled = None;
+        for tick in 0..4000 {
+            sim.tick(&mut grid, fluids, 0.02, usize::MAX);
+            assert_eq!(held(&grid, &sim), start, "work {work}, tick {tick}");
+            if sim.active() == 0 && sim.reservoirs.pooled_total() == 0 {
+                settled = Some(tick);
+                break;
+            }
+        }
+        assert!(settled.is_some(), "work {work}: never came to rest");
+        sim.reservoirs.max_columns = 0;
+        sim.flush_reservoirs(&mut grid);
+        assert_eq!(grid.total(WATER) as i64, start, "work {work}");
+    }
+}
+
+/// A reservoir put off for many ticks by a small budget, while its
+/// members keep giving fluid away, never gives away more than it holds:
+/// nothing is made when it's finally written or dropped.
+#[test]
+fn a_starved_reservoir_never_gives_more_than_it_holds() {
+    for (work, cap) in [(40, 144), (10, 144), (3, 144), (1, 144), (10, 4096)] {
+        // A 12×12 pond, one deep, draining onto an open floor 40 wide.
+        let mut grid = pond(12, 1);
+        grid.open(IVec3::new(12, 0, 0), IVec3::new(51, 1, 11));
+        let mut sim = sim(true);
+        sim.reservoirs.work = work;
+        sim.reservoirs.max_columns = cap;
+        let start = held(&grid, &sim);
+        for z in 0..12 {
+            sim.wake_around(&grid, IVec3::new(12, 0, z));
+        }
+        for tick in 0..3000 {
+            sim.tick(&mut grid, fluids, 1.0 / 60.0, usize::MAX);
+            assert_eq!(held(&grid, &sim), start, "work {work}, tick {tick}");
+            for reservoir in sim.reservoirs.iter() {
+                assert!(reservoir.total() >= 0, "work {work}, tick {tick}");
+            }
+        }
+        let stranded: i64 = sim.reservoirs.stranded.values().sum();
+        assert_eq!(stranded, 0, "work {work}");
+        sim.reservoirs.max_columns = 0;
+        sim.flush_reservoirs(&mut grid);
+        assert_eq!(grid.total(WATER) as i64, start, "work {work}");
+    }
+}
+
+/// Random scenes with edits, pumps drawing, walls, unloads and flushes,
+/// on budgets from one column a tick up: nothing is made or lost, no
+/// reservoir ever holds less than nothing, and nothing is left stranded.
+#[test]
+fn random_scenes_keep_their_fluid_on_any_budget() {
+    let mut seed = 0xBADC_0FFE_u64;
+    let mut random = move |below: u32| (crate::perlin::splitmix64(&mut seed) % below as u64) as u32;
+    for scene in 0..24 {
+        let mut grid = Grid::default();
+        let n = 24;
+        for x in 0..n {
+            for y in 0..5 {
+                for z in 0..n {
+                    if random(12) > 0 {
+                        let cell = if random(15) == 0 {
+                            Cell::Open(900)
+                        } else {
+                            Cell::OPEN
+                        };
+                        grid.cells.insert(IVec3::new(x, y, z), cell);
+                    }
+                }
+            }
+        }
+        for x in 0..n {
+            for z in 0..n {
+                for y in 0..3 {
+                    if random(4) > 0
+                        && let Some(Cell::Open(room)) =
+                            grid.cells.get(&IVec3::new(x, y, z)).copied()
+                    {
+                        grid.cells
+                            .insert(IVec3::new(x, y, z), Cell::Fluid(WATER, room, room));
+                    }
+                }
+            }
+        }
+        let mut open: Vec<IVec3> = grid.cells.keys().copied().collect();
+        open.sort_by_key(|p| (p.x, p.y, p.z));
+        let mut sim = sim(true);
+        sim.reservoirs.max_columns = [40, 200, 4096][random(3) as usize];
+        let work = [1usize, 5, 30, 100, usize::MAX][random(5) as usize];
+        sim.reservoirs.work = work;
+        for &pos in &open {
+            sim.wake(&grid, pos);
+        }
+        let start = held(&grid, &sim);
+        let seconds = [0.004, 1.0 / 60.0, 0.05][random(3) as usize];
+        let budget = [7, 50, usize::MAX][random(3) as usize];
+        let mut drawn = 0i64;
+        // Edits heard a tick late, as some are in the game.
+        let mut late: Vec<(IVec3, bool)> = Vec::new();
+        for tick in 0..1500 {
+            let heard = std::mem::take(&mut late);
+            let editing = tick < 900;
+            if editing && random(10) == 0 {
+                let pos = open[random(open.len() as u32) as usize];
+                drawn += sim.reservoirs.draw(&grid, &water(), pos, 400).unwrap_or(0) as i64;
+            }
+            if editing && random(25) == 0 {
+                let pos = open[random(open.len() as u32) as usize];
+                let cell = match random(3) {
+                    0 => Cell::Closed,
+                    1 => Cell::OPEN,
+                    _ => Cell::Fluid(WATER, random(FULL_FLUID as u32) as u16 + 1, FULL_FLUID),
+                };
+                drawn += grid.amount(pos) as i64;
+                let was = grid.cell(pos);
+                grid.cells.insert(pos, cell);
+                drawn -= grid.amount(pos) as i64;
+                let walled = cell == Cell::Closed && was != Some(Cell::Closed);
+                if random(2) == 0 {
+                    if walled {
+                        sim.reservoirs.walled(pos);
+                    }
+                    sim.reservoirs.touch(pos);
+                } else {
+                    late.push((pos, walled));
+                }
+                sim.wake_around(&grid, pos);
+            }
+            if editing && random(150) == 0 {
+                sim.reservoirs
+                    .unloading(IVec3::new(random(2) as i32, 0, random(2) as i32));
+                sim.drop_marked_reservoirs(&mut grid);
+            }
+            if editing && random(200) == 0 {
+                sim.flush_reservoirs(&mut grid);
+                assert_eq!(
+                    sim.reservoirs.pooled_total(),
+                    0,
+                    "scene {scene}, tick {tick}"
+                );
+            }
+            sim.tick(&mut grid, fluids, seconds, budget);
+            for (pos, walled) in heard {
+                if walled {
+                    sim.reservoirs.walled(pos);
+                }
+                sim.reservoirs.touch(pos);
+            }
+            assert_eq!(
+                held(&grid, &sim),
+                start - drawn,
+                "scene {scene}, tick {tick}, work {work}"
+            );
+            for reservoir in sim.reservoirs.iter() {
+                assert!(
+                    reservoir.total() >= 0,
+                    "scene {scene}, tick {tick}, work {work}"
+                );
+            }
+        }
+        let stranded: i64 = sim.reservoirs.stranded.values().sum();
+        assert_eq!(stranded, 0, "scene {scene}, work {work}");
+        sim.reservoirs.max_columns = 0;
+        sim.flush_reservoirs(&mut grid);
+        assert_eq!(grid.total(WATER) as i64, start - drawn, "scene {scene}");
+    }
+}
