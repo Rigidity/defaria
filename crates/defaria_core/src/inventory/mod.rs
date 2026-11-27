@@ -3,23 +3,13 @@
 //! - [`model`]: [`Inventory`], how many of each item ([`ItemStack`]s),
 //!   limited only by an optional weight, as a component anything can
 //!   have.
-//! - [`player`]: the local player's inventory: what a new player starts
-//!   with, its weight limit, and saving it with the world.
+//! - [`player`]: what a new player starts with, and its weight limit
+//!   (the server gives players theirs and saves them:
+//!   `defaria_server::inventory`).
 //! - [`transfer`]: moving items between inventories and the catalog.
 
 pub mod model;
 pub mod player;
 pub mod transfer;
 
-use bevy::prelude::*;
-
 pub use model::{Inventory, ItemStack};
-
-pub struct InventoryPlugin;
-
-impl Plugin for InventoryPlugin {
-    fn build(&self, app: &mut App) {
-        app.register_type::<Inventory>()
-            .add_plugins(player::PlayerInventoryPlugin);
-    }
-}

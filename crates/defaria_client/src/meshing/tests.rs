@@ -5,10 +5,10 @@ use defaria_core::player::tests::local_player_at;
 use defaria_core::{
     content::{BlockState, Direction, base, block},
     world::{Voxels, WorldPlugin, spawn_chunk},
-    worldgen::{
-        Terrain, TerrainBlocks, TerrainSettings,
-        testing::{PATCH_SIZE, patch_chunks, spawn_patch},
-    },
+};
+use defaria_server::worldgen::{
+    Terrain, TerrainBlocks, TerrainSettings,
+    testing::{PATCH_SIZE, patch_chunks, spawn_patch},
 };
 
 fn terrain() -> Terrain {
@@ -461,7 +461,7 @@ fn set_voxel(app: &mut App, pos: IVec3, state: BlockState) {
 /// keep their meshes.
 #[test]
 fn light_changes_remesh_the_chunks_they_reach() {
-    let mut app = defaria_core::testing::patch_app(base().clone());
+    let mut app = defaria_server::testing::patch_app(base().clone());
     with_meshing(&mut app);
     finish_meshing(&mut app);
     // High in the air, where the terrain doesn't reach: a stone in the
@@ -491,7 +491,7 @@ fn light_changes_remesh_the_chunks_they_reach() {
 /// and only those: the edge of what's loaded waits for its neighbours.
 #[test]
 fn streamed_chunks_are_drawn_once_their_neighbours_load() {
-    let app = defaria_core::testing::world_app(base().clone())
+    let app = defaria_server::testing::world_app(base().clone())
         .with(with_meshing)
         .build();
     let mut chunks = app

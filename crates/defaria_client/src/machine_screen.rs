@@ -168,7 +168,7 @@ pub struct SendsToMachine;
 pub struct MachineView;
 
 /// Opens the screen of the machine the server says the local player used
-/// (`defaria_core::server` claims the use).
+/// (`defaria_server::server` claims the use).
 pub fn open_machine_screen(
     mut commands: Commands,
     mut messages: MessageReader<FromServer>,

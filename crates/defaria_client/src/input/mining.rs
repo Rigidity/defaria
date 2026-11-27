@@ -95,11 +95,11 @@ mod tests {
     use super::*;
     use defaria_core::{
         content::{base, block},
-        mining::MiningPlugin,
         player::tests::local_player_at,
         testing::{chunk_app, insert_chunk},
         world::{Chunk, Voxels},
     };
+    use defaria_server::mining::MiningPlugin;
 
     /// Stone at (5, 1, 5), a locked cursor, and the local player looking
     /// at the stone from three blocks away.

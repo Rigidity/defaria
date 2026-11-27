@@ -1,9 +1,9 @@
 //! Scripts in the game.
 
 use bevy::prelude::*;
-use defaria_core::{
-    block_entity::{BlockData, BlockEntities, Value},
-    machine::EnergyBuffer,
+use defaria_core::{block_entity::Value, machine::EnergyBuffer};
+use defaria_server::{
+    block_entity::{BlockData, BlockEntities},
     script::ScriptRuntime,
 };
 

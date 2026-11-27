@@ -15,8 +15,8 @@ pub fn test_game(script: Script) -> App {
     let mut app = App::new();
     // Before the game's plugins, so its scripts load with them: what a
     // script may do then doesn't depend on how busy the machine is.
-    app.insert_resource(defaria_core::script::ScriptSettings::untimed())
-        .insert_resource(defaria_core::script::hooks::HookSettings::untimed());
+    app.insert_resource(defaria_server::script::ScriptSettings::untimed())
+        .insert_resource(defaria_server::script::hooks::HookSettings::untimed());
     app.add_plugins((
         default_plugins(false).disable::<bevy::log::LogPlugin>(),
         crate::GamePlugin,
@@ -52,7 +52,7 @@ pub fn run_more(app: &mut App, script: &str) {
     panic!("the script never finished");
 }
 
-pub use defaria_core::testing::settle;
+pub use defaria_server::testing::settle;
 
 /// Runs the whole game with no GPU until the script ends, and returns
 /// how it exited.
@@ -236,8 +236,8 @@ pub fn test_multiplayer(clients: usize) -> Multiplayer {
 pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multiplayer {
     let mut server = App::new();
     server
-        .insert_resource(defaria_core::script::ScriptSettings::untimed())
-        .insert_resource(defaria_core::script::hooks::HookSettings::untimed())
+        .insert_resource(defaria_server::script::ScriptSettings::untimed())
+        .insert_resource(defaria_server::script::hooks::HookSettings::untimed())
         .insert_resource(defaria_core::streaming::StreamingSettings {
             radius: 4,
             ..default()
@@ -254,7 +254,7 @@ pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multipla
             client.insert_resource(defaria_client::net::ServerConnection(to_server));
             server
                 .world_mut()
-                .resource_mut::<defaria_core::server::Incoming>()
+                .resource_mut::<defaria_server::server::Incoming>()
                 .0
                 .push(at_server);
             let relay = Relay {

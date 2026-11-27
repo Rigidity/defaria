@@ -13,7 +13,9 @@
 //! The mode is a component of the player ([`GameMode`]), saved with them;
 //! anything without one plays as in creative, the default. The rules for
 //! using items up are [`harvest`] and [`use_up`].
-//! C switches it while playing (`input::game_mode`). New players start in
+//! C switches it while playing (`input::game_mode`), and the server
+//! keeps a player's weight limit in step with it
+//! (`defaria_server::game_mode`). New players start in
 //! creative.
 
 use bevy::prelude::*;
@@ -21,17 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     content::{BlockState, Content, ItemState},
-    inventory::{Inventory, ItemStack, player::PLAYER_MAX_WEIGHT},
+    inventory::{Inventory, ItemStack},
 };
-
-pub struct GameModePlugin;
-
-impl Plugin for GameModePlugin {
-    fn build(&self, app: &mut App) {
-        app.register_type::<GameMode>()
-            .add_systems(Update, limit_weight.in_set(GameModeSystems));
-    }
-}
 
 /// Where a player's game mode takes effect; what switches it runs before.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -52,16 +45,6 @@ pub enum GameMode {
 impl GameMode {
     pub fn is_creative(self) -> bool {
         self == Self::Creative
-    }
-}
-
-/// The player's weight limit: none in creative.
-fn limit_weight(mut players: Query<(&GameMode, &mut Inventory), Changed<GameMode>>) {
-    for (mode, mut inventory) in &mut players {
-        let limit = (!mode.is_creative()).then_some(PLAYER_MAX_WEIGHT);
-        if inventory.max_weight != limit {
-            inventory.max_weight = limit;
-        }
     }
 }
 

@@ -6,9 +6,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [workspace]
-members = ["crates/defaria_core", "crates/defaria_client"]
+members = ["crates/defaria_core", "crates/defaria_client", "crates/defaria_server"]
 # Plain `cargo build`, `test`, `clippy` and `check` cover every crate.
-default-members = [".", "crates/defaria_core", "crates/defaria_client"]
+default-members = [".", "crates/defaria_core", "crates/defaria_client", "crates/defaria_server"]
 resolver = "3"
 
 [workspace.package]
@@ -24,6 +24,7 @@ publish = false
 bevy = { version = "0.20.1", features = ["serialize"] }
 defaria_core = { path = "crates/defaria_core", default-features = false }
 defaria_client = { path = "crates/defaria_client", default-features = false }
+defaria_server = { path = "crates/defaria_server", default-features = false }
 json5 = "1.3.8"
 # zlib for saved chunks. The version Bevy already builds (for PNGs).
 miniz_oxide = "0.8.9"
@@ -49,6 +50,7 @@ too_many_arguments = "allow"
 bevy = { workspace = true }
 defaria_core = { workspace = true }
 defaria_client = { workspace = true }
+defaria_server = { workspace = true }
 tracing = { workspace = true }
 
 # The headless runner's per-system CPU clock (`systems`): the version, and
@@ -69,6 +71,7 @@ rustix = { version = "1.1.6", default-features = false, features = ["time"] }
 [dev-dependencies]
 defaria_core = { workspace = true, features = ["test-support"] }
 defaria_client = { workspace = true, features = ["test-support"] }
+defaria_server = { workspace = true, features = ["test-support"] }
 
 [features]
 # `dev` is on by default so that `cargo run`, `test`, `clippy` and `check` all
@@ -84,6 +87,7 @@ dev = [
     "bevy/bevy_remote",     # Bevy Remote Protocol: inspect the running game over HTTP
     "defaria_core/dev",
     "defaria_client/dev",
+    "defaria_server/dev",
 ]
 
 [lib]

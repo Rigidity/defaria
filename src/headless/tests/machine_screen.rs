@@ -8,7 +8,6 @@ use defaria_client::{
     ui::{Bar, ItemSlot, Tooltip, UiTheme},
 };
 use defaria_core::{
-    block_entity::BlockEntities,
     content::{BlockState, Content},
     inventory::Inventory,
     machine::{Slots, has_screen},
@@ -16,6 +15,7 @@ use defaria_core::{
     recipe::{RecipeProgress, RecipeStatus},
     world::Voxels,
 };
+use defaria_server::block_entity::BlockEntities;
 
 use bevy::{
     ui::UiGlobalTransform,
@@ -563,7 +563,7 @@ fn wide_machines_wrap_to_fit_the_window() {
     // The machine's part scrolls, since its parts don't fit even wrapped.
     let mut machine = world.query_filtered::<&ComputedNode, With<MachinePanel>>();
     let node = machine.single(world).unwrap();
-    assert!(crate::ui::scroll::max_scroll(node) > 0.0);
+    assert!(defaria_client::ui::scroll::max_scroll(node) > 0.0);
 }
 
 /// The base game and a test mod with `big_crate`: 54 slots, six rows.
@@ -603,12 +603,12 @@ fn a_big_slot_group_scrolls() {
         outer_at.translation.y - outer.size.y / 2.0 >= 0.0,
         "the screen's top is above the window"
     );
-    let mut scrolled =
-        world.query_filtered::<(&Name, &ComputedNode), With<crate::ui::scroll::Scrollable>>();
+    let mut scrolled = world
+        .query_filtered::<(&Name, &ComputedNode), With<defaria_client::ui::scroll::Scrollable>>();
     let grids: Vec<f32> = scrolled
         .iter(world)
         .filter(|(name, _)| name.as_str() == "Slot group")
-        .map(|(_, node)| crate::ui::scroll::max_scroll(node))
+        .map(|(_, node)| defaria_client::ui::scroll::max_scroll(node))
         .collect();
     assert_eq!(grids.len(), 1);
     assert!(grids[0] > 0.0, "{grids:?}");
@@ -656,9 +656,9 @@ fn scripted_machine_mods() -> Vec<defaria_core::content::load::ModFiles> {
 /// the click and neither happens.
 #[test]
 fn a_scripted_machine_is_used_rather_than_opened() {
-    use defaria_core::{
-        block_entity::{BlockData, Value},
-        content::load::order,
+    use defaria_core::{block_entity::Value, content::load::order};
+    use defaria_server::{
+        block_entity::BlockData,
         script::{ScriptIndex, ScriptRuntime, ScriptSettings, ScriptSources},
     };
     let content = Content::from_mods(scripted_machine_mods());
@@ -748,9 +748,9 @@ fn scripted_item_mods() -> Vec<defaria_core::content::load::ModFiles> {
 /// on a scripted machine runs the machine's `on_used`.
 #[test]
 fn a_scripted_item_comes_after_the_block_it_is_used_on() {
-    use defaria_core::{
-        block_entity::{BlockData, Value},
-        content::load::order,
+    use defaria_core::{block_entity::Value, content::load::order};
+    use defaria_server::{
+        block_entity::BlockData,
         script::{ScriptIndex, ScriptRuntime, ScriptSettings, ScriptSources},
     };
     let content = Content::from_mods(scripted_item_mods());

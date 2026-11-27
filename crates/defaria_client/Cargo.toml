@@ -14,6 +14,10 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 defaria_core = { workspace = true, features = ["test-support"] }
+# Only for tests that run the server's systems beside the client's (the
+# world streamed or generated, scripts, mining): the client itself never
+# depends on the server.
+defaria_server = { workspace = true, features = ["test-support"] }
 
 [features]
 # The same Bevy features as the game's `dev` (see the root Cargo.toml), so

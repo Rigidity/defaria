@@ -15,6 +15,10 @@ use bevy::{math::DVec3, prelude::*};
 
 use crate::player::Look;
 
+/// How often the server sends snapshots: twenty a second. A client draws
+/// entities a couple of these behind.
+pub const SNAPSHOT_INTERVAL: f64 = 1.0 / 20.0;
+
 /// An entity clients are shown, and what kind it is.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq)]
 #[reflect(Component)]

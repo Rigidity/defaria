@@ -19,9 +19,9 @@ use bevy::{app::TerminalCtrlCHandlerPlugin, log::LogPlugin, prelude::*};
 use defaria_core::{
     content::Content,
     save::{WorldFolder, data_dir},
-    server::{Incoming, ReceiveSystems},
     streaming::StreamingSettings,
 };
+use defaria_server::server::{Incoming, ReceiveSystems};
 
 use crate::quic::{self, DEFAULT_PORT, Listener};
 

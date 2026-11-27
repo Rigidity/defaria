@@ -45,7 +45,7 @@ fn breaking_and_placing_round_trip_in_survival() {
     assert_eq!(player(&mut app).1, GameMode::Survival);
     assert_eq!(
         player(&mut app).0.max_weight,
-        Some(crate::inventory::player::PLAYER_MAX_WEIGHT)
+        Some(defaria_core::inventory::player::PLAYER_MAX_WEIGHT)
     );
     run_more(&mut app, "hold MouseLeft 90\nwait 2");
     assert!(voxel(&mut app, at).is_air());
@@ -120,7 +120,7 @@ fn survival_needs_the_item_to_place() {
 fn voxel(app: &mut App, pos: IVec3) -> BlockState {
     app.world_mut()
         .run_system_cached_with(
-            |pos: In<IVec3>, voxels: crate::world::Voxels| voxels.get(*pos),
+            |pos: In<IVec3>, voxels: defaria_core::world::Voxels| voxels.get(*pos),
             pos,
         )
         .unwrap()

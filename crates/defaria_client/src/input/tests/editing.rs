@@ -31,15 +31,19 @@ use defaria_core::{
 use defaria_core::{
     content::{FULL_FLUID, base, block, test_mod},
     inventory::player::new_player,
-    mining::{Mining, MiningPlugin},
+    mining::Mining,
     player::SIZE,
+    testing::{chunk_app, insert_chunk},
+    use_action::{UseActionPlugin, UseSystems},
+    world::{Chunk, ChunkCoord},
+};
+use defaria_server::block_edit::BlockEditPlugin;
+use defaria_server::{
+    mining::MiningPlugin,
     script::{
         BlockUsed, ItemUsed, ScriptIndex,
         using::{use_scripted_block, use_scripted_item},
     },
-    testing::{chunk_app, insert_chunk},
-    use_action::{UseActionPlugin, UseSystems},
-    world::{Chunk, ChunkCoord},
 };
 use std::time::Duration;
 
@@ -932,9 +936,9 @@ fn right_click_with_an_item_that_places_nothing_does_nothing() {
 fn scripted_app() -> (App, Entity, Entity) {
     let (mut app, left, right) = app();
     let ids: Vec<String> = base().mods.iter().map(|m| m.id.clone()).collect();
-    let runtime = defaria_core::script::ScriptRuntime::new(
-        defaria_core::script::ScriptSources::read(&defaria_core::content::mods_dir(), &ids),
-        defaria_core::script::ScriptSettings::untimed(),
+    let runtime = defaria_server::script::ScriptRuntime::new(
+        defaria_server::script::ScriptSources::read(&defaria_core::content::mods_dir(), &ids),
+        defaria_server::script::ScriptSettings::untimed(),
     );
     app.insert_resource(ScriptIndex::new(base(), &runtime))
         .add_systems(

@@ -25,7 +25,7 @@ use bevy::prelude::*;
 
 use crate::{
     content::{Content, FULL_FLUID, ItemState},
-    fluid_network::FluidAmount,
+    fluid::FluidAmount,
 };
 
 /// What sets one copy of an item apart from another of the same state:
