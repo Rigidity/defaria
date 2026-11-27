@@ -22,13 +22,7 @@ pub(super) fn fixture() -> ScriptSources {
 /// The fixture runtime, with no time limit, so what runs out runs out
 /// of steps, the same every run.
 fn runtime() -> ScriptRuntime {
-    ScriptRuntime::new(
-        fixture(),
-        ScriptSettings {
-            time_limit: Duration::MAX,
-            ..default()
-        },
-    )
+    ScriptRuntime::new(fixture(), ScriptSettings::untimed())
 }
 
 const CALLER: Caller = Caller::Other(1);
@@ -354,7 +348,7 @@ fn scripts_from_the_same_mod_dont_share_globals_either() {
         )],
         &mut Vec::new(),
     ));
-    let mut runtime = ScriptRuntime::new(sources, default());
+    let mut runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
     assert_eq!(
         runtime.call_with::<_, Option<i32>>(CALLER, "m:b", "on_read", ()),
         Ok(Some(None))

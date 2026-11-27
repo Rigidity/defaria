@@ -235,7 +235,7 @@ fn content() -> &'static Content {
 fn runtime() -> ScriptRuntime {
     let sources = ScriptSources::from_mods(&order(mods(), &mut Vec::new()));
     assert!(sources.errors.is_empty(), "{:?}", sources.errors);
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::default());
+    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
     assert!(
         runtime.load_errors().is_empty(),
         "{:?}",
@@ -253,6 +253,8 @@ fn state(id: &str, values: &[(&str, &str)]) -> BlockState {
 fn app() -> App {
     let mut app = chunk_app(content().clone(), Duration::from_millis(50));
     app.add_plugins(AssetPlugin::default())
+        .insert_resource(ScriptSettings::untimed())
+        .insert_resource(HookSettings::untimed())
         .insert_resource(runtime())
         .add_plugins((BlockEntityPlugin, ScriptPlugin));
     for coord in [IVec3::ZERO, IVec3::Y] {
@@ -872,7 +874,7 @@ fn the_base_games_scripts_load() {
     let ids: Vec<String> = content.mods.iter().map(|m| m.id.clone()).collect();
     let runtime = ScriptRuntime::new(
         ScriptSources::read(Path::new("assets/mods"), &ids),
-        ScriptSettings::default(),
+        ScriptSettings::untimed(),
     );
     assert!(
         runtime.load_errors().is_empty(),

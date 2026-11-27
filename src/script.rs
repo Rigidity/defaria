@@ -70,6 +70,18 @@ impl Default for ScriptSettings {
     }
 }
 
+#[cfg(test)]
+impl ScriptSettings {
+    /// The defaults with no time limit, for tests: what runs out runs
+    /// out of steps, the same every run however busy the machine is.
+    pub fn untimed() -> Self {
+        Self {
+            time_limit: Duration::MAX,
+            ..default()
+        }
+    }
+}
+
 /// Sent when the scripts have reloaded (a script changed in a dev build,
 /// or the settings did). Every script's state is fresh and every
 /// disabled caller enabled again.
