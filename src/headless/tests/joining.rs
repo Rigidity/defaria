@@ -4,9 +4,17 @@
 //! textures, and the player carrying what the server says, its hotbar
 //! showing it.
 
-use std::{net::SocketAddr, thread, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
-use bevy::prelude::*;
+use bevy::{math::DVec3, prelude::*};
 use defaria_client::{
     hotbar_ui::HotbarSlot,
     session::{GameState, StartAtMenu},
@@ -17,17 +25,20 @@ use defaria_core::{
     content::Content,
     hotbar::{ActiveSlot, Hotbar},
     inventory::Inventory,
-    player::LocalPlayer,
+    physics::Body,
+    player::{EYE_HEIGHT, LocalPlayer, START_POSITION},
     save::DataFolder,
     streaming::{StreamingSettings, StreamingStatus},
     testing::temp_folder,
-    world::ChunkCoord,
+    world::{ChunkCoord, ChunkMap},
 };
 
 use crate::{
     connecting::ConnectOnStart,
     dedicated::take_clients_from,
-    headless::{Multiplayer, default_plugins, test_server_with},
+    headless::{
+        FRAME_TIME, HeadlessPlugin, Multiplayer, Script, default_plugins, test_server_with,
+    },
     identity::Identity,
     mod_transfer::Offer,
     quic,
@@ -138,4 +149,93 @@ fn a_client_that_joins_from_the_menu_plays_there() {
         .map(Mesh::count_vertices)
         .sum();
     assert!(vertices > 0, "nothing drawn");
+}
+
+/// A server on the network that runs on its own thread in real time, as
+/// a dedicated server does, until the returned flag is set.
+fn real_time_server() -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
+    let (address_tx, address_rx) = std::sync::mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let thread = thread::spawn(move || {
+        let mut server = test_server_with(None, None);
+        let content = server.world().resource::<Content>().clone();
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener =
+            quic::listen(local, Offer::new(&content).unwrap(), &Identity::generate()).unwrap();
+        address_tx.send(listener.address.to_string()).unwrap();
+        take_clients_from(&mut server, listener);
+        while !stopping.load(Ordering::Relaxed) {
+            let start = Instant::now();
+            server.update();
+            if let Some(rest) = FRAME_TIME.checked_sub(start.elapsed()) {
+                thread::sleep(rest);
+            }
+        }
+    });
+    (address_rx.recv().unwrap(), stop, thread)
+}
+
+/// The original failure, end to end: a headless run on a server over the
+/// network jumps far from where it starts (`camera`) and `settle`s. It
+/// settles there, with the player where it jumped to and the world around
+/// it loaded, not around where it started. The client runs its frames as
+/// a headless run does, back to back, while the server steps in real
+/// time; and the server, not the client, says when the world has loaded
+/// around the player.
+#[test]
+fn a_camera_jump_on_a_server_settles_where_it_went() {
+    let (address, stop, server) = real_time_server();
+    let script = Script::parse("camera 600 80 600 0 -30\nsettle\n").unwrap();
+    let mut client = App::new();
+    client
+        .insert_resource(ConnectOnStart {
+            address,
+            exit_on_failure: true,
+        })
+        .insert_resource(StartAtMenu)
+        .insert_resource(DataFolder(temp_folder("camera-jump")))
+        .add_plugins((
+            default_plugins(false).disable::<bevy::log::LogPlugin>(),
+            crate::GamePlugin,
+            HeadlessPlugin {
+                script,
+                rendering: false,
+            },
+        ))
+        .insert_resource(StreamingSettings {
+            radius: 4,
+            ..default()
+        });
+    client.finish();
+    client.cleanup();
+    let started = Instant::now();
+    let exit = loop {
+        client.update();
+        if let Some(exit) = client.should_exit() {
+            break exit;
+        }
+        assert!(started.elapsed() < Duration::from_secs(120), "never ended");
+    };
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
+    assert_eq!(exit, AppExit::Success);
+
+    let world = client.world_mut();
+    let feet = world
+        .query_filtered::<&Body, With<LocalPlayer>>()
+        .single(world)
+        .unwrap()
+        .position;
+    let jumped = DVec3::new(600.0, 80.0 - EYE_HEIGHT, 600.0);
+    assert!(feet.distance(jumped) < 1.0, "the player is at {feet}");
+    let there = ChunkCoord::split(IVec3::new(600, 80, 600)).0.0;
+    let settings = world.resource::<StreamingSettings>().clone();
+    let map = world.resource::<ChunkMap>();
+    let missing = (settings.window(there))
+        .filter(|&coord| map.get(ChunkCoord(coord)).is_none())
+        .count();
+    assert_eq!(missing, 0, "chunks around where it went still missing");
+    let start = ChunkCoord::split(START_POSITION.floor().as_ivec3()).0;
+    assert!(map.get(start).is_none(), "still has where it started");
 }

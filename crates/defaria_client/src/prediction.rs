@@ -91,6 +91,11 @@ pub struct Prediction {
     /// The inputs since the server's last, each with where it left the
     /// player, oldest first.
     steps: VecDeque<(Input, Motion)>,
+    /// The newest input that put the player somewhere (a teleport), until
+    /// the server has applied it: sent with every batch, however many
+    /// inputs came after it, since losing it would leave the player where
+    /// it was on the server for good.
+    teleport: Option<Input>,
     /// How many times the client's player was put where the server had it.
     pub corrections: u32,
 }
@@ -99,6 +104,39 @@ impl Prediction {
     /// The last input numbered: the step the player has been taken to.
     pub fn tick(&self) -> u32 {
         self.tick
+    }
+
+    /// Keeps the input for the step about to be taken.
+    fn note(&mut self, input: Input, motion: Motion) {
+        if input.teleport.is_some() {
+            self.teleport = Some(input.clone());
+        }
+        self.steps.push_back((input, motion));
+        while self.steps.len() > MAX_KEPT {
+            self.steps.pop_front();
+        }
+    }
+
+    /// The server applied the inputs up to `tick`.
+    fn applied(&mut self, tick: u32) {
+        self.acked = Some(tick);
+        if self.teleport.as_ref().is_some_and(|input| input.tick <= tick) {
+            self.teleport = None;
+        }
+    }
+
+    /// The inputs to send: the newest [`MAX_SENT`] the server hasn't
+    /// applied, after the last teleport among them if it's older than
+    /// those.
+    fn batch(&self) -> Vec<Input> {
+        let skip = self.steps.len().saturating_sub(MAX_SENT);
+        let newest = self.steps.iter().skip(skip).map(|(input, _)| input.clone());
+        let oldest_sent = self.steps.get(skip).map(|(input, _)| input.tick);
+        let teleport = self
+            .teleport
+            .clone()
+            .filter(|input| oldest_sent.is_none_or(|oldest| input.tick < oldest));
+        teleport.into_iter().chain(newest).collect()
     }
 }
 
@@ -134,10 +172,7 @@ fn note_input(
         teleport: teleported.then(|| Motion::of(body, state)),
     };
     let motion = Motion::of(body, state);
-    prediction.steps.push_back((input, motion));
-    while prediction.steps.len() > MAX_KEPT {
-        prediction.steps.pop_front();
-    }
+    prediction.note(input, motion);
 }
 
 /// Notes where the step left the player.
@@ -190,7 +225,7 @@ fn reconcile(
     let Ok((entity, mut body, mut state, mut controls, correction)) = player.single_mut() else {
         return;
     };
-    prediction.acked = Some(tick);
+    prediction.applied(tick);
     let predicted = prediction
         .steps
         .iter()
@@ -271,14 +306,66 @@ fn send_inputs(mut prediction: ResMut<Prediction>, connection: Option<ResMut<Ser
     }
     let made_after = prediction.sent;
     prediction.sent = prediction.tick;
-    let skip = prediction.steps.len().saturating_sub(MAX_SENT);
-    let inputs: Vec<Input> = prediction
-        .steps
-        .iter()
-        .skip(skip)
-        .map(|(input, _)| input.clone())
-        .collect();
+    let inputs = prediction.batch();
     connection
         .0
         .send(ClientMessage::Inputs { inputs, made_after });
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::math::DVec3;
+
+    use super::*;
+
+    fn input(tick: u32, teleport: bool) -> Input {
+        let motion = Motion {
+            feet: DVec3::new(600.0, 80.0, 600.0),
+            velocity: DVec3::ZERO,
+            on_ground: false,
+            flying: true,
+            sneaking: false,
+            sprinting: false,
+            eye_height: defaria_core::player::EYE_HEIGHT,
+        };
+        Input {
+            tick,
+            controls: Controls::default(),
+            look: Look::default(),
+            teleport: teleport.then_some(motion),
+        }
+    }
+
+    fn ticks(batch: &[Input]) -> Vec<u32> {
+        batch.iter().map(|input| input.tick).collect()
+    }
+
+    /// A teleport the server hasn't applied is sent with every batch, even
+    /// once more than a batch's worth of inputs came after it (a client
+    /// outrunning the server), and kept even past the steps kept to step
+    /// again; once applied, it's dropped.
+    #[test]
+    fn a_teleport_is_sent_until_applied() {
+        let mut prediction = Prediction::default();
+        let motion = input(0, true).teleport.unwrap();
+        for tick in 1..=300 {
+            prediction.note(input(tick, tick == 5), motion);
+        }
+        let batch = prediction.batch();
+        assert_eq!(batch.len(), MAX_SENT + 1);
+        assert_eq!(batch[0].tick, 5);
+        assert!(batch[0].teleport.is_some());
+        assert_eq!(ticks(&batch[1..]), (269..=300).collect::<Vec<_>>());
+
+        // Among the newest, it's sent once, in order.
+        let mut recent = Prediction::default();
+        for tick in 1..=40 {
+            recent.note(input(tick, tick == 20), motion);
+        }
+        assert_eq!(ticks(&recent.batch()), (9..=40).collect::<Vec<_>>());
+
+        prediction.applied(5);
+        assert_eq!(prediction.batch().len(), MAX_SENT);
+        assert!(prediction.teleport.is_none());
+    }
 }
