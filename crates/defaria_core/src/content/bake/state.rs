@@ -13,8 +13,8 @@ use super::{
     texture::Textures,
 };
 use crate::content::{
-    BakedFace, BlockBox, Content, Direction, MAX_LIGHT, Model, SideTexture, State, StatePart,
-    Vertex,
+    BakedFace, BlockBox, Content, Direction, MAX_LIGHT, Model, NextPart, SideTexture, State,
+    StatePart, Vertex,
     schema::{BlockDef, TextureRef},
 };
 
@@ -74,9 +74,10 @@ pub(super) fn bake_state(
         })?;
     }
     // Something to aim at, unless it's a fluid, which the crosshair
-    // passes through.
-    if state.target.is_empty() && fluid.is_none() {
+    // passes through, or its parts drawn by the neighbours give it some.
+    if state.target.is_empty() && state.next_target.is_empty() && fluid.is_none() {
         state.target.push(BlockBox::FULL);
+        state.target_reaches.push(None);
     }
     state.fluid = fluid;
     for side in Direction::ALL {
@@ -132,10 +133,16 @@ fn bake_part(
         layers.insert(slot, layer);
     }
 
-    let first_face = state.faces.len();
+    // A part drawn by its neighbours is kept apart: its faces and its
+    // boxes. It covers nothing.
+    let faces = match part.next {
+        Some(_) => &mut state.next_faces,
+        None => &mut state.faces,
+    };
+    let first_face = faces.len();
     for face in &model.faces {
         let layer = slot_texture(&face.slot, model, &layers)?;
-        state.faces.push(BakedFace {
+        faces.push(BakedFace {
             // A quarter turn keeps it a unit vector, exactly.
             normal: rotation * face.normal,
             vertices: face
@@ -150,11 +157,6 @@ fn bake_part(
             cull: face.cull.map(rotate_direction),
         });
     }
-    let occludes = model
-        .occludes
-        .iter()
-        .fold(0, |bits, &d| bits | rotate_direction(d).bit());
-    state.occludes |= occludes;
     let turn_box = |b: &BlockBox| {
         let [a, c] = [b.min, b.max].map(turn);
         BlockBox {
@@ -162,10 +164,38 @@ fn bake_part(
             max: a.max(c),
         }
     };
+    if let Some(rule) = part.next {
+        let first_box = state.next_collision.len();
+        let first_target = state.next_target.len();
+        if def.fluid.is_none() {
+            state
+                .next_collision
+                .extend(model.collision.iter().map(turn_box));
+            state.next_target.extend(model.target.iter().map(turn_box));
+            state
+                .next_target_reaches
+                .resize(state.next_target.len(), part.reaches);
+        }
+        state.next_parts.push(NextPart {
+            rule,
+            faces: first_face..state.next_faces.len(),
+            collision: first_box..state.next_collision.len(),
+            target: first_target..state.next_target.len(),
+        });
+        return Ok(());
+    }
+    let occludes = model
+        .occludes
+        .iter()
+        .fold(0, |bits, &d| bits | rotate_direction(d).bit());
+    state.occludes |= occludes;
     let first_box = state.collision.len();
     if def.fluid.is_none() {
         state.collision.extend(model.collision.iter().map(turn_box));
         state.target.extend(model.target.iter().map(turn_box));
+        state
+            .target_reaches
+            .resize(state.target.len(), part.reaches);
     }
     state.parts.push(StatePart {
         model: model.id.clone(),

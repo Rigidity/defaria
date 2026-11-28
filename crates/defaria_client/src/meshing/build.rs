@@ -4,7 +4,8 @@
 //!
 //! Meshing copies each block state's baked model faces into the chunk mesh,
 //! leaving out the faces covered by the neighbour on their `cull` side,
-//! including across chunk borders. It reads a [`Neighborhood`]: a copy of the
+//! including across chunk borders, and the faces of its parts drawn by
+//! their neighbours (a part's `next`) where the blocks around match. It reads a [`Neighborhood`]: a copy of the
 //! chunk's blocks and light plus the one-voxel layer around it from the
 //! neighbouring chunks, so meshing never looks anything up in other chunks.
 //! Greedy meshing is the next step if vertex counts become a problem.
@@ -55,7 +56,8 @@ use crate::meshing::{
 };
 use defaria_core::{
     content::{
-        BakedFace, BlockState, Content, Direction, FULL_FLUID, Fluid, MAX_LIGHT, Render, Vertex,
+        Around, BakedFace, BlockState, Content, Direction, FULL_FLUID, Fluid, MAX_LIGHT, Render,
+        Vertex,
     },
     fluid,
     light::{CHANNELS, ChunkLight, Light, part_full_dim},
@@ -442,7 +444,18 @@ impl Neighborhood {
             let state = content.state(voxel);
             let glows = state.emits_light();
             let builder = &mut builders[state.render as usize];
-            for (index, face) in state.faces.iter().enumerate() {
+            // Its own faces, then those of its parts drawn by the blocks
+            // next to it, numbered after its own in the face table.
+            let own = state.faces.iter().enumerate();
+            let around = if content.reads_around(voxel) {
+                Around::read(|side| self.block(pos + side.normal()))
+            } else {
+                Around::AIR
+            };
+            let by_next = content
+                .next_faces(voxel, &around)
+                .map(|(index, face)| (state.faces.len() + index, face));
+            for (index, face) in own.chain(by_next) {
                 if face.hidden_by(|side| self.hides(content, voxel, pos + side.normal(), side)) {
                     continue;
                 }

@@ -435,8 +435,9 @@ pub struct BlockDef {
     pub support: Option<Vec<SupportDef>>,
 }
 
-/// One kind of block a block can stand on (see [`BlockDef::support`]): a
-/// block, and if `when` is given, only its states that match it.
+/// One kind of block a block can stand on (see [`BlockDef::support`]), or
+/// a part's neighbour must be (see [`PartDef::next`]): a block, and if
+/// `when` is given, only its states that match it.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SupportDef {
@@ -882,6 +883,26 @@ pub struct PartDef {
     /// turns: the block's `rotate` doesn't apply to it.
     #[serde(default)]
     pub rotate: Option<[i32; 3]>,
+    /// What the block on each side named must be, or not be, for the part
+    /// to be there: drawn, bumped into and aimed at. A part with any covers
+    /// no sides.
+    #[serde(default)]
+    pub next: BTreeMap<Direction, NextDef>,
+}
+
+/// What a part's neighbour on one side must be: a block (in states that
+/// match its `when`), or `{ not: ... }` for anything but that.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum NextDef {
+    Not(NotNext),
+    Is(SupportDef),
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct NotNext {
+    pub not: SupportDef,
 }
 
 /// How a block's faces are drawn.

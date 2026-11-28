@@ -10,7 +10,7 @@ use crate::{
     testing::world_app,
 };
 use defaria_core::{
-    content::{base, block},
+    content::{Around, BlockBox, BlockState, base, block},
     testing::temp_folder,
 };
 
@@ -31,20 +31,26 @@ fn ray(from: Vec3, to: Vec3) -> Ray3d {
     Ray3d::new(from, Dir3::new(to - from).unwrap())
 }
 
-/// The side a wrench aimed from `from` at `to` works on, in the pipe of
-/// `state` at the origin.
-fn side_of(state: BlockState, from: Vec3, to: Vec3) -> Option<Direction> {
+/// The side a wrench aimed from `from` at `to` works on, in the conduit
+/// of `state` at the origin, with the blocks `around` it.
+fn side_beside(state: BlockState, around: Around, from: Vec3, to: Vec3) -> Option<Direction> {
     let content = base();
     let ray = ray(from, to);
+    let target = content.target(state, &around);
     let hit = defaria_core::block_edit::raycast(ray, 8.0, |pos| {
         if pos == IVec3::ZERO {
-            target_shape(content, state)
+            target.boxes.clone()
         } else {
-            &[]
+            std::borrow::Cow::Borrowed(&[][..])
         }
     })?;
     assert_eq!(hit.block, IVec3::ZERO);
-    wrench_side(content, state, ray, hit)
+    wrench_side(&target, ray, hit)
+}
+
+/// [`side_beside`], with nothing around it.
+fn side_of(state: BlockState, from: Vec3, to: Vec3) -> Option<Direction> {
+    side_beside(state, Around::AIR, from, to)
 }
 
 /// On an arm, the wrench works on the side the arm reaches, whichever of
@@ -66,20 +72,36 @@ fn the_side_is_the_arm_aimed_at_or_the_face() {
     assert_eq!(side_of(state, core - Vec3::Z, core), Some(Direction::North));
 }
 
-/// A whole block that's a conduit has no arms: the face clicked.
+/// A box whose part reaches no side (a whole block, a core) is worked on
+/// by the face clicked; one whose part reaches one, by that side, from
+/// any of its faces.
 #[test]
-fn a_box_that_reaches_every_side_is_no_arm() {
-    assert_eq!(arm_of(&BlockBox::FULL), None);
-    let core = BlockBox {
-        min: Vec3::splat(0.1875),
-        max: Vec3::splat(0.8125),
+fn a_box_works_on_the_side_its_part_reaches() {
+    use std::borrow::Cow;
+    let whole = Target {
+        boxes: Cow::Owned(vec![BlockBox::FULL]),
+        reaches: Cow::Owned(vec![None]),
     };
-    assert_eq!(arm_of(&core), None);
-    let up = BlockBox {
-        min: Vec3::new(0.25, 0.8125, 0.25),
-        max: Vec3::new(0.75, 1.0, 0.75),
+    let from_above = ray(Vec3::new(0.5, 2.0, 0.5), Vec3::new(0.5, 0.5, 0.5));
+    let hit = |target: &Target| {
+        defaria_core::block_edit::raycast(from_above, 8.0, |pos| {
+            if pos == IVec3::ZERO {
+                target.boxes.clone()
+            } else {
+                Cow::Borrowed(&[][..])
+            }
+        })
+        .unwrap()
     };
-    assert_eq!(arm_of(&up), Some(Direction::Up));
+    assert_eq!(
+        wrench_side(&whole, from_above, hit(&whole)),
+        Some(Direction::Up)
+    );
+    let arm = Target {
+        boxes: Cow::Owned(vec![BlockBox::FULL]),
+        reaches: Cow::Owned(vec![Some(E)]),
+    };
+    assert_eq!(wrench_side(&arm, from_above, hit(&arm)), Some(E));
 }
 
 /// The blocked faces round trip through their saved form, and a mask
@@ -237,7 +259,7 @@ fn target_of(app: &mut App, ray: Ray3d) -> Option<(IVec3, Direction)> {
         .run_system_once(
             move |content: Res<Content>, voxels: Voxels, blocked: Blocked| {
                 let hit = defaria_core::block_edit::raycast(ray, 8.0, |pos| {
-                    target_shape(&content, voxels.get(pos).unwrap_or(BlockState::AIR))
+                    target_at(&content, &voxels, pos).boxes
                 })?;
                 wrench_target(&content, &voxels, |pos| blocked.at(pos), ray, hit)
             },
@@ -271,6 +293,34 @@ fn a_face_blocked_between_two_conduits_opens_from_either() {
     toggle(&mut app, beyond, W);
     assert_eq!(target_of(&mut app, at_beyond), Some((beyond, W)));
     assert_eq!(target_of(&mut app, at_middle), Some((beyond, W)));
+}
+
+/// Aimed at a machine's face where a conduit is joined to it, the wrench
+/// blocks the conduit's face, and then opens it again; on a face no
+/// conduit is joined to, it does nothing.
+#[test]
+fn a_joint_with_a_machine_turns_from_the_machine() {
+    let mut app = app(None);
+    let tank = LINE;
+    let above = tank + IVec3::Y;
+    app.world_mut()
+        .run_system_once(move |mut voxels: Voxels| {
+            assert!(voxels.set(tank, block("tank")));
+            assert!(voxels.set(above, pipe()));
+        })
+        .unwrap();
+    app.update();
+    assert_eq!(get(&mut app, above), joined_pipe(&[Direction::Down]));
+    // Down onto the tank's top, beside the pipe.
+    let corner = tank.as_vec3() + Vec3::new(0.1, 1.0, 0.1);
+    let at_tank = ray(corner + Vec3::Y * 2.0, corner);
+    assert_eq!(target_of(&mut app, at_tank), Some((above, Direction::Down)));
+    toggle(&mut app, above, Direction::Down);
+    assert_eq!(get(&mut app, above), pipe());
+    assert_eq!(target_of(&mut app, at_tank), Some((above, Direction::Down)));
+    // At the tank's side, where nothing is joined: nothing.
+    let side = tank.as_vec3() + Vec3::new(1.0, 0.5, 0.5);
+    assert_eq!(target_of(&mut app, ray(side + Vec3::X * 2.0, side)), None);
 }
 
 /// A wire with every face open keeps nothing in its block entity, so its

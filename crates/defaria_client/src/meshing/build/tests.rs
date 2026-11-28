@@ -1483,3 +1483,41 @@ fn indices_widen_past_16_bits_of_vertices() {
     assert_eq!(sorted.iter().next(), Some(69_996), "the farther face first");
     assert!(matches!(faces(8).indices_from(Vec3::ZERO), Indices::U16(_)));
 }
+
+/// A part drawn by its neighbours is meshed, at its own place in the
+/// block, only where the block next to it matches: a `lamp`'s part, a
+/// face halfway up the block, is there with a post east of it.
+#[test]
+fn parts_are_meshed_where_their_neighbours_match() {
+    let content = defaria_core::content::test_mod(&[
+        (
+            "models/middle.json5",
+            r#"{ slots: { all: null }, faces: [{ texture: "all", vertices: [
+                { pos: [0, 0.5, 1], uv: [0, 1] }, { pos: [1, 0.5, 1], uv: [1, 1] },
+                { pos: [1, 0.5, 0], uv: [1, 0] }, { pos: [0, 0.5, 0], uv: [0, 0] } ] }] }"#,
+        ),
+        (
+            "blocks/post.json5",
+            r#"{ model: "quad", textures: { all: "a" } }"#,
+        ),
+        (
+            "blocks/lamp.json5",
+            r#"{ model: "quad", textures: { all: "a" },
+                 parts: [{ model: "middle", next: { east: { block: "post" } } }] }"#,
+        ),
+    ]);
+    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let lamp = content.default_state("test:lamp").unwrap();
+    let post = content.default_state("test:post").unwrap();
+    let mut chunk = Chunk::default();
+    chunk.set(2, 3, 4, lamp);
+    let halfway = |chunk: &Chunk| {
+        vec3s(&chunk_mesh(chunk, &content, air), Mesh::ATTRIBUTE_POSITION)
+            .iter()
+            .filter(|p| p.y == 3.5)
+            .count()
+    };
+    assert_eq!(halfway(&chunk), 0);
+    chunk.set(3, 3, 4, post);
+    assert_eq!(halfway(&chunk), 4);
+}

@@ -53,7 +53,8 @@ fn axis(side: Direction) -> usize {
 /// share its voxel with another: its only box is that half, it covers that
 /// side completely, the crosshair picks it by that box, it's drawn
 /// opaque, and it's a plain block (no fluid, block entity, script,
-/// connections or support, and not replaceable), whose voxel holds
+/// connections, support or parts drawn by their neighbours, and not
+/// replaceable), whose voxel holds
 /// nothing but its state.
 fn half_side(state: &State, block: &Block) -> Option<Direction> {
     let plain = state.render == Render::Opaque
@@ -64,6 +65,7 @@ fn half_side(state: &State, block: &Block) -> Option<Direction> {
         && block.script.is_none()
         && block.connections.is_none()
         && block.support.is_none()
+        && state.next_parts.is_empty()
         && !state.replaceable;
     let &[only] = &state.collision[..] else {
         return None;
@@ -102,6 +104,7 @@ fn combined_state(content: &Content, low: BlockState, high: BlockState, block: u
         name: format!("{} and {}", a.name, b.name),
         collision: [a.collision[0], b.collision[0]].to_vec(),
         target: [a.collision[0], b.collision[0]].to_vec(),
+        target_reaches: vec![None; 2],
         occludes: ALL_SIDES,
         light: std::array::from_fn(|i| a.light[i].max(b.light[i])),
         light_filter: a.light_filter.max(b.light_filter),
@@ -163,6 +166,7 @@ pub(super) fn add_combinations(content: &mut Content, errors: &mut Vec<String>) 
         block_entity: None,
         script: None,
         support: None,
+        next: Vec::new(),
     });
     for (low, high) in pairs {
         let state = combined_state(content, low, high, block);

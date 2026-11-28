@@ -33,12 +33,12 @@
 //! `Time<Virtual>` caps how many after a long stall. Whatever draws a body
 //! between steps uses [`Body::interpolated`].
 
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use bevy::{ecs::system::SystemParam, math::DVec3, prelude::*};
 
 use crate::{
-    content::{BlockBox, Content},
+    content::{Around, BlockBox, BlockState, Content},
     world::{Chunk, ChunkCoord, ChunkMap},
 };
 
@@ -226,7 +226,7 @@ impl Body {
 /// functions: a block's boxes in its own coordinates, or `None` where the
 /// world isn't loaded (which is solid).
 pub trait Shapes {
-    fn shape(&self, block: IVec3) -> Option<&[BlockBox]>;
+    fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>>;
 }
 
 /// [`Shapes`] read from the loaded chunks.
@@ -237,11 +237,27 @@ pub struct WorldShapes<'w, 's> {
     content: Res<'w, Content>,
 }
 
-impl Shapes for WorldShapes<'_, '_> {
-    fn shape(&self, block: IVec3) -> Option<&[BlockBox]> {
+impl WorldShapes<'_, '_> {
+    /// The block at `block`, or `None` where the world isn't loaded.
+    fn state(&self, block: IVec3) -> Option<BlockState> {
         let (coord, local) = ChunkCoord::split(block);
         let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
-        Some(&self.content.state(chunk.at(local)).collision)
+        Some(chunk.at(local))
+    }
+}
+
+impl Shapes for WorldShapes<'_, '_> {
+    /// A block's collision boxes, with those of its parts drawn by the
+    /// blocks around it ([`Content::collision`]; unloaded ones count as
+    /// air).
+    fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>> {
+        let state = self.state(block)?;
+        if !self.content.reads_around(state) {
+            return Some(self.content.collision(state, &Around::AIR));
+        }
+        let around =
+            Around::read(|side| self.state(block + side.normal()).unwrap_or(BlockState::AIR));
+        Some(self.content.collision(state, &around))
     }
 }
 
@@ -257,7 +273,7 @@ fn any_box_in(region: Aabb, shapes: &impl Shapes, mut f: impl FnMut(Aabb) -> boo
         for y in min.y..=max.y {
             for z in min.z..=max.z {
                 let block = IVec3::new(x, y, z);
-                for b in shapes.shape(block).unwrap_or(FULL) {
+                for b in shapes.shape(block).as_deref().unwrap_or(FULL) {
                     if f(Aabb::of_block(block, b)) {
                         return true;
                     }
@@ -497,13 +513,50 @@ mod tests {
     struct TestShapes(HashMap<IVec3, Option<Vec<BlockBox>>>);
 
     impl Shapes for TestShapes {
-        fn shape(&self, block: IVec3) -> Option<&[BlockBox]> {
+        fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>> {
             match self.0.get(&block) {
-                Some(Some(boxes)) => Some(boxes),
+                Some(Some(boxes)) => Some(Cow::Borrowed(boxes)),
                 Some(None) => None,
-                None => Some(&[]),
+                None => Some(Cow::Borrowed(&[])),
             }
         }
+    }
+
+    /// The world's shapes give a block the collision boxes of its parts
+    /// drawn by the blocks really next to it.
+    #[test]
+    fn world_shapes_read_the_neighbours() {
+        use crate::{
+            content::vines,
+            testing::{chunk_app, insert_chunk},
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let content = vines();
+        let vine = content.default_state("test:vine").unwrap();
+        let tall = content
+            .block_state("test:post", &[("tall", "yes")])
+            .unwrap();
+        let short = content.default_state("test:post").unwrap();
+        let mut app = chunk_app(content, Duration::from_millis(10));
+        let mut chunk = Chunk::default();
+        // A short post west of the vine, so its second part is never there.
+        chunk.set(1, 1, 1, vine);
+        chunk.set(0, 1, 1, short);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        let bumps = |app: &mut App| {
+            app.world_mut()
+                .run_system_once(|shapes: WorldShapes| {
+                    shapes.shape(IVec3::new(1, 1, 1)).unwrap().len()
+                })
+                .unwrap()
+        };
+        assert_eq!(bumps(&mut app), 0);
+        let mut chunks = app.world_mut().query::<&mut Chunk>();
+        chunks
+            .single_mut(app.world_mut())
+            .unwrap()
+            .set(2, 1, 1, tall);
+        assert_eq!(bumps(&mut app), 1);
     }
 
     const SLAB: BlockBox = BlockBox {

@@ -85,8 +85,8 @@ pub struct FaceIndex {
 }
 
 impl FaceIndex {
-    /// The entry of face `face` (by its index in the state's faces) of
-    /// state `state`.
+    /// The entry of face `face` of state `state`: by its index in the
+    /// state's faces, or past them, in its `next_faces`.
     pub fn id(&self, state: BlockState, face: usize) -> Option<u16> {
         let start = *self.starts.get(state.0 as usize)? as usize;
         self.ids.get(start + face).copied().flatten()
@@ -139,7 +139,8 @@ impl ModelFaces {
         let mut left_out = 0;
         for state in &content.states {
             index.starts.push(index.ids.len() as u32);
-            for face in &state.faces {
+            // Its parts drawn by their neighbours after its own faces.
+            for face in state.faces.iter().chain(&state.next_faces) {
                 let entry = ModelFace::of(face);
                 let entry_words = entry.words();
                 let key = (entry_words, entry.triangle);
@@ -190,6 +191,23 @@ pub fn update_model_faces(content: Res<Content>, mut faces: ResMut<ModelFaces>) 
 mod tests {
     use super::*;
     use defaria_core::content::{base, block};
+
+    /// The faces of parts drawn by their neighbours are numbered after
+    /// the state's own, and each has its entry.
+    #[test]
+    fn parts_drawn_by_neighbours_have_entries() {
+        let content = defaria_core::content::vines();
+        let faces = ModelFaces::new(&content);
+        let vine = content.default_state("test:vine").unwrap();
+        let state = content.state(vine);
+        assert!(!state.next_faces.is_empty());
+        for (f, face) in state.next_faces.iter().enumerate() {
+            let id = faces.index.id(vine, state.faces.len() + f).unwrap();
+            let entry = faces.index.face(id);
+            assert_eq!(*entry, ModelFace::of(face));
+            assert_eq!(entry.texture, face.layer);
+        }
+    }
 
     /// Every face of every state has an entry holding what it baked to,
     /// and states sharing a model and texture share entries: the base

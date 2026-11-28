@@ -259,8 +259,8 @@ fn fluids_are_passed_through_and_replaced() {
     }
     chunk.fill_fluid_at(IVec3::new(13, 2, 5), block("lava"));
     app.update();
-    assert_eq!(target_shape(base(), block("water")), []);
-    assert_eq!(target_shape(base(), block("lava")), []);
+    assert!(target_shape(base(), block("water"), &defaria_core::content::Around::AIR).is_empty());
+    assert!(target_shape(base(), block("lava"), &defaria_core::content::Around::AIR).is_empty());
     // The dirt behind the water is the target: placing goes into the
     // water against it.
     press_key(&mut app, KeyCode::Digit1);

@@ -708,8 +708,48 @@ a model for each of the 64 ways its arms can go:
   Each part's faces cull against the neighbours as they would on their
   own; parts in the same block don't hide each other's faces, so leave
   out faces one part covers inside another (the pipe's arm has no face
-  against the core).
+  against the core). The crosshair outlines the union of the
+  target boxes as one shape, so a shape built of several boxes shows no
+  seams between them.
+- A part whose `when` needs exactly one of the block's
+  [connection](#connections) sides `"true"` (`when: { north: "true" }`,
+  or `{ facing: "up", north: "true" }`) **reaches** that side: aimed at,
+  its target boxes are that side's for the [wrench](#items). A part
+  naming none (a core) or several reaches none.
 - A fluid can't have parts.
+
+#### Parts drawn by their neighbours
+
+A part's **`next`** says what the block on some of its sides must be for
+it to be there: for each side, a block (in the states that match its
+`when`, as in [Support](#support)), or `{ not: ... }` for anything but
+that. A block can change shape with the blocks around it this way, with
+no property of its own for it:
+
+```json5
+// A railing (in part): a post that grows a rail toward each railing
+// beside it, and a foot where it stands on anything but another post.
+parts: [
+  { model: "railing_post" },
+  { model: "railing_rail", next: { north: { block: "railing" } } },
+  { model: "railing_rail", rotate: [0, 90, 0], next: { west: { block: "railing" } } },
+  { model: "railing_foot", next: { down: { not: { block: "railing" } } } },
+],
+```
+
+- The part's `when` must match too, as for any part.
+- Every side it names must match. The blocks are looked up as the chunk
+  is drawn, so the part changes as its neighbours do, without the
+  state changing.
+- Where it's there, things bump into its collision boxes and the
+  crosshair picks its target boxes (which reach a side as any part's
+  do), so what it draws is bumped into and aimed at as drawn. It covers no
+  sides, whatever its model `occludes`: light and what hides a
+  neighbour's faces don't change with the neighbours.
+- A state whose own parts leave nothing to aim at, while such parts
+  have target boxes, is aimed at as the whole block where none of them
+  is there.
+- A block with such parts isn't a [half](#halves).
 
 ### Material properties
 
@@ -879,8 +919,8 @@ sees that from the state itself; there's nothing to declare. A state is a
 - the crosshair picks it by that same box (no smaller `target`);
 - it's drawn `opaque`;
 - and it's a plain block: not a fluid, a conduit or a machine, not
-  `replaceable`, and with no `block_entity`, `script`, connections or
-  `support`.
+  `replaceable`, and with no `block_entity`, `script`, connections,
+  `support` or [parts drawn by their neighbours](#parts-drawn-by-their-neighbours).
 
 Any two halves on opposite sides of the same axis fit together, whatever
 their blocks: a slab with a slab, a vertical slab with a vertical slab.
@@ -1267,9 +1307,14 @@ an item or material that doesn't exist, is an error.
 
 - `"wrench"`: on a [conduit](#conduits), blocks the face aimed at, or
   opens it if it's blocked. On one of the conduit's arms, that's the side
-  the arm reaches; on its core, the face clicked. A blocked face has no
+  the arm reaches; on its core, the face clicked. (An arm is a part that
+  [reaches](#parts) a side: one whose `when` needs that connection
+  side joined, bends included.) A blocked face has no
   arm, so it's opened again from the core's face there, or from the face
-  of the block next to it (a machine's port). It places nothing, and
+  of the block next to it (a machine's port); aimed at that face while the
+  conduit is joined to it, it blocks the conduit's face, so a joint with
+  no arm to click (a wire lying on the machine) can be parted too. It
+  places nothing, and
   while it's in hand right click on any block is its own: it doesn't
   open machines' screens or use scripted blocks.
 
