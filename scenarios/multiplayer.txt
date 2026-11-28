@@ -1,0 +1,85 @@
+# The Multiplayer screen: servers added and edited, a server joined that
+# doesn't answer (connecting, in the background, then why it failed),
+# and back to the list. Headless runs keep their server list in a data
+# folder of their own.
+# Run: cargo headless scenarios/multiplayer.txt
+wait 5
+hold MouseLeft 1                   # lock the cursor, playing
+wait 1
+hold Escape 1                      # the pause menu
+wait 3
+cursor 640 398                     # Main menu
+wait 30
+hold MouseLeft 1
+wait 3
+cursor 640 374                     # Multiplayer: no servers yet
+wait 30
+hold MouseLeft 1
+wait 3
+screenshot target/scenarios/multiplayer/0-no-servers.png
+wait 1
+cursor 640 366                     # Add server
+wait 30
+hold MouseLeft 1
+wait 3
+cursor 640 300                     # its name
+wait 30
+hold MouseLeft 1
+wait 1
+type Home
+wait 1
+cursor 640 376                     # and address: nothing answers there
+wait 30
+hold MouseLeft 1
+wait 1
+type 127.0.0.1:1
+wait 2
+screenshot target/scenarios/multiplayer/1-add-server.png
+wait 1
+cursor 640 432                     # Add
+wait 30
+hold MouseLeft 1
+wait 3
+cursor 640 384                     # and another, at the usual port
+wait 30
+hold MouseLeft 1
+wait 3
+cursor 640 300
+wait 30
+hold MouseLeft 1
+wait 1
+type LAN party
+wait 1
+cursor 640 376
+wait 30
+hold MouseLeft 1
+wait 1
+type 192.168.1.20
+wait 2
+cursor 640 432
+wait 30
+hold MouseLeft 1
+wait 3
+screenshot target/scenarios/multiplayer/2-servers.png
+wait 1
+cursor 759 361                     # Edit the second
+wait 30
+hold MouseLeft 1
+wait 3
+screenshot target/scenarios/multiplayer/3-edit-server.png
+wait 1
+cursor 640 501                     # Back to the list
+wait 30
+hold MouseLeft 1
+wait 3
+connect-timeout 2                  # rather than ten seconds
+cursor 605 295                     # join Home
+wait 30
+hold MouseLeft 1
+wait 10
+screenshot target/scenarios/multiplayer/4-connecting.png
+joined                             # it doesn't answer
+wait 3
+screenshot target/scenarios/multiplayer/5-cant-connect.png
+inspect MenuPage
+inspect ConnectStatus

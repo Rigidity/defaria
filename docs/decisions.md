@@ -177,7 +177,7 @@ incremental builds stay cheap.
   client that falls too far behind, should replace it (#225).
 - `--connect` connects on the main thread before the world starts, which
   can block a few seconds; the connect screen (#52) should connect in the
-  background.
+  background (done: see below).
 - A player's inventory is saved only with one player in the world
   (`inventory::player` saves the single `Player`), so a dedicated
   server with several doesn't save theirs; per-player saves come with
@@ -395,7 +395,8 @@ bandwidth for light or chunks shows up in the `net` report.
   given (`host:port` as typed, so `localhost:25575` and
   `127.0.0.1:25575` are two entries), trust it the first time, and
   refuse a different one with an error saying how to forget it (edit
-  `servers.json5`; the server list, #52, should offer that). An unreadable
+  `servers.json5`; the server list, #52, should offer that: it does,
+  see below). An unreadable
   or newer `servers.json5` refuses to connect rather than trust anyone.
 - `player.id` in scripts is now the player's id, a hex string, and
   `net.send` takes it (or the player table) by that: the same across
@@ -491,10 +492,72 @@ bandwidth for light or chunks shows up in the `net` report.
   runtime is made anew, and background meshing drops its copy.
   Everything else reads `Content` live. Fetching and building happen in
   `--connect`'s blocking connect, so the first frame waits for them; the
-  connect screen (#52) should show progress.
+  connect screen (#52) should show progress (done: see below).
 - Single player still copies `Content` into the server app rather than
   sharing one `Arc<Content>`: the copy happens once a world, and sharing
   it means every reader taking it through an `Arc`.
+
+*As built in #52*, the server list and joining in the background:
+
+- The saved servers are `servers.json5`, the known-servers file #216
+  made, at format 2: each entry gained a name (optional: the list shows
+  the address without one), and the file's order is the list's. The
+  address (`host:port`, the default port added when there's none) is
+  still what a server is known by, so no two entries share one; a
+  server given another address forgets its key, and removing one
+  forgets it. A format 1 file reads as unnamed servers with no code for
+  it, since the fields are a subset. Addresses are normalized (host in
+  lowercase, default port) as the file is read, and a fingerprint that
+  isn't 64 hex digits or an address listed twice makes the file
+  unreadable, as a corrupt one is: each would otherwise make a server
+  count as never seen, trusting any key. It's core's
+  (`defaria_core::server_list`), as the world list is, since the
+  client's menu reads and writes it; `DataFolder` moved to core's `save`
+  with it. Every change rereads the file and writes it through a
+  temporary file of its own, as remembering a key did.
+- Connecting runs on a thread of its own (`src/connecting.rs`): it
+  resolves the address, connects, fetches the mods, builds `Content` and
+  remembers the key, while the client stays in `GameState::Menu` and its
+  frames go on. A step shared through a mutex (connecting, downloading
+  mods n of m, loading them, joining) is what the screen shows, and the
+  outcome comes back through another; the client swaps the content in
+  and enters `Playing` only once it's done. So the sessions' "connecting"
+  state is a page of the menu (`MenuPage::Connecting`) and a resource
+  (`ConnectStatus`), not a `GameState` of its own: everything that
+  belongs to a world still comes and goes with `Playing`.
+- Cancelling (the button, Escape, or asking for another server) drops
+  the attempt, and with it the sender of a channel that the network's
+  side races against the handshake and the mod transfer: the connection
+  is closed at once, and whatever it made is dropped. Resolving a host
+  name and building content can't be interrupted, so a cancelled flag is
+  checked after building (before the server lets the player in) and
+  before the key is saved: a cancelled attempt never joins or remembers
+  anything. A panic on the connecting thread comes back as an error
+  (and a thread that ends without an outcome, as one too), so the screen
+  never waits for ever. A first visit whose key can't be saved fails.
+- `--connect` takes the same path: the game starts at the menu
+  (`ConnectOnStart`), headless too, where a failure exits with an error
+  (nobody's there to read it) and frames spent connecting don't count
+  towards the start's settle timeout. Scenarios gain `joined` (wait for
+  joining to finish, and print how) and `connect-timeout`.
+- A server that goes while the player's there returns to the menu saying
+  why: the client's network thread keeps the connection's close reason
+  (the server's own words, such as "the server stopped", or a time-out),
+  read as the client leaves. Leaving on purpose (the pause menu says
+  **Disconnect** on a server) returns to the Multiplayer screen.
+- A changed key is refused as before, and the error screen shows the new
+  key's fingerprint (its first 16 hex digits) and offers **Trust new
+  key**: that reconnects expecting exactly the key shown, and replaces
+  the saved key only once the server has shown it holds it, and only if
+  the saved key is still the old one (`ServerList::replace_key`). A
+  retry that fails, times out or is called off keeps the old key;
+  forgetting the old key first would have trusted whatever answered
+  next.
+- What's left: the list can't be reordered on screen (only by editing
+  the file), servers aren't pinged for whether they're up, their player
+  count or their message of the day, there's no direct connect without
+  saving a server first, and a saved key's fingerprint isn't shown until
+  it changes.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

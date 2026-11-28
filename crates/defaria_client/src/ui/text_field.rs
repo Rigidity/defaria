@@ -75,8 +75,21 @@ pub fn text_field(
     placeholder: impl Into<String>,
     max: usize,
 ) -> impl Bundle {
+    text_field_holding(theme, width, placeholder, max, "")
+}
+
+/// A [`text_field`] with `value` in it already, to edit.
+pub fn text_field_holding(
+    theme: &UiTheme,
+    width: f32,
+    placeholder: impl Into<String>,
+    max: usize,
+    value: &str,
+) -> impl Bundle {
     (
-        TextField::default(),
+        TextField {
+            value: value.to_string(),
+        },
         Node {
             width: px(width),
             border: UiRect::all(px(theme.slot_border)),
@@ -93,7 +106,7 @@ pub fn text_field(
                 TabIndex(0),
                 EditableText {
                     max_characters: Some(max),
-                    ..default()
+                    ..EditableText::new(value)
                 },
                 theme.text_font(),
                 TextColor(theme.text),

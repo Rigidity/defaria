@@ -93,7 +93,7 @@ pub struct Cli {
     /// game's own process (headless too).
     pub connect: Option<String>,
     /// `--data <folder>`: the game's data folder (the install's key, name
-    /// and known servers, the worlds, a dedicated server's default world)
+    /// and saved servers, the worlds, a dedicated server's default world)
     /// instead of the system's. Headless runs use a new one in the
     /// temporary folder unless given this.
     pub data: Option<PathBuf>,

@@ -9,9 +9,9 @@
 //!   single player included.
 //! - `profile.json5`: the player's name, shown to others (only shown: the
 //!   id is who they are).
-//! - `servers.json5`: each server this install has connected to and its
-//!   key's fingerprint, trusted the first time and checked every time
-//!   after, as SSH does ([`KnownServers`]).
+//! - `servers.json5`: the saved servers, and each one's key's
+//!   fingerprint, trusted the first time and checked every time after, as
+//!   SSH does (`defaria_core::server_list`).
 //!
 //! A server's own key (`server.pem`) is the same kind of file, in the
 //! folder of the world it serves, so it stays the same server across
@@ -20,14 +20,13 @@
 //! Without a data folder (tests, and anything given none), the identity is
 //! made in memory and lasts as long as the app.
 
-use std::{
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{io, path::Path, sync::Arc};
 
 use bevy::prelude::*;
-use defaria_core::identity::{DEFAULT_NAME, PlayerId, clean_name, hex, parse_hex};
+use defaria_core::{
+    identity::{DEFAULT_NAME, PlayerId, clean_name},
+    save::{DataFolder, write_replacing, write_temp},
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 
@@ -35,22 +34,12 @@ use serde::{Deserialize, Serialize};
 pub const KEY_FILE: &str = "identity.pem";
 /// The player's name, in the data folder.
 pub const PROFILE_FILE: &str = "profile.json5";
-/// The servers the install knows, in the data folder.
-pub const SERVERS_FILE: &str = "servers.json5";
 /// A server's key pair, in the folder of the world it serves.
 pub const SERVER_KEY_FILE: &str = "server.pem";
 /// The `profile.json5` format this build writes.
 pub const PROFILE_FORMAT: u32 = 1;
-/// The `servers.json5` format this build writes.
-pub const SERVERS_FORMAT: u32 = 1;
 /// The name certificates are made for (a server's is asked for by it).
 pub const CERT_NAME: &str = "defaria";
-
-/// The game's data folder: where the install's identity, profile and
-/// known servers are kept (and, for the game itself, its worlds). Without
-/// it, they're kept in memory.
-#[derive(Resource, Debug, Clone, PartialEq, Eq)]
-pub struct DataFolder(pub PathBuf);
 
 /// A key pair: an install's (a player) or a server's.
 #[derive(Clone)]
@@ -136,51 +125,6 @@ impl Identity {
     }
 }
 
-/// A temporary file's name next to `path`, unique to this process and
-/// call, so two writers never share one.
-fn temp_beside(path: &Path) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.subsec_nanos());
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(
-        ".{}.{}.{nanos}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    PathBuf::from(name)
-}
-
-/// Writes `data` to a new temporary file next to `path`, readable only by
-/// its owner from the start (on unix; on Windows the data folder's own
-/// per-user permissions keep it), and synced to disk.
-fn write_temp(path: &Path, data: &[u8], secret: bool) -> io::Result<PathBuf> {
-    use std::io::Write;
-    let temp = temp_beside(path);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    if secret {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    #[cfg(not(unix))]
-    let _ = secret;
-    let written = options.open(&temp).and_then(|mut file| {
-        file.write_all(data)?;
-        file.sync_all()
-    });
-    match written {
-        Ok(()) => Ok(temp),
-        Err(error) => {
-            let _ = std::fs::remove_file(&temp);
-            Err(error)
-        }
-    }
-}
-
 /// Puts a private key at `path`, readable only by its owner, if there's
 /// nothing there yet: whether it did. Never replaces a file, and never
 /// leaves `path` half written.
@@ -194,15 +138,6 @@ fn write_new_secret(path: &Path, data: &[u8]) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
         Err(error) => Err(error),
     }
-}
-
-/// Writes `data` to `path` whole, through a temporary file of its own (so
-/// two writers don't trip over each other's), replacing what's there.
-fn write_replacing(path: &Path, data: &[u8]) -> io::Result<()> {
-    let temp = write_temp(path, data, false)?;
-    std::fs::rename(&temp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })
 }
 
 /// The SHA-256 hash of the public key `cert` holds (its DER
@@ -313,125 +248,6 @@ pub fn load_name(folder: &Path) -> Result<String, String> {
     }
 }
 
-/// A server key's fingerprint: the SHA-256 hash of its public key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Fingerprint(pub [u8; 32]);
-
-impl std::fmt::Display for Fingerprint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&hex(&self.0))
-    }
-}
-
-/// `servers.json5`: the servers this install has played on.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServersFile {
-    pub format: u32,
-    pub servers: Vec<KnownServer>,
-}
-
-/// A server this install has played on.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KnownServer {
-    /// Its address, as it was given (`host:port`).
-    pub address: String,
-    /// Its key's fingerprint, 64 hex digits.
-    pub fingerprint: String,
-}
-
-/// The servers this install knows, and the file they're kept in (none:
-/// in memory, forgotten when the game stops).
-#[derive(Debug, Clone, Default)]
-pub struct KnownServers {
-    path: Option<PathBuf>,
-    file: ServersFile,
-}
-
-impl KnownServers {
-    /// The servers in `folder`'s `servers.json5` (none yet if it has
-    /// none). One that can't be read is an error: connecting without it
-    /// would trust any server.
-    pub fn load(folder: Option<&Path>) -> Result<Self, String> {
-        let Some(folder) = folder else {
-            return Ok(Self::default());
-        };
-        let path = folder.join(SERVERS_FILE);
-        Ok(Self {
-            file: read_servers(&path)?,
-            path: Some(path),
-        })
-    }
-
-    /// The fingerprint remembered for the server at `address`.
-    pub fn fingerprint(&self, address: &str) -> Option<Fingerprint> {
-        let known = self.file.servers.iter().find(|s| s.address == address)?;
-        parse_hex(&known.fingerprint).map(Fingerprint)
-    }
-
-    /// Remembers `fingerprint` for the server at `address`, if nothing's
-    /// remembered for it yet, and writes the file. The file is read again
-    /// first, so what another copy of the game added since this one read it
-    /// is kept; if that other copy remembered a different key for the same
-    /// address meanwhile, theirs stays and this is an error.
-    pub fn remember(&mut self, address: &str, fingerprint: Fingerprint) -> Result<(), String> {
-        if let Some(path) = &self.path {
-            self.file = read_servers(path)?;
-        }
-        match self.fingerprint(address) {
-            Some(known) if known == fingerprint => return Ok(()),
-            Some(known) => {
-                return Err(format!(
-                    "another copy of the game remembered a different key for {address} \
-                     ({known}) while this one connected"
-                ));
-            }
-            None => {}
-        }
-        self.file.servers.push(KnownServer {
-            address: address.to_string(),
-            fingerprint: fingerprint.to_string(),
-        });
-        self.file.format = SERVERS_FORMAT;
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let text = json5::to_string(&self.file).map_err(|error| error.to_string())?;
-        let text = format!(
-            "// The servers this game has played on, and their keys' fingerprints.\n\
-             // A server whose key changes is refused; see docs/world-format.md.\n{text}\n"
-        );
-        write_replacing(path, text.as_bytes())
-            .map_err(|error| format!("can't write {}: {error}", path.display()))
-    }
-
-    /// The file they're kept in, if any.
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
-    }
-}
-
-/// `servers.json5` at `path`: empty if there's none.
-fn read_servers(path: &Path) -> Result<ServersFile, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let file: ServersFile =
-                json5::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
-            if file.format > SERVERS_FORMAT {
-                return Err(format!(
-                    "{} is format {}, newer than this build's {SERVERS_FORMAT}",
-                    path.display(),
-                    file.format
-                ));
-            }
-            Ok(file)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ServersFile::default()),
-        Err(error) => Err(format!("can't read {}: {error}", path.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,41 +326,5 @@ mod tests {
         assert_eq!(load_name(&folder).unwrap(), "Ada Lovelace");
         std::fs::write(folder.join(PROFILE_FILE), "{ format: 9, name: 'x' }").unwrap();
         assert!(load_name(&folder).unwrap_err().contains("newer"));
-    }
-
-    #[test]
-    fn known_servers_are_remembered() {
-        let folder = temp_folder("known-servers");
-        let mut known = KnownServers::load(Some(&folder)).unwrap();
-        assert_eq!(known.fingerprint("example.org:25575"), None);
-        let print = Fingerprint([7; 32]);
-        known.remember("example.org:25575", print).unwrap();
-        known.remember("localhost:1", Fingerprint([1; 32])).unwrap();
-        let again = KnownServers::load(Some(&folder)).unwrap();
-        assert_eq!(again.fingerprint("example.org:25575"), Some(print));
-        assert_eq!(again.fingerprint("localhost:1"), Some(Fingerprint([1; 32])));
-        assert_eq!(again.file.servers.len(), 2);
-        std::fs::write(folder.join(SERVERS_FILE), "{ format: 9, servers: [] }").unwrap();
-        assert!(KnownServers::load(Some(&folder)).is_err());
-    }
-
-    /// Two copies of the game remembering servers at once keep both; the
-    /// first to remember an address keeps its key.
-    #[test]
-    fn known_servers_from_two_copies_are_merged() {
-        let folder = temp_folder("known-servers-merge");
-        let mut first = KnownServers::load(Some(&folder)).unwrap();
-        let mut second = KnownServers::load(Some(&folder)).unwrap();
-        first.remember("a:1", Fingerprint([1; 32])).unwrap();
-        second.remember("b:2", Fingerprint([2; 32])).unwrap();
-        let both = KnownServers::load(Some(&folder)).unwrap();
-        assert_eq!(both.fingerprint("a:1"), Some(Fingerprint([1; 32])));
-        assert_eq!(both.fingerprint("b:2"), Some(Fingerprint([2; 32])));
-        let error = first.remember("b:2", Fingerprint([3; 32])).unwrap_err();
-        assert!(error.contains("different key"), "{error}");
-        let after = KnownServers::load(Some(&folder)).unwrap();
-        assert_eq!(after.fingerprint("b:2"), Some(Fingerprint([2; 32])));
-        let files: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().collect();
-        assert_eq!(files.len(), 1, "no temporary files left: {files:?}");
     }
 }

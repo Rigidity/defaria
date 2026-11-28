@@ -1,13 +1,19 @@
 //! The main menu, in [`GameState::Menu`]: **Singleplayer** lists the saved
 //! worlds in [`WorldsFolder`], the most recently played first, to play;
 //! **New world** asks for a name and a seed (a number, or any text, or
-//! nothing for a random one) and creates it; **Quit** quits.
+//! nothing for a random one) and creates it; **Multiplayer** lists the
+//! saved servers, to add, edit and join ([`multiplayer`]); **Quit** quits.
 //!
 //! Playing a world puts its folder in [`WorldFolder`] and starts playing;
 //! whoever runs the server (`defaria::integrated`) opens it from there.
 //! Each page is a screen of its own ([`MenuPage`]), replaced by the next;
 //! Escape doesn't close it. Its buttons take a left click once it's been
 //! open a moment ([`MenuClick`]).
+//!
+//! Coming back to the menu from a server opens the Multiplayer screen, or,
+//! if the server went, says why.
+
+pub mod multiplayer;
 
 use bevy::{
     ecs::system::SystemParam,
@@ -17,6 +23,7 @@ use bevy::{
 use defaria_core::save::{self, SavedWorld, WorldFolder};
 
 use crate::{
+    connecting::ConnectStatus,
     session::{GameState, WorldsFolder},
     ui::{TextField, UiScreen, UiTheme, button, screen::StaysOnEscape, scroll_panel, text_field},
 };
@@ -25,10 +32,12 @@ pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<MenuPage>().add_systems(
-            OnEnter(GameState::Menu),
-            (spawn_menu_camera, open_main_menu),
-        );
+        app.register_type::<MenuPage>()
+            .add_systems(
+                OnEnter(GameState::Menu),
+                (spawn_menu_camera, open_first_page),
+            )
+            .add_plugins(multiplayer::MultiplayerMenuPlugin);
     }
 }
 
@@ -40,6 +49,14 @@ pub enum MenuPage {
     Main,
     Worlds,
     NewWorld,
+    /// The saved servers.
+    Servers,
+    AddServer,
+    EditServer,
+    /// Connecting to a server, with how far it's got.
+    Connecting,
+    /// Why connecting to a server failed, or why it went.
+    ConnectError,
 }
 
 /// How tall the world list is at most, in logical pixels, before it
@@ -72,20 +89,41 @@ fn spawn_menu_camera(mut commands: Commands) {
     ));
 }
 
-fn open_main_menu(
+/// The menu's first page: the main menu, or, back from a server, the
+/// Multiplayer screen (or why the server went); or, connecting already
+/// (`--connect`), how that's going.
+fn open_first_page(
     mut commands: Commands,
     theme: Res<UiTheme>,
     pages: Query<Entity, With<MenuPage>>,
+    mut status: ResMut<ConnectStatus>,
+    folder: Option<Res<defaria_core::save::DataFolder>>,
 ) {
+    let folder = folder.as_deref().map(|folder| folder.0.as_path());
+    match &*status {
+        ConnectStatus::Idle => main_menu(&mut commands, &theme, &pages),
+        ConnectStatus::Playing { .. } => {
+            *status = ConnectStatus::Idle;
+            multiplayer::servers_page(&mut commands, &theme, &pages, folder);
+        }
+        status => multiplayer::status_page(&mut commands, &theme, &pages, status),
+    }
+}
+
+fn main_menu(commands: &mut Commands, theme: &UiTheme, pages: &Query<Entity, With<MenuPage>>) {
     open_page(
-        &mut commands,
-        &theme,
-        &pages,
+        commands,
+        theme,
+        pages,
         MenuPage::Main,
+        "Defaria",
         |panel, theme| {
             panel
                 .spawn((Name::new("Singleplayer"), button(theme, "Singleplayer")))
                 .observe(show_worlds);
+            panel
+                .spawn((Name::new("Multiplayer"), button(theme, "Multiplayer")))
+                .observe(multiplayer::show_servers);
             panel
                 .spawn((Name::new("Quit"), button(theme, "Quit")))
                 .observe(quit);
@@ -126,14 +164,15 @@ fn quit(click: On<PointerClick>, menu: MenuClick, mut exit: MessageWriter<AppExi
 }
 
 /// Despawns the page that's open, and opens `page`: a panel with its
-/// title, filled by `fill`.
+/// `title`, filled by `fill`. Returns its root.
 fn open_page(
     commands: &mut Commands,
     theme: &UiTheme,
     pages: &Query<Entity, With<MenuPage>>,
     page: MenuPage,
+    title: &str,
     fill: impl FnOnce(&mut ChildSpawnerCommands, &UiTheme),
-) {
+) -> Entity {
     for open in pages {
         commands.entity(open).try_despawn();
     }
@@ -141,11 +180,6 @@ fn open_page(
         let now = world.resource::<Time<Real>>().elapsed_secs();
         world.insert_resource(PageOpened(now));
     });
-    let title = match page {
-        MenuPage::Main => "Defaria",
-        MenuPage::Worlds => "Singleplayer",
-        MenuPage::NewWorld => "New world",
-    };
     commands
         .spawn((
             Name::new(format!("Menu: {title}")),
@@ -187,7 +221,8 @@ fn open_page(
                 ));
                 fill(panel, theme);
             });
-        });
+        })
+        .id()
 }
 
 fn show_worlds(
@@ -207,6 +242,7 @@ fn show_worlds(
         &theme,
         &pages,
         MenuPage::Worlds,
+        "Singleplayer",
         |panel, theme| {
             let none = worlds.is_empty();
             if none {
@@ -249,12 +285,12 @@ fn show_worlds(
 fn back_to_main(
     click: On<PointerClick>,
     menu: MenuClick,
-    commands: Commands,
+    mut commands: Commands,
     theme: Res<UiTheme>,
     pages: Query<Entity, With<MenuPage>>,
 ) {
     if menu.counts(&click) {
-        open_main_menu(commands, theme, pages);
+        main_menu(&mut commands, &theme, &pages);
     }
 }
 
@@ -273,6 +309,7 @@ fn show_new_world(
         &theme,
         &pages,
         MenuPage::NewWorld,
+        "New world",
         |panel, theme| {
             let label = |text: &str| {
                 (

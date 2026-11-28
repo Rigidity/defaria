@@ -181,7 +181,7 @@ fn a_server_whose_key_changed_is_refused() {
     let bound = listener.address;
     take_clients_from(&mut game.server, listener);
     join(&mut game, &address, &data).unwrap();
-    let remembered = crate::identity::KnownServers::load(Some(&data))
+    let remembered = defaria_core::server_list::ServerList::load(Some(&data))
         .unwrap()
         .fingerprint(&address)
         .expect("remembered the first time");
@@ -203,7 +203,7 @@ fn a_server_whose_key_changed_is_refused() {
         "{error}"
     );
     assert!(error.to_string().contains("servers.json5"), "{error}");
-    let still = crate::identity::KnownServers::load(Some(&data)).unwrap();
+    let still = defaria_core::server_list::ServerList::load(Some(&data)).unwrap();
     assert_eq!(still.fingerprint(&address), Some(remembered));
 }
 
@@ -221,5 +221,24 @@ fn a_damaged_key_joins_no_server() {
         error.to_string().contains("key couldn't be read"),
         "{error}"
     );
-    assert!(!data.join(crate::identity::SERVERS_FILE).exists());
+    assert!(!data.join(defaria_core::server_list::SERVERS_FILE).exists());
+}
+
+/// A first visit whose key can't be saved doesn't join: otherwise every
+/// visit would be a first, trusting any key.
+#[cfg(unix)]
+#[test]
+fn a_key_that_cant_be_saved_joins_no_server() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = temp_folder("identity-unsaved-key");
+    // The install's own files first, then a folder nothing can be written to.
+    LocalIdentity::load(Some(&data));
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let (mut game, listener) = start(None, "127.0.0.1:0".parse().unwrap());
+    let address = listener.address.to_string();
+    take_clients_from(&mut game.server, listener);
+    let error = join(&mut game, &address, &data);
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let error = error.unwrap_err();
+    assert!(error.to_string().contains("couldn't save"), "{error}");
 }

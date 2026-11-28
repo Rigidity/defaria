@@ -62,7 +62,7 @@ feels. Only open the window when the user explicitly asks. Use headless mode
 Likewise, leave the user's saved worlds alone: don't read, write or delete
 anything in `~/Library/Application Support/Defaria` (see
 `docs/world-format.md`), which also holds the install's key
-(`identity.pem`) and known servers. Headless runs and tests keep their
+(`identity.pem`) and saved servers (`servers.json5`). Headless runs and tests keep their
 worlds in memory or in folders they're given, and their identity in a
 temporary data folder (`--data` gives another) or in memory.
 
@@ -145,7 +145,9 @@ changes.
    kept dense) and `lookups` (time reading every voxel in a box of at
    most 256³ by world position and a chunk at a time) and `random-ticks` (pick more
    voxels a chunk for random ticks, so scripted blocks grow or spread
-   quickly enough to watch). The full format is documented at the top of
+   quickly enough to watch) and `joined` (wait until joining a server is
+   done, and print how it went) and `connect-timeout` (how long a server
+   being joined has to answer). The full format is documented at the top of
    `src/headless.rs`. The world loads around the camera in the background;
    the script starts once the first view has loaded. Headless runs play a
    world kept in memory, so every run starts the same; add `--world <folder>`
@@ -367,7 +369,9 @@ frame; the messages between them are `defaria_core::net`. So:
 - Multiplayer: `cargo server` runs a dedicated server (`src/dedicated.rs`;
   type `stop` to save and stop it), and `--connect <host:port>` plays on
   one instead of starting a server (windowed or headless:
-  `cargo headless <script> --connect 127.0.0.1:25575`). The messages
+  `cargo headless <script> --connect 127.0.0.1:25575`), as joining from
+  the Multiplayer screen does: in the background, from the menu
+  (`src/connecting.rs`), playing once it's done. The messages
   cross the network as bytes over QUIC (`src/quic.rs`); a server and
   clients in one test are `headless::test_multiplayer` (in memory;
   `test_multiplayer_over` with `Conditions` delays the messages a number
@@ -390,8 +394,9 @@ frame; the messages between them are `defaria_core::net`. So:
   player's id (`defaria_core::identity::PlayerId`, a component on the
   server's player) is the key's hash, read from the handshake; single
   player uses the install's own. A player joins as a
-  `server::Joining` (id, name, link). Clients remember servers' key
-  fingerprints in `servers.json5` and refuse a changed one. Players are
+  `server::Joining` (id, name, link). Clients keep their saved servers
+  and the servers' key fingerprints in `servers.json5`
+  (`defaria_core::server_list`) and refuse a changed key. Players are
   saved by id in the world's `players/<id>.json5`
   (`crates/defaria_server/src/inventory/player.rs`).
 - The client moves its own player at once and the server checks it: the
@@ -417,8 +422,12 @@ frame; the messages between them are `defaria_core::net`. So:
   (`crates/defaria_server/src/server/replication.rs`,
   `crates/defaria_client/src/replication.rs`).
 - The client is in a `session::GameState`: `Menu` (the main menu, the
-  world list and the new world screen, `crates/defaria_client/src/menu.rs`)
-  or `Playing` a world. The windowed game starts at the menu
+  world list and the new world screen, `crates/defaria_client/src/menu.rs`,
+  and the Multiplayer screen, `menu/multiplayer.rs`) or `Playing` a
+  world. Joining a server happens in `Menu`: the screen sends a
+  `connecting::Connect` and shows the `connecting::ConnectStatus`, which
+  `src/connecting.rs` keeps up to date as it connects in the background,
+  and it enters `Playing` once it's done. The windowed game starts at the menu
   (`StartAtMenu`); headless runs and tests start playing. What belongs
   to the world on the client (its chunks, the local player) has
   `DespawnOnExit(GameState::Playing)`; the integrated server starts on
@@ -441,12 +450,14 @@ relative path.
 - `src/main.rs`: CLI flags and `App` setup only.
 - `src/lib.rs`: `GamePlugin`, `ClientPlugin` and `ServerPlugin`, which
   register one plugin per feature on each side.
-- `src/integrated.rs`: the server in the game's own process, or the
-  connection to a remote one (`RemoteServer`, checked against the known
-  servers). `src/server.rs` builds a server app; `src/dedicated.rs` runs
-  one on its own; `src/quic.rs` is the network; `src/identity.rs` the
-  install's key, name and known servers (`DataFolder`, `LocalIdentity`,
-  `KnownServers`); `src/mod_transfer.rs` the mods a server sends and
+- `src/integrated.rs`: the server in the game's own process, unless the
+  client plays on a remote one (`connecting::RemoteServer`, joined in the
+  background by `src/connecting.rs`, its key checked against the saved
+  servers, `defaria_core::server_list`). `src/server.rs` builds a server
+  app; `src/dedicated.rs` runs one on its own; `src/quic.rs` is the
+  network; `src/identity.rs` the install's key and name
+  (`LocalIdentity`; the data folder is `save::DataFolder`);
+  `src/mod_transfer.rs` the mods a server sends and
   the client's cache of them (`Offer`, `Library`, `Package`).
   `crates/defaria_client/src/content_swap.rs` puts other content in
   place on the client (the block texture, icons and scripts with it).

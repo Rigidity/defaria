@@ -16,6 +16,7 @@ mod player_save;
 mod prediction;
 mod script;
 mod script_channel;
+mod server_list;
 mod support;
 mod ui;
 mod wrench;

@@ -1,7 +1,8 @@
 //! The pause menu: Escape while playing, with no screen open, opens it
 //! (a screen, so the cursor's free); Escape again or **Resume** closes it,
 //! and **Main menu** leaves the world (the server saves it) for the main
-//! menu.
+//! menu, or on a server **Disconnect** leaves it for the Multiplayer
+//! screen.
 //!
 //! While it's open the player is [`Paused`], which the server is told: a
 //! server in the game's own process pauses the game while every player
@@ -14,6 +15,7 @@ use bevy::{
 use defaria_core::net::ClientMessage;
 
 use crate::{
+    connecting::ConnectStatus,
     net::ToServer,
     session::GameState,
     ui::{UiScreen, UiTheme, button, playing, screen::CloseOnEscapeSystems, typing},
@@ -53,14 +55,25 @@ pub struct PauseMenu;
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Paused(pub bool);
 
-fn open_pause_menu(keys: Res<ButtonInput<KeyCode>>, mut commands: Commands, theme: Res<UiTheme>) {
+fn open_pause_menu(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    theme: Res<UiTheme>,
+    status: Option<Res<ConnectStatus>>,
+) {
     if keys.just_pressed(KeyCode::Escape) {
-        spawn_pause_menu(&mut commands, &theme);
+        let on_a_server = status.is_some_and(|status| status.is_on_a_server());
+        spawn_pause_menu(&mut commands, &theme, on_a_server);
     }
 }
 
-/// Spawns the pause menu.
-pub fn spawn_pause_menu(commands: &mut Commands, theme: &UiTheme) {
+/// Spawns the pause menu: leaving says **Disconnect** `on_a_server`.
+pub fn spawn_pause_menu(commands: &mut Commands, theme: &UiTheme, on_a_server: bool) {
+    let leave_label = if on_a_server {
+        "Disconnect"
+    } else {
+        "Main menu"
+    };
     commands
         .spawn((
             Name::new("Pause menu"),
@@ -104,7 +117,7 @@ pub fn spawn_pause_menu(commands: &mut Commands, theme: &UiTheme) {
                     .spawn((Name::new("Resume"), button(theme, "Resume")))
                     .observe(resume);
                 panel
-                    .spawn((Name::new("Main menu"), button(theme, "Main menu")))
+                    .spawn((Name::new(leave_label), button(theme, leave_label)))
                     .observe(leave);
             });
         });

@@ -67,15 +67,18 @@ use serde::{Deserialize, Serialize};
 
 use defaria_core::content::Content;
 
+use defaria_client::connecting::ConnectStep;
+use defaria_core::server_list::Fingerprint;
+
 use crate::{
-    identity::{CERT_NAME, Fingerprint, Identity, key_hash},
+    identity::{CERT_NAME, Identity, key_hash},
     mod_transfer::{
         Library, MAX_FILES, MAX_MOD, MAX_MODS, MAX_PATH, ModEntry, ModHash, Offer, Package,
     },
 };
 
 /// The port a server listens on unless told otherwise.
-pub const DEFAULT_PORT: u16 = 25_575;
+pub use defaria_core::server_list::DEFAULT_PORT;
 
 /// The protocol's version: a client and server of different ones refuse
 /// each other.
@@ -101,7 +104,7 @@ const MAX_MOD_LIST: usize = MAX_MODS * 200 + 64;
 /// their paths and lengths.
 const MAX_MOD_FRAME: usize = MAX_MOD + MAX_FILES * (MAX_PATH + 16) + 64;
 /// How long a client has to say hello, and to connect.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long fetching mods and building content may take, once a server
 /// has answered (and how long a server goes on sending them).
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(300);
@@ -252,8 +255,9 @@ impl std::fmt::Display for ConnectError {
                 f,
                 "the server at {address} isn't the one played on before: its key changed \
                  (fingerprint {found}, expected {expected}). It may be someone else's \
-                 server; if its owner says they changed its key, forget it (remove it from \
-                 servers.json5 in the game's folder) and connect again"
+                 server. If its owner says they changed its key, trust the new one (on the \
+                 Multiplayer screen, or by removing its fingerprint from servers.json5 in \
+                 the game's folder) and connect again"
             ),
             Self::Failed(reason) => f.write_str(reason),
         }
@@ -277,7 +281,68 @@ pub struct Connected {
     /// The mods that had to be fetched (the rest were the client's own, or
     /// cached).
     pub fetched: Vec<ModHash>,
+    /// Why the connection ended, once it has.
+    pub closed: CloseReason,
 }
+
+/// Why a connection ended, as the network saw it: set once it has (the
+/// link closes after).
+#[derive(Debug, Clone, Default)]
+pub struct CloseReason(Arc<std::sync::Mutex<Option<String>>>);
+
+impl CloseReason {
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set(&self, reason: String) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+    }
+}
+
+/// How [`connect_with`] goes: how long a server has to answer, where it
+/// says how far it's got, and what calls it off.
+#[derive(Debug, Clone, Default)]
+pub struct ConnectOptions {
+    /// How long each address has to answer and take the hello
+    /// ([`HANDSHAKE_TIMEOUT`] by default).
+    pub timeout: Option<Duration>,
+    /// Kept up to date with how far it's got.
+    pub step: Option<Arc<std::sync::Mutex<ConnectStep>>>,
+    /// Calls it off when its sender goes (or sends), before play starts:
+    /// the connection is closed, and connecting fails.
+    pub cancel: Option<smol::channel::Receiver<()>>,
+    /// Set when it's called off: checked between steps that can't be
+    /// interrupted (building content), and by whoever acts on the result.
+    pub cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl ConnectOptions {
+    /// Whether it's been called off.
+    pub fn is_cancelled(&self) -> bool {
+        (self.cancelled.as_ref()).is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    fn report(&self, step: ConnectStep) {
+        if let Some(shared) = &self.step {
+            *shared.lock().unwrap_or_else(|e| e.into_inner()) = step;
+        }
+    }
+
+    /// Done once it's called off; never without a `cancel`.
+    async fn cancelled<T>(&self) -> Result<T, String> {
+        match &self.cancel {
+            Some(cancel) => {
+                let _ = cancel.recv().await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+        Err(CANCELLED.to_string())
+    }
+}
+
+/// Why connecting failed when it was called off.
+pub const CANCELLED: &str = "cancelled";
 
 /// Connects to the server at `address` (a host and port) as `identity`,
 /// named `name`, takes the server's mods (from `library` where it has
@@ -290,10 +355,31 @@ pub struct Connected {
 /// first, until one answers.
 pub fn connect(
     address: &str,
+    library: Library,
+    identity: &Identity,
+    name: &str,
+    expected: Option<Fingerprint>,
+) -> Result<Connected, ConnectError> {
+    connect_with(
+        address,
+        library,
+        identity,
+        name,
+        expected,
+        ConnectOptions::default(),
+    )
+}
+
+/// [`connect`], as `options` say: its timeout, reporting how far it's got,
+/// and called off when they say. Still blocks until it's done, so a game
+/// calls it off its main thread (`defaria::connecting`).
+pub fn connect_with(
+    address: &str,
     mut library: Library,
     identity: &Identity,
     name: &str,
     expected: Option<Fingerprint>,
+    options: ConnectOptions,
 ) -> Result<Connected, ConnectError> {
     let given = address.to_string();
     let mut addresses: Vec<SocketAddr> = address
@@ -313,36 +399,52 @@ pub fn connect(
         .spawn(move || {
             smol::block_on(async move {
                 let mut error = String::new();
+                let limit = options.timeout.unwrap_or(HANDSHAKE_TIMEOUT);
                 for address in addresses {
                     let timeout = async {
-                        smol::Timer::after(HANDSHAKE_TIMEOUT).await;
+                        smol::Timer::after(limit).await;
                         Err(format!("{address} didn't answer"))
                     };
-                    let (connection, mut control, mods) =
-                        match open(address, &name, config.clone()).or(timeout).await {
-                            Ok(opened) => opened,
-                            Err(this) => {
-                                error = this;
-                                continue;
-                            }
-                        };
+                    let opened = open(address, &name, config.clone())
+                        .or(timeout)
+                        .or(options.cancelled())
+                        .await;
+                    let (connection, mut control, mods) = match opened {
+                        Ok(opened) => opened,
+                        Err(this) if this == CANCELLED => {
+                            let _ = result_send.send(Err(this));
+                            return;
+                        }
+                        Err(this) => {
+                            error = this;
+                            continue;
+                        }
+                    };
                     // It answered: no other address is tried.
                     let timeout = async {
                         smol::Timer::after(TRANSFER_TIMEOUT).await;
                         Err("fetching the server's mods took too long".to_string())
                     };
-                    match take_mods(&mut control, mods, &mut library)
+                    match take_mods(&mut control, mods, &mut library, &options)
                         .or(timeout)
+                        .or(options.cancelled())
                         .await
                     {
                         Ok(content) => {
                             let (game_end, server_end) = link();
                             let fetched = std::mem::take(&mut library.fetched);
-                            let _ = result_send.send(Ok((game_end, content, fetched)));
-                            play(connection, control, server_end).await;
+                            let closed = CloseReason::default();
+                            let _ =
+                                result_send.send(Ok((game_end, content, fetched, closed.clone())));
+                            play(connection, control, server_end, closed).await;
                         }
                         Err(this) => {
-                            connection.close(1u32.into(), b"refused");
+                            let reason: &[u8] = if this == CANCELLED {
+                                b"cancelled"
+                            } else {
+                                b"refused"
+                            };
+                            connection.close(1u32.into(), reason);
                             let _ = result_send.send(Err(this));
                         }
                     }
@@ -357,11 +459,12 @@ pub fn connect(
         .map_err(|_| "the network thread stopped".to_string())?;
     let found = *seen.lock().unwrap_or_else(|e| e.into_inner());
     match (outcome, found) {
-        (Ok((link, content, fetched)), Some(fingerprint)) => Ok(Connected {
+        (Ok((link, content, fetched, closed)), Some(fingerprint)) => Ok(Connected {
             link,
             fingerprint,
             content,
             fetched,
+            closed,
         }),
         (Ok(_), None) => Err("the server showed no certificate".to_string().into()),
         (Err(_), Some(found)) if expected.is_some_and(|expected| expected != found) => {
@@ -429,8 +532,10 @@ async fn take_mods(
     (send, receive): &mut (SendStream, RecvStream),
     mods: Vec<ModEntry>,
     library: &mut Library,
+    options: &ConnectOptions,
 ) -> Result<Content, String> {
     let missing = library.missing(&mods)?;
+    let total = missing.len();
     write_frame(send, &encode(&Handshake::Fetch(missing.clone())))
         .await
         .map_err(|error| error.to_string())?;
@@ -441,7 +546,8 @@ async fn take_mods(
             mods.len()
         );
     }
-    for hash in missing {
+    for (done, hash) in missing.into_iter().enumerate() {
+        options.report(ConnectStep::Fetching { done, total });
         let entry = mods
             .iter()
             .find(|entry| entry.hash == hash)
@@ -458,7 +564,14 @@ async fn take_mods(
             .receive(entry, package)
             .map_err(|error| format!("the server sent a bad copy of mod {}: {error}", entry.id))?;
     }
+    options.report(ConnectStep::Loading);
     let content = library.content(&mods)?;
+    // Building can't be interrupted: called off meanwhile, it stops here,
+    // before the server lets the player in.
+    if options.is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    options.report(ConnectStep::Joining);
     let ready = Handshake::Ready {
         content: content.fingerprint(),
     };
@@ -793,6 +906,7 @@ async fn play(
     connection: Connection,
     (mut control, mut from_server): (SendStream, RecvStream),
     mut game: ServerLink,
+    closed: CloseReason,
 ) {
     let (to_game, from_net) = mpsc::channel::<ServerMessage>();
     let _datagrams = {
@@ -847,12 +961,36 @@ async fn play(
                 return;
             }
         }
-        if game.is_closed() || connection.close_reason().is_some() {
+        if let Some(why) = connection.close_reason() {
+            if let Some(reason) = why_closed(&why) {
+                closed.set(reason);
+            }
+            return;
+        }
+        if game.is_closed() {
             goodbye(&connection, [&mut control]).await;
             return;
         }
         smol::Timer::after(POLL).await;
     }
+}
+
+/// Why the server's end of a connection went, as a player is told, or
+/// `None` if this end closed it.
+fn why_closed(error: &quinn::ConnectionError) -> Option<String> {
+    use quinn::ConnectionError::*;
+    Some(match error {
+        ApplicationClosed(close) => match String::from_utf8_lossy(&close.reason) {
+            reason if reason.is_empty() || reason == "bye" => {
+                "the server closed the connection".to_string()
+            }
+            reason => reason.into_owned(),
+        },
+        TimedOut => "the server stopped answering".to_string(),
+        Reset => "the server forgot the connection (it may have restarted)".to_string(),
+        LocallyClosed => return None,
+        other => format!("the connection broke: {other}"),
+    })
 }
 
 /// Whether `bytes` fit in a datagram on `connection`.

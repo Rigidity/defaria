@@ -126,6 +126,12 @@ pub fn take_clients_from(app: &mut App, listener: Listener) {
 pub(crate) struct Network(Mutex<Listener>);
 
 impl Network {
+    /// The address it listens at.
+    #[cfg(test)]
+    pub(crate) fn address(&self) -> SocketAddr {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).address
+    }
+
     /// Closes every connection (see [`Listener::close`]), and returns the
     /// address it listened at.
     pub(crate) fn close(self) -> SocketAddr {

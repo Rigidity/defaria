@@ -6,7 +6,7 @@
 use std::{net::SocketAddr, thread, time::Duration};
 
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
-use defaria_client::{content_swap::swap_content, net::ServerConnection};
+use defaria_client::{content_swap::swap_content, net::ServerConnection, session::GameState};
 use defaria_core::{
     content::{BlockState, Content, load::ModFiles},
     script::ScriptRuntime,
@@ -189,8 +189,9 @@ fn a_client_fetches_only_what_it_lacks() {
     assert_eq!(connected.content.mods[0].dir, "mods/defaria");
 }
 
-/// The game, told to play on a server (`--connect`), plays with the
-/// content of that server's mods, and with its own again once it leaves.
+/// The game, told to play on a server (`--connect`), connects in the
+/// background, plays with the content of that server's mods once it has,
+/// and with its own again once it leaves.
 #[test]
 fn the_game_swaps_in_a_servers_content_and_back() {
     let content = server_content();
@@ -199,10 +200,12 @@ fn the_game_swaps_in_a_servers_content_and_back() {
         quic::listen(local, Offer::new(&content).unwrap(), &Identity::generate()).unwrap();
     let data = temp_folder("mod-transfer-game");
     let mut app = App::new();
-    app.insert_resource(crate::integrated::RemoteServer(
-        listener.address.to_string(),
-    ))
-    .insert_resource(crate::identity::DataFolder(data.clone()))
+    app.insert_resource(crate::connecting::ConnectOnStart {
+        address: listener.address.to_string(),
+        exit_on_failure: false,
+    })
+    .insert_resource(defaria_client::session::StartAtMenu)
+    .insert_resource(defaria_core::save::DataFolder(data.clone()))
     .add_plugins((
         crate::headless::default_plugins(false).disable::<bevy::log::LogPlugin>(),
         crate::GamePlugin,
@@ -212,8 +215,20 @@ fn the_game_swaps_in_a_servers_content_and_back() {
     let own = app.world().resource::<Content>().fingerprint();
     assert_ne!(own, content.fingerprint());
 
-    // Entering play connects, and takes the server's mods.
+    // It connects, and takes the server's mods, while the menu's frames go
+    // on; then plays.
     app.update();
+    assert_eq!(
+        *app.world().resource::<State<GameState>>().get(),
+        GameState::Menu
+    );
+    for _ in 0..5000 {
+        if *app.world().resource::<State<GameState>>().get() == GameState::Playing {
+            break;
+        }
+        app.update();
+        thread::sleep(Duration::from_millis(1));
+    }
     let playing = app.world().resource::<Content>();
     assert_eq!(playing.fingerprint(), content.fingerprint());
     assert!(playing.block("test:tinted").is_some());
@@ -222,8 +237,8 @@ fn the_game_swaps_in_a_servers_content_and_back() {
 
     // Leaving, it has its own again.
     app.world_mut()
-        .resource_mut::<NextState<defaria_client::session::GameState>>()
-        .set(defaria_client::session::GameState::Menu);
+        .resource_mut::<NextState<GameState>>()
+        .set(GameState::Menu);
     app.update();
     let back = app.world().resource::<Content>();
     assert_eq!(back.fingerprint(), own);

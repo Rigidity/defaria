@@ -74,6 +74,10 @@ pub enum Command {
     /// Report this many of the busiest frame's systems.
     Systems(usize),
     Settle,
+    /// Wait until joining a server is done, one way or the other.
+    Joined,
+    /// How long a server has to answer, in seconds.
+    ConnectTimeout(f32),
     Memory,
     Lookups {
         min: IVec3,
@@ -300,6 +304,20 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             expect(0)?;
             commands.push(Command::Settle);
         }
+        "joined" => {
+            expect(0)?;
+            commands.push(Command::Joined);
+        }
+        "connect-timeout" => {
+            expect(1)?;
+            let seconds: f32 = parse_number(args[0])?;
+            if !(seconds > 0.0 && seconds.is_finite()) {
+                return Err(format!(
+                    "`connect-timeout` takes seconds, more than 0: {line}"
+                ));
+            }
+            commands.push(Command::ConnectTimeout(seconds));
+        }
         "memory" => {
             expect(0)?;
             commands.push(Command::Memory);
@@ -372,6 +390,8 @@ mod tests {
              systems\n\
              systems 5\n\
              settle\n\
+             joined\n\
+             connect-timeout 0.5\n\
              pour 4 -5 6 water 0.25\n\
              fluids\n\
              fluids 4 -5 6 1 2 3\n\
@@ -415,6 +435,8 @@ mod tests {
                 Command::Systems(12),
                 Command::Systems(5),
                 Command::Settle,
+                Command::Joined,
+                Command::ConnectTimeout(0.5),
                 Command::Pour {
                     pos: IVec3::new(4, -5, 6),
                     fluid: "water".into(),

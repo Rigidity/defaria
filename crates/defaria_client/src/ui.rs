@@ -54,7 +54,7 @@ pub use pointer::{DRAG_DISTANCE, PointerTravel, UiPointer};
 pub use screen::{UiScreen, playing};
 pub use scroll::scroll_panel;
 pub use slot::{ItemSlot, SlotFluid, item_slot};
-pub use text_field::{TextField, text_field, typing};
+pub use text_field::{TextField, text_field, text_field_holding, typing};
 pub use theme::UiTheme;
 pub use tooltip::Tooltip;
 
