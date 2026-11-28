@@ -897,6 +897,11 @@ mod tests {
     fn inputs_step_the_player_once_each() {
         let (mut app, mut client, _) = server();
         let player = the_player(&mut app);
+        // A step a frame, as the client makes them.
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            defaria_core::physics::STEP,
+        ));
+        app.update();
         let start = app.world().get::<Body>(player).unwrap().position;
         let forward = Controls {
             forward: 1.0,

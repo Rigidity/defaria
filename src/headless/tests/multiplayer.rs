@@ -2,13 +2,15 @@
 //! the other.
 
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
-use defaria_client::replication::Replica;
+use defaria_client::replication::{Playback, Replica};
 use defaria_core::{
     content::{BlockState, block},
+    physics::Body,
     world::Voxels,
 };
 
 use crate::headless::test_multiplayer;
+use defaria_server::server::PlayerInputs;
 
 fn voxel(app: &mut App, pos: IVec3) -> Option<BlockState> {
     app.world_mut()
@@ -131,9 +133,38 @@ fn other_player(game: &mut crate::headless::Multiplayer, watcher: usize) -> Vec3
     views.single(world).unwrap().1.translation
 }
 
+/// Where each player is on the server, in the order of their entities.
+fn players_on_server(game: &mut crate::headless::Multiplayer) -> Vec<Vec3> {
+    let world = game.server.world_mut();
+    let mut bodies = world.query_filtered::<(Entity, &Body), With<PlayerInputs>>();
+    let mut players: Vec<(Entity, Vec3)> = (bodies.iter(world))
+        .map(|(entity, body)| (entity, body.position.as_vec3()))
+        .collect();
+    players.sort_by_key(|(entity, _)| *entity);
+    players.into_iter().map(|(_, at)| at).collect()
+}
+
+/// How far each of `frames` is from the one before.
+fn steps(frames: &[Vec3]) -> Vec<f32> {
+    frames.windows(2).map(|w| w[0].distance(w[1])).collect()
+}
+
+/// The mean of `steps`, and the frames off it by more than `share` of it.
+fn off_the_mean(steps: &[f32], share: f32) -> (f32, Vec<usize>) {
+    let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+    let off = (steps.iter().enumerate())
+        .filter(|(_, step)| (*step - mean).abs() > mean * share)
+        .map(|(frame, _)| frame)
+        .collect();
+    (mean, off)
+}
+
 /// One player flies along over a connection a tenth of a second each way
-/// that loses a quarter of the snapshots; the other sees it glide there,
-/// a little behind, hardly ever stopping and jumping on.
+/// that loses a quarter of the inputs and snapshots. The server steps it
+/// the same distance every frame, holding its inputs a little to even out
+/// the losses, and the other player sees it glide there, a little behind,
+/// stopping only when a run of lost snapshots outlasts the tenth of a
+/// second it's drawn behind (it holds then, rather than guess ahead).
 #[test]
 fn another_player_moves_smoothly() {
     let mut game = crate::headless::test_multiplayer_over(
@@ -153,27 +184,49 @@ fn another_player_moves_smoothly() {
     game.run(1, "camera 60.5 66 92.5 0 0\nwait 20");
     game.settle();
     game.run(0, "wait 30");
-    let mut path = Vec::new();
-    game.run_watching(0, "hold KeyW 150", |game| path.push(other_player(game, 1)));
-    let steps: Vec<f32> = path.windows(2).map(|w| w[0].distance(w[1])).collect();
-    // Once it's up to speed (and for as long as it's seen at speed):
-    // about the same distance every frame.
-    let cruising = &steps[60..140];
-    let mean = cruising.iter().sum::<f32>() / cruising.len() as f32;
+    // The same losses from here on, however many messages loading took.
+    game.reseed(1);
+    let (mut on_server, mut seen, mut holding) = (Vec::new(), Vec::new(), Vec::new());
+    game.run_watching(0, "hold KeyW 150", |game| {
+        on_server.push(players_on_server(game));
+        seen.push(other_player(game, 1));
+        holding.push(game.clients[1].world().resource::<Playback>().holding());
+    });
+    // Once it's up to speed, and for as long as it's seen at speed.
+    let cruising = 60..140;
+
+    // On the server, the walker (the one that moved) goes the same
+    // distance every frame but where a run of losses is longer than any
+    // lately (measured: none in most runs, two at most).
+    let walker = (0..on_server[0].len())
+        .max_by(|a, b| {
+            let moved = |player: usize| on_server[0][player].distance(on_server[149][player]);
+            moved(*a).total_cmp(&moved(*b))
+        })
+        .unwrap();
+    let walked: Vec<Vec3> = on_server.iter().map(|players| players[walker]).collect();
+    let walked = &steps(&walked)[cruising.clone()];
+    let (mean, off) = off_the_mean(walked, 0.05);
     assert!(mean > 0.05, "it moved: {mean} a frame");
-    // Losses are random, both ways: a run of lost inputs stops the walker
-    // on the server for a few frames (it steps inputs as they arrive),
-    // and a run of lost snapshots can outlast the tenth of a second it's
-    // drawn behind, so it holds and catches up (it doesn't guess ahead).
-    // Which frames that hits depends on when the world finished loading,
-    // so a few frames may be off, but no more than one in eight. Without
-    // drawing between snapshots, two frames in three would be.
-    let off: Vec<usize> = (cruising.iter().enumerate())
-        .filter(|(_, step)| (*step - mean).abs() >= mean * 0.5)
-        .map(|(frame, _)| frame)
-        .collect();
     assert!(
-        off.len() <= cruising.len() / 8,
-        "frames {off:?} are off the mean of {mean} a frame: {steps:?}"
+        off.len() <= 2,
+        "the server stepped it unevenly in frames {off:?}: {walked:?}"
+    );
+
+    // Seen by the other: every frame within 40% of the mean but where it
+    // holds (measured: within 20% in most runs, 31% at worst, as the
+    // playback clock eases toward the snapshots). Drawn at the newest
+    // snapshot, rather than between them, frames would be two or three
+    // times the mean, then none.
+    let seen = &steps(&seen)[cruising.clone()];
+    let held =
+        |frame: usize| holding[cruising.start + frame] || holding[cruising.start + frame + 1];
+    let holds = (0..seen.len()).filter(|frame| held(*frame)).count();
+    assert!(holds <= seen.len() / 5, "held {holds} frames");
+    let (mean, off) = off_the_mean(seen, 0.4);
+    let off: Vec<usize> = off.into_iter().filter(|frame| !held(*frame)).collect();
+    assert!(
+        off.is_empty(),
+        "frames {off:?} are off the mean of {mean} a frame: {seen:?}"
     );
 }

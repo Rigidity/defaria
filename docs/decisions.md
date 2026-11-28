@@ -212,7 +212,8 @@ bandwidth for light or chunks shows up in the `net` report.
   with the same function (`player::step`), rather than on its own physics
   steps: a client's clock and the server's never need to agree, and a
   late input is still applied in order. A player with no inputs (paused,
-  or its client stalled) stands still, even in the air.
+  or its client stalled) stands still, even in the air. (#232 holds them
+  a little and steps them a step apart: see below.)
 - A client can't step its player faster than time passes: a budget of
   steps refills at the physics rate (5% over, for jitter), with a burst
   of 20. What it does with its inputs isn't checked otherwise: a client
@@ -558,6 +559,49 @@ bandwidth for light or chunks shows up in the `net` report.
   count or their message of the day, there's no direct connect without
   saving a server first, and a saved key's fingerprint isn't shown until
   it changes.
+
+*As built in #232*, an input buffer on the server:
+
+- The server no longer steps a player for each input as it arrives: it
+  steps input `tick` once the server's clock reaches `tick * STEP +
+  offset` (`server::movement::Playout`), so inputs come out a physics
+  step apart, as they were made, however they arrived. An input's
+  offset is when it first arrived less when it was made; the playout's
+  is the biggest of the last 3 seconds, so it holds inputs just long
+  enough for the latest of them lately. With even arrival (single
+  player, where inputs arrive the frame they're made, or a clean
+  connection) that's no hold at all; with uneven frames, no longer than
+  the frames are uneven. An input later than the playout's offset is
+  stepped as it arrives and raises the offset, so a run of losses stops
+  the player once, the first time it's that long. Once the late ones
+  are out of the window the offset comes down 4% of the time passing
+  (catching up within the budget's 5% slack, never two steps in a frame
+  more than once in 25).
+- The hold is capped at 0.1 s (six steps) past the earliest arrival
+  lately: inputs later than that are stepped at once (as many as the
+  budget allows), so a long stall still ends in a burst. A client whose
+  newest input is more than the cap later or earlier than expected (it
+  paused while the server went on, or its clock runs slow or fast) is
+  timed afresh from it. The budget (5% over the physics rate, a burst of
+  20) still bounds it all, so no client steps faster than time passes.
+- The server's clock is its virtual clock, as before: the integrated
+  server, stepped with the client's frames, and its client pause
+  together, so a pause doesn't shift the offsets.
+- `Moved` names the last input stepped, as before, so prediction only
+  sees its answers later, never different: the prediction tests still
+  see no corrections. A use waits for its input to be stepped, so it's
+  held as long as the inputs are: not at all on a good connection, up to
+  the cap on a bad one.
+- Measured in `another_player_moves_smoothly` (a tenth of a second each
+  way, a quarter of datagrams lost), over 40 runs with different losses:
+  the walker's server step was off its mean by more than 5% in 26 to 53
+  frames of 80 before, and 0 to 2 after. What the other player sees is
+  now even except where snapshots run out: drawn frames that aren't
+  holding were up to 112% off the mean before and 31% after. The test
+  reseeds the losses once the world has settled, so it doesn't depend
+  on how long loading took. The rest is the client's playback (a run of
+  two lost snapshots outlasts its fixed tenth of a second, and its clock
+  eases toward the newest snapshot, so speed swings about 20%): #234.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

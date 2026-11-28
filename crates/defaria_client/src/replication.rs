@@ -68,6 +68,14 @@ pub struct Playback {
     newest: f64,
 }
 
+impl Playback {
+    /// Whether the clock has passed the newest snapshot, so replicas hold
+    /// where it put them until the next comes (after a run of lost ones).
+    pub fn holding(&self) -> bool {
+        self.time.is_some_and(|time| time >= self.newest)
+    }
+}
+
 /// A world left: the next starts afresh.
 fn forget(mut playback: ResMut<Playback>, mut replicas: ResMut<Replicas>) {
     *playback = Playback::default();
