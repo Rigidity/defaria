@@ -155,8 +155,13 @@ fn servers_are_added_edited_and_removed() {
     assert_eq!(page(&mut app), Some(MenuPage::Servers));
     let left: Vec<_> = saved(&data).iter().map(|s| s.name.clone()).collect();
     assert_eq!(left, ["Homestead"]);
-    click(&mut app, "Server: Homestead");
-    // (Nothing listens there; connecting is called off.)
+    // Connecting to one, called off. (Not the usual port: a server the
+    // developer runs may be listening there.)
+    click(&mut app, "Add server");
+    type_into::<ServerNameField>(&mut app, "Nowhere");
+    type_into::<AddressField>(&mut app, "127.0.0.1:1");
+    click(&mut app, "Add");
+    click(&mut app, "Server: Nowhere");
     run_more(&mut app, "wait 2\nhold Escape 1\nwait 2");
     assert_eq!(page(&mut app), Some(MenuPage::Servers));
 }
