@@ -18,7 +18,8 @@ use defaria_core::{
 use defaria_server::command::{Console, Operators, ops};
 
 use crate::headless::{
-    Multiplayer, Script, run_more, settle, test_game, test_multiplayer, test_player_id,
+    Conditions, Multiplayer, Script, run_more, settle, test_game, test_multiplayer,
+    test_multiplayer_over, test_player_id,
 };
 
 fn is_open(app: &mut App) -> bool {
@@ -35,6 +36,14 @@ fn voxel(app: &mut App, pos: IVec3) -> Option<BlockState> {
     app.world_mut()
         .run_system_once(move |voxels: Voxels| voxels.get(pos))
         .unwrap()
+}
+
+/// A command, as a client sends it.
+fn command(line: impl Into<String>) -> ClientMessage {
+    ClientMessage::Command {
+        id: 0,
+        line: line.into(),
+    }
 }
 
 /// Sends `message` from client `client` as its chat line would, and lets
@@ -58,6 +67,8 @@ fn the_chat_line_opens_types_and_sends() {
     run_more(&mut app, "hold KeyT 1\nwait 2");
     assert!(is_open(&mut app));
     assert!(app.world_mut().run_system_cached(typing).unwrap());
+    // The T that opened it isn't typed into it.
+    assert_eq!(field_text(&mut app), Some(String::new()));
 
     let at = IVec3::new(64, 70, 80);
     run_more(
@@ -88,12 +99,48 @@ fn the_chat_line_opens_types_and_sends() {
     );
     assert!(!is_open(&mut app));
     assert_eq!(lines(&app).len(), said.len(), "Escape sent nothing");
+    // The Escape that closed it didn't open the pause menu too.
+    assert!(!pause_menu_open(&mut app));
 
     // A scenario's own commands run, but their answers stay out of the
     // chat.
     run_more(&mut app, "fill 64 71 80 64 71 80 stone\nlist\nwait 2");
     assert_eq!(voxel(&mut app, at + IVec3::Y), Some(block("stone")));
     assert_eq!(lines(&app).len(), said.len());
+
+    // A command typed in the chat line on the same frame as a scenario's:
+    // each reply goes to its own sender. The chat's mistake is shown and
+    // doesn't fail the scenario; the scenario's fill isn't shown.
+    run_more(
+        &mut app,
+        "hold KeyT 1\nwait 1\ntype /fill 0 0 0 0 0 0 nonsense\nwait 1\n\
+         hold Enter 1\nfill 64 72 80 64 72 80 stone\nwait 3",
+    );
+    assert!(
+        !app.should_exit().is_some_and(|exit| exit.is_error()),
+        "the scenario didn't fail"
+    );
+    assert_eq!(voxel(&mut app, at + IVec3::Y * 2), Some(block("stone")));
+    let after = lines(&app);
+    assert_eq!(after.len(), said.len() + 1);
+    assert_eq!(after.last().unwrap().kind, ChatKind::Refused);
+    assert!(after.last().unwrap().text.contains("nonsense"));
+}
+
+/// What the chat line's field holds, while it's open.
+fn field_text(app: &mut App) -> Option<String> {
+    let mut fields = app
+        .world_mut()
+        .query_filtered::<&defaria_client::ui::TextField, With<ChatScreen>>();
+    fields
+        .iter(app.world())
+        .next()
+        .map(|field| field.value.clone())
+}
+
+fn pause_menu_open(app: &mut App) -> bool {
+    let mut menus = app.world_mut().query::<&defaria_client::pause::PauseMenu>();
+    menus.iter(app.world()).count() > 0
 }
 
 /// The chat line doesn't open over another screen, or over the pause
@@ -161,7 +208,7 @@ fn commands_are_refused_for_players_not_allowed() {
     let at = IVec3::new(64, 70, 80);
     let fill = format!("fill {0} {1} {2} {0} {1} {2} stone", at.x, at.y, at.z);
 
-    send(&mut game, 1, ClientMessage::Command(fill.clone()));
+    send(&mut game, 1, command(fill.clone()));
     assert_eq!(voxel(&mut game.server, at), Some(BlockState::AIR));
     let refused = lines(&game.clients[1]);
     let last = refused.last().unwrap();
@@ -172,7 +219,14 @@ fn commands_are_refused_for_players_not_allowed() {
     game.run(0, &format!("{fill}\nwait 1"));
     assert_eq!(voxel(&mut game.server, at), Some(block("stone")));
 
-    send(&mut game, 1, ClientMessage::Command("list".into()));
+    send(
+        &mut game,
+        1,
+        ClientMessage::Command {
+            id: 0,
+            line: "list".into(),
+        },
+    );
     let listed = lines(&game.clients[1]).last().unwrap().clone();
     assert_eq!(listed.kind, ChatKind::Output);
     assert!(
@@ -223,6 +277,39 @@ fn allowed_commands_act_on_whoever_ran_them() {
         eyes.distance(bevy::math::DVec3::new(70.5, 80.0, 90.5)) < 0.01,
         "{eyes}"
     );
+}
+
+/// Over a slow link, a command typed in the chat line and then one a
+/// scenario sends are both in flight at once: each reply goes to its own
+/// sender, by id. The chat's refusal shows in the chat and doesn't fail
+/// the scenario; the scenario's fill runs and stays out of the chat.
+#[test]
+fn replies_go_to_whichever_sent_the_command() {
+    let mut game = test_multiplayer_over(
+        1,
+        Conditions {
+            delay: 3,
+            loss: 0.0,
+        },
+    );
+    game.server
+        .insert_resource(Operators([test_player_id(0)].into()));
+    game.settle();
+    let before = lines(&game.clients[0]).len();
+    game.run(
+        0,
+        "hold KeyT 1\ntype /fill 0 0 0 0 0 0 nonsense\nwait 1\nhold Enter 1\n\
+         fill 64 70 80 64 70 80 stone\nwait 1",
+    );
+    let exit = game.clients[0].should_exit();
+    assert!(!exit.as_ref().is_some_and(AppExit::is_error), "{exit:?}");
+    assert_eq!(
+        voxel(&mut game.server, IVec3::new(64, 70, 80)),
+        Some(block("stone"))
+    );
+    let after = lines(&game.clients[0]);
+    assert_eq!(after.len(), before + 1, "{after:?}");
+    assert_eq!(after.last().unwrap().kind, ChatKind::Refused);
 }
 
 /// What a player sends is held to a rate and a length, and cleaned of
@@ -276,9 +363,7 @@ fn chat_is_limited_and_cleaned_on_the_server() {
     for _ in 0..12 {
         game.clients[1]
             .world_mut()
-            .write_message(ToServer(ClientMessage::Command(
-                "fill 0 0 0 0 0 0 stone".into(),
-            )));
+            .write_message(ToServer(command("fill 0 0 0 0 0 0 stone")));
     }
     for _ in 0..3 {
         game.update();
@@ -335,7 +420,7 @@ fn the_console_runs_commands() {
     send(
         &mut game,
         0,
-        ClientMessage::Command(format!(
+        command(format!(
             "fill {0} {1} {2} {0} {1} {2} stone",
             at.x, at.y, at.z
         )),
@@ -350,7 +435,7 @@ fn the_console_runs_commands() {
     send(
         &mut game,
         0,
-        ClientMessage::Command(format!(
+        command(format!(
             "fill {0} {1} {2} {0} {1} {2} stone",
             at.x, at.y, at.z
         )),
@@ -365,7 +450,7 @@ fn the_console_runs_commands() {
     send(
         &mut game,
         0,
-        ClientMessage::Command(format!(
+        command(format!(
             "fill {0} {1} {2} {0} {1} {2} air",
             at.x, at.y, at.z
         )),

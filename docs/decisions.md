@@ -709,11 +709,26 @@ bandwidth for light or chunks shows up in the `net` report.
   `op` and `deop`. The headless runner's parser hands any line starting
   with one of their names to that parser, and the runner sends the line
   over the protocol as the player, as typing it would, and waits for
-  its reply: a refusal or error fails the run, `fill`'s reply carries
-  how many voxels it set and how long that took (for `timing`), and a
+  its reply. Each command carries an id the client picks
+  (`ClientMessage::Command { id, line }`), which its reply carries
+  back, so the runner and the chat line, both sending, each take their
+  own replies (`chat::CommandIds`; the runner's are quiet, out of the
+  chat). Chat and replies are reliable and go on the control stream,
+  not the bulk one with the chunks; protocol 6 (`defaria/6`). A
+  refusal or error fails the run, `fill`'s reply carries how many
+  voxels it set and how long that took (for `timing`), and a
   report prints when it arrives, a frame later than before. `hotbar`,
   `give` and `fluids` without a box act on whoever ran them, rather than
   the one player there was. Every scenario runs unchanged.
+- Operators are trusted to play, not to crash the server: every
+  argument that could overflow, exhaust memory or stall is refused with
+  why. A box (`fill`'s, `fluids`') holds at most 256³ voxels, counted
+  with saturating maths; `tp` (and a client's teleport, `Input::teleport`,
+  which is otherwise ignored) stays within ten million blocks of the
+  middle on each axis (`player::WORLD_LIMIT`, far inside where chunk
+  coordinates and terrain generation's `i32` maths overflow), finite,
+  with a sane speed and eye height; `random-ticks` is at most a chunk's
+  4,096 voxels, and `evaporation` at most 1,000 times the rate.
 - `camera` and `lookups` stay the runner's. `camera` puts the client's
   own player (with its look, eye height and sway), which the next input
   tells the server (`Input::teleport`), at once, as scenarios rely on;
@@ -722,9 +737,11 @@ bandwidth for light or chunks shows up in the `net` report.
 - Who may run commands: the console always; the player whose game
   hosts the server (`command::Host`, the install's id, set by
   `integrated`); and on any server the ids in the world's `ops.json5`
-  (`command::Operators`), read at start and again when someone not
-  listed tries, so an edit counts without a restart; the console's `op`
-  and `deop` write it. Nobody else, except for `list` and `help`. A
+  (`command::Operators`), read at start and again before every command
+  that needs an operator, so an edit (in or out) counts at once, and a
+  file that can't be read allows nobody; the console's `op` and `deop`
+  read it first, keep hand edits and won't write over an unreadable
+  file, and refuse a name two players share. Nobody else, except for `list` and `help`. A
   refusal says why and where the list is. Permissions are all or
   nothing, not per command: levels are for when there are commands an
   operator shouldn't have.
@@ -733,9 +750,10 @@ bandwidth for light or chunks shows up in the `net` report.
   host's `/stop` in single player stops the server in the game's own
   process, which goes back to the menu, saving, as leaving does.
 - What's still open: teleports a client sends (`camera`'s
-  `Input::teleport`) are still taken from anyone; now that permissions
-  exist, the server could take them only from those allowed to run
-  commands, once scenarios against a dedicated server don't need them.
+  `Input::teleport`) are still taken from anyone, within the world;
+  now that permissions exist, the server could take them only from
+  those allowed to run commands, once scenarios against a dedicated
+  server don't need them.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

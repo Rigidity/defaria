@@ -43,9 +43,13 @@ pub enum ChatKind {
     Refused,
 }
 
-/// What the server answers a command with: one reply each, in order.
+/// What the server answers a command with: one reply each, carrying the
+/// id the client gave the command, so whatever sent it (the chat line,
+/// a scenario) knows the reply is its own.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CommandReply {
+    /// The command's id, as the client sent it.
+    pub id: u32,
     /// Whether it ran.
     pub ok: bool,
     /// What it says: its output, or why it didn't run.
@@ -59,6 +63,7 @@ impl CommandReply {
     /// A command that ran, saying `text`.
     pub fn ok(text: impl Into<String>) -> Self {
         Self {
+            id: 0,
             ok: true,
             text: text.into(),
             filled: None,
@@ -68,6 +73,7 @@ impl CommandReply {
     /// A command that didn't run, and why.
     pub fn refused(text: impl Into<String>) -> Self {
         Self {
+            id: 0,
             ok: false,
             text: text.into(),
             filled: None,

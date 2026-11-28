@@ -15,7 +15,7 @@
 //!   [`SHOW_SECONDS`], fading out at the end; while the chat line is open,
 //!   the last [`OPEN_LINES`] show whatever their age.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use bevy::{
     input_focus::{FocusCause, InputFocus},
@@ -51,7 +51,7 @@ pub struct ChatPlugin;
 impl Plugin for ChatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ChatLog>()
-            .init_resource::<SentCommands>()
+            .init_resource::<CommandIds>()
             .register_type::<ChatScreen>()
             .add_systems(Startup, spawn_chat)
             .add_systems(OnExit(GameState::Playing), forget_chat)
@@ -89,12 +89,31 @@ impl ChatLog {
     }
 }
 
-/// The commands this client has sent and not had answered, oldest first
-/// (they're answered in order): whether each was the chat line's, whose
-/// answer shows. Anything else that sends commands (a headless scenario)
-/// pushes `false`, so its answers don't fill the chat.
+/// The ids of the commands this client sends ([`ClientMessage::Command`]),
+/// which their replies carry back: each sender takes one with
+/// [`CommandIds::take`]. A sender whose answers aren't for the chat (a
+/// headless scenario) marks them [`CommandIds::quiet`], and the chat
+/// leaves their replies out.
 #[derive(Resource, Debug, Default)]
-pub struct SentCommands(pub VecDeque<bool>);
+pub struct CommandIds {
+    last: u32,
+    quiet: HashSet<u32>,
+}
+
+impl CommandIds {
+    /// A new id for a command.
+    pub fn take(&mut self) -> u32 {
+        self.last = self.last.wrapping_add(1);
+        self.last
+    }
+
+    /// A new id for a command whose reply stays out of the chat.
+    pub fn quiet(&mut self) -> u32 {
+        let id = self.take();
+        self.quiet.insert(id);
+        id
+    }
+}
 
 /// The open chat line: a screen, and the text field typed into.
 #[derive(Component, Reflect, Debug, Clone, Copy)]
@@ -151,11 +170,11 @@ fn spawn_chat(mut commands: Commands, theme: Res<UiTheme>) {
 fn forget_chat(
     mut commands: Commands,
     mut log: ResMut<ChatLog>,
-    mut sent: ResMut<SentCommands>,
+    mut ids: ResMut<CommandIds>,
     screens: Query<Entity, With<ChatScreen>>,
 ) {
     log.lines.clear();
-    sent.0.clear();
+    ids.quiet.clear();
     for screen in &screens {
         commands.entity(screen).try_despawn();
     }
@@ -165,15 +184,14 @@ fn receive_lines(
     time: Res<Time<Real>>,
     mut messages: MessageReader<FromServer>,
     mut log: ResMut<ChatLog>,
-    mut sent: ResMut<SentCommands>,
+    mut ids: ResMut<CommandIds>,
 ) {
     let now = time.elapsed_secs();
     for FromServer(message) in messages.read() {
         let line = match message {
             ServerMessage::Chat(line) => line.clone(),
             ServerMessage::CommandReply(reply) => {
-                let shown = sent.0.pop_front().unwrap_or(true);
-                if !shown || reply.text.is_empty() {
+                if ids.quiet.remove(&reply.id) || reply.text.is_empty() {
                     continue;
                 }
                 reply.line()
@@ -211,17 +229,14 @@ fn send_line(
     keys: Res<ButtonInput<KeyCode>>,
     screens: Query<(Entity, &TextField), With<ChatScreen>>,
     mut to_server: MessageWriter<ToServer>,
-    mut sent: ResMut<SentCommands>,
+    mut ids: ResMut<CommandIds>,
     mut focus: Option<ResMut<InputFocus>>,
 ) {
     if !keys.just_pressed(KeyCode::Enter) && !keys.just_pressed(KeyCode::NumpadEnter) {
         return;
     }
     for (screen, field) in &screens {
-        if let Some(message) = message_for(&field.value) {
-            if matches!(message, ClientMessage::Command(_)) {
-                sent.0.push_back(true);
-            }
+        if let Some(message) = message_for(&field.value, || ids.take()) {
             to_server.write(ToServer(message));
         }
         commands.entity(screen).try_despawn();
@@ -233,13 +248,16 @@ fn send_line(
 
 /// What a typed line sends: a command for `/…`, chat otherwise, or
 /// nothing for a blank line.
-pub fn message_for(typed: &str) -> Option<ClientMessage> {
+pub fn message_for(typed: &str, id: impl FnOnce() -> u32) -> Option<ClientMessage> {
     let typed = typed.trim();
     if typed.is_empty() {
         return None;
     }
     Some(match typed.strip_prefix('/') {
-        Some(command) => ClientMessage::Command(command.trim().to_string()),
+        Some(command) => ClientMessage::Command {
+            id: id(),
+            line: command.trim().to_string(),
+        },
         None => ClientMessage::Chat(typed.to_string()),
     })
 }
@@ -378,14 +396,17 @@ mod tests {
     #[test]
     fn a_typed_line_is_chat_or_a_command() {
         assert_eq!(
-            message_for("  hello there "),
+            message_for("  hello there ", || 1),
             Some(ClientMessage::Chat("hello there".into()))
         );
         assert_eq!(
-            message_for("/fill 1 2 3 4 5 6 stone"),
-            Some(ClientMessage::Command("fill 1 2 3 4 5 6 stone".into()))
+            message_for("/fill 1 2 3 4 5 6 stone", || 3),
+            Some(ClientMessage::Command {
+                id: 3,
+                line: "fill 1 2 3 4 5 6 stone".into()
+            })
         );
-        assert_eq!(message_for("   "), None);
+        assert_eq!(message_for("   ", || 1), None);
     }
 
     #[test]

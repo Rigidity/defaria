@@ -112,8 +112,14 @@ fn commands_are_answered_to_whoever_sent_them() {
     let (mut app, mut players) = server(&[1, 2]);
     app.insert_resource(Host(PlayerId([1; 32])));
     let (_, client) = &mut players[0];
-    client.send(ClientMessage::Command("list".into()));
-    client.send(ClientMessage::Command("nonsense".into()));
+    client.send(ClientMessage::Command {
+        id: 0,
+        line: "list".into(),
+    });
+    client.send(ClientMessage::Command {
+        id: 0,
+        line: "nonsense".into(),
+    });
     app.world_mut()
         .resource_mut::<Console>()
         .lines
@@ -141,4 +147,109 @@ fn commands_are_answered_to_whoever_sent_them() {
             .iter()
             .all(|message| !matches!(message, ServerMessage::CommandReply(_)))
     );
+}
+
+/// Operators are trusted to play, not to crash the server: every
+/// argument that could overflow, run out of memory or stall is refused
+/// with why.
+#[test]
+fn arguments_too_big_are_refused_not_crashed_on() {
+    let (mut app, _) = server(&[]);
+    app.init_resource::<RandomTicks>()
+        .init_resource::<EvaporationSpeed>();
+    let world = app.world_mut();
+    for line in [
+        "fill -2000000000 0 0 2000000000 0 0 stone",
+        "fill -2147483648 -2147483648 -2147483648 2147483647 2147483647 2147483647 stone",
+        "fluids -2147483648 -2147483648 -2147483648 2147483647 2147483647 2147483647",
+        "tp 1e30 1e30 1e30",
+        "tp 0 -20000000 0",
+        "random-ticks 4294967295",
+        "evaporation 1e30",
+    ] {
+        let reply = run(world, Source::Console, line);
+        assert!(!reply.ok, "{line}: {}", reply.text);
+        assert!(!reply.text.is_empty(), "{line}");
+    }
+    // The systems behind them check too, whatever calls them.
+    let filled = world
+        .run_system_cached_with(
+            scene::fill,
+            (
+                IVec3::splat(i32::MIN),
+                IVec3::splat(i32::MAX),
+                "stone".to_string(),
+            ),
+        )
+        .unwrap();
+    assert!(filled.is_err());
+    let report = report::fluid_report(
+        world,
+        report::FluidRegion::Box {
+            min: IVec3::splat(i32::MIN),
+            max: IVec3::splat(i32::MAX),
+        },
+    );
+    assert!(report.contains("more than"), "{report}");
+    // As big as they may be, they run.
+    assert!(run(world, Source::Console, "random-ticks 4096").ok);
+    assert!(run(world, Source::Console, "evaporation 1000").ok);
+}
+
+/// `ops.json5` is read again before each command that needs an
+/// operator: one taken out by hand can't any more, a file that turns
+/// unreadable allows nobody, and `op` keeps what was changed by hand and
+/// won't write over a file it can't read.
+#[test]
+fn the_operators_file_is_read_before_each_command() {
+    let folder = defaria_core::testing::temp_folder("ops-reread");
+    let (mut app, players) = server(&[1, 2]);
+    app.insert_resource(WorldFolder(folder.clone()));
+    let (one, two) = (PlayerId([1; 32]), PlayerId([2; 32]));
+    let world = app.world_mut();
+    let fill = "fill 0 40 0 0 40 0 stone";
+
+    ops::write(&folder, &Operators([one, two].into())).unwrap();
+    assert!(run(world, Source::Player(players[0].0), fill).ok);
+    // Taken out by hand: refused at once.
+    ops::write(&folder, &Operators([two].into())).unwrap();
+    assert!(!run(world, Source::Player(players[0].0), fill).ok);
+    assert!(run(world, Source::Player(players[1].0), fill).ok);
+
+    // `op` starts from what the file says now, not what was read before.
+    ops::write(&folder, &Operators::default()).unwrap();
+    assert!(run(world, Source::Console, "op P1").ok);
+    assert_eq!(ops::read(&folder).unwrap(), Operators([one].into()));
+
+    // A broken file allows nobody, and isn't written over.
+    let path = folder.join(OPS_FILE);
+    std::fs::write(&path, "{ broken").unwrap();
+    assert!(!run(world, Source::Player(players[0].0), fill).ok);
+    assert!(world.resource::<Operators>().0.is_empty());
+    let op = run(world, Source::Console, "op P2");
+    assert!(!op.ok);
+    assert!(op.text.contains("fix or remove"), "{}", op.text);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ broken");
+}
+
+/// `op` takes the player called exactly that, or else the one called
+/// that in any case; two of those is refused, and their ids tell them
+/// apart.
+#[test]
+fn op_by_a_shared_name_is_refused() {
+    let (mut app, players) = server(&[1, 2]);
+    let world = app.world_mut();
+    world.entity_mut(players[1].0).insert(Name::new("p1"));
+    assert!(run(world, Source::Console, "op p1").ok);
+    assert_eq!(world.resource::<Operators>().0, [PlayerId([2; 32])].into());
+    world.entity_mut(players[0].0).insert(Name::new("Ada"));
+    world.entity_mut(players[1].0).insert(Name::new("ADA"));
+    let ambiguous = run(world, Source::Console, "op ada");
+    assert!(!ambiguous.ok);
+    assert!(
+        ambiguous.text.contains("more than one"),
+        "{}",
+        ambiguous.text
+    );
+    assert!(run(world, Source::Console, "op Ada").ok);
 }

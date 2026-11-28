@@ -79,11 +79,14 @@ game's own process (single player) always may, listed or not.
 ```
 
 The console's `op <name or id>` and `deop <name or id>` add and remove
-ids and write the file (through `ops.json5.tmp`, renamed over it). The
-server reads it as it starts, and again whenever a player not listed
-runs a command, so an edit by hand counts without a restart. A file it
-can't read, or of a newer format, allows nobody until it's fixed. The
-code is in `crates/defaria_server/src/command/ops.rs`.
+ids and write the file (through `ops.json5.tmp`, renamed over it),
+starting from the file as it is then, so what was changed by hand is
+kept; a name two players share is refused (give the id). The server
+reads the file as it starts and again before every command that needs
+an operator, so an edit by hand (adding or removing someone) counts at
+once. A file it can't read, or of a newer format, allows nobody until
+it's fixed, and `op` and `deop` won't write over it. The code is in
+`crates/defaria_server/src/command/ops.rs`.
 
 ## `players/<id>.json5`
 

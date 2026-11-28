@@ -8,10 +8,11 @@
 //! Commands are allowed by player id: the console and the player hosting
 //! a world in the game's own process ([`Host`]) always may, and on a
 //! dedicated server those the world's `ops.json5` lists ([`Operators`]),
-//! read as the server starts and again when someone not listed tries (so
-//! an edit to the file counts without a restart). Anyone may run `list`
-//! and `help`. A player who isn't allowed is answered why, and what they
-//! send is held to chat's rate ([`chat::Allowance`]).
+//! read again before every command that needs an operator (so an edit
+//! to the file counts at once; one that can't be read allows nobody).
+//! Anyone may run `list` and `help`. A player who isn't allowed is
+//! answered why, and what they send is held to chat's rate
+//! (`defaria_core::chat::Allowance`).
 //!
 //! [`ClientMessage::Command`]: defaria_core::net::ClientMessage::Command
 
@@ -101,20 +102,23 @@ fn load_operators(mut commands: Commands, folder: Option<Res<WorldFolder>>) {
 /// console, in order, answering each.
 fn run_commands(world: &mut World) {
     let mut connections = world.query::<(Entity, &Connection)>();
-    let lines: Vec<(Entity, String)> = connections
+    let lines: Vec<(Entity, u32, String)> = connections
         .iter(world)
         .flat_map(|(entity, connection)| {
             connection
                 .inbox()
                 .iter()
                 .filter_map(move |message| match message {
-                    ClientMessage::Command(line) => Some((entity, line.clone())),
+                    ClientMessage::Command { id, line } => Some((entity, *id, line.clone())),
                     _ => None,
                 })
         })
         .collect();
-    for (entity, line) in lines {
-        let reply = run(world, Source::Player(entity), &line);
+    for (entity, id, line) in lines {
+        let reply = CommandReply {
+            id,
+            ..run(world, Source::Player(entity), &line)
+        };
         if let Some(mut connection) = world.get_mut::<Connection>(entity) {
             connection.send(ServerMessage::CommandReply(reply));
         }
@@ -135,22 +139,18 @@ pub fn run(world: &mut World, source: Source, line: &str) -> CommandReply {
             "that command is too long: at most {MAX_MESSAGE} characters"
         ));
     }
-    let command = match parse(&line) {
-        Ok(command) => command,
-        Err(error) => {
-            // Mistakes cost a player who isn't allowed their allowance
-            // too, so nonsense can't be sent as fast as anything.
-            if !listed(world, source) && !take_allowance(world, source) {
-                return slow_down();
-            }
-            return CommandReply::refused(error);
-        }
-    };
-    if !listed(world, source) {
-        if !take_allowance(world, source) {
+    let parsed = parse(&line);
+    if !hosts(world, source) {
+        // Anyone not known as an operator is held to chat's rate, before
+        // anything else (mistakes and refusals too), so nonsense can't be
+        // sent as fast as anything, nor the file read for each.
+        if !listed(world, source) && !take_allowance(world, source) {
             return slow_down();
         }
-        if !command.open_to_all() && !allowed_after_rereading(world, source) {
+        let needs_operator = parsed.as_ref().is_ok_and(|command| !command.open_to_all());
+        // Read again for every command an operator's needed for, so a
+        // name taken out of the file by hand counts at once.
+        if needs_operator && (refresh_operators(world).is_err() || !listed(world, source)) {
             info!("{} isn't allowed to run `{line}`", who(world, source));
             return CommandReply::refused(
                 "you're not allowed to run commands on this server: its operators are \
@@ -158,6 +158,10 @@ pub fn run(world: &mut World, source: Source, line: &str) -> CommandReply {
             );
         }
     }
+    let command = match parsed {
+        Ok(command) => command,
+        Err(error) => return CommandReply::refused(error),
+    };
     // Logged for a server's operators to see who did what; a game's own
     // (single player, and scenarios building their scene) keeps quiet.
     if world.contains_resource::<Host>() {
@@ -182,31 +186,48 @@ fn who(world: &World, source: Source) -> String {
     }
 }
 
-/// Whether `source` may run any command, as far as the server knows
-/// without reading the operators again.
+/// Whether `source` is the console or the player hosting the server,
+/// who may always run commands.
+fn hosts(world: &World, source: Source) -> bool {
+    let Source::Player(entity) = source else {
+        return true;
+    };
+    world.get::<PlayerId>(entity).is_some_and(|id| {
+        world
+            .get_resource::<Host>()
+            .is_some_and(|host| host.0 == *id)
+    })
+}
+
+/// Whether `source` may run any command, as far as the operators last
+/// read say.
 fn listed(world: &World, source: Source) -> bool {
     let Source::Player(entity) = source else {
         return true;
     };
-    let Some(id) = world.get::<PlayerId>(entity) else {
-        return false;
-    };
-    world
-        .get_resource::<Host>()
-        .is_some_and(|host| host.0 == *id)
-        || world.resource::<Operators>().0.contains(id)
+    hosts(world, source)
+        || world
+            .get::<PlayerId>(entity)
+            .is_some_and(|id| world.resource::<Operators>().0.contains(id))
 }
 
-/// Whether `source` may run any command, reading the world's operators
-/// again in case the file changed.
-fn allowed_after_rereading(world: &mut World, source: Source) -> bool {
-    if let Some(folder) = world.get_resource::<WorldFolder>() {
-        match ops::read(&folder.0) {
-            Ok(operators) => world.insert_resource(operators),
-            Err(error) => warn!("{error}"),
+/// Reads the world's operators again (a world in memory keeps what it
+/// has). A file that can't be read allows nobody until it's fixed.
+fn refresh_operators(world: &mut World) -> Result<(), String> {
+    let Some(folder) = world.get_resource::<WorldFolder>() else {
+        return Ok(());
+    };
+    match ops::read(&folder.0) {
+        Ok(operators) => {
+            world.insert_resource(operators);
+            Ok(())
+        }
+        Err(error) => {
+            warn!("{error}; nobody may run commands until it's fixed");
+            world.insert_resource(Operators::default());
+            Err(error)
         }
     }
-    listed(world, source)
 }
 
 /// Takes one message's worth of the player's allowance, if they have it.
@@ -372,11 +393,27 @@ fn list(world: &mut World, source: Source) -> String {
 /// Lets `who` (an online player's name, or an id) run commands, or stops
 /// letting them, saving the list in the world's `ops.json5`.
 fn set_operator(world: &mut World, who: &str, allow: bool) -> Result<String, String> {
-    let named = world
+    let playing: Vec<(String, PlayerId)> = world
         .query_filtered::<(&Name, &PlayerId), With<Connection>>()
         .iter(world)
-        .find(|(name, _)| name.as_str().eq_ignore_ascii_case(who))
-        .map(|(name, id)| (name.to_string(), *id));
+        .map(|(name, id)| (name.to_string(), *id))
+        .collect();
+    // The one called exactly that, or else the one called that in any
+    // case; two of either is too many to guess between.
+    let exact: Vec<_> = playing.iter().filter(|(name, _)| name == who).collect();
+    let loose: Vec<_> = (playing.iter())
+        .filter(|(name, _)| name.eq_ignore_ascii_case(who))
+        .collect();
+    let named = match (exact.as_slice(), loose.as_slice()) {
+        ([one], _) | ([], [one]) => Some((*one).clone()),
+        ([], []) => None,
+        _ => {
+            return Err(format!(
+                "more than one player playing is called `{who}`; give their id \
+                 (`list` shows it)"
+            ));
+        }
+    };
     let (name, id) = match named {
         Some(found) => found,
         None => {
@@ -386,6 +423,11 @@ fn set_operator(world: &mut World, who: &str, allow: bool) -> Result<String, Str
             (id.to_string(), id)
         }
     };
+    // From the file as it is now, not as it was read: what was changed
+    // by hand stays changed. One that can't be read isn't written over.
+    refresh_operators(world).map_err(|error| {
+        format!("can't change the operators: {error}; fix or remove the file first")
+    })?;
     let mut operators = world.resource::<Operators>().clone();
     let changed = if allow {
         operators.0.insert(id)

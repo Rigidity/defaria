@@ -318,7 +318,10 @@ pub(super) fn move_by_inputs(
             }
             let input = inputs.waiting.remove(&next).unwrap();
             inputs.budget -= 1.0;
-            if let Some(teleport) = input.teleport {
+            // A teleport out of the world (or of NaNs) would break
+            // streaming and terrain generation: it's ignored, and the
+            // client is put right.
+            if let Some(teleport) = input.teleport.filter(Motion::is_sane) {
                 teleport.put(&mut body, &mut player);
             }
             look.set_if_neq(input.look);

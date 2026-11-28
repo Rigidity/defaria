@@ -68,6 +68,14 @@ impl FluidRegion {
 /// weren't loaded; and the active voxels in the whole world. A fluid
 /// that's anywhere but the world also shows where it is.
 pub fn fluid_report(world: &mut World, region: FluidRegion) -> String {
+    if let FluidRegion::Box { min, max } = region
+        && super::parse::box_volume(min, max) > super::parse::MAX_BOX
+    {
+        return format!(
+            "fluids: that box is more than {} voxels",
+            super::parse::MAX_BOX
+        );
+    }
     use std::collections::BTreeMap;
     let (covered, bounds) = region.chunks(world);
     let in_chunks: HashSet<IVec3> = covered.iter().copied().collect();

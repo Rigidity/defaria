@@ -65,6 +65,20 @@ pub enum ServerCommand {
     Deop(String),
 }
 
+/// The most voxels a box (`fill`'s, `fluids`') may hold: 256 a side.
+pub const MAX_BOX: u64 = 256 * 256 * 256;
+/// The fastest `evaporation` may make films dry up, times their rate.
+pub const MAX_EVAPORATION: f32 = 1000.0;
+
+/// How many voxels the box between `min` and `max` (both included, `min`
+/// the lowest) holds, saturating rather than overflowing.
+pub fn box_volume(min: IVec3, max: IVec3) -> u64 {
+    let side = |low: i32, high: i32| (high as i64 - low as i64 + 1).max(0) as u64;
+    side(min.x, max.x)
+        .saturating_mul(side(min.y, max.y))
+        .saturating_mul(side(min.z, max.z))
+}
+
 /// What `help` says.
 pub const HELP: &str = "commands: \
 fill <x0 y0 z0 x1 y1 z1> <block>, \
@@ -128,7 +142,7 @@ pub fn parse(line: &str) -> Result<ServerCommand, String> {
     Ok(match name {
         "fill" => {
             expect(7)?;
-            let (min, max) = parse_box(&args[..6])?;
+            let (min, max) = parse_sized_box(&args[..6])?;
             ServerCommand::Fill {
                 min,
                 max,
@@ -186,26 +200,40 @@ pub fn parse(line: &str) -> Result<ServerCommand, String> {
                 parse_number(args[1])?,
                 parse_number(args[2])?,
             );
-            if !at.is_finite() {
-                return Err(format!("`tp` takes a place: {line}"));
+            if !defaria_core::player::within_world(at.as_dvec3()) {
+                return Err(format!(
+                    "`tp` takes a place at most {} blocks from the middle of the world on \
+                     each axis: {line}",
+                    defaria_core::player::WORLD_LIMIT
+                ));
             }
             ServerCommand::Teleport(at)
         }
         "random-ticks" => {
             expect(1)?;
-            ServerCommand::RandomTicks(parse_number(args[0])?)
+            let per_chunk: u32 = parse_number(args[0])?;
+            let most = defaria_core::world::CHUNK_VOLUME as u32;
+            if per_chunk > most {
+                return Err(format!(
+                    "`random-ticks` takes at most {most}, a chunk's voxels: {line}"
+                ));
+            }
+            ServerCommand::RandomTicks(per_chunk)
         }
         "evaporation" => {
             expect(1)?;
             let speed: f32 = parse_number(args[0])?;
-            if !(speed.is_finite() && speed >= 0.0) {
-                return Err(format!("`{}` isn't a speed", args[0]));
+            if !(speed.is_finite() && (0.0..=MAX_EVAPORATION).contains(&speed)) {
+                return Err(format!(
+                    "`{}` isn't a speed from 0 to {MAX_EVAPORATION}",
+                    args[0]
+                ));
             }
             ServerCommand::Evaporation(speed)
         }
         "fluids" => ServerCommand::Fluids(match args.len() {
             0 => None,
-            6 => Some(parse_box(args)?),
+            6 => Some(parse_sized_box(args)?),
             _ => return Err(format!("`fluids` takes no arguments or 6: {line}")),
         }),
         "network" => {
@@ -260,6 +288,17 @@ fn parse_pos(args: &[&str]) -> Result<IVec3, String> {
 fn parse_box(args: &[&str]) -> Result<(IVec3, IVec3), String> {
     let (a, b) = (parse_pos(&args[..3])?, parse_pos(&args[3..6])?);
     Ok((a.min(b), a.max(b)))
+}
+
+/// [`parse_box`], holding at most [`MAX_BOX`] voxels.
+fn parse_sized_box(args: &[&str]) -> Result<(IVec3, IVec3), String> {
+    let (min, max) = parse_box(args)?;
+    if box_volume(min, max) > MAX_BOX {
+        return Err(format!(
+            "that box is more than {MAX_BOX} voxels (256 a side); split it up"
+        ));
+    }
+    Ok((min, max))
 }
 
 fn parse_number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
@@ -327,6 +366,15 @@ mod tests {
                 ServerCommand::Teleport(Vec3::new(1.0, 2.5, -3.0)),
             ),
             ("random-ticks 64", ServerCommand::RandomTicks(64)),
+            ("random-ticks 4096", ServerCommand::RandomTicks(4096)),
+            (
+                "fill 0 0 0 255 255 255 air",
+                ServerCommand::Fill {
+                    min: IVec3::ZERO,
+                    max: IVec3::splat(255),
+                    block: "air".into(),
+                },
+            ),
             ("evaporation 20", ServerCommand::Evaporation(20.0)),
             ("fluids", ServerCommand::Fluids(None)),
             (
@@ -354,6 +402,15 @@ mod tests {
     }
 
     #[test]
+    fn box_volumes_saturate() {
+        assert_eq!(box_volume(IVec3::ZERO, IVec3::ONE), 8);
+        assert_eq!(
+            box_volume(IVec3::splat(i32::MIN), IVec3::splat(i32::MAX)),
+            u64::MAX
+        );
+    }
+
+    #[test]
     fn mistakes_are_errors() {
         for bad in [
             "",
@@ -371,6 +428,15 @@ mod tests {
             "give bucket lots",
             "tp 1 2",
             "tp 1 2 inf",
+            "tp 1e30 1e30 1e30",
+            "tp 0 0 10000001",
+            "random-ticks 4294967295",
+            "random-ticks 4097",
+            "evaporation 1e9",
+            "fill -2000000000 0 0 2000000000 0 0 stone",
+            "fill -2000000000 -2000000000 -2000000000 2000000000 2000000000 2000000000 stone",
+            "fill 0 0 0 256 255 255 stone",
+            "fluids -2000000000 -2000000000 -2000000000 2000000000 2000000000 2000000000",
             "random-ticks many",
             "evaporation -1",
             "evaporation NaN",

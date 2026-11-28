@@ -35,7 +35,7 @@ use super::{
     world_commands::apply_world_commands,
 };
 use defaria_client::{
-    chat::SentCommands,
+    chat::CommandIds,
     connecting::ConnectStatus,
     fog::ChunkFog,
     net::{FromServer, ServerConnection, ToServer},
@@ -72,6 +72,7 @@ impl Plugin for HeadlessPlugin {
             // client's net adds them too, in the game).
             .add_message::<ToServer>()
             .add_message::<FromServer>()
+            .init_resource::<CommandIds>()
             .add_systems(
                 PreUpdate,
                 (
@@ -141,7 +142,7 @@ pub(super) struct ScriptRunner {
     /// Server commands to send this frame, by their lines.
     pub(super) to_send: Vec<(String, ServerCommand)>,
     /// Server commands sent and not answered yet, oldest first.
-    pub(super) awaiting: VecDeque<ServerCommand>,
+    pub(super) awaiting: VecDeque<(u32, ServerCommand)>,
     /// Whether a `timing` report is due at the end of this frame.
     pub(super) timing: bool,
     /// Whether a `memory` report is due at the end of this frame.
@@ -429,7 +430,7 @@ fn send_server_commands(
     connection: Option<Res<ServerConnection>>,
     mut to_server: MessageWriter<ToServer>,
     mut exit: MessageWriter<AppExit>,
-    mut chat: Option<ResMut<SentCommands>>,
+    mut ids: ResMut<CommandIds>,
 ) {
     let runner = &mut *runner;
     for (line, command) in runner.to_send.drain(..) {
@@ -439,11 +440,9 @@ fn send_server_commands(
             continue;
         }
         // Not the chat line's: its answer stays out of the chat.
-        if let Some(chat) = &mut chat {
-            chat.0.push_back(false);
-        }
-        to_server.write(ToServer(ClientMessage::Command(line)));
-        runner.awaiting.push_back(command);
+        let id = ids.quiet();
+        to_server.write(ToServer(ClientMessage::Command { id, line }));
+        runner.awaiting.push_back((id, command));
     }
 }
 
@@ -461,9 +460,11 @@ fn take_replies(
         let ServerMessage::CommandReply(reply) = message else {
             continue;
         };
-        let Some(command) = runner.awaiting.pop_front() else {
+        // Only the scenario's own: the chat line's go to the chat.
+        let Some(at) = (runner.awaiting.iter()).position(|(id, _)| *id == reply.id) else {
             continue;
         };
+        let (_, command) = runner.awaiting.remove(at).unwrap();
         if !reply.ok {
             error!("{}", reply.text);
             exit.write(AppExit::error());

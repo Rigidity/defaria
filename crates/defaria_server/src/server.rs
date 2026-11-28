@@ -1061,6 +1061,44 @@ mod tests {
         });
     }
 
+    /// A teleport out of the world, or to no place at all, is ignored:
+    /// the player stays where it was, and streaming and terrain
+    /// generation never see the place.
+    #[test]
+    fn a_teleport_out_of_the_world_is_ignored() {
+        let (mut app, mut client, _) = server();
+        let player = the_player(&mut app);
+        let before = app.world().get::<Body>(player).unwrap().position;
+        let away = |feet| Motion {
+            feet,
+            velocity: DVec3::ZERO,
+            on_ground: false,
+            flying: true,
+            sneaking: false,
+            sprinting: false,
+            eye_height: EYE_HEIGHT,
+        };
+        let inputs = [
+            DVec3::splat(1e30),
+            DVec3::new(f64::NAN, 0.0, 0.0),
+            DVec3::new(0.0, 0.0, defaria_core::player::WORLD_LIMIT + 1.0),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, feet)| input(i as u32 + 1, Controls::default(), Some(away(feet))))
+        .collect();
+        client.send(ClientMessage::Inputs {
+            inputs,
+            made_after: 0,
+        });
+        for _ in 0..30 {
+            app.update();
+            crate::streaming::finish_loads(app.world_mut());
+        }
+        let after = app.world().get::<Body>(player).unwrap().position;
+        assert!(after.is_finite() && after.distance(before) < 1.0, "{after}");
+    }
+
     /// Each input is a step of the player, applied once however often it's
     /// sent, and the client is told the last applied and where it left the
     /// player.

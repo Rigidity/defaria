@@ -56,8 +56,7 @@ pub fn fill_state(content: &Content, name: &str) -> Result<BlockState, String> {
         .ok_or_else(|| format!("block `{id}` has no state `{name}`"))
 }
 
-/// The most voxels one `fill` may set: 256 a side.
-pub const MAX_FILL: u64 = 256 * 256 * 256;
+pub use super::parse::{MAX_BOX, box_volume};
 
 /// Sets every voxel between `min` and `max` to `id`. Returns how many it
 /// changed: not ones already as it leaves them, nor ones in chunks that
@@ -67,9 +66,8 @@ pub(super) fn fill(
     content: Res<Content>,
     mut voxels: Voxels,
 ) -> Result<usize, String> {
-    let size = max.as_i64vec3() - min.as_i64vec3() + bevy::math::I64Vec3::ONE;
-    if (size.x * size.y * size.z) as u64 > MAX_FILL {
-        return Err(format!("fill: that's more than {MAX_FILL} voxels"));
+    if box_volume(min, max) > MAX_BOX {
+        return Err(format!("fill: that's more than {MAX_BOX} voxels"));
     }
     let state = if id == defaria_core::content::AIR {
         BlockState::AIR
