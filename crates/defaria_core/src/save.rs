@@ -241,10 +241,18 @@ fn temp_beside(path: &Path) -> PathBuf {
 
 /// Writes `data` to a new temporary file next to `path`, of its own (no
 /// other writer shares its name), synced to disk, and returns its path.
+/// The folder it goes in is made if it isn't there yet (a data folder
+/// before anything else has been saved in it).
 /// A `secret` one is readable only by its owner from the start (on unix;
 /// on Windows the data folder's own per-user permissions keep it).
 pub fn write_temp(path: &Path, data: &[u8], secret: bool) -> io::Result<PathBuf> {
     use std::io::Write;
+    if let Some(folder) = path
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(folder)?;
+    }
     let temp = temp_beside(path);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);

@@ -655,6 +655,17 @@ mod tests {
         }
     }
 
+    /// A data folder that isn't there yet (a new install, or `--data` naming
+    /// a new folder) is made when the first server is added.
+    #[test]
+    fn the_folder_is_made_for_the_first_server() {
+        let folder = crate::testing::temp_folder("server-list-new").join("not-yet");
+        let mut list = ServerList::load(Some(&folder)).unwrap();
+        list.add("Here", "localhost").unwrap();
+        let again = ServerList::load(Some(&folder)).unwrap();
+        assert_eq!(again.servers().len(), 1);
+    }
+
     /// Without a folder the list is kept in memory.
     #[test]
     fn without_a_folder_it_is_in_memory() {
