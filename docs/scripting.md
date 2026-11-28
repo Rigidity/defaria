@@ -302,8 +302,8 @@ A client's scripts get these hooks:
 
 | Hook | When |
 |---|---|
-| `on_join()` | The client has joined a world: its player is in it. Once a world. Chunks are still arriving. |
-| `on_message(channel, value)` | The same mod's server scripts sent this client a message ([Messages](#messages)). |
+| `on_join()` | The client has joined a world: its player is in it. Once a world, and again if the scripts reload (they start afresh). Chunks are still arriving. |
+| `on_message(channel, value)` | The same mod's server scripts sent this client a message ([Messages](#messages)). Messages that arrive before `on_join` has run wait for it (up to 256; past that the oldest are dropped). |
 
 They read the client's copy of the world with [block handles](#blocks)
 and [`world`](#the-world), as the server's hooks do: `block.id`, `.state`,
@@ -358,8 +358,12 @@ end
 ```
 
 Messages arrive in the order they were sent, and none is lost while the
-client stays connected. They're taken as they arrive, once a frame, not
-on the simulation's ticks. The server's `on_message` reads the world
+client stays connected. They're run once a frame, not on the
+simulation's ticks. On the server they wait their turn: each frame's
+`on_message`s may use as many steps and as much time between them as
+block hooks get in a tick (250,000 steps, 4 ms, `HookSettings`), and
+the rest run on the next frame, oldest first. At most 1,024 wait, and
+80 from one player; past that new ones are dropped. The server's `on_message` reads the world
 but has no block to change: it's about a player, not a block. Any hook
 on the server can send (an `on_used` telling the player's client
 something).
@@ -371,7 +375,8 @@ Limits ([Limits](#limits) has the rest):
 - One hook call sends at most 16 messages; the 17th is an error.
 - A client's scripts send at most 20 messages a second, in bursts of up
   to 40 after a quiet spell; past that `net.send` returns false and the
-  message is dropped. The server holds every client to the same budget
+  message is dropped. The server holds every client to the same rate,
+  with twice the burst (so messages that arrive bunched up aren't lost),
   whatever it runs, and drops what's over it.
 
 A message from a client is a player's say, not the server's: check it as
@@ -472,7 +477,9 @@ rendering or the UI.
 
 - **Messages.** 4 KiB a message, 64 bytes a channel name, 16 messages a
   hook call, and 20 a second (in bursts of 40) from each client
-  ([Messages](#messages)). Fixed, in `script::channel`.
+  ([Messages](#messages)). Fixed, in `script::channel`. The server's
+  `on_message`s get a block-hook tick's steps and time each frame,
+  waiting their turn past that.
 
 The limits are in the `ScriptSettings` resource (and the per-tick ones
 in `HookSettings`); changing `ScriptSettings` reloads the scripts.
@@ -527,9 +534,11 @@ Messages are `script::channel`: `net.send` puts them in the runtime's
 (`defaria_server::script::message`, `defaria_client::script`) as
 `ClientMessage::Script` and `ServerMessage::Script`; each side checks
 what it receives with `channel::check`, and the server holds each
-connection to a `MessageBudget`. `on_message` is called with
-`Caller::script(id, player)`, so a failure disables that script for that
-player.
+connection to a `MessageBudget::server()`; received messages wait in
+`PendingMessages` and run within `HookSettings`' per-tick steps and time
+each frame. `on_message` is called with `Caller::script(id, player)`, so
+a failure disables that script for that player, until it goes
+(`ScriptRuntime::forget_player`).
 
 The server's blocks' and items' hooks are called in
 `defaria_server::script::hooks`, with `ScriptWorld::call`

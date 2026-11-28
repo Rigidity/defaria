@@ -319,19 +319,36 @@ bandwidth for light or chunks shows up in the `net` report.
   4 KiB a message encoded, 64 bytes a channel name, 16 messages a hook
   call, and a client's scripts 20 a second in bursts of 40; past the
   budget `net.send` returns false. The server holds each connection to
-  the same budget (a client needn't be the game's) and drops what's
-  over it. The server's sends aren't rate-limited beyond the per-call
-  cap: they're its own mods'.
+  the same rate with twice the burst (a client needn't be the game's,
+  and a well-behaved one's messages can arrive bunched up, a frame late
+  or behind a lost packet), and drops what's over it, so only a client
+  that ignores its own limit loses messages. The server's sends aren't
+  rate-limited beyond the per-call cap: they're its own mods'.
 - A player is named by `player.id`, its entity's bits, as replication
   names it. A Luau number holds it exactly while the entity's
   generation is under 2^21; ids from the players' keys (#216) would be
   steadier, and a script that keeps one across a player leaving and
   another joining could reach the wrong player if the entity is reused.
-- The server's `on_message` runs once a frame in `Update` as messages
-  arrive, with no block to change (it reads the world and sends);
+- The server's `on_message` runs in `Update`, not on the simulation's
+  ticks, with no block to change (it reads the world and sends);
   changing the world from a message, within some reach of the player, is
-  for when a feature needs it. Its calls aren't counted against the
-  block hooks' per-tick budget; the per-connection rate bounds them.
+  for when a feature needs it. The rate alone doesn't bound its cost
+  (each message runs every matching script under a whole call's
+  budget, from every player at once), so messages wait in a queue and
+  run a frame at a time within as many steps and as much time as block
+  hooks get in a tick (`HookSettings`); the queue holds at most 1,024,
+  and 80 of one player's, and drops new ones past that.
+- What a player's messages disabled (`Caller::script(id, Some(player))`)
+  and what it sent that hasn't run are forgotten when its `Connection`
+  goes.
+- A client's `on_join` runs again after its scripts reload in play
+  (they start afresh), and the server's messages that arrive before it
+  has run are held (up to 256) until it has, so `on_join` always comes
+  first.
+- Both message budgets refill from `Time<Real>`, not the virtual clock:
+  the server's virtual clock stops while its players are paused, and
+  their clients may still send. Headless runs step real time by the
+  fixed frame (`ManualDuration`), so they stay deterministic.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

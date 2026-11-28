@@ -23,6 +23,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use bevy::reflect::Reflect;
 use mlua::{Lua, Table, Value};
 
 use super::{Side, api::from_lua, sandbox::Meter};
@@ -63,26 +64,48 @@ pub struct Outgoing {
     pub message: ScriptMessage,
 }
 
-/// How many messages may go now: [`MESSAGE_BURST`] at most, refilled at
-/// [`MESSAGES_PER_SECOND`]. A client's scripts are held to one, and the
-/// server holds each connection to another.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// How many times [`MESSAGE_BURST`] the server lets a connection send at
+/// once. Messages a client sent at its own rate can arrive bunched up (a
+/// frame late, or held behind a lost packet over QUIC), so the server
+/// leaves room for that: a client that keeps to its budget, with up to
+/// [`MESSAGE_BURST`] / [`MESSAGES_PER_SECOND`] seconds (two) of its
+/// messages arriving at once, is never dropped. Only one that ignores its
+/// own limit is.
+pub const SERVER_SLACK: f64 = 2.0;
+
+/// How many messages may go now: up to a burst, refilled at
+/// [`MESSAGES_PER_SECOND`]. A client's scripts are held to
+/// [`MessageBudget::default`] (bursts of [`MESSAGE_BURST`]); the server
+/// holds each connection to [`MessageBudget::server`], with more room.
+#[derive(Reflect, Debug, Clone, Copy, PartialEq)]
 pub struct MessageBudget {
     tokens: f64,
+    burst: f64,
 }
 
 impl Default for MessageBudget {
     fn default() -> Self {
         Self {
             tokens: MESSAGE_BURST,
+            burst: MESSAGE_BURST,
         }
     }
 }
 
 impl MessageBudget {
+    /// The budget the server holds a client's connection to: the client's
+    /// rate, with [`SERVER_SLACK`] times its burst.
+    pub fn server() -> Self {
+        let burst = MESSAGE_BURST * SERVER_SLACK;
+        Self {
+            tokens: burst,
+            burst,
+        }
+    }
+
     /// `seconds` more have passed.
     pub fn refill(&mut self, seconds: f64) {
-        self.tokens = (self.tokens + seconds.max(0.0) * MESSAGES_PER_SECOND).min(MESSAGE_BURST);
+        self.tokens = (self.tokens + seconds.max(0.0) * MESSAGES_PER_SECOND).min(self.burst);
     }
 
     /// Takes one message's worth, if there is one.
@@ -475,6 +498,47 @@ mod tests {
             (0..100).take_while(|_| budget.take()).count(),
             MESSAGE_BURST as usize
         );
+    }
+
+    /// A client that sends as fast as its budget lets it, every frame,
+    /// never has a message dropped by the server, even when a second's
+    /// worth arrives bunched up with the next; one that sends twice as
+    /// fast is dropped.
+    #[test]
+    fn the_server_leaves_room_for_messages_that_arrive_bunched_up() {
+        let frame = 1.0 / 60.0;
+        // What the client sends each frame, for ten seconds.
+        let mut client = MessageBudget::default();
+        let sent: Vec<usize> = (0..600)
+            .map(|_| {
+                client.refill(frame);
+                (0..100).take_while(|_| client.take()).count()
+            })
+            .collect();
+        // The server gets nothing for two seconds at a time, then
+        // everything sent in them at once.
+        let mut server = MessageBudget::server();
+        let mut dropped = 0;
+        for two_seconds in sent.chunks(120) {
+            for _ in 0..120 {
+                server.refill(frame);
+            }
+            let arrived: usize = two_seconds.iter().sum();
+            dropped += (0..arrived).filter(|_| !server.take()).count();
+        }
+        assert_eq!(dropped, 0);
+        // A message every frame, three times its rate: a client ignoring
+        // its limit, cut to the rate once the slack is spent.
+        let mut server = MessageBudget::server();
+        let kept = (0..600)
+            .filter(|_| {
+                server.refill(frame);
+                server.take()
+            })
+            .count();
+        let most = MESSAGE_BURST * SERVER_SLACK + 10.0 * MESSAGES_PER_SECOND;
+        assert!(kept as f64 <= most + 1.0, "{kept}");
+        assert!(kept < 600);
     }
 
     #[test]

@@ -3,9 +3,12 @@
 //! client's copy of the world and change nothing in it.
 //!
 //! - `on_join()`: the client has joined a world (its player's first
-//!   state arrived), once a world.
+//!   state arrived), once a world, and again after the scripts reload
+//!   (a script changed, in a dev build), since they start afresh.
 //! - `on_message(channel, value)`: the same mod's server scripts sent
-//!   this client a message.
+//!   this client a message. What arrives before `on_join` has run waits
+//!   for it (up to [`MAX_HELD_MESSAGES`]; past that the oldest go), so a
+//!   script's `on_join` always comes first.
 //!
 //! The gameplay hooks (`on_used`, `on_tick`, ...) are the server's, and
 //! never run here. A client script reads the loaded chunks as the
@@ -17,6 +20,8 @@
 //!
 //! The scripts reload on leaving a world, so the next starts afresh.
 
+use std::collections::VecDeque;
+
 use bevy::prelude::*;
 
 use crate::{
@@ -24,9 +29,9 @@ use crate::{
     session::GameState,
 };
 use defaria_core::{
-    net::{ClientMessage, ServerMessage},
+    net::{ClientMessage, ScriptMessage, ServerMessage},
     script::{
-        Caller, ScriptRuntime, ScriptRuntimePlugin, Side,
+        Caller, ScriptRuntime, ScriptRuntimePlugin, ScriptsReloaded, Side,
         api::{ChunkReader, call_read_only},
         channel::{ON_MESSAGE, Recipient, check, value_to_lua},
     },
@@ -41,10 +46,15 @@ impl Plugin for ClientScriptPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(ScriptRuntimePlugin { side: Side::Client })
             .init_resource::<JoinRan>()
+            .init_resource::<HeldMessages>()
             .add_systems(OnExit(GameState::Playing), start_afresh)
             .add_systems(
                 Update,
-                (run_on_join, receive_messages)
+                (
+                    join_again_on_reload.run_if(on_message::<ScriptsReloaded>),
+                    run_on_join,
+                    receive_messages,
+                )
                     .chain()
                     .run_if(in_state(GameState::Playing)),
             )
@@ -52,15 +62,35 @@ impl Plugin for ClientScriptPlugin {
     }
 }
 
-/// Whether this world's `on_join`s have run.
+/// The most messages from the server held for `on_join` to run first.
+pub const MAX_HELD_MESSAGES: usize = 256;
+
+/// Whether this world's `on_join`s have run, since the scripts last
+/// loaded.
 #[derive(Resource, Debug, Default)]
 struct JoinRan(bool);
 
-/// A world left: the scripts reload, and what they hadn't sent is
-/// dropped.
-fn start_afresh(mut runtime: ResMut<ScriptRuntime>, mut ran: ResMut<JoinRan>) {
+/// The server's script messages that arrived before `on_join` ran,
+/// oldest first.
+#[derive(Resource, Debug, Default)]
+struct HeldMessages(VecDeque<ScriptMessage>);
+
+/// A world left: the scripts reload, and what they hadn't sent, or
+/// hadn't been handed, is dropped.
+fn start_afresh(
+    mut runtime: ResMut<ScriptRuntime>,
+    mut ran: ResMut<JoinRan>,
+    mut held: ResMut<HeldMessages>,
+) {
     runtime.reload(None);
     runtime.outbox().take();
+    ran.0 = false;
+    held.0.clear();
+}
+
+/// The scripts reloaded while playing: they start afresh, so they're
+/// told they've joined again.
+fn join_again_on_reload(mut ran: ResMut<JoinRan>) {
     ran.0 = false;
 }
 
@@ -101,18 +131,34 @@ fn run_on_join(
     }
 }
 
-/// Calls `on_message` for what the server's scripts sent.
+/// Calls `on_message` for what the server's scripts sent, once `on_join`
+/// has run; until then it's held.
+///
+/// The budget refills from `Time<Real>` (as the server's does), which
+/// headless runs and tests step by the fixed frame, so it's the same
+/// every run there.
 fn receive_messages(
     time: Res<Time<Real>>,
+    ran: Res<JoinRan>,
+    mut held: ResMut<HeldMessages>,
     mut messages: MessageReader<FromServer>,
     mut runtime: ResMut<ScriptRuntime>,
     world: ChunkReader,
 ) {
     runtime.outbox().refill(time.delta_secs_f64());
     for FromServer(message) in messages.read() {
-        let ServerMessage::Script(message) = message else {
-            continue;
-        };
+        if let ServerMessage::Script(message) = message {
+            if held.0.len() == MAX_HELD_MESSAGES {
+                held.0.pop_front();
+            }
+            held.0.push_back(message.clone());
+        }
+    }
+    if !ran.0 {
+        return;
+    }
+    for message in std::mem::take(&mut held.0) {
+        let message = &message;
         if let Err(error) = check(message) {
             warn!(
                 "dropped the server's message for mod `{}`: {error}",

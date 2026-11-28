@@ -262,6 +262,15 @@ impl ScriptRuntime {
         self.disabled.remove(&caller);
     }
 
+    /// Forgets the scripts disabled for `player` (its
+    /// [`Caller::script`]s), once it has gone, so what a player's errors
+    /// disabled doesn't outlive it.
+    pub fn forget_player(&mut self, player: Entity) {
+        self.disabled.retain(
+            |caller| !matches!(caller, Caller::Script { player: Some(p), .. } if *p == player),
+        );
+    }
+
     /// The most recent lines the scripts logged, oldest first.
     pub fn log_lines(&self) -> Vec<LogLine> {
         self.log.lines()

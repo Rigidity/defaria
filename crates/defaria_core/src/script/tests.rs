@@ -438,3 +438,24 @@ fn changing_the_settings_reloads() {
     assert_eq!(runtime.generation(), 1);
     assert_eq!(runtime.settings().step_budget, 10);
 }
+
+#[test]
+fn forgetting_a_player_enables_only_its_scripts() {
+    let mut runtime = runtime();
+    let (gone, stays) = (
+        Entity::from_raw_u32(1).unwrap(),
+        Entity::from_raw_u32(2).unwrap(),
+    );
+    for caller in [
+        Caller::script("scripted:failing", Some(gone)),
+        Caller::script("scripted:failing", Some(stays)),
+        CALLER,
+    ] {
+        let _ = runtime.call_with::<_, ()>(caller, "scripted:failing", "on_tick", ());
+        assert!(runtime.is_disabled(caller), "{caller:?}");
+    }
+    runtime.forget_player(gone);
+    assert!(!runtime.is_disabled(Caller::script("scripted:failing", Some(gone))));
+    assert!(runtime.is_disabled(Caller::script("scripted:failing", Some(stays))));
+    assert!(runtime.is_disabled(CALLER));
+}

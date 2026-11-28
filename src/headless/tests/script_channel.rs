@@ -35,6 +35,10 @@ function on_message(channel, value, player)
         if channel == "hello" then
             log.info("hello from", value.from)
             net.send(player, "welcome", { id = player.id })
+        elseif channel == "boom" then
+            error("boom")
+        elseif channel == "burn" then
+            for i = 1, 60000 do end
         elseif channel == "report" then
             log.info("report", value.read, value.data, value.wrote, value.error)
         end
@@ -172,7 +176,7 @@ fn the_server_holds_a_client_to_its_message_budget() {
     use defaria_core::{
         block_entity::Value,
         net::{ClientMessage, ScriptMessage},
-        script::channel::MESSAGE_BURST,
+        script::channel::{MESSAGE_BURST, SERVER_SLACK},
     };
     let mut game = game();
     game.settle();
@@ -196,6 +200,119 @@ fn the_server_holds_a_client_to_its_message_budget() {
     let count = |what: &str| server.iter().filter(|l| *l == what).count();
     assert_eq!(count("server got too big"), 0);
     assert!(!server.iter().any(|l| l.contains("ccc")), "{server:?}");
-    // The two dropped for their size count against the budget too.
-    assert_eq!(count("server got flood"), MESSAGE_BURST as usize - 2);
+    // The server leaves twice a client's burst of room; the two dropped
+    // for their size count against it too.
+    assert_eq!(
+        count("server got flood"),
+        (MESSAGE_BURST * SERVER_SLACK) as usize - 2
+    );
+}
+
+/// A message for mod `test`'s scripts on `channel`, as a client sends it.
+fn raw(channel: &str) -> defaria_client::net::ToServer {
+    defaria_client::net::ToServer(defaria_core::net::ClientMessage::Script(
+        defaria_core::net::ScriptMessage {
+            mod_id: "test".into(),
+            channel: channel.into(),
+            value: None,
+        },
+    ))
+}
+
+/// The server's player entity for the one client.
+fn the_player(game: &mut Multiplayer) -> Entity {
+    let world = game.server.world_mut();
+    world
+        .query_filtered::<Entity, With<defaria_server::server::Connection>>()
+        .single(world)
+        .unwrap()
+}
+
+/// Messages whose hooks cost a lot run a few a frame, within the steps
+/// block hooks get in a tick, and the rest wait their turn rather than
+/// stall the server.
+#[test]
+fn costly_messages_wait_for_the_next_frame() {
+    let mut game = game();
+    game.settle();
+    for _ in 0..20 {
+        game.clients[0].world_mut().write_message(raw("burn"));
+    }
+    let burned = |game: &Multiplayer| {
+        logged(&game.server)
+            .iter()
+            .filter(|l| *l == "server got burn")
+            .count()
+    };
+    let mut per_frame = Vec::new();
+    for _ in 0..20 {
+        let before = burned(&game);
+        game.update();
+        per_frame.push(burned(&game) - before);
+    }
+    assert_eq!(per_frame.iter().sum::<usize>(), 20, "{per_frame:?}");
+    // 60,000 steps each, against 250,000 a frame: five at most (the one
+    // that crosses it included).
+    assert!(per_frame.iter().all(|&n| n <= 5), "{per_frame:?}");
+    assert!(
+        per_frame.iter().filter(|&&n| n > 0).count() >= 4,
+        "{per_frame:?}"
+    );
+}
+
+/// A script that one player's message broke stays disabled for that
+/// player only while it's playing: once it goes, it's forgotten.
+#[test]
+fn what_a_players_messages_disabled_goes_with_it() {
+    let mut game = game();
+    game.settle();
+    let player = the_player(&mut game);
+    let caller = defaria_core::script::Caller::script("test:both", Some(player));
+    game.clients[0].world_mut().write_message(raw("boom"));
+    for _ in 0..3 {
+        game.update();
+    }
+    assert!(
+        game.server
+            .world()
+            .resource::<ScriptRuntime>()
+            .is_disabled(caller)
+    );
+    game.server.world_mut().despawn(player);
+    assert!(
+        !game
+            .server
+            .world()
+            .resource::<ScriptRuntime>()
+            .is_disabled(caller)
+    );
+}
+
+/// When the client's scripts reload while it plays, they start afresh,
+/// and `on_join` runs again.
+#[test]
+fn a_reload_on_the_client_joins_again() {
+    let mut game = game();
+    game.settle();
+    let joins = |game: &Multiplayer| {
+        logged(&game.clients[0])
+            .iter()
+            .filter(|l| *l == "client on_join")
+            .count()
+    };
+    assert_eq!(joins(&game), 1);
+    game.clients[0]
+        .world_mut()
+        .resource_mut::<ScriptSettings>()
+        .step_budget += 1;
+    for _ in 0..3 {
+        game.update();
+    }
+    assert_eq!(joins(&game), 2);
+    // And its `hello` reached the server again.
+    let hellos = logged(&game.server)
+        .iter()
+        .filter(|l| *l == "hello from client")
+        .count();
+    assert_eq!(hellos, 2);
 }
