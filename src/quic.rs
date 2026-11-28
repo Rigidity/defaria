@@ -103,8 +103,15 @@ const MAX_MOD_FRAME: usize = MAX_MOD + MAX_FILES * (MAX_PATH + 16) + 64;
 /// How long a client has to say hello, and to connect.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long fetching mods and building content may take, once a server
-/// has answered.
+/// has answered (and how long a server goes on sending them).
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a server waits for each of a client's answers in the
+/// handshake (which mods it wants, its content).
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
+/// The most clients a server has in its handshake at once, and from one
+/// address: a handshake costs the server, and any key may try one.
+const MAX_HANDSHAKES: usize = 64;
+const MAX_HANDSHAKES_PER_ADDRESS: usize = 4;
 /// How often each end sends something when it has nothing to say, so an
 /// idle connection isn't timed out.
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
@@ -175,7 +182,10 @@ impl Listener {
 /// Listens on `address` (port 0 for any free one) for clients, offering
 /// them the mods in `offer`, as the server whose key is `identity`.
 pub fn listen(address: SocketAddr, offer: Offer, identity: &Identity) -> io::Result<Listener> {
+    // Encoded and deflated once, here, not on the network's executor for
+    // each client.
     let offer = Arc::new(Encoded::new(offer));
+    let handshakes = Arc::new(std::sync::Mutex::new(Handshakes::default()));
     let config = server_config(identity).map_err(io::Error::other)?;
     let endpoint = Endpoint::server(config, address)?;
     let address = endpoint.local_addr()?;
@@ -189,9 +199,16 @@ pub fn listen(address: SocketAddr, offer: Offer, identity: &Identity) -> io::Res
                 while let Some(connecting) = endpoint.accept().await {
                     let send = send.clone();
                     let offer = offer.clone();
+                    let handshakes = handshakes.clone();
                     smol::spawn(async move {
                         match connecting.await {
-                            Ok(connection) => serve(connection, &offer, send).await,
+                            Ok(connection) => {
+                                let Some(slot) = Handshakes::start(&handshakes, &connection) else {
+                                    connection.close(1u32.into(), b"the server is busy");
+                                    return;
+                                };
+                                serve(connection, &offer, slot, send).await
+                            }
                             Err(error) => warn!("a client couldn't connect: {error}"),
                         }
                     })
@@ -390,7 +407,14 @@ async fn open(
         .map_err(|error| error.to_string())?;
     let answer = read_frame(&mut receive, MAX_MOD_LIST)
         .await
-        .map_err(|error| format!("the server didn't answer: {error}"))?;
+        .map_err(|error| match connection.close_reason() {
+            // Turned away before any answer (busy, say): why.
+            Some(quinn::ConnectionError::ApplicationClosed(close)) => format!(
+                "the server closed the connection: {}",
+                String::from_utf8_lossy(&close.reason)
+            ),
+            _ => format!("the server didn't answer: {error}"),
+        })?;
     match decode::<Handshake>(&answer)? {
         Handshake::Mods(mods) => Ok((connection, (send, receive), mods)),
         Handshake::Refused(reason) => Err(format!("the server refused: {reason}")),
@@ -451,11 +475,13 @@ async fn take_mods(
     }
 }
 
-/// An [`Offer`], each mod encoded once as the frame that sends it, for
-/// every client that asks.
+/// An [`Offer`] as it's sent: the list of mods and each mod as the frame
+/// that sends it (encoded and deflated once, for every client that asks),
+/// and the content's fingerprint.
 struct Encoded {
-    offer: Offer,
+    list: Vec<u8>,
     frames: std::collections::HashMap<ModHash, Vec<u8>>,
+    content: u64,
 }
 
 impl Encoded {
@@ -463,10 +489,64 @@ impl Encoded {
         let frames = (offer.entries.iter())
             .filter_map(|entry| {
                 let package = offer.package(entry.hash)?;
-                Some((entry.hash, encode(&Handshake::Mod((**package).clone()))))
+                let bytes = encode(&Handshake::Mod((**package).clone()));
+                Some((entry.hash, frame(&bytes)))
             })
             .collect();
-        Self { offer, frames }
+        Self {
+            list: frame(&encode(&Handshake::Mods(offer.entries.clone()))),
+            frames,
+            content: offer.content,
+        }
+    }
+}
+
+/// The clients in a server's handshake, in all and by address.
+#[derive(Default)]
+struct Handshakes {
+    total: usize,
+    by_address: std::collections::HashMap<std::net::IpAddr, usize>,
+}
+
+/// A client's place in [`Handshakes`], given up when it's dropped.
+struct HandshakeSlot {
+    handshakes: Arc<std::sync::Mutex<Handshakes>>,
+    address: std::net::IpAddr,
+}
+
+impl Handshakes {
+    /// A place for `connection`'s handshake, or `None` if the server has
+    /// as many as it takes, in all or from that address.
+    fn start(
+        handshakes: &Arc<std::sync::Mutex<Self>>,
+        connection: &Connection,
+    ) -> Option<HandshakeSlot> {
+        let address = connection.remote_address().ip();
+        let mut all = handshakes.lock().unwrap_or_else(|e| e.into_inner());
+        let from = all.by_address.get(&address).copied().unwrap_or(0);
+        if all.total >= MAX_HANDSHAKES || from >= MAX_HANDSHAKES_PER_ADDRESS {
+            warn!("turned away {address}: too many handshakes at once");
+            return None;
+        }
+        all.total += 1;
+        all.by_address.insert(address, from + 1);
+        Some(HandshakeSlot {
+            handshakes: handshakes.clone(),
+            address,
+        })
+    }
+}
+
+impl Drop for HandshakeSlot {
+    fn drop(&mut self) {
+        let mut all = self.handshakes.lock().unwrap_or_else(|e| e.into_inner());
+        all.total -= 1;
+        if let Some(count) = all.by_address.get_mut(&self.address) {
+            *count -= 1;
+            if *count == 0 {
+                all.by_address.remove(&self.address);
+            }
+        }
     }
 }
 
@@ -482,7 +562,12 @@ fn player_id(connection: &Connection) -> Option<PlayerId> {
 /// The server's side of a connection: hears the client out, sends it the
 /// mods it asks for, and if it's welcome, carries its messages until
 /// either side goes.
-async fn serve(connection: Connection, offer: &Encoded, accepted: mpsc::Sender<Joining>) {
+async fn serve(
+    connection: Connection,
+    offer: &Encoded,
+    slot: HandshakeSlot,
+    accepted: mpsc::Sender<Joining>,
+) {
     // Checked in the handshake: a client without a certificate can't get
     // this far.
     let Some(id) = player_id(&connection) else {
@@ -547,6 +632,8 @@ async fn serve(connection: Connection, offer: &Encoded, accepted: mpsc::Sender<J
     let Ok(bulk_stream) = connection.open_uni().await else {
         return;
     };
+    // In: no longer a handshake.
+    drop(slot);
     info!(
         "{name} ({id}) connected from {}",
         connection.remote_address()
@@ -574,11 +661,11 @@ async fn send_mods(
     offer: &Encoded,
 ) -> Result<(), String> {
     let broken = |error: io::Error| format!("the handshake broke: {error}");
-    let list = encode(&Handshake::Mods(offer.offer.entries.clone()));
-    write_frame(send, &list).await.map_err(broken)?;
-    let frame = read_frame(receive, MAX_CLIENT_HANDSHAKE)
+    send.write_all(&offer.list)
         .await
+        .map_err(io::Error::other)
         .map_err(broken)?;
+    let frame = answer(receive).await?;
     let Ok(Handshake::Fetch(wanted)) = decode::<Handshake>(&frame) else {
         return Err("that's not which mods to send".into());
     };
@@ -590,13 +677,14 @@ async fn send_mods(
         if !sent.insert(hash) {
             return Err(format!("asked for a mod twice ({hash})"));
         }
-        write_frame(send, frame).await.map_err(broken)?;
+        send.write_all(frame)
+            .await
+            .map_err(io::Error::other)
+            .map_err(broken)?;
     }
-    let frame = read_frame(receive, MAX_CLIENT_HANDSHAKE)
-        .await
-        .map_err(broken)?;
+    let frame = answer(receive).await?;
     match decode::<Handshake>(&frame) {
-        Ok(Handshake::Ready { content }) if content == offer.offer.content => Ok(()),
+        Ok(Handshake::Ready { content }) if content == offer.content => Ok(()),
         Ok(Handshake::Ready { .. }) => Err(
             "the game built different blocks and items from this server's mods: \
              are the game and the server the same version?"
@@ -604,6 +692,21 @@ async fn send_mods(
         ),
         _ => Err("that's not ready".into()),
     }
+}
+
+/// A client's next answer in the handshake, if it comes within
+/// [`ANSWER_TIMEOUT`].
+async fn answer(receive: &mut RecvStream) -> Result<Vec<u8>, String> {
+    let read = async {
+        read_frame(receive, MAX_CLIENT_HANDSHAKE)
+            .await
+            .map_err(|error| format!("the handshake broke: {error}"))
+    };
+    let late = async {
+        smol::Timer::after(ANSWER_TIMEOUT).await;
+        Err("no answer in time".to_string())
+    };
+    read.or(late).await
 }
 
 /// Carries a server's messages to its client and the client's back, until
@@ -781,8 +884,16 @@ async fn goodbye<const N: usize>(connection: &Connection, streams: [&mut SendStr
     connection.close(0u32.into(), b"bye");
 }
 
-/// Writes a frame: its length, whether it's deflated, and its bytes.
+/// Writes a frame ([`frame`]).
 async fn write_frame(stream: &mut SendStream, bytes: &[u8]) -> io::Result<()> {
+    stream
+        .write_all(&frame(bytes))
+        .await
+        .map_err(io::Error::other)
+}
+
+/// A frame's bytes: its length, whether it's deflated, and its bytes.
+fn frame(bytes: &[u8]) -> Vec<u8> {
     let (flag, payload) = if bytes.len() > COMPRESS_OVER {
         (1u8, miniz_oxide::deflate::compress_to_vec(bytes, 1))
     } else {
@@ -792,7 +903,7 @@ async fn write_frame(stream: &mut SendStream, bytes: &[u8]) -> io::Result<()> {
     frame.extend_from_slice(&(payload.len() as u32 + 1).to_le_bytes());
     frame.push(flag);
     frame.extend_from_slice(&payload);
-    stream.write_all(&frame).await.map_err(io::Error::other)
+    frame
 }
 
 /// Reads a frame's bytes, inflated if they were deflated, refusing one of
@@ -1142,6 +1253,62 @@ mod tests {
         };
         assert!(reason.contains("doesn't have"), "{reason}");
         assert!(listener.accept().is_empty());
+    }
+
+    /// A server takes only a few unfinished handshakes from one address
+    /// at a time, and more once they're done; one that says nothing more
+    /// after its hello is dropped in time.
+    #[test]
+    fn handshakes_are_held_to_a_few_an_address() {
+        let listener = server();
+        let address = listener.address;
+        let config = client_config(&Identity::generate(), None, Default::default()).unwrap();
+        // Clients that connect, say hello, and then nothing.
+        let silent: Vec<_> = smol::block_on(async {
+            let mut silent = Vec::new();
+            for _ in 0..MAX_HANDSHAKES_PER_ADDRESS {
+                silent.push(open(address, "Quiet", config.clone()).await.unwrap());
+            }
+            silent
+        });
+        let error = join(&listener, &Identity::generate()).err().unwrap();
+        assert!(error.contains("busy"), "{error}");
+        // Once they're gone, there's room again.
+        drop(silent);
+        let mut joined = None;
+        for _ in 0..200 {
+            if let Ok(link) = join(&listener, &Identity::generate()) {
+                joined = Some(link);
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(joined.is_some(), "never had room again");
+    }
+
+    /// A client that stops answering mid-handshake is refused once
+    /// [`ANSWER_TIMEOUT`] has passed, and gives up its place.
+    #[test]
+    fn a_silent_client_is_refused_in_time() {
+        let listener = server();
+        let address = listener.address;
+        let config = client_config(&Identity::generate(), None, Default::default()).unwrap();
+        let answer = smol::block_on(async move {
+            let (_connection, (_send, mut receive), _) =
+                open(address, "Quiet", config).await.unwrap();
+            let started = std::time::Instant::now();
+            let frame = read_frame(&mut receive, MAX_HANDSHAKE).await.unwrap();
+            (decode::<Handshake>(&frame).unwrap(), started.elapsed())
+        });
+        let (Handshake::Refused(reason), waited) = answer else {
+            panic!("{answer:?}");
+        };
+        assert!(reason.contains("in time"), "{reason}");
+        assert!(
+            waited >= ANSWER_TIMEOUT - Duration::from_secs(1),
+            "{waited:?}"
+        );
+        assert!(waited < ANSWER_TIMEOUT * 2, "{waited:?}");
     }
 
     /// A server that stops tells its clients, who see their link close.

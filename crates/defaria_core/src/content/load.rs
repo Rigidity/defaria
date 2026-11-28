@@ -150,7 +150,9 @@ pub struct LoadedMod {
 pub fn order(mods: Vec<ModFiles>, errors: &mut Vec<String>) -> Vec<LoadedMod> {
     let mut by_id: BTreeMap<String, LoadedMod> = BTreeMap::new();
     for files in mods {
-        let manifest: Manifest = match json5::from_str(&files.manifest) {
+        let parsed = check_nesting(&files.manifest)
+            .and_then(|()| json5::from_str(&files.manifest).map_err(|e| e.to_string()));
+        let manifest: Manifest = match parsed {
             Ok(manifest) => manifest,
             Err(error) => {
                 errors.push(format!("{}/{MANIFEST}: {error}", files.dir));
@@ -236,6 +238,90 @@ pub fn order(mods: Vec<ModFiles>, errors: &mut Vec<String>) -> Vec<LoadedMod> {
         ));
     }
     ordered
+}
+
+/// The deepest a JSON5 file's arrays and objects may nest. Parsing
+/// recurses once a level, so a file nested far deeper (from a server, say)
+/// would overflow the stack; nothing a mod defines needs more than a few.
+pub const MAX_NESTING: usize = 64;
+
+/// Checks `text` (JSON5) nests its arrays and objects at most
+/// [`MAX_NESTING`] deep, before it's parsed. Brackets in strings and
+/// comments don't count; anything it can't make sense of is left to the
+/// parser, which then never nests deeper than this either.
+pub fn check_nesting(text: &str) -> Result<(), String> {
+    let mut depth = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                // To the closing quote, skipping what's escaped.
+                while let Some(next) = chars.next() {
+                    match next {
+                        '\\' => {
+                            chars.next();
+                        }
+                        _ if next == c => break,
+                        _ => {}
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut star = false;
+                for next in chars.by_ref() {
+                    if star && next == '/' {
+                        break;
+                    }
+                    star = next == '*';
+                }
+            }
+            '[' | '{' => {
+                depth += 1;
+                if depth > MAX_NESTING {
+                    return Err(format!(
+                        "it nests arrays and objects more than {MAX_NESTING} deep"
+                    ));
+                }
+            }
+            ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The most frames an image may hold: a strip of 16×16 frames at most
+/// this long (`block_texture::MAX_FRAMES` on the client is the same).
+pub const MAX_IMAGE_FRAMES: u32 = 64;
+/// An image's width, and its frames' height.
+pub const IMAGE_SIZE: u32 = 16;
+
+/// Checks a PNG's header says it's an image a mod may have: 16 pixels
+/// wide, and 16 to 16 × [`MAX_IMAGE_FRAMES`] tall. Done before it's
+/// decoded, so a small file claiming a huge image is never decoded.
+/// Returns its width and height.
+pub fn check_png(bytes: &[u8]) -> Result<(u32, u32), String> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return Err("it isn't a PNG".into());
+    }
+    let read = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    let (width, height) = (read(16), read(20));
+    if width != IMAGE_SIZE || !(IMAGE_SIZE..=IMAGE_SIZE * MAX_IMAGE_FRAMES).contains(&height) {
+        return Err(format!(
+            "it's {width}×{height}: images are {IMAGE_SIZE} wide and {IMAGE_SIZE} to {} tall",
+            IMAGE_SIZE * MAX_IMAGE_FRAMES
+        ));
+    }
+    Ok((width, height))
 }
 
 /// Checks a mod keeps to its side's rules. A `server` or `client` mod
@@ -410,6 +496,49 @@ mod tests {
         );
         assert!(all.contains("mods/needs_hud"), "{all}");
         assert!(all.contains("mods/crossed"), "{all}");
+    }
+
+    /// Nesting past the limit is refused before parsing; brackets in
+    /// strings and comments don't count.
+    #[test]
+    fn deep_nesting_is_refused() {
+        let deep = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert_eq!(check_nesting(&deep(MAX_NESTING)), Ok(()));
+        assert!(check_nesting(&deep(MAX_NESTING + 1)).is_err());
+        assert!(check_nesting(&"[".repeat(100_000)).is_err());
+        let quoted = format!(
+            "{{ a: \"{0}\", b: '{0}\\'{0}', // {0}\n /* {0} */ c: [1] }}",
+            "[".repeat(200)
+        );
+        assert_eq!(check_nesting(&quoted), Ok(()));
+        // A manifest nested that deep is reported, not parsed.
+        let mut errors = Vec::new();
+        let manifest = format!("{{ id: \"x\", name: \"x\", d: {} }}", deep(100_000));
+        let ordered = order(vec![ModFiles::new("mods/x", &manifest, &[])], &mut errors);
+        assert!(ordered.is_empty());
+        assert!(errors[0].contains("deep"), "{errors:?}");
+    }
+
+    /// Only a PNG 16 wide and at most 64 frames tall passes, by its
+    /// header alone.
+    #[test]
+    fn png_headers_are_checked() {
+        let png = |width: u32, height: u32| {
+            let mut bytes = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+            bytes.extend_from_slice(&13u32.to_be_bytes());
+            bytes.extend_from_slice(b"IHDR");
+            bytes.extend_from_slice(&width.to_be_bytes());
+            bytes.extend_from_slice(&height.to_be_bytes());
+            bytes
+        };
+        assert_eq!(check_png(&png(16, 16)), Ok((16, 16)));
+        assert_eq!(check_png(&png(16, 1024)), Ok((16, 1024)));
+        assert!(check_png(&png(16, 1040)).is_err());
+        assert!(check_png(&png(16, 1 << 30)).is_err());
+        assert!(check_png(&png(32, 16)).is_err());
+        assert!(check_png(b"not a png at all, nope").is_err());
+        let stone = std::fs::read(crate::content::mods_dir().join("defaria/images/stone.png"));
+        assert_eq!(check_png(&stone.unwrap()), Ok((16, 16)));
     }
 
     /// The disk reader finds the base game's manifest, definition files

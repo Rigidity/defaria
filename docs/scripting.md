@@ -460,8 +460,10 @@ rendering or the UI.
   a pool of their own; those that don't fit wait for the next network
   tick, oldest first (and past 65,536 waiting, new ones are dropped).
 - **Memory.** Each mod's scripts may use 32 MiB between them by default
-  (`ScriptSettings::memory_limit`). An allocation past that fails with an
-  error.
+  (`ScriptSettings::memory_limit`), on the server and on each client
+  alike, so a mod a server sent can't take a client's memory either. An
+  allocation past that (`string.rep("x", 2^30)`) fails with an error,
+  and the call that made it is a script error.
 - **Time.** Steps don't measure the time library functions take inside
   one step: a `table.sort` of a big table, or `string.rep` with a huge
   count, is one step. So each call may also run for only 20 ms of wall

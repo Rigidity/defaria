@@ -195,9 +195,13 @@ The hash covers every file's path and bytes (each with its length first,
 in path order). A mod is written into a hidden folder beside its own and
 renamed into place once it's whole, and checked against its name each
 time it's used: one whose files no longer hash to it, or that holds
-anything a mod doesn't send, is removed and fetched again. Nothing else
-removes them; deleting the folder is safe. The cache has no format
-version: a folder's name is all there is to it.
+anything a mod doesn't send, is removed and fetched again. Each use
+sets the folder's modified time; once the cache holds more than 256 MiB
+(after a mod is added), the folders used longest ago are removed until
+it doesn't, never the ones being played with. Half-written folders
+(`.<hash>.<process>.<n>.partial`) more than a day old go too. Deleting
+the folder is safe. The cache has no format version: a folder's name is
+all there is to it.
 
 ## Chunks and regions
 

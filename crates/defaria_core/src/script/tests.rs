@@ -459,3 +459,36 @@ fn forgetting_a_player_enables_only_its_scripts() {
     assert!(runtime.is_disabled(Caller::script("scripted:failing", Some(stays))));
     assert!(runtime.is_disabled(CALLER));
 }
+
+/// A server's scripts run on its clients too, so a script's memory is
+/// held to the cap there as well, by default: a huge string fails as a
+/// script error, and the runtime goes on.
+#[test]
+fn a_huge_allocation_fails_on_either_side() {
+    use crate::content::load::{ModFiles, order};
+    let mods = order(
+        vec![ModFiles::new(
+            "received/greedy",
+            r#"{ id: "greedy", name: "Greedy" }"#,
+            &[(
+                "scripts/hog.luau",
+                "function on_hog() local s = string.rep('x', 2^30) end\nfunction on_fine() end",
+            )],
+        )],
+        &mut Vec::new(),
+    );
+    for side in [Side::Client, Side::Server] {
+        let mut runtime = ScriptRuntime::new(
+            side,
+            ScriptSources::from_mods(&mods),
+            ScriptSettings::default(),
+        );
+        let error = failure(runtime.call_with(CALLER, "greedy:hog", "on_hog", ()));
+        assert_eq!(error.kind, ErrorKind::Memory, "{error}");
+        // The caller that failed is disabled; another call still runs.
+        assert_eq!(
+            runtime.call_with::<_, ()>(Caller::Other(2), "greedy:hog", "on_fine", ()),
+            Ok(Some(()))
+        );
+    }
+}

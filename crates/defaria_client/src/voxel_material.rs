@@ -182,8 +182,9 @@ pub struct BlockMaterial {
 
 /// Loads every layer image the content's textures use: through the asset
 /// server (so they hot reload), or, for a mod a server sent, from the
-/// bytes in memory. One whose bytes aren't an image is left out, so its
-/// textures show the placeholder.
+/// bytes in memory, once their header says they're no bigger than a
+/// layer may be (`check_png`). One whose bytes aren't such an image is
+/// left out, so its textures show the placeholder.
 fn load_layers(world: &mut World) -> HashMap<String, Handle<Image>> {
     let content = world.resource::<Content>();
     let mut on_disk = Vec::new();
@@ -211,6 +212,12 @@ fn load_layers(world: &mut World) -> HashMap<String, Handle<Image>> {
         .collect();
     let mut images = world.resource_mut::<Assets<Image>>();
     for (path, bytes) in in_memory {
+        // The header first: a mod a server sent is untrusted, and a small
+        // file can claim a huge image, which decoding would allocate.
+        if let Err(error) = defaria_core::content::load::check_png(&bytes) {
+            error!("{path}: {error}; showing a placeholder");
+            continue;
+        }
         // As the asset server's loader would (its default settings).
         let image = Image::from_buffer(
             &bytes,
@@ -597,6 +604,46 @@ mod tests {
         }
         assert_ne!(material_texture(&app), old, "built again");
         assert_eq!(app.world().resource::<BlockTiles>().0, from_disk);
+    }
+
+    /// An image in memory whose header claims more than a layer may be
+    /// (16 wide, at most 64 frames tall) is never decoded: its textures
+    /// show the placeholder, and the rest build.
+    #[test]
+    fn an_oversized_image_in_memory_is_not_decoded() {
+        use defaria_core::content::load::read_mods;
+        let mut app = app();
+        let old = built_texture(&mut app);
+        let (mut mods, _) = read_mods(&defaria_core::content::mods_dir(), "mods");
+        for files in &mut mods {
+            let folder = files.folder.take().unwrap();
+            for path in &files.images {
+                let mut bytes = std::fs::read(folder.join(path)).unwrap();
+                if path == "images/stone.png" {
+                    // The header's height: 16 × 2^20, a gigabyte decoded.
+                    bytes[20..24].copy_from_slice(&(16u32 << 20).to_be_bytes());
+                }
+                files.image_bytes.insert(path.clone(), bytes.into());
+            }
+            files.dir = files.dir.replace("mods/", "received/");
+        }
+        app.world_mut().insert_resource(Content::from_mods(mods));
+        reload_layers(app.world_mut());
+        let block = app.world().resource::<BlockMaterial>();
+        assert!(
+            !block
+                .layers
+                .contains_key("received/defaria/images/stone.png")
+        );
+        assert!(
+            block
+                .layers
+                .contains_key("received/defaria/images/dirt.png")
+        );
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_ne!(material_texture(&app), old, "the rest built");
     }
 
     #[test]

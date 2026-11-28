@@ -1645,19 +1645,30 @@ What's sent, and what's taken:
   (`.luau`). Nothing else in a mod folder ever leaves it (notes, sources,
   art files).
 - A file at most 1 MiB, a mod at most 16 MiB and 4,096 files, a server at
-  most 256 mods, and a mod's id and `version` at most 64 bytes. A server whose mod breaks a limit doesn't start, saying
-  which file; a client refuses a mod that breaks one.
+  most 256 mods and 64 MiB of them in all, and a mod's `version` at most
+  64 printable characters (its id is checked as any mod's). A server
+  whose mods break a limit doesn't start, saying which; a client refuses
+  a server whose list breaks one, and a mod that does.
 - Paths are lowercase letters, digits, `_`, `-` and `.`, in folders split
-  by `/`, none starting with `.`, at most 128 bytes and 16 folders deep.
-  A server with a file named otherwise doesn't start; a client refuses a
-  mod with one. What a client receives is checked again (every path,
-  size and the hash) before it's used or cached, and its scripts run in
-  the same sandbox as any other.
+  by `/`, none starting with `.` or named as Windows names devices
+  (`con`, `nul`, `prn`, `aux`, `com1` to `com9`, `lpt1` to `lpt9`, with
+  any extension), at most 128 bytes and 16 folders deep. A server with a
+  file named otherwise doesn't start; a client refuses a mod with one.
+- JSON5 files may nest arrays and objects at most 64 deep (anywhere, not
+  just in multiplayer: deeper is an error naming the file), and an
+  image's PNG header must say it's 16 wide and at most 64 frames tall
+  before it's decoded.
+- What a client receives is untrusted, and checked again before it's
+  used or cached: every path, size, nesting and image header, the hash,
+  that it's the size the server listed, and that its `mod.json5` names
+  the mod the server listed. Its scripts run in the same sandbox, with
+  the same limits, as any other (see `docs/scripting.md`, "Limits").
 
 The cache is the data folder's `mod-cache/`, a folder per mod named by
 its hash (see `docs/world-format.md`). A cached mod is checked against
-its hash each time it's used, and fetched again if it changed; it's
-never removed otherwise (delete the folder to clear it).
+its hash each time it's used, and fetched again if it changed. It keeps
+at most 256 MiB: past that, the mods used longest ago go (never those
+the game is playing with).
 
 ## Not yet
 

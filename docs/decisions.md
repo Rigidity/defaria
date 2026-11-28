@@ -428,10 +428,17 @@ bandwidth for light or chunks shows up in the `net` report.
   each as one frame on the control stream, and the client builds
   `Content` and says its fingerprint, which the server checks (still the
   hash of every block and item state's name) before welcoming it. The
-  protocol is 3. Fetching has five minutes, past the ten seconds
-  connecting has; the mods come on the control stream before play, not
-  on a stream of their own alongside it, since nothing can be played
-  without them.
+  protocol is 3. A client has five minutes to fetch and build, past
+  the ten seconds connecting has; the server waits ten seconds for each
+  of the client's answers (which mods, its content), and keeps at most
+  64 clients in their handshake at once, 4 from one address, closing
+  others with "the server is busy" (any key may try a handshake, so
+  they'd otherwise cost it what anyone liked). The mods come on the
+  control stream before play, not on a stream of their own alongside
+  it, since nothing can be played without them. Each mod is encoded and
+  deflated once, as the server starts listening, and the same frame is
+  written to every client that asks, so sending costs the network's
+  executor no work.
 - `server` and `client` mods may hold only scripts: any definition or
   image is a load error. The other choice, server mods whose content is
   sent as part of the state table, would make a client's content more
@@ -451,17 +458,32 @@ bandwidth for light or chunks shows up in the `net` report.
   and each side's script runtime loads from them (`both` mods, and its
   own side's) instead of reading the mods folder again, so in-memory
   mods' scripts load too.
-- Limits: 1 MiB a file, 16 MiB and 4,096 files a mod, 256 mods. Paths
-  are lowercase ASCII letters, digits, `_`, `-`, `.`, no part starting
-  with `.`, 128 bytes and 16 folders at most, checked when packing,
+- Limits: 1 MiB a file, 16 MiB and 4,096 files a mod, 256 mods and 64
+  MiB in all (so what a client holds of a server's mods is bounded, a
+  few times over while it builds). Paths are lowercase ASCII letters,
+  digits, `_`, `-`, `.`, no part starting with `.` or named as a Windows
+  device, 128 bytes and 16 folders at most, checked when packing,
   receiving and reading the cache; only `.json5`, `.png` and `.luau` go.
-  A server whose mod breaks a rule doesn't start. Received files are
-  untrusted: hash, sizes and paths are checked before they're cached or
-  used, and a cached mod is checked again each time.
+  Ids are checked as local mods' are, and versions are printable ASCII,
+  so neither reaches a path, log or error screen as anything else. A
+  server whose mod breaks a rule doesn't start.
+- Received files are untrusted: hash, sizes (each mod's the size
+  listed), paths, the manifest naming the mod listed, JSON5 nesting and
+  PNG headers are checked before they're cached or used, and a cached
+  mod is checked again each time. JSON5 nests at most 64 deep, for
+  every mod (the parser recurses, and a deeply nested file overflowed
+  the stack and aborted the game), checked by a scan that skips strings
+  and comments before parsing. A PNG must say it's 16 wide and at most
+  64 frames tall before it's decoded: Bevy's decoder sets no limits of
+  its own, and decoding happens on the main thread as content swaps.
+  Scripts from a server run under the same per-mod memory cap (32 MiB)
+  as any, on the client as on the server.
 - The cache is `mod-cache/<hash>/` in the data folder, the files as
-  sent, written beside and renamed into place. Without a data folder
-  (tests) nothing's cached. Nothing removes old mods; a size cap or a
-  "last used" sweep is for when the folder grows.
+  sent, written beside (a hidden folder unique to the write) and renamed
+  into place. Without a data folder (tests) nothing's cached. It keeps
+  256 MiB: each use touches a mod's folder, and once a new mod takes it
+  past that the folders used longest ago go, never those being played
+  with, so a server offering new hashes every time can't fill the disk.
 - Swapping content on the client (`content_swap::swap_content`) happens
   as play starts on a server, and the client's own is put back as it
   leaves: the block texture's layers load again (the materials stay),
