@@ -160,7 +160,8 @@ incremental builds stay cheap.
   the game's link in memory, checking the link every millisecond: simple,
   at up to a millisecond of latency each way.
 - The server's certificate is made afresh at each start, and clients
-  accept any (#216 remembers servers and gives players keys).
+  accept any (#216 remembers servers and gives players keys: done, see
+  below).
 - Other players are drawn as boxes where the server's latest positions
   put them, with no smoothing between updates (#214).
 - A client that quits without saying so (its process ends) leaves when
@@ -179,7 +180,7 @@ incremental builds stay cheap.
 - A player's inventory is saved only with one player in the world
   (`inventory::player` saves the single `Player`), so a dedicated
   server with several doesn't save theirs; per-player saves come with
-  players' keys (#216).
+  players' keys (#216: done, see below).
 
 **What's wrong with it.** Single player keeps two copies of the loaded
 chunks' blocks, fluid and light (about 21 MiB at the default radius
@@ -329,6 +330,7 @@ bandwidth for light or chunks shows up in the `net` report.
   generation is under 2^21; ids from the players' keys (#216) would be
   steadier, and a script that keeps one across a player leaving and
   another joining could reach the wrong player if the entity is reused.
+  (#216 made `player.id` the player's id: see below.)
 - The server's `on_message` runs in `Update`, not on the simulation's
   ticks, with no block to change (it reads the world and sends);
   changing the world from a message, within some reach of the player, is
@@ -349,6 +351,60 @@ bandwidth for light or chunks shows up in the `net` report.
   the server's virtual clock stops while its players are paused, and
   their clients may still send. Headless runs step real time by the
   fixed frame (`ManualDuration`), so they stay deterministic.
+
+*As built in #216*, players' identity:
+
+- Each install's key pair is `identity.pem` in the game's data folder
+  (ECDSA P-256, PKCS#8 PEM, made once, readable only by its owner), with
+  the name in `profile.json5` beside it (`"Player"` until changed; the
+  file is the setting, there's no screen for it yet) and the servers it
+  trusts in `servers.json5`. A player's id is the SHA-256 hash of the
+  key's DER `SubjectPublicKeyInfo`, 64 hex digits. The certificate is
+  made afresh from the key each connection, so only the key is kept.
+  `--data <folder>` points the game (and a dedicated server) at another
+  data folder; headless runs get a new one in the temporary folder, and
+  tests (and anything without a `DataFolder`) an identity in memory, so
+  none of them ever touch the player's.
+- The server reads the id from the client's certificate in the TLS
+  handshake (any self-signed key may play; the handshake's signature
+  proves the client holds it), never from a message. The name rides the
+  hello and is cleaned by the server; it's only shown (the player
+  entity's `Name`, the player file). The integrated server, with no
+  handshake in memory, takes the install's id as the client app hands it
+  over, so a world played alone and then hosted keeps its player.
+- A player joining while already playing (a game that stopped without
+  saying so stays connected for QUIC's 30-second timeout) takes over:
+  the old connection goes, saving the player, and the new one loads what
+  was saved. Refusing the second would lock a crashed player out for
+  that long.
+- Players are saved in `players/<id>.json5` (world format 2, player
+  format 3): as each leaves, every autosave and when the server stops,
+  for every player, not the single one. Players who left are also kept
+  in memory for the rest of the run, so a world in memory (a dedicated
+  server without a folder, the test harness) keeps them too. Position is
+  saved (the feet, and flying), since movement is the server's: a
+  returning player is put there, and the client learns it from the first
+  `Moved` like any correction. Where they look isn't: the client owns its
+  look and isn't sent one, so a returning player faces where new ones do.
+  Sending it is for when someone minds.
+- A server's key is `server.pem` in the world's folder, made the first
+  time, so it's the same server after a restart (or a move to another
+  machine with its world); a world in memory has a new key each start.
+  Clients remember each server's fingerprint by the address they were
+  given (`host:port` as typed, so `localhost:25575` and
+  `127.0.0.1:25575` are two entries), trust it the first time, and
+  refuse a different one with an error saying how to forget it (edit
+  `servers.json5`; the server list, #52, should offer that). An unreadable
+  or newer `servers.json5` refuses to connect rather than trust anyone.
+- `player.id` in scripts is now the player's id, a hex string, and
+  `net.send` takes it (or the player table) by that: the same across
+  reconnects and restarts, so scripts may keep it. A player without one
+  (a test's) has a nil id. The server finds the recipient among the
+  players playing, one by one: fine for tens of players.
+- What's still open: teleports a client sends (a scenario's `camera`)
+  are still taken as they are; checking them by permission needs
+  permissions, which can now be given by id. There are no accounts or key
+  backups: a lost `identity.pem` is a new player everywhere.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

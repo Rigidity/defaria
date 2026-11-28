@@ -147,8 +147,10 @@ variable and using it in a later call is an error.
 
 ### Players and items
 
-`player` is a table: `id`, which [`net.send`](#messages) sends to,
-`pos` (the eyes) and `look` (the way they look), vectors, `mode`,
+`player` is a table: `id`, a string of 64 hex digits that's the same
+every time that player plays, on any server (the hash of their install's
+key; see `docs/world-format.md`), so a script can keep it, and which
+[`net.send`](#messages) sends to; `pos` (the eyes) and `look` (the way they look), vectors, `mode`,
 `"creative"` or `"survival"`, `sneaking`, a boolean, and `target`, the
 block they look at (a handle, or nil; always nil in `on_message`), with
 `face`, the face of it they look at. `item` is `{ id, name, state }`.

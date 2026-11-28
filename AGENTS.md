@@ -12,7 +12,7 @@ A Bevy 0.20 game, developed mostly by agents. Rust is pinned in
 | Lint (must be clean) | `cargo clippy --all-targets -- -D warnings` |
 | Format | `cargo fmt` |
 | Play a scripted scenario, no window | `cargo headless <script>` |
-| Run a dedicated server, no window | `cargo server [--port N] [--world DIR] [--radius N]` |
+| Run a dedicated server, no window | `cargo server [--port N] [--world DIR] [--radius N] [--data DIR]` |
 | Shipping build | `cargo dist` |
 
 `cargo run`, `cargo play` and `cargo shot` open the game window. They're for
@@ -61,8 +61,10 @@ feels. Only open the window when the user explicitly asks. Use headless mode
 
 Likewise, leave the user's saved worlds alone: don't read, write or delete
 anything in `~/Library/Application Support/Defaria` (see
-`docs/world-format.md`). Headless runs and tests keep their worlds in memory
-or in folders they're given.
+`docs/world-format.md`), which also holds the install's key
+(`identity.pem`) and known servers. Headless runs and tests keep their
+worlds in memory or in folders they're given, and their identity in a
+temporary data folder (`--data` gives another) or in memory.
 
 ## Verifying changes
 
@@ -366,7 +368,16 @@ frame; the messages between them are `defaria_core::net`. So:
   (`dedicated::take_clients_from`). Every message type derives serde;
   `net::encode`/`decode` round-trip them. Give a scenario's server a
   world folder in your scratch directory, never the default
-  `server-world`.
+  `server-world`, and give `cargo server` a `--data` folder there too.
+- Players are who their keys say (`src/identity.rs`): each install's
+  key pair, in its data folder, is its TLS client certificate, and a
+  player's id (`defaria_core::identity::PlayerId`, a component on the
+  server's player) is the key's hash, read from the handshake; single
+  player uses the install's own. A player joins as a
+  `server::Joining` (id, name, link). Clients remember servers' key
+  fingerprints in `servers.json5` and refuse a changed one. Players are
+  saved by id in the world's `players/<id>.json5`
+  (`crates/defaria_server/src/inventory/player.rs`).
 - The client moves its own player at once and the server checks it: the
   client sends its inputs, numbered, each physics step; the server steps
   the player on them with the same `player::step` and says where the
@@ -415,9 +426,11 @@ relative path.
 - `src/lib.rs`: `GamePlugin`, `ClientPlugin` and `ServerPlugin`, which
   register one plugin per feature on each side.
 - `src/integrated.rs`: the server in the game's own process, or the
-  connection to a remote one (`RemoteServer`). `src/server.rs` builds a
-  server app; `src/dedicated.rs` runs one on its own; `src/quic.rs` is
-  the network.
+  connection to a remote one (`RemoteServer`, checked against the known
+  servers). `src/server.rs` builds a server app; `src/dedicated.rs` runs
+  one on its own; `src/quic.rs` is the network; `src/identity.rs` the
+  install's key, name and known servers (`DataFolder`, `LocalIdentity`,
+  `KnownServers`).
 - `crates/defaria_core/src/net.rs`: the messages between server and
   client, and the link in memory that carries them.
   `crates/defaria_server/src/server.rs`: the server's side: each client a
@@ -542,8 +555,9 @@ relative path.
 - `crates/defaria_core/src/inventory/`: inventories. `model.rs` has `Inventory` (how many of
   each item, limited only by weight), a component any entity can have;
   `player.rs` what a new player starts with (the server's
-  `crates/defaria_server/src/inventory/player.rs` gives players theirs
-  and saves them in `player.json5`); `transfer.rs` moving items between
+  `crates/defaria_server/src/inventory/player.rs` gives players theirs,
+  or what they had, and saves each by id in `players/<id>.json5`: what
+  they carry, their game mode and where they were); `transfer.rs` moving items between
   inventories and the creative catalog.
   `crates/defaria_client/src/inventory_screen/`: the inventory screen (E)
   and what other screens build on: `list.rs` sorted item lists on
