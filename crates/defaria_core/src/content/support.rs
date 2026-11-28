@@ -282,7 +282,7 @@ mod tests {
             content.support_side(wire("north")),
             Some(crate::content::Direction::North)
         );
-        assert!(content.needs_support(wire("north")));
+        assert!(content.support_side(wire("north")).is_some());
         assert!(content.supports(wire("north"), stone));
         assert!(content.supports(wire("down"), block("soil")), "soil");
         assert!(content.supports(wire("up"), block("planks")));

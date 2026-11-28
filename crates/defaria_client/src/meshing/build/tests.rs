@@ -1520,6 +1520,7 @@ fn parts_are_meshed_where_their_neighbours_match() {
     assert_eq!(halfway(&chunk), 0);
     chunk.set(3, 3, 4, post);
     assert_eq!(halfway(&chunk), 4);
+}
 
 /// A part drawn by its neighbours is meshed where the block next to it
 /// matches: a wire on the floor joined up to a wire on the floor above

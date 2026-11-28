@@ -131,7 +131,7 @@ fn a_wire_is_aimed_at_by_its_bends() {
     let floor = base()
         .block_state("defaria:wire", &[("on", "down"), ("west", "true")])
         .unwrap();
-    let beside = |side| if side == E { floor } else { BlockState::AIR };
+    let beside = Around::only(E, floor);
     // Down onto the bend's run along the floor, in the middle.
     let run = Vec3::new(0.5, 0.0625, 0.3);
     assert_eq!(side_beside(state, beside, run + Vec3::Y, run), Some(E));

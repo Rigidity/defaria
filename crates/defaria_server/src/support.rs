@@ -239,6 +239,8 @@ mod tests {
         for (at_pos, _) in row {
             assert_eq!(at(&mut app, at_pos), BlockState::AIR, "{at_pos}");
         }
+    }
+
     /// A wire rests on the solid face on the side it lies on: on a wall it
     /// stays while the wall does, whatever goes under it, and breaks when
     /// the wall goes; one put against no solid face breaks at once.

@@ -830,6 +830,14 @@ fn wires_are_placed_only_against_solid_faces() {
     click(&mut app, MouseButton::Right);
     assert_eq!(voxel(&app, left, 14, 3, 5), BlockState::AIR);
     assert_eq!(count(&app, owner, "defaria:wire"), 1);
+    // At the stone wall's west side, above it: on the wall.
+    look_at(&mut app, Vec3::new(13.5, 3.5, 5.5), Vec3::X);
+    click(&mut app, MouseButton::Right);
+    let on_wall = base()
+        .block_state("defaria:wire", &[("on", "east")])
+        .unwrap();
+    assert_eq!(voxel(&app, left, 14, 3, 5), on_wall);
+    assert_eq!(count(&app, owner, "defaria:wire"), 0);
 }
 
 /// The player in survival, with `items` in the inventory and on the

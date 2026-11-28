@@ -40,117 +40,49 @@ neighbours (`next`) bend one of them onto the other's surface:
   block (`wire_riser`) and on along the other's.
 
 Usage:
-    python3 scripts/wire-models.py            # writes the models, prints the parts
+    python3 scripts/wire-models.py          # writes the models, and the parts into
+                                            # blocks/wire.json5
+    python3 scripts/wire-models.py --check  # fails if any of them is out of date
 
-Writes into assets/mods/defaria/models/. Standard library only.
+Writes into assets/mods/defaria/. Standard library only; the helpers it
+shares with pipe-models.py are in conduit_models.py.
 """
 
-import itertools
-import os
 import sys
+
+sys.dont_write_bytecode = True  # no __pycache__ beside the scripts
+
+from conduit_models import BLOCK_UV, OPPOSITE, X, Y, Z, block_uv, part, turn_to, write
+from conduit_models import face as block_face
+from conduit_models import model as write_model
 
 # Sizes in pixels (sixteenths of a block).
 WIDTH = 4  # across the wire, along the surface
 THICK = 2  # off the surface
 LO, HI = 8 - WIDTH // 2, 8 + WIDTH // 2
-# The crosshair's boxes, a little bigger than the wire so it's easy to aim at.
-PICK_WIDTH = 6
-PICK_THICK = 3
-PLO, PHI = 8 - PICK_WIDTH // 2, 8 + PICK_WIDTH // 2
-
-SIDES = {
-    "up": (0, 1, 0),
-    "down": (0, -1, 0),
-    "north": (0, 0, -1),
-    "south": (0, 0, 1),
-    "east": (1, 0, 0),
-    "west": (-1, 0, 0),
-}
-
-
-def px(v):
-    s = f"{v / 16:.4f}".rstrip("0").rstrip(".")
-    return s if s not in ("", "-0") else "0"
-
-
-X, Y, Z = 0, 1, 2
-
 
 def face(side, lo, hi, texture, along, cull=None):
-    """The face of the box from `lo` to `hi` (pixels) on `side`, its
-    vertices counter-clockwise seen from the front, each showing the tile
+    """The face of the box from `lo` to `hi` on `side`, showing the tile
     at its own position as a full block's face would, but turned a
     quarter if need be so the tile's u runs `along` the wire (an axis:
-    X, Y or Z). The texture's diagonal strands then slant the same way
-    on every face, seen from outside, as a twist does; turning a model
-    keeps its faces' uvs, so they still do on every side it rests on."""
-    n = SIDES[side]
-    axis = next(i for i in range(3) if n[i])
-    at = hi[axis] if n[axis] > 0 else lo[axis]
-    # (u axis, u flipped, v axis, v flipped) per side, as models/cube.json5.
-    uv_of = {
-        "up": (0, False, 2, False),
-        "down": (0, False, 2, True),
-        "north": (0, True, 1, True),
-        "south": (0, False, 1, True),
-        "east": (2, True, 1, True),
-        "west": (2, False, 1, True),
-    }[side]
-    ua, uf, va, vf = uv_of
-    corners = []
-    for a, b in [(0, 0), (1, 0), (1, 1), (0, 1)]:
-        p = [0, 0, 0]
-        p[axis] = at
-        p[ua] = (lo[ua], hi[ua])[a ^ uf]
-        p[va] = (lo[va], hi[va])[b ^ vf]
-        corners.append(p)
+    X, Y or Z). A texture with a direction then runs the same way on
+    every face, seen from outside; turning a model keeps its faces' uvs,
+    so it still does on every side the wire rests on."""
+    va = BLOCK_UV[side][2]
+    at_own = block_uv(side)
 
     def uv(p):
-        u = p[ua] / 16
-        v = p[va] / 16
-        u, v = (1 - u if uf else u), (1 - v if vf else v)
-        # A quarter turn, not a mirror, so the strands keep their slant.
+        u, v = at_own(p)
+        # A quarter turn, not a mirror.
         return [v, 1 - u] if va == along else [u, v]
 
-    # Counter-clockwise from the front: (b - a) x (c - a) points along n.
-    a, b, c = corners[0], corners[1], corners[2]
-    ab = [b[i] - a[i] for i in range(3)]
-    ac = [c[i] - a[i] for i in range(3)]
-    cross = [
-        ab[1] * ac[2] - ab[2] * ac[1],
-        ab[2] * ac[0] - ab[0] * ac[2],
-        ab[0] * ac[1] - ab[1] * ac[0],
-    ]
-    if sum(cross[i] * n[i] for i in range(3)) < 0:
-        corners.reverse()
-    head = f'texture: "{texture}"' + (f', cull: "{cull}"' if cull else "")
-    verts = ",\n".join(
-        f"        {{ pos: [{', '.join(px(c) for c in p)}], uv: [{', '.join(px(t * 16) for t in uv(p))}] }}"
-        for p in corners
-    )
-    return f"    {{\n      {head},\n      vertices: [\n{verts},\n      ],\n    }}"
-
-
-def box(lo, hi):
-    return f"{{ from: [{', '.join(px(c) for c in lo)}], to: [{', '.join(px(c) for c in hi)}] }}"
+    return block_face(side, lo, hi, texture, uv, cull)
 
 
 def model(comment, faces, collision):
     """A model's file: its faces and its boxes (`collision`: the wire as
     drawn), which are also what the crosshair picks."""
-    body = "".join(f + ",\n" for f in faces)
-    boxes = ", ".join(box(*b) for b in collision)
-    return (
-        "\n".join(f"// {line}" if line else "//" for line in comment)
-        + "\n// Written by scripts/wire-models.py; change it there.\n"
-        + "{\n"
-        + "  slots: { wire: null },\n"
-        + "  occludes: [],\n"
-        + f"  collision: [{boxes}],\n"
-        + "  faces: [\n"
-        + body
-        + "  ],\n}\n"
-    )
+    return write_model("wire-models.py", comment, ["wire"], faces, collision)
 
 
 def core():
@@ -223,42 +155,6 @@ def climb():
     )
 
 
-# Quarter turns, as `content::bake::model::rotation`: about X, then Y, then Z.
-def rotation(deg):
-    def rx(v):
-        return (v[0], -v[2], v[1])
-
-    def ry(v):
-        return (v[2], v[1], -v[0])
-
-    def rz(v):
-        return (-v[1], v[0], v[2])
-
-    def apply(v):
-        for turn, d in zip((rx, ry, rz), deg):
-            for _ in range(d // 90):
-                v = turn(v)
-        return v
-
-    return apply
-
-
-ROTATIONS = sorted(
-    itertools.product((0, 90, 180, 270), repeat=3),
-    key=lambda d: (sum(1 for x in d if x), sum(d), d),
-)
-
-
-def turn_to(want):
-    """The simplest rotation taking each direction in `want` to its target."""
-    for deg in ROTATIONS:
-        r = rotation(deg)
-        if all(r(SIDES[a]) == SIDES[b] for a, b in want.items()):
-            return list(deg)
-    raise ValueError(want)
-
-
-OPPOSITE = {"up": "down", "down": "up", "north": "south", "south": "north", "east": "west", "west": "east"}
 ORDER = ["down", "up", "north", "south", "east", "west"]
 
 
@@ -268,12 +164,6 @@ def flat(sides):
 
 def where(on):
     return "the floor" if on == "down" else "the ceiling" if on == "up" else f"the {on} wall"
-
-
-def part(when, model_name, turn, next=None):
-    rot = "" if turn == [0, 0, 0] else f", rotate: {turn}"
-    nxt = f", next: {next}" if next else ""
-    return f"    {{ when: {when}, model: \"{model_name}\"{rot}{nxt} }},"
 
 
 def wire_on(side, ons):
@@ -333,17 +223,13 @@ def parts():
 
 
 def main():
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-    out = os.path.join(root, "assets", "mods", "defaria", "models")
-    for name, text in [
-        ("wire_core", core()),
-        ("wire_arm", arm()),
-        ("wire_riser", riser()),
-        ("wire_climb", climb()),
-    ]:
-        with open(os.path.join(out, f"{name}.json5"), "w") as f:
-            f.write(text)
-    sys.stdout.write(parts() + "\n")
+    models = {
+        "wire_core": core(),
+        "wire_arm": arm(),
+        "wire_riser": riser(),
+        "wire_climb": climb(),
+    }
+    write(models, {"wire": parts()}, "--check" in sys.argv[1:])
 
 
 if __name__ == "__main__":

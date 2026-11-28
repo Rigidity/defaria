@@ -140,10 +140,7 @@ fn a_wire_collides_where_it_bends() {
     let below = wire(&[("on", "down"), ("up", "true")]);
     let boxes = |above: BlockState| {
         content
-            .collision(below, |side| match side {
-                Direction::Up => above,
-                _ => BlockState::AIR,
-            })
+            .collision(below, &Around::only(Direction::Up, above))
             .into_owned()
     };
     let floor = boxes(wire(&[("on", "down"), ("down", "true")]));
@@ -197,6 +194,17 @@ fn one_piece(boxes: &[BlockBox]) -> bool {
     boxes.is_empty() || reached.iter().all(|&r| r)
 }
 
+/// Whether every footprint in `ends` overlaps one in `other`: no end on
+/// the side between two conduits leads nowhere (a riser drawn beside the
+/// climb that replaces it).
+fn meets(ends: &[(Vec2, Vec2)], other: &[(Vec2, Vec2)]) -> bool {
+    ends.iter().all(|(lo, hi)| {
+        other
+            .iter()
+            .any(|(olo, ohi)| (hi.min(*ohi) - lo.max(*olo)).cmpgt(Vec2::splat(1e-5)).all())
+    })
+}
+
 /// Whether every footprint in `inner` lies within one in `outer`.
 fn within(inner: &[(Vec2, Vec2)], outer: &[(Vec2, Vec2)]) -> bool {
     inner.iter().all(|(lo, hi)| {
@@ -210,7 +218,8 @@ fn within(inner: &[(Vec2, Vec2)], outer: &[(Vec2, Vec2)]) -> bool {
 /// go (its materials at their defaults), is one piece and meets a joined
 /// neighbour of its own kind wherever that one is: each reaches the side
 /// between them, and one's end there lies within the other's (the same
-/// end, for two arms meeting). Pairs where one would rest on the other
+/// end, for two arms meeting), and every end there meets the other's.
+/// Pairs where one would rest on the other
 /// are left out: a wire rests only on a solid face (its `support`), which
 /// a wire isn't. The bends drawn by the
 /// neighbours are worked out by `scripts/wire-models.py` for each wire
@@ -262,15 +271,8 @@ fn joined_conduits_meet() {
             };
             for &a in here.iter().filter(|&&a| !rests(a, side)) {
                 for &b in there.iter().filter(|&&b| !rests(b, side.opposite())) {
-                    let boxes_a =
-                        content.collision(a, |d| if d == side { b } else { BlockState::AIR });
-                    let boxes_b = content.collision(b, |d| {
-                        if d == side.opposite() {
-                            a
-                        } else {
-                            BlockState::AIR
-                        }
-                    });
+                    let boxes_a = content.collision(a, &Around::only(side, b));
+                    let boxes_b = content.collision(b, &Around::only(side.opposite(), a));
                     assert!(
                         one_piece(&boxes_a),
                         "{}, with {} {side:?} of it, is in pieces: {boxes_a:?}",
@@ -282,7 +284,9 @@ fn joined_conduits_meet() {
                     assert!(
                         !end_a.is_empty()
                             && !end_b.is_empty()
-                            && (within(&end_a, &end_b) || within(&end_b, &end_a)),
+                            && (within(&end_a, &end_b) || within(&end_b, &end_a))
+                            && meets(&end_a, &end_b)
+                            && meets(&end_b, &end_a),
                         "{} and, {side:?} of it, {} don't meet: {end_a:?} and {end_b:?}",
                         content.state(a).name,
                         content.state(b).name,
