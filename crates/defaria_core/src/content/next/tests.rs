@@ -2,28 +2,6 @@ use super::*;
 
 use crate::content::{BlockBox, test_mod};
 
-/// A `vine` with a part drawn where a tall `post` is east of it and
-/// another where no post is west of it.
-fn vines() -> Content {
-    test_mod(&[
-        (
-            "blocks/post.json5",
-            r#"{ properties: { tall: ["no", "yes"] }, model: "quad", textures: { all: "a" } }"#,
-        ),
-        (
-            "blocks/vine.json5",
-            r#"{
-                model: "quad",
-                textures: { all: "a", top: "b", bottom: "c" },
-                parts: [
-                    { model: "pair", next: { east: { block: "post", when: { tall: "yes" } } } },
-                    { model: "pair", next: { west: { not: { block: "post" } } } },
-                ],
-            }"#,
-        ),
-    ])
-}
-
 /// Air all round but `east` and `west`.
 fn around(east: BlockState, west: BlockState) -> Around {
     Around::read(|side| match side {

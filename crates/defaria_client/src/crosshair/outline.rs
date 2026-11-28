@@ -181,4 +181,20 @@ mod tests {
         // It points out into the empty quarter, up and east.
         assert!(inner.out.x > 0.0 && inner.out.y > 0.0);
     }
+
+    /// Two boxes meeting only along an edge keep that edge: two quarters
+    /// across from each other are filled there, which no flat face makes.
+    #[test]
+    fn boxes_meeting_along_an_edge_keep_it() {
+        let edges = outline(&[
+            b([0.0, 0.0, 0.0], [0.5, 0.5, 1.0]),
+            b([0.5, 0.5, 0.0], [1.0, 1.0, 1.0]),
+        ]);
+        let shared = edges
+            .iter()
+            .find(|e| e.from.x == 0.5 && e.from.y == 0.5 && e.from.z != e.to.z)
+            .expect("the shared edge");
+        assert_eq!((shared.from.z, shared.to.z), (0.0, 1.0));
+        assert_eq!(shared.out, Vec3::ZERO);
+    }
 }

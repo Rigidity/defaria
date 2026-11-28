@@ -11,7 +11,9 @@
 //! included, so the wrench never guesses from the boxes' shapes.
 //! Aimed at another block's face (a machine's port) where a conduit next
 //! to it has its face blocked, it opens that face again, since the arm
-//! that was there to click is gone.
+//! that was there to click is gone; where the conduit is joined to it, it
+//! blocks that face, so a joint with no arm to click (a wire lying on the
+//! machine it's joined to) can be parted too.
 //!
 //! An item does this when its file says `action: "wrench"`. The faces are
 //! kept in the conduit's block entity, as [`BlockedFaces`] (a part this
@@ -80,7 +82,8 @@ pub fn turned(faces: Option<BlockedFaces>, side: Direction) -> Option<BlockedFac
 /// The conduit face a wrench aimed along `ray` at `hit` turns: one of the
 /// conduit's own ([`wrench_side`]), or, on another block, the face of the
 /// conduit next to the face clicked, if that's blocked (it can only be
-/// opened from there). On a conduit's open face toward another conduit
+/// opened from there) or joined to that block (a wire lying on a machine,
+/// whose joint has no arm to click). On a conduit's open face toward another conduit
 /// that has blocked its face back, it's that one's, so a face blocked
 /// between two conduits opens from either.
 fn wrench_target(
@@ -105,8 +108,10 @@ fn wrench_target(
     let face = Direction::from_normal(hit.normal)?;
     let next = hit.block + face.normal();
     let side = face.opposite();
-    (content.block_of(voxels.get(next)?).is_conduit() && blocked(next).has(side))
-        .then_some((next, side))
+    let conduit = voxels.get(next)?;
+    (content.block_of(conduit).is_conduit()
+        && (blocked(next).has(side) || content.joined(conduit, side)))
+    .then_some((next, side))
 }
 
 /// Blocks or opens the face of the conduit that the wrench is aimed at

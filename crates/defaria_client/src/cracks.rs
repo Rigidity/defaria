@@ -21,7 +21,8 @@ use bevy::{
 };
 
 use defaria_core::{
-    content::{BlockState, Content, Direction},
+    block_edit::around,
+    content::{Around, BlockState, Content, Direction},
     mining::{Mining, MiningSystems},
     world::Voxels,
 };
@@ -54,15 +55,16 @@ impl Plugin for CracksPlugin {
 }
 
 /// The crack overlay. `stage` is the crack stage it shows, or `None` while
-/// it's hidden. `drawn` is the state and the hidden sides its mesh was
-/// built for, and whether that left any faces to draw. It has no mesh
+/// it's hidden. `drawn` is the state, the hidden sides and the blocks
+/// around it that its mesh was built for, and whether that left any faces
+/// to draw. It has no mesh
 /// until the first block with faces to crack.
 #[derive(Component, Reflect, Debug, Default)]
 #[reflect(Component)]
 pub struct Cracks {
     pub stage: Option<usize>,
     #[reflect(ignore)]
-    drawn: Option<(BlockState, u8)>,
+    drawn: Option<(BlockState, u8, Around)>,
     #[reflect(ignore)]
     empty: bool,
     #[reflect(ignore)]
@@ -140,10 +142,11 @@ fn show_cracks(
             content.hides(state, neighbour, side)
         })
         .fold(0, |bits, side| bits | side.bit());
-    if cracks.drawn != Some((state, hidden)) {
-        cracks.drawn = Some((state, hidden));
+    let around = around(&voxels, pos);
+    if cracks.drawn != Some((state, hidden, around)) {
+        cracks.drawn = Some((state, hidden, around));
         // A block with every face covered keeps its last mesh, hidden.
-        let built = crack_mesh(&content, state, |side| hidden & side.bit() == 0);
+        let built = crack_mesh(&content, state, &around, |side| hidden & side.bit() == 0);
         cracks.empty = built.is_none();
         if let Some(built) = built {
             if let Some(mut mesh) = mesh.and_then(|mesh| meshes.get_mut(&mesh.0)) {
@@ -175,19 +178,22 @@ fn hide(cracks: &mut Mut<Cracks>, visibility: &mut Mut<Visibility>) {
     visibility.set_if_neq(Visibility::Hidden);
 }
 
-/// The faces of `state`, in its block's coordinates, lifted off them by
-/// [`LIFT`], keeping faces that can be hidden only on sides `shown`
-/// allows, or `None` if that leaves no faces.
+/// The faces of `state` with the blocks `around` it (its own, and its
+/// parts' drawn by the neighbours), in its block's coordinates, lifted off
+/// them by [`LIFT`], keeping faces that can be hidden only on sides
+/// `shown` allows, or `None` if that leaves no faces.
 pub fn crack_mesh(
     content: &Content,
     state: BlockState,
+    around: &Around,
     shown: impl Fn(Direction) -> bool,
 ) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut indices = Vec::new();
-    for face in &content.state(state).faces {
+    let by_next = content.next_faces(state, around).map(|(_, face)| face);
+    for face in content.state(state).faces.iter().chain(by_next) {
         if face.hidden_by(|side| !shown(side)) {
             continue;
         }
@@ -283,8 +289,9 @@ mod tests {
     #[test]
     fn the_mesh_fits_the_shape_of_the_block() {
         let content = base();
-        let full = positions(&crack_mesh(content, block("stone"), |_| true).unwrap());
-        let slab = positions(&crack_mesh(content, block("stone_slab"), |_| true).unwrap());
+        let full = positions(&crack_mesh(content, block("stone"), &Around::AIR, |_| true).unwrap());
+        let slab =
+            positions(&crack_mesh(content, block("stone_slab"), &Around::AIR, |_| true).unwrap());
         assert_eq!(full.len(), 6 * 4);
         assert_eq!(slab.len(), 6 * 4);
         let top = |points: &[Vec3]| points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
@@ -305,13 +312,36 @@ mod tests {
         let content = base();
         let only_up = |side| side == Direction::Up;
         assert_eq!(
-            positions(&crack_mesh(content, block("stone"), only_up).unwrap()).len(),
+            positions(&crack_mesh(content, block("stone"), &Around::AIR, only_up).unwrap()).len(),
             4
         );
         assert_eq!(
-            positions(&crack_mesh(content, block("stone_slab"), |_| false).unwrap()).len(),
+            positions(&crack_mesh(content, block("stone_slab"), &Around::AIR, |_| false).unwrap())
+                .len(),
             4
         );
+    }
+
+    /// The parts the neighbours draw crack too: a vine with a tall post
+    /// east of it has its own quad and that part's two faces.
+    #[test]
+    fn parts_drawn_by_neighbours_crack() {
+        let content = defaria_core::content::vines();
+        let vine = content.default_state("test:vine").unwrap();
+        let post = content.default_state("test:post").unwrap();
+        let tall = content
+            .block_state("test:post", &[("tall", "yes")])
+            .unwrap();
+        let faces = |east: BlockState| {
+            let around = Around::read(|side| match side {
+                Direction::East => east,
+                Direction::West => post,
+                _ => BlockState::AIR,
+            });
+            positions(&crack_mesh(&content, vine, &around, |_| true).unwrap()).len() / 4
+        };
+        assert_eq!(faces(BlockState::AIR), 1);
+        assert_eq!(faces(tall), 3);
     }
 
     /// A chunk with a slab on a stone, a camera with [`Mining`], and the

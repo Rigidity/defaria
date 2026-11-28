@@ -70,10 +70,11 @@ fn run_game(script: &str) -> (Option<BlockedFaces>, bool) {
 }
 
 /// With a wrench in hand, right click on a machine is the wrench's: it
-/// never opens the machine's screen, and aimed at the machine's face where
-/// a wire's blocked arm used to be, it opens the wire's face again.
+/// never opens the machine's screen. Aimed at the machine's face where a
+/// wire's blocked arm used to be, it opens the wire's face again; where a
+/// wire is joined, it blocks the wire's face.
 #[test]
-fn a_wrench_on_a_machine_reopens_the_conduit_blocked_against_it() {
+fn a_wrench_on_a_machine_turns_the_conduit_joined_to_it() {
     // A furnace facing south, its power port at its back (north), with a
     // wire there.
     let setup = "wait 2\n\
@@ -93,9 +94,9 @@ fn a_wrench_on_a_machine_reopens_the_conduit_blocked_against_it() {
     south.toggle(Direction::South);
     assert_eq!(run_game(&format!("{setup}{block}")), (Some(south), false));
     assert_eq!(run_game(&format!("{setup}{block}{furnace}")), (None, false));
-    // Straight at the furnace, with nothing blocked: no screen either;
-    // with a pickaxe in hand, its screen.
-    assert_eq!(run_game(&format!("{setup}{furnace}")), (None, false));
+    // Straight at the furnace, with the wire joined: it blocks the wire's
+    // face, and opens no screen; with a pickaxe in hand, its screen.
+    assert_eq!(run_game(&format!("{setup}{furnace}")), (Some(south), false));
     let pickaxe = setup.replace("hotbar 1 wrench", "hotbar 1 pickaxe");
     assert_eq!(run_game(&format!("{pickaxe}{furnace}")), (None, true));
 }

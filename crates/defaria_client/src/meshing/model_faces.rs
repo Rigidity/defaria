@@ -195,6 +195,23 @@ mod tests {
     /// Every face of every state has an entry holding what it baked to,
     /// and states sharing a model and texture share entries: the base
     /// game's fit with plenty of room.
+    /// The faces of parts drawn by their neighbours are numbered after
+    /// the state's own, and each has its entry.
+    #[test]
+    fn parts_drawn_by_neighbours_have_entries() {
+        let content = defaria_core::content::vines();
+        let faces = ModelFaces::new(&content);
+        let vine = content.default_state("test:vine").unwrap();
+        let state = content.state(vine);
+        assert!(!state.next_faces.is_empty());
+        for (f, face) in state.next_faces.iter().enumerate() {
+            let id = faces.index.id(vine, state.faces.len() + f).unwrap();
+            let entry = faces.index.face(id);
+            assert_eq!(*entry, ModelFace::of(face));
+            assert_eq!(entry.texture, face.layer);
+        }
+    }
+
     #[test]
     fn every_face_has_its_entry() {
         let content = base();

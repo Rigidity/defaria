@@ -713,7 +713,7 @@ a model for each of the 64 ways its arms can go:
   seams between them.
 - A part whose `when` needs exactly one of the block's
   [connection](#connections) sides `"true"` (`when: { north: "true" }`,
-  or `{ on: "down", north: "true" }`) **reaches** that side: aimed at,
+  or `{ facing: "up", north: "true" }`) **reaches** that side: aimed at,
   its target boxes are that side's for the [wrench](#items). A part
   naming none (a core) or several reaches none.
 - A fluid can't have parts.
@@ -721,19 +721,20 @@ a model for each of the 64 ways its arms can go:
 #### Parts drawn by their neighbours
 
 A part's **`next`** says what the block on some of its sides must be for
-it to be drawn: for each side, a block (in the states that match its
+it to be there: for each side, a block (in the states that match its
 `when`, as in [Support](#support)), or `{ not: ... }` for anything but
-that. A wire bends to meet a wire resting on another side of its voxel
-this way:
+that. A block can change shape with the blocks around it this way, with
+no property of its own for it:
 
 ```json5
-// blocks/wire.json5 (in part): a wire on the floor, joined up, rises
-// through the middle of its voxel, unless the wire above rests on a
-// wall; on the north wall, it runs to that wall and climbs it instead.
-{ when: { on: "down", up: "true" }, model: "wire_riser",
-  next: { up: { not: { block: "wire", when: { on: ["north", "south", "east", "west"] } } } } },
-{ when: { on: "down", up: "true" }, model: "wire_climb",
-  next: { up: { block: "wire", when: { on: "north" } } } },
+// A railing (in part): a post that grows a rail toward each railing
+// beside it, and a foot where it stands on anything but another post.
+parts: [
+  { model: "railing_post" },
+  { model: "railing_rail", next: { north: { block: "railing" } } },
+  { model: "railing_rail", rotate: [0, 90, 0], next: { west: { block: "railing" } } },
+  { model: "railing_foot", next: { down: { not: { block: "railing" } } } },
+],
 ```
 
 - The part's `when` must match too, as for any part.
@@ -742,7 +743,7 @@ this way:
   state changing.
 - Where it's there, things bump into its collision boxes and the
   crosshair picks its target boxes (which reach a side as any part's
-  do), so a wire's bends collide and are aimed at as drawn. It covers no
+  do), so what it draws is bumped into and aimed at as drawn. It covers no
   sides, whatever its model `occludes`: light and what hides a
   neighbour's faces don't change with the neighbours.
 - A state whose own parts leave nothing to aim at, while such parts
@@ -1310,7 +1311,10 @@ an item or material that doesn't exist, is an error.
   [reaches](#parts) a side: one whose `when` needs that connection
   side joined, bends included.) A blocked face has no
   arm, so it's opened again from the core's face there, or from the face
-  of the block next to it (a machine's port). It places nothing, and
+  of the block next to it (a machine's port); aimed at that face while the
+  conduit is joined to it, it blocks the conduit's face, so a joint with
+  no arm to click (a wire lying on the machine) can be parted too. It
+  places nothing, and
   while it's in hand right click on any block is its own: it doesn't
   open machines' screens or use scripted blocks.
 

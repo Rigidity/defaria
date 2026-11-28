@@ -55,6 +55,8 @@ pub use machine::{
     Emits, EnergySpec, FACING, ItemFilter, MAX_SLOTS, Machine, MachinePort, MachineRecipes,
     SlotGroupSpec, TankSpec, resolve_face,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use next::vines;
 pub use next::{Around, NextPart, NextRule, Target};
 use palette::Palette;
 pub use place::Placement;

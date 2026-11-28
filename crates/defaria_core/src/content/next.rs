@@ -219,5 +219,31 @@ impl Content {
     }
 }
 
+/// A `test` mod for tests of parts drawn by their neighbours: a `post`
+/// (`tall`: `no` or `yes`), and a `vine`, a quad with two parts (each the
+/// `pair` model, a full block's top and bottom with the whole block as its
+/// box): the first where a tall post is east of it, the second where no
+/// post is west of it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn vines() -> Content {
+    super::test_mod(&[
+        (
+            "blocks/post.json5",
+            r#"{ properties: { tall: ["no", "yes"] }, model: "quad", textures: { all: "a" } }"#,
+        ),
+        (
+            "blocks/vine.json5",
+            r#"{
+                model: "quad",
+                textures: { all: "a", top: "b", bottom: "c" },
+                parts: [
+                    { model: "pair", next: { east: { block: "post", when: { tall: "yes" } } } },
+                    { model: "pair", next: { west: { not: { block: "post" } } } },
+                ],
+            }"#,
+        ),
+    ])
+}
+
 #[cfg(test)]
 mod tests;

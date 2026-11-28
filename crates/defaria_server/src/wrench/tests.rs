@@ -295,6 +295,34 @@ fn a_face_blocked_between_two_conduits_opens_from_either() {
     assert_eq!(target_of(&mut app, at_middle), Some((beyond, W)));
 }
 
+/// Aimed at a machine's face where a conduit is joined to it, the wrench
+/// blocks the conduit's face, and then opens it again; on a face no
+/// conduit is joined to, it does nothing.
+#[test]
+fn a_joint_with_a_machine_turns_from_the_machine() {
+    let mut app = app(None);
+    let tank = LINE;
+    let above = tank + IVec3::Y;
+    app.world_mut()
+        .run_system_once(move |mut voxels: Voxels| {
+            assert!(voxels.set(tank, block("tank")));
+            assert!(voxels.set(above, pipe()));
+        })
+        .unwrap();
+    app.update();
+    assert_eq!(get(&mut app, above), joined_pipe(&[Direction::Down]));
+    // Down onto the tank's top, beside the pipe.
+    let corner = tank.as_vec3() + Vec3::new(0.1, 1.0, 0.1);
+    let at_tank = ray(corner + Vec3::Y * 2.0, corner);
+    assert_eq!(target_of(&mut app, at_tank), Some((above, Direction::Down)));
+    toggle(&mut app, above, Direction::Down);
+    assert_eq!(get(&mut app, above), pipe());
+    assert_eq!(target_of(&mut app, at_tank), Some((above, Direction::Down)));
+    // At the tank's side, where nothing is joined: nothing.
+    let side = tank.as_vec3() + Vec3::new(1.0, 0.5, 0.5);
+    assert_eq!(target_of(&mut app, ray(side + Vec3::X * 2.0, side)), None);
+}
+
 /// A wire with every face open keeps nothing in its block entity, so its
 /// chunk saves none for it; one with a face blocked saves its faces.
 #[test]

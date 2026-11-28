@@ -519,6 +519,43 @@ mod tests {
         }
     }
 
+    /// The world's shapes give a block the collision boxes of its parts
+    /// drawn by the blocks really next to it.
+    #[test]
+    fn world_shapes_read_the_neighbours() {
+        use crate::{
+            content::vines,
+            testing::{chunk_app, insert_chunk},
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let content = vines();
+        let vine = content.default_state("test:vine").unwrap();
+        let tall = content
+            .block_state("test:post", &[("tall", "yes")])
+            .unwrap();
+        let short = content.default_state("test:post").unwrap();
+        let mut app = chunk_app(content, Duration::from_millis(10));
+        let mut chunk = Chunk::default();
+        // A short post west of the vine, so its second part is never there.
+        chunk.set(1, 1, 1, vine);
+        chunk.set(0, 1, 1, short);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        let bumps = |app: &mut App| {
+            app.world_mut()
+                .run_system_once(|shapes: WorldShapes| {
+                    shapes.shape(IVec3::new(1, 1, 1)).unwrap().len()
+                })
+                .unwrap()
+        };
+        assert_eq!(bumps(&mut app), 0);
+        let mut chunks = app.world_mut().query::<&mut Chunk>();
+        chunks
+            .single_mut(app.world_mut())
+            .unwrap()
+            .set(2, 1, 1, tall);
+        assert_eq!(bumps(&mut app), 1);
+    }
+
     const SLAB: BlockBox = BlockBox {
         min: Vec3::ZERO,
         max: Vec3::new(1.0, 0.5, 1.0),
