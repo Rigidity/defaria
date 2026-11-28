@@ -690,7 +690,7 @@ fn solver_name(solver: Solver) -> &'static str {
 }
 
 fn direction(name: &str) -> Option<Direction> {
-    Direction::ALL.into_iter().find(|side| side.name() == name)
+    Direction::from_name(name)
 }
 
 /// Checks that the fluids a machine's tanks accept are blocks with

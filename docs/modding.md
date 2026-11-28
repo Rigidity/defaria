@@ -1092,7 +1092,9 @@ support: { side: "{on}", solid: true },
 For a list or a rule:
 
 - A player can place it only against what holds it; anywhere else the
-  click does nothing, and uses nothing up.
+  click does nothing, and uses nothing up. Placed into a plant from the
+  plant's side, where the side that face gives it holds nothing, it's
+  placed as though on top of what the plant stands on.
 - When the block on the side it rests on stops holding it (it's broken,
   or replaced, by anyone: a player, a script, flowing fluid), it breaks,
   on the same frame, and so does anything resting on it in turn. A

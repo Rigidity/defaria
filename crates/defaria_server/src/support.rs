@@ -209,6 +209,36 @@ mod tests {
         assert_eq!(at(&mut app, pos), BlockState::AIR);
     }
 
+    /// What rests sideways on a block that breaks breaks with it, on the
+    /// same frame: a row of signs, each on the one north of it.
+    #[test]
+    fn blocks_resting_sideways_break_together() {
+        let content = test_mod(&[
+            (
+                "blocks/wall.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/sign.json5",
+                r#"{ model: "quad", textures: { all: "a" },
+                     support: { side: "north", blocks: [{ block: "wall" }, { block: "sign" }] } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let wall = content.default_state("test:wall").unwrap();
+        let sign = content.default_state("test:sign").unwrap();
+        let mut app = app();
+        app.insert_resource(content);
+        let pos = IVec3::new(3, 4, 3);
+        let row: Vec<_> = (1..4).map(|z| (pos + IVec3::Z * z, sign)).collect();
+        edit(&mut app, &[&[(pos, wall)][..], &row[..]].concat());
+        assert_eq!(at(&mut app, pos + IVec3::Z * 3), sign);
+        edit(&mut app, &[(pos, BlockState::AIR)]);
+        for (at_pos, _) in row {
+            assert_eq!(at(&mut app, at_pos), BlockState::AIR, "{at_pos}");
+        }
+    }
+
     /// A support changed in place (a script's `set_state`, or `set` to
     /// another state of the same block) is checked too.
     #[test]

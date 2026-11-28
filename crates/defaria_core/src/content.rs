@@ -183,6 +183,11 @@ impl Direction {
         }
     }
 
+    /// The side named `name` (as [`Direction::name`] writes it), if any.
+    pub fn from_name(name: &str) -> Option<Direction> {
+        Direction::ALL.into_iter().find(|side| side.name() == name)
+    }
+
     /// The name it's written with in mod files.
     pub fn name(self) -> &'static str {
         match self {
@@ -530,6 +535,9 @@ pub struct State {
     /// Whether placing a block replaces it: air's (which may hold
     /// fluid) and a plant's, from its `replaceable`.
     pub replaceable: bool,
+    /// The side it rests on, if its block has a `support` (see
+    /// [`Content::support_side`]).
+    pub rests_on: Option<Direction>,
     /// Whether its faces show from behind too: from inside a glass block
     /// or under water.
     pub double_sided: bool,

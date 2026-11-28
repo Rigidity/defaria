@@ -61,6 +61,21 @@ pub(super) fn bake(
         (true, true) => SupportBy::Solid,
         (false, false) => SupportBy::States(states(blocks, namespace, content)?),
     };
+    // Each state's side, worked out once.
+    let block = &content.blocks[index];
+    let first = block.first_state as usize;
+    let sides: Vec<_> = (0..block.state_count as usize)
+        .map(|offset| match side {
+            SupportSide::Fixed(side) => Some(side),
+            SupportSide::Property(at) => {
+                let value = &block.properties[at].values[index_of(&block.properties, offset)[at]];
+                Direction::from_name(value)
+            }
+        })
+        .collect();
+    for (offset, side) in sides.into_iter().enumerate() {
+        content.states[first + offset].rests_on = side;
+    }
     content.blocks[index].support = Some(Support { side, by });
     Ok(())
 }
@@ -68,7 +83,6 @@ pub(super) fn bake(
 /// A `support`'s `side`: a direction, or `{property}` naming one of the
 /// block's properties whose values are all directions.
 fn parse_side(side: &str, index: usize, content: &Content) -> Result<SupportSide, String> {
-    let direction = |name: &str| Direction::ALL.into_iter().find(|d| d.name() == name);
     if let Some(name) = side.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
         let properties = &content.blocks[index].properties;
         let at = properties
@@ -78,7 +92,7 @@ fn parse_side(side: &str, index: usize, content: &Content) -> Result<SupportSide
         if let Some(value) = properties[at]
             .values
             .iter()
-            .find(|v| direction(v).is_none())
+            .find(|v| Direction::from_name(v).is_none())
         {
             return Err(format!(
                 "`support` side: `{name}` has `{value}`, which isn't a direction"
@@ -86,7 +100,7 @@ fn parse_side(side: &str, index: usize, content: &Content) -> Result<SupportSide
         }
         return Ok(SupportSide::Property(at));
     }
-    direction(side)
+    Direction::from_name(side)
         .map(SupportSide::Fixed)
         .ok_or_else(|| format!("`support` side `{side}` isn't a direction or a `{{property}}`"))
 }
@@ -120,15 +134,7 @@ impl Content {
     /// The side `block` rests on, if its block has a `support`: what's
     /// there must hold it up ([`Content::supports`]).
     pub fn support_side(&self, block: BlockState) -> Option<Direction> {
-        let def = self.block_of(block);
-        match def.support.as_ref()?.side {
-            SupportSide::Fixed(side) => Some(side),
-            SupportSide::Property(at) => {
-                let index = index_of(&def.properties, (block.0 - def.first_state) as usize);
-                let value = &def.properties[at].values[index[at]];
-                Direction::ALL.into_iter().find(|d| d.name() == value)
-            }
-        }
+        self.state(block).rests_on
     }
 
     /// Whether `block` can rest on `on`, the block on the side it rests on
@@ -146,12 +152,6 @@ impl Content {
                 .is_some_and(|side| self.state(on).occludes(side.opposite())),
         }
     }
-
-    /// Whether `block`'s block has a `support`, so it breaks when what's
-    /// on the side it rests on stops supporting it.
-    pub fn needs_support(&self, block: BlockState) -> bool {
-        self.block_of(block).support.is_some()
-    }
 }
 
 #[cfg(test)]
@@ -164,7 +164,7 @@ mod tests {
         let tuft = block("tuft");
         let grass = crate::content::grass();
         let dirt = block_with("soil", &[("soil", "defaria:dirt"), ("turf", "none")]);
-        assert!(content.needs_support(tuft));
+        assert!(content.support_side(tuft).is_some());
         assert!(content.supports(tuft, grass));
         assert!(content.supports(tuft, dirt));
         // Bare loam is soil plants grow in, like bare dirt; bare sand isn't.
@@ -189,7 +189,7 @@ mod tests {
         assert!(!content.supports(bush, grassy_sand));
         assert!(!content.supports(bush, grass));
         // Blocks without a `support` stand on anything, air included.
-        assert!(!content.needs_support(block("stone")));
+        assert!(content.support_side(block("stone")).is_none());
         assert!(content.supports(block("stone"), crate::content::BlockState::AIR));
     }
 
@@ -254,7 +254,7 @@ mod tests {
         let vine = content.default_state("test:vine").unwrap();
         assert_eq!(content.support_side(lamp("down")), Some(Direction::Down));
         assert_eq!(content.support_side(lamp("east")), Some(Direction::East));
-        assert!(content.needs_support(lamp("up")));
+        assert!(content.support_side(lamp("up")).is_some());
         // The floor covers its top: a lamp on it stands, one under it
         // doesn't hang.
         assert!(content.supports(lamp("down"), floor));

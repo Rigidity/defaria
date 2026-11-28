@@ -395,6 +395,82 @@ fn placing_reads_the_clicked_face_and_the_view() {
     }
 }
 
+/// A block resting on the side its `on` says is placed against a solid
+/// face (a wall's side, a ceiling) and not against what doesn't cover
+/// its face; placed into a plant from its side, it lies on what the
+/// plant stands on.
+#[test]
+fn blocks_rest_on_the_face_they_are_placed_against() {
+    let content = test_mod(&[
+        ("models/m.json5", "{ faces: [] }"),
+        (
+            "models/solid.json5",
+            r#"{ faces: [], occludes: ["up", "down", "north", "south", "east", "west"] }"#,
+        ),
+        ("blocks/wall.json5", r#"{ model: "solid" }"#),
+        ("blocks/tuft.json5", r#"{ model: "m", replaceable: true }"#),
+        (
+            "blocks/lamp.json5",
+            r#"{ model: "m",
+                 properties: { on: {
+                     values: ["down", "up", "north", "south", "east", "west"],
+                     place: { from: "face", values: {
+                         up: "down", down: "up", north: "south", south: "north", east: "west", west: "east",
+                     } },
+                 } },
+                 support: { side: "{on}", solid: true } }"#,
+        ),
+    ]);
+    assert!(content.errors.is_empty(), "{:?}", content.errors);
+    let lamp = |on: &str| content.block_state("test:lamp", &[("on", on)]).unwrap();
+    let wall = content.default_state("test:wall").unwrap();
+    let mut hotbar = Hotbar::default();
+    hotbar.assign(0, content.default_item("test:lamp"));
+    let (mut app, entity, _) = app_with(content.clone(), hotbar);
+    let set = |app: &mut App, x, y, z, state| {
+        app.world_mut()
+            .get_mut::<Chunk>(entity)
+            .unwrap()
+            .set(x, y, z, state);
+    };
+    set(&mut app, 8, 8, 8, wall);
+    set(
+        &mut app,
+        8,
+        9,
+        8,
+        content.default_state("test:tuft").unwrap(),
+    );
+    let place = |app: &mut App, from: Vec3, at: Vec3| {
+        look_at(app, from, (at - from).normalize());
+        click(app, MouseButton::Right);
+    };
+    // Against the wall's south side, with nothing under it.
+    place(
+        &mut app,
+        Vec3::new(8.5, 8.5, 10.5),
+        Vec3::new(8.5, 8.5, 9.0),
+    );
+    assert_eq!(voxel(&app, entity, 8, 8, 9), lamp("north"));
+    // Under the wall, hanging from it.
+    place(&mut app, Vec3::new(8.5, 6.5, 8.5), Vec3::new(8.5, 8.0, 8.5));
+    assert_eq!(voxel(&app, entity, 8, 7, 8), lamp("up"));
+    // Against that hanging lamp's south side: it covers nothing.
+    place(
+        &mut app,
+        Vec3::new(8.5, 7.5, 10.5),
+        Vec3::new(8.5, 7.5, 9.0),
+    );
+    assert_eq!(voxel(&app, entity, 8, 7, 9), BlockState::AIR);
+    // Into the tuft on the wall, from its east side: on the wall's top.
+    place(
+        &mut app,
+        Vec3::new(10.5, 9.5, 8.5),
+        Vec3::new(9.0, 9.5, 8.5),
+    );
+    assert_eq!(voxel(&app, entity, 8, 9, 8), lamp("down"));
+}
+
 /// A block isn't placed where it would overlap a body, such as the
 /// player standing there, but a slab fits under one floating above it.
 #[test]

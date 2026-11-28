@@ -93,14 +93,11 @@ const MAX_COORD: i32 = 1 << 30;
 
 /// A face from its name: `up`, `down`, `north`, `south`, `east` or `west`.
 pub fn face_named(name: &str) -> mlua::Result<Direction> {
-    Direction::ALL
-        .into_iter()
-        .find(|d| d.name() == name)
-        .ok_or_else(|| {
-            mlua::Error::runtime(format!(
-                "there's no face `{name}`: it's up, down, north, south, east or west"
-            ))
-        })
+    Direction::from_name(name).ok_or_else(|| {
+        mlua::Error::runtime(format!(
+            "there's no face `{name}`: it's up, down, north, south, east or west"
+        ))
+    })
 }
 
 /// A handle on a block by position, made in some call: a [`BlockRef`], or
