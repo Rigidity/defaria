@@ -106,7 +106,18 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
         }
     }
 
+    let sources: std::sync::Arc<[LoadedMod]> = mods.clone().into();
+    let image_bytes = mods
+        .iter()
+        .flat_map(|loaded| {
+            let dir = &loaded.files.dir;
+            (loaded.files.image_bytes.iter())
+                .map(move |(path, bytes)| (format!("{dir}/{path}"), bytes.clone()))
+        })
+        .collect();
     let mut content = Content {
+        sources,
+        image_bytes,
         mods: mods
             .into_iter()
             .map(|loaded| ModInfo {
@@ -116,6 +127,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
                 description: loaded.manifest.description,
                 authors: loaded.manifest.authors,
                 dir: loaded.files.dir,
+                side: loaded.manifest.side,
             })
             .collect(),
         materials: BTreeMap::new(),

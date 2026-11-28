@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-use crate::content::{self, Content};
+use crate::content::Content;
 pub use error::{CallError, ErrorKind, ScriptError};
 pub use runtime::{Caller, ScriptRuntime};
 pub use sandbox::{LogLevel, LogLine};
@@ -135,20 +135,20 @@ impl Plugin for ScriptRuntimePlugin {
 }
 
 impl FromWorld for ScriptRuntime {
-    /// Loads the scripts of the mods the content loaded, from disk, for
-    /// the world's [`Side`] (the server's, if it has none).
+    /// Loads the scripts of the mods the content loaded that run on the
+    /// world's [`Side`] (the server's, if it has none): every `both` mod's,
+    /// and that side's own mods'.
     fn from_world(world: &mut World) -> Self {
         let settings = world.get_resource_or_init::<ScriptSettings>().clone();
         let side = world
             .get_resource::<Side>()
             .copied()
             .unwrap_or(Side::Server);
-        let mods: Vec<String> = world
+        let mods = world
             .get_resource::<Content>()
-            .map(|content| content.mods.iter().map(|m| m.id.clone()).collect())
+            .map(|content| content.sources_on(side))
             .unwrap_or_default();
-        let root = content::mods_dir();
-        let sources = ScriptSources::read(&root, &mods);
+        let sources = ScriptSources::from_mods(&mods);
         for error in &sources.errors {
             error!("{error}");
         }

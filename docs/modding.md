@@ -57,12 +57,33 @@ dependency.
   description: "Adds copper and tin.",
   authors: ["Someone"],
   dependencies: ["defaria"],      // these load first
+  side: "both",                   // "both" (the default), "server" or "client"
 }
 ```
 
 Mods load after their dependencies, otherwise in order of id. A mod whose
 dependency is missing, broken or circular isn't loaded. Two mods may not
 share an id. The folder's name doesn't matter.
+
+`side` says where the mod belongs, once a server plays with clients (see
+[Multiplayer](#multiplayer)):
+
+- `both`: blocks, items, everything below, and scripts both sides load.
+  A server sends its `both` mods to every client that joins.
+- `server`: scripts only the server runs, such as gameplay rules or admin
+  tools. Never sent: clients don't see them.
+- `client`: scripts only a client runs, kept on that client: a player's
+  own, optional, and the server doesn't know about them.
+
+A `server` or `client` mod holds only `scripts/` (and its manifest): a
+definition or an image in one is an error, and the mod isn't loaded.
+Everything a mod defines changes the block and item states both sides
+must number the same, and a client never has the server's `server` mods,
+nor the server its clients' `client` ones. Put content in a `both` mod.
+For the same reason a `both` mod can't depend on a `server` or `client`
+mod, nor one side's mod on the other's; any mod may depend on `both`
+mods, and a side's mods on each other. In single player every mod loads,
+each side's scripts on their own side.
 
 ## Images
 
@@ -1605,9 +1626,46 @@ What a reaction uses up is the only fluid flow ever loses, besides what
 blocks placed into fluid delete, having nowhere to push it; the headless
 `fluids` report counts both (`displaced` and `reacted`).
 
+## Multiplayer
+
+A server sends its mods to the clients that join it, so a player needs
+none of a server's mods to play there. On connecting, the server lists
+its `both` mods (each one's id, version and a SHA-256 hash of its files),
+and the client fetches the ones it doesn't have: a mod of its own with
+the same files (the base game, usually) is used as it is, and one it
+fetched before is in its cache. It then builds its blocks and items from
+exactly the server's mods, plus its own `client` mods, and the two sides
+check they number every state the same; if they don't (a different
+version of the game), the client is refused, saying so. Leaving the
+server, the client has its own mods again.
+
+What's sent, and what's taken:
+
+- Only the manifest, definitions (`.json5`), images (`.png`) and scripts
+  (`.luau`). Nothing else in a mod folder ever leaves it (notes, sources,
+  art files).
+- A file at most 1 MiB, a mod at most 16 MiB and 4,096 files, a server at
+  most 256 mods, and a mod's id and `version` at most 64 bytes. A server whose mod breaks a limit doesn't start, saying
+  which file; a client refuses a mod that breaks one.
+- Paths are lowercase letters, digits, `_`, `-` and `.`, in folders split
+  by `/`, none starting with `.`, at most 128 bytes and 16 folders deep.
+  A server with a file named otherwise doesn't start; a client refuses a
+  mod with one. What a client receives is checked again (every path,
+  size and the hash) before it's used or cached, and its scripts run in
+  the same sandbox as any other.
+
+The cache is the data folder's `mod-cache/`, a folder per mod named by
+its hash (see `docs/world-format.md`). A cached mod is checked against
+its hash each time it's used, and fetched again if it changed; it's
+never removed otherwise (delete the folder to clear it).
+
 ## Not yet
 
-- JSON5 changes need a restart; images hot reload.
+- JSON5 changes need a restart; images hot reload. A server's mods
+  don't hot reload on its clients.
+- A `client` mod can't restyle the server's blocks (a resource pack): it
+  holds only scripts. A `server` mod can't add recipes or other content
+  only the server needs.
 - Vertical slabs are blocks of their own rather than a slab placed
   another way, since a click on a block's side can't tell a top or
   bottom slab from a vertical one.

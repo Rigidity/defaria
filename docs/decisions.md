@@ -152,7 +152,8 @@ incremental builds stay cheap.
 - QUIC through `quinn` on async-io (which Bevy already builds), with
   rustls on ring. Each connection's control stream carries the handshake
   (the protocol's version and the content's fingerprint, refused on a
-  mismatch) and then the messages in order; chunks, their changes and
+  mismatch; #217 put the server's mods between them) and then the
+  messages in order; chunks, their changes and
   drops, and the settled flag go on a stream of their own from the
   server; a client's pose goes as a datagram. Frames are a length, a
   flag and `postcard` bytes, deflated past 512 bytes.
@@ -292,7 +293,7 @@ bandwidth for light or chunks shows up in the `net` report.
   budgets, errors, reloading, what every side reads (block handles and
   `world` over a `WorldView`), and the message channel. Each app makes
   its own `ScriptRuntime` for its `Side`, from every mod's `scripts/`
-  (every mod counts as `both` until #217 gives mods a `side`), so
+  (every mod counted as `both` until #217 gave mods a `side`), so
   modules are shared and a script is loaded on both. Scripts see which
   with the `side` global. The server's hooks and writes stay in
   `defaria_server::script`; the client's hooks are
@@ -417,6 +418,61 @@ bandwidth for light or chunks shows up in the `net` report.
   are still taken as they are; checking them by permission needs
   permissions, which can now be given by id. There are no accounts or key
   backups: a lost `identity.pem` is a new player everywhere.
+
+*As built in #217*, mods from the server:
+
+- The handshake no longer starts with the content's fingerprint: a
+  client can't know its content before it has the server's mods. After
+  the hello the server lists its `both` mods (id, version, size, SHA-256
+  of the files), the client asks for those it lacks, the server sends
+  each as one frame on the control stream, and the client builds
+  `Content` and says its fingerprint, which the server checks (still the
+  hash of every block and item state's name) before welcoming it. The
+  protocol is 3. Fetching has five minutes, past the ten seconds
+  connecting has; the mods come on the control stream before play, not
+  on a stream of their own alongside it, since nothing can be played
+  without them.
+- `server` and `client` mods may hold only scripts: any definition or
+  image is a load error. The other choice, server mods whose content is
+  sent as part of the state table, would make a client's content more
+  than its mods, and the simple rule covers what's wanted now (admin and
+  gameplay scripts, a player's own client scripts). It rules out
+  server-only recipes and resource packs; see `docs/modding.md`'s "Not
+  yet". A `both` mod can't depend on either, nor one side's on the
+  other's.
+- A client's own mod with the same hash is used as it is, from its
+  folder (so the same game fetches nothing, and its images still load
+  through the asset server); a fetched mod's images are decoded from the
+  bytes in memory, and its scripts aren't watched for hot reload. A
+  fetched mod's asset paths (in errors, too) are `received/<id>`, which
+  is no folder, so a server's mod never loads the client's files of the
+  same name.
+- `Content` now keeps the files it was baked from (`Content::sources`),
+  and each side's script runtime loads from them (`both` mods, and its
+  own side's) instead of reading the mods folder again, so in-memory
+  mods' scripts load too.
+- Limits: 1 MiB a file, 16 MiB and 4,096 files a mod, 256 mods. Paths
+  are lowercase ASCII letters, digits, `_`, `-`, `.`, no part starting
+  with `.`, 128 bytes and 16 folders at most, checked when packing,
+  receiving and reading the cache; only `.json5`, `.png` and `.luau` go.
+  A server whose mod breaks a rule doesn't start. Received files are
+  untrusted: hash, sizes and paths are checked before they're cached or
+  used, and a cached mod is checked again each time.
+- The cache is `mod-cache/<hash>/` in the data folder, the files as
+  sent, written beside and renamed into place. Without a data folder
+  (tests) nothing's cached. Nothing removes old mods; a size cap or a
+  "last used" sweep is for when the folder grows.
+- Swapping content on the client (`content_swap::swap_content`) happens
+  as play starts on a server, and the client's own is put back as it
+  leaves: the block texture's layers load again (the materials stay),
+  icons keep their handles and are drawn again, the client's script
+  runtime is made anew, and background meshing drops its copy.
+  Everything else reads `Content` live. Fetching and building happen in
+  `--connect`'s blocking connect, so the first frame waits for them; the
+  connect screen (#52) should show progress.
+- Single player still copies `Content` into the server app rather than
+  sharing one `Arc<Content>`: the copy happens once a world, and sharing
+  it means every reader taking it through an `Arc`.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

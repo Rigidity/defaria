@@ -234,7 +234,18 @@ pub fn test_player_id(index: usize) -> defaria_core::identity::PlayerId {
 /// A server app for a [`Multiplayer`], loading a small world: the one in
 /// `world`, or one in memory.
 pub fn test_server(world: Option<std::path::PathBuf>) -> App {
+    test_server_with(world, None)
+}
+
+/// [`test_server`], playing with `content` rather than the mods on disk.
+pub fn test_server_with(
+    world: Option<std::path::PathBuf>,
+    content: Option<defaria_core::content::Content>,
+) -> App {
     let mut server = App::new();
+    if let Some(content) = content {
+        server.insert_resource(content);
+    }
     server
         .insert_resource(defaria_core::script::ScriptSettings::untimed())
         .insert_resource(defaria_server::script::hooks::HookSettings::untimed())

@@ -25,6 +25,9 @@ pub struct Source {
     /// name it by and hot reloading watches.
     pub file: String,
     pub text: String,
+    /// Whether it was read from a mod folder on disk (so hot reloading
+    /// can watch it), rather than made in memory or sent by a server.
+    pub on_disk: bool,
 }
 
 /// A mod that scripts can run for.
@@ -80,6 +83,7 @@ impl ScriptSources {
                         mod_id: mod_id.clone(),
                         file,
                         text: text.clone(),
+                        on_disk: loaded.files.folder.is_some(),
                     },
                 );
             }

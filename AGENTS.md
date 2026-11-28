@@ -298,6 +298,15 @@ documented in `docs/modding.md`; keep that file, the serde types in
 (`content.default_state("defaria:stone")`), and in tests use
 `content::base()` and `content::block("stone")`.
 
+A mod's `side` (`both`, `server` or `client`, in `mod.json5`) says where
+it loads in multiplayer; only `both` mods may define anything
+(`content::load::check_side`). A server sends its `both` mods to the
+clients that join (`src/mod_transfer.rs`), which play with the content
+built from exactly those, and their own again after
+(`defaria_client::content_swap`). So code reading `Content` on the
+client must cope with it being replaced between worlds: read it as it
+goes, or rebuild what's cached from it when it changes.
+
 ## Code layout
 
 The code is a Cargo workspace of four crates:
@@ -369,6 +378,13 @@ frame; the messages between them are `defaria_core::net`. So:
   `net::encode`/`decode` round-trip them. Give a scenario's server a
   world folder in your scratch directory, never the default
   `server-world`, and give `cargo server` a `--data` folder there too.
+- Joining a server takes its mods: after the hello, the server lists its
+  `both` mods, the client fetches those it lacks (into the data folder's
+  `mod-cache/`), builds `Content` from them and says its fingerprint,
+  which the server checks before welcoming it (`src/quic.rs`,
+  `src/mod_transfer.rs`). `quic::listen` takes a `mod_transfer::Offer`
+  and `quic::connect` a `mod_transfer::Library`, and returns the
+  content to play with; `integrated` swaps it in.
 - Players are who their keys say (`src/identity.rs`): each install's
   key pair, in its data folder, is its TLS client certificate, and a
   player's id (`defaria_core::identity::PlayerId`, a component on the
@@ -430,7 +446,10 @@ relative path.
   servers). `src/server.rs` builds a server app; `src/dedicated.rs` runs
   one on its own; `src/quic.rs` is the network; `src/identity.rs` the
   install's key, name and known servers (`DataFolder`, `LocalIdentity`,
-  `KnownServers`).
+  `KnownServers`); `src/mod_transfer.rs` the mods a server sends and
+  the client's cache of them (`Offer`, `Library`, `Package`).
+  `crates/defaria_client/src/content_swap.rs` puts other content in
+  place on the client (the block texture, icons and scripts with it).
 - `crates/defaria_core/src/net.rs`: the messages between server and
   client, and the link in memory that carries them.
   `crates/defaria_server/src/server.rs`: the server's side: each client a

@@ -4,6 +4,7 @@
 //! `defaria_core`.
 
 pub mod block_texture;
+pub mod content_swap;
 pub mod cracks;
 pub mod crosshair;
 pub mod dynamic_light;

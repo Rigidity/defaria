@@ -35,6 +35,53 @@ pub struct Manifest {
     /// Mods that must load first.
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Which side of a game the mod is for.
+    #[serde(default)]
+    pub side: ModSide,
+}
+
+/// Which side of a game a mod is for (`side` in `mod.json5`). A server
+/// sends its `both` mods to the clients that join it; its `server` mods
+/// stay with it, and a client's `client` mods with the client. Neither of
+/// those may define anything (`content::load::order` refuses them), so
+/// the block and item states both sides number are the `both` mods'.
+#[derive(Deserialize, serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ModSide {
+    /// Content and scripts for both sides: sent to every client.
+    #[default]
+    Both,
+    /// Scripts the server alone runs (gameplay or admin): never sent.
+    Server,
+    /// Scripts a client alone runs, kept on that client and optional.
+    Client,
+}
+
+impl ModSide {
+    /// How it's written in `mod.json5`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::Server => "server",
+            Self::Client => "client",
+        }
+    }
+
+    /// Whether a mod for this side may depend on one for `other`: a `both`
+    /// mod only on `both` mods (it loads on every side), a `server` or
+    /// `client` one on its own side's too.
+    pub fn may_depend_on(self, other: ModSide) -> bool {
+        other == Self::Both || other == self
+    }
+
+    /// Whether the mod's scripts load on `side`.
+    pub fn runs_on(self, side: crate::script::Side) -> bool {
+        match self {
+            Self::Both => true,
+            Self::Server => side == crate::script::Side::Server,
+            Self::Client => side == crate::script::Side::Client,
+        }
+    }
 }
 
 /// `materials/<name>.json5`.

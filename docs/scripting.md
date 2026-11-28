@@ -53,10 +53,12 @@ The hooks themselves and what they're passed are below, for
 The game always runs as a server and a client, even in single player
 (see "Multiplayer" in `docs/decisions.md`): the server decides the
 world, and a client draws its copy of it and sends what its player
-does. Every mod's scripts load on both, the same way, with the same
-sandbox and limits, so a module one side uses the other can too. The
-`side` global says which a script is running on: `"server"` or
-`"client"`.
+does. A `both` mod's scripts (the default) load on both, the same way,
+with the same sandbox and limits, so a module one side uses the other
+can too; a `server` mod's load only on the server, and a `client` mod's
+only on the client (see `side` in `docs/modding.md`). A server sends its
+`both` mods, scripts included, to the clients that join it. The `side`
+global says which a script is running on: `"server"` or `"client"`.
 
 Each hook belongs to a side. The gameplay hooks, the
 [block, item](#block-and-item-hooks) and [machine](#machines) hooks,

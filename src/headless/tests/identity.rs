@@ -23,6 +23,7 @@ use crate::{
     headless::{Multiplayer, test_client, test_server},
     identity::LocalIdentity,
     integrated::connect_remembering,
+    mod_transfer::{Library, Offer},
     quic::{self, ConnectError, Listener},
 };
 
@@ -30,12 +31,12 @@ use crate::{
 /// listening at `address`.
 fn start(world: Option<&Path>, address: SocketAddr) -> (Multiplayer, Listener) {
     let game = Multiplayer::serving(test_server(world.map(Path::to_path_buf)));
-    let content = game.server.world().resource::<Content>().fingerprint();
+    let offer = Offer::new(game.server.world().resource::<Content>()).unwrap();
     let key = server_identity(world).unwrap();
     // The address may take a moment to be free again after a server there
     // stops.
     for _ in 0..100 {
-        match quic::listen(address, content, &key) {
+        match quic::listen(address, offer.clone(), &key) {
             Ok(listener) => return (game, listener),
             Err(_) => thread::sleep(Duration::from_millis(20)),
         }
@@ -46,9 +47,9 @@ fn start(world: Option<&Path>, address: SocketAddr) -> (Multiplayer, Listener) {
 /// Joins `game` at `address` as the install in `data`, and waits for its
 /// world to load.
 fn join(game: &mut Multiplayer, address: &str, data: &Path) -> Result<(), ConnectError> {
-    let content = game.server.world().resource::<Content>().fingerprint();
+    let library = Library::new(game.server.world().resource::<Content>(), Some(data));
     let local = LocalIdentity::load(Some(data));
-    let link = connect_remembering(address, content, &local, Some(data))?;
+    let link = connect_remembering(address, library, &local, Some(data))?.link;
     let mut client = test_client();
     client.insert_resource(ServerConnection(link));
     game.clients.push(client);

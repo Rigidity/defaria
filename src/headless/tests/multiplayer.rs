@@ -67,15 +67,16 @@ fn a_client_plays_over_the_network() {
     let content = game
         .server
         .world()
-        .resource::<defaria_core::content::Content>()
-        .fingerprint();
+        .resource::<defaria_core::content::Content>();
+    let offer = crate::mod_transfer::Offer::new(content).unwrap();
+    let library = crate::mod_transfer::Library::new(content, None);
     let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let listener =
-        crate::quic::listen(local, content, &crate::identity::Identity::generate()).unwrap();
+        crate::quic::listen(local, offer, &crate::identity::Identity::generate()).unwrap();
     let address = listener.address.to_string();
     crate::dedicated::take_clients_from(&mut game.server, listener);
     let me = crate::identity::Identity::generate();
-    let link = crate::quic::connect(&address, content, &me, "Tester", None)
+    let link = crate::quic::connect(&address, library, &me, "Tester", None)
         .unwrap()
         .link;
     let mut client = crate::headless::test_client();

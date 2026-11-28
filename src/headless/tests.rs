@@ -10,6 +10,7 @@ mod inventory_screen;
 mod light;
 mod machine_screen;
 mod menus;
+mod mod_transfer;
 mod multiplayer;
 mod player_save;
 mod prediction;
