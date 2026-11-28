@@ -92,6 +92,11 @@ pub struct Cli {
     /// `--connect <host:port>`: play on that server rather than one in the
     /// game's own process (headless too).
     pub connect: Option<String>,
+    /// `--data <folder>`: the game's data folder (the install's key, name
+    /// and known servers, the worlds, a dedicated server's default world)
+    /// instead of the system's. Headless runs use a new one in the
+    /// temporary folder unless given this.
+    pub data: Option<PathBuf>,
 }
 
 impl Cli {
@@ -107,6 +112,7 @@ impl Cli {
         let mut size = None;
         let mut port = None;
         let mut connect = None;
+        let mut data = None;
         let mut args = args.into_iter().peekable();
         let server = args.next_if(|arg| arg == "server").is_some();
         while let Some(arg) = args.next() {
@@ -161,6 +167,9 @@ impl Cli {
                 "--connect" => {
                     connect = Some(args.next().expect("--connect needs a host:port"));
                 }
+                "--data" => {
+                    data = Some(PathBuf::from(args.next().expect("--data needs a folder")));
+                }
                 other => panic!("unknown argument: {other}"),
             }
         }
@@ -200,6 +209,7 @@ impl Cli {
             server,
             port,
             connect,
+            data,
         }
     }
 }
@@ -301,6 +311,15 @@ mod tests {
     #[should_panic(expected = "--radius needs a positive number of chunks")]
     fn radius_must_be_positive() {
         Cli::from_args(args(&["--radius", "0"]));
+    }
+
+    #[test]
+    fn parses_data_folder() {
+        let cli = Cli::from_args(args(&["--data", "here"]));
+        assert_eq!(cli.data, Some(PathBuf::from("here")));
+        let server = Cli::from_args(args(&["server", "--data", "there"]));
+        assert_eq!(server.data, Some(PathBuf::from("there")));
+        assert_eq!(Cli::from_args(args(&[])).data, None);
     }
 
     #[test]

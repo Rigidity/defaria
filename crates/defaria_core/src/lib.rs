@@ -16,6 +16,7 @@ pub mod fluid;
 pub mod fluid_container;
 pub mod game_mode;
 pub mod hotbar;
+pub mod identity;
 pub mod inventory;
 pub mod light;
 pub mod machine;

@@ -19,6 +19,7 @@ use defaria_core::{
     content::{Content, Direction},
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
+    identity::PlayerId,
     player::Player,
     use_action::{Use, UseAction, UseStep},
     world::Voxels,
@@ -38,13 +39,13 @@ pub(super) fn plugin(app: &mut App) {
 
 /// What a script sees of the player making `using`.
 fn view(
-    player: Entity,
+    id: Option<&PlayerId>,
     using: Use,
     mode: Option<&GameMode>,
     walker: Option<&Player>,
 ) -> PlayerView {
     PlayerView {
-        id: Some(player.to_bits()),
+        id: id.copied(),
         pos: using.eyes.translation,
         look: *using.eyes.forward(),
         mode: mode.copied().unwrap_or_default(),
@@ -60,7 +61,7 @@ fn view(
 /// place against it.
 pub fn use_scripted_block(
     mut players: Query<(
-        Entity,
+        Option<&PlayerId>,
         &mut UseAction,
         &Hotbar,
         &ActiveSlot,
@@ -75,7 +76,7 @@ pub fn use_scripted_block(
     let Some(scripts) = scripts else {
         return;
     };
-    for (entity, mut action, hotbar, active, mode, walker) in &mut players {
+    for (id, mut action, hotbar, active, mode, walker) in &mut players {
         let Some(using) = action.pending() else {
             continue;
         };
@@ -94,7 +95,7 @@ pub fn use_scripted_block(
         action.claim();
         uses.write(BlockUsed {
             pos: hit.block,
-            player: Some(view(entity, using, mode, walker)),
+            player: Some(view(id, using, mode, walker)),
         });
     }
 }
@@ -104,6 +105,7 @@ pub fn use_scripted_block(
 pub fn use_scripted_item(
     mut players: Query<(
         Entity,
+        Option<&PlayerId>,
         &mut UseAction,
         &Hotbar,
         &ActiveSlot,
@@ -117,7 +119,7 @@ pub fn use_scripted_item(
     let Some(scripts) = scripts else {
         return;
     };
-    for (entity, mut action, hotbar, active, mode, walker) in &mut players {
+    for (entity, id, mut action, hotbar, active, mode, walker) in &mut players {
         let Some(using) = action.pending() else {
             continue;
         };
@@ -131,7 +133,7 @@ pub fn use_scripted_item(
         uses.write(ItemUsed {
             player: entity,
             item,
-            view: view(entity, using, mode, walker),
+            view: view(id, using, mode, walker),
         });
     }
 }

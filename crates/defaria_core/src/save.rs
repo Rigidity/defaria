@@ -1,12 +1,14 @@
 //! Saved worlds' folders: where they live on disk, the world list and
 //! each world's `world.json5`. What's in them (regions of chunks, the
-//! player) is the server's to read and write (`defaria_server::save`).
+//! players) is the server's to read and write (`defaria_server::save`).
 //! The file formats are in `docs/world-format.md`.
 //!
 //! The game's own folder is [`data_dir`]: `Defaria` in Application Support
-//! on macOS (`%APPDATA%` on Windows, `$XDG_DATA_HOME` on Linux). Each world
-//! is a folder in its `worlds` folder holding `world.json5` (the seed and
-//! format version) and a `regions` folder of region files.
+//! on macOS (`%APPDATA%` on Windows, `$XDG_DATA_HOME` on Linux), which
+//! also holds the install's identity (`defaria::identity`). Each world is
+//! a folder in its `worlds` folder holding `world.json5` (the seed and
+//! format version), a `regions` folder of region files and a `players`
+//! folder of players' files.
 
 use std::{
     io,
@@ -16,8 +18,9 @@ use std::{
 use bevy::prelude::*;
 use serde::Deserialize;
 
-/// The `world.json5` format this build writes.
-pub const WORLD_FORMAT: u32 = 1;
+/// The `world.json5` format this build writes. 2 keeps players by id, in
+/// `players/` (a format 1 world's `player.json5` is left alone, unread).
+pub const WORLD_FORMAT: u32 = 2;
 /// The world's settings file, in its folder.
 pub const WORLD_FILE: &str = "world.json5";
 /// The folder of region files, in the world's.
@@ -84,7 +87,12 @@ pub fn open_world(folder: &Path, seed: u64) -> Result<u64, String> {
                 ));
             }
             // Written again, so when it was last written is when the world
-            // was last played (see `list_worlds`).
+            // was last played (see `list_worlds`), and as this build's
+            // format, which it's now played as.
+            let info = WorldInfo {
+                format: WORLD_FORMAT,
+                ..info
+            };
             write_atomically(&path, info.to_json5().as_bytes())
                 .map_err(|error| format!("can't write {}: {error}", path.display()))?;
             Ok(info.seed)
@@ -218,6 +226,12 @@ mod tests {
         let folder = temp_folder("info");
         assert_eq!(open_world(&folder, 42), Ok(42));
         assert_eq!(open_world(&folder, 7), Ok(42), "the saved seed wins");
+        // An older world is played, and written back as this build's.
+        std::fs::write(folder.join(WORLD_FILE), "{ format: 1, seed: 5 }").unwrap();
+        assert_eq!(open_world(&folder, 7), Ok(5));
+        let text = std::fs::read_to_string(folder.join(WORLD_FILE)).unwrap();
+        let info: WorldInfo = json5::from_str(&text).unwrap();
+        assert_eq!(info.format, WORLD_FORMAT);
         std::fs::write(folder.join(WORLD_FILE), "{ format: 99, seed: 1 }").unwrap();
         assert!(open_world(&folder, 7).unwrap_err().contains("newer"));
     }

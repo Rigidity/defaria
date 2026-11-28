@@ -225,6 +225,33 @@ pub fn test_client() -> App {
     client
 }
 
+/// The id of a [`Multiplayer`]'s client `index`: a made-up one, the same
+/// every run, as if each were its own install.
+pub fn test_player_id(index: usize) -> defaria_core::identity::PlayerId {
+    defaria_core::identity::PlayerId([index as u8 + 1; 32])
+}
+
+/// A server app for a [`Multiplayer`], loading a small world: the one in
+/// `world`, or one in memory.
+pub fn test_server(world: Option<std::path::PathBuf>) -> App {
+    let mut server = App::new();
+    server
+        .insert_resource(defaria_core::script::ScriptSettings::untimed())
+        .insert_resource(defaria_server::script::hooks::HookSettings::untimed())
+        .insert_resource(defaria_core::streaming::StreamingSettings {
+            radius: 4,
+            ..default()
+        });
+    if let Some(world) = world {
+        server.insert_resource(defaria_core::save::WorldFolder(world));
+    }
+    crate::server::build_server(&mut server);
+    server.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+        super::FRAME_TIME,
+    ));
+    server
+}
+
 /// A [`Multiplayer`] with `clients` clients, each with no script of its
 /// own yet (see [`Multiplayer::run`]), loading a small world.
 pub fn test_multiplayer(clients: usize) -> Multiplayer {
@@ -234,18 +261,7 @@ pub fn test_multiplayer(clients: usize) -> Multiplayer {
 /// [`test_multiplayer`], each client's messages delayed and lost as
 /// `conditions` say.
 pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multiplayer {
-    let mut server = App::new();
-    server
-        .insert_resource(defaria_core::script::ScriptSettings::untimed())
-        .insert_resource(defaria_server::script::hooks::HookSettings::untimed())
-        .insert_resource(defaria_core::streaming::StreamingSettings {
-            radius: 4,
-            ..default()
-        });
-    crate::server::build_server(&mut server);
-    server.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
-        super::FRAME_TIME,
-    ));
+    let mut server = test_server(None);
     let (clients, relays) = (0..clients)
         .map(|index| {
             let mut client = test_client();
@@ -256,7 +272,11 @@ pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multipla
                 .world_mut()
                 .resource_mut::<defaria_server::server::Incoming>()
                 .0
-                .push(at_server);
+                .push(defaria_server::server::Joining {
+                    id: test_player_id(index),
+                    name: format!("Player {}", index + 1),
+                    link: at_server,
+                });
             let relay = Relay {
                 client: client_side,
                 server: server_side,
@@ -277,6 +297,16 @@ pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multipla
 }
 
 impl Multiplayer {
+    /// `server`, with no clients yet: they join over the network (add each
+    /// to `clients`).
+    pub fn serving(server: App) -> Self {
+        Self {
+            server,
+            clients: Vec::new(),
+            relays: Vec::new(),
+        }
+    }
+
     /// One frame: each client's, then the server's.
     pub fn update(&mut self) {
         for client in &mut self.clients {

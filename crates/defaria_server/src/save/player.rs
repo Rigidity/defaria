@@ -1,5 +1,7 @@
-//! The player's file, `player.json5`: what they carry and their hotbar.
-//! See `docs/world-format.md`.
+//! Players' files, `players/<id>.json5`: one per player who has played
+//! in the world, named by their id (`defaria_core::identity::PlayerId`),
+//! with what they carry, their hotbar, game mode and where they were. See
+//! `docs/world-format.md`.
 //!
 //! Items are saved by name (`defaria:stone`,
 //! `defaria:pickaxe[handle=defaria:oak,head=defaria:iron]`), like blocks in
@@ -15,19 +17,34 @@ use super::write_atomically;
 use defaria_core::{
     content::{Content, ItemState, StateName},
     game_mode::GameMode,
+    identity::PlayerId,
 };
 
-/// The `player.json5` format this build writes. 2 added the fluid in a
-/// container (`fluid` on a stack).
-pub const PLAYER_FORMAT: u32 = 2;
-/// The player's file, in the world's folder.
-pub const PLAYER_FILE: &str = "player.json5";
+/// The player file format this build writes. 2 added the fluid in a
+/// container (`fluid` on a stack); 3 moved the file to `players/<id>.json5`
+/// and added the name and position.
+pub const PLAYER_FORMAT: u32 = 3;
+/// The folder of players' files, in the world's folder.
+pub const PLAYERS_DIR: &str = "players";
 
-/// `player.json5`.
+/// Where player `id`'s file is, in the world in `folder`.
+pub fn path(folder: &Path, id: PlayerId) -> std::path::PathBuf {
+    folder.join(PLAYERS_DIR).join(format!("{id}.json5"))
+}
+
+/// `players/<id>.json5`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlayerFile {
     pub format: u32,
+    /// What they were called when they were last saved: only for people
+    /// reading the file (who they are is the file's name).
+    #[serde(default)]
+    pub name: String,
+    /// Where they were, if they've been anywhere: a new player starts
+    /// where new players do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<SavedPosition>,
     /// Creative or survival.
     #[serde(default)]
     pub game_mode: GameMode,
@@ -37,6 +54,16 @@ pub struct PlayerFile {
     pub hotbar: Vec<Option<String>>,
     /// What the inventory holds.
     pub inventory: Vec<SavedStack>,
+}
+
+/// Where a saved player was: their feet, and whether they were flying.
+/// (Not which way they looked: the client keeps that, and isn't told it.)
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedPosition {
+    pub feet: [f64; 3],
+    #[serde(default)]
+    pub flying: bool,
 }
 
 /// Some number of one item in a saved inventory.
@@ -60,10 +87,11 @@ pub struct SavedFluid {
     pub amount: u64,
 }
 
-/// Reads the world's `player.json5`: `None` if there isn't one yet (a new
-/// world), and an error if it can't be read or is newer than this build.
-pub fn read(folder: &Path) -> Result<Option<PlayerFile>, String> {
-    let path = folder.join(PLAYER_FILE);
+/// Reads player `id`'s file in the world in `folder`: `None` if there
+/// isn't one yet (they've never played here), and an error if it can't be
+/// read or is newer than this build.
+pub fn read(folder: &Path, id: PlayerId) -> Result<Option<PlayerFile>, String> {
+    let path = path(folder, id);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -81,11 +109,16 @@ pub fn read(folder: &Path) -> Result<Option<PlayerFile>, String> {
     Ok(Some(file))
 }
 
-/// Writes the world's `player.json5`, replacing the old one whole.
-pub fn write(folder: &Path, file: &PlayerFile) -> Result<(), String> {
-    let path = folder.join(PLAYER_FILE);
+/// Writes player `id`'s file in the world in `folder`, replacing the old
+/// one whole.
+pub fn write(folder: &Path, id: PlayerId, file: &PlayerFile) -> Result<(), String> {
+    let path = path(folder, id);
+    if let Some(players) = path.parent() {
+        std::fs::create_dir_all(players)
+            .map_err(|error| format!("can't create {}: {error}", players.display()))?;
+    }
     let text = json5::to_string(file).map_err(|error| format!("{}: {error}", path.display()))?;
-    let text = format!("// The player in a Defaria world; see docs/world-format.md.\n{text}\n");
+    let text = format!("// A player in a Defaria world; see docs/world-format.md.\n{text}\n");
     write_atomically(&path, text.as_bytes())
         .map_err(|error| format!("can't write {}: {error}", path.display()))
 }
@@ -168,9 +201,15 @@ mod tests {
     #[test]
     fn the_file_round_trips() {
         let folder = temp_folder("player-file");
-        assert_eq!(read(&folder), Ok(None));
+        let id = PlayerId([3; 32]);
+        assert_eq!(read(&folder, id), Ok(None));
         let file = PlayerFile {
             format: PLAYER_FORMAT,
+            name: "Ada".into(),
+            position: Some(SavedPosition {
+                feet: [1.5, -2.0, 1e9],
+                flying: true,
+            }),
             game_mode: GameMode::Survival,
             active_slot: 3,
             hotbar: vec![Some("defaria:lamp".into()), None],
@@ -180,18 +219,28 @@ mod tests {
                 fluid: None,
             }],
         };
-        write(&folder, &file).unwrap();
-        assert_eq!(read(&folder), Ok(Some(file)));
+        write(&folder, id, &file).unwrap();
+        assert_eq!(read(&folder, id), Ok(Some(file)));
+        assert!(
+            folder
+                .join(PLAYERS_DIR)
+                .join(format!("{id}.json5"))
+                .exists()
+        );
+        // Another player's is their own.
+        assert_eq!(read(&folder, PlayerId([4; 32])), Ok(None));
     }
 
     #[test]
     fn a_newer_file_isnt_read() {
         let folder = temp_folder("player-newer");
+        let id = PlayerId([3; 32]);
+        std::fs::create_dir_all(folder.join(PLAYERS_DIR)).unwrap();
         std::fs::write(
-            folder.join(PLAYER_FILE),
+            path(&folder, id),
             "{ format: 99, active_slot: 0, hotbar: [], inventory: [] }",
         )
         .unwrap();
-        assert!(read(&folder).unwrap_err().contains("newer"));
+        assert!(read(&folder, id).unwrap_err().contains("newer"));
     }
 }

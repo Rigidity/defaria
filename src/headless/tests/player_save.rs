@@ -1,4 +1,4 @@
-//! The player saved with the world.
+//! The player saved with the world, by their install's id.
 
 use bevy::prelude::*;
 use defaria_core::{
@@ -10,18 +10,24 @@ use defaria_core::{
     streaming::StreamingSettings,
     testing::temp_folder,
 };
-use defaria_server::{inventory::player::KeepPlayerFile, save::player as file};
+use defaria_server::{inventory::player::KeepSavedPlayer, save::player as file};
 
-use crate::headless::{HeadlessPlugin, Script, default_plugins};
+use crate::{
+    headless::{HeadlessPlugin, Script, default_plugins},
+    identity::{DataFolder, LocalIdentity},
+};
 
 /// Through the real game, in a world on disk: the active slot is saved
-/// when the game exits, and the next run starts with it.
+/// when the game exits, and the next run, by the same install, starts
+/// with it.
 #[test]
 fn the_player_is_saved_with_the_world() {
     let folder = temp_folder("player-inventory");
+    let data = temp_folder("player-inventory-data");
     let run = |script: &str| {
         let mut app = App::new();
         app.insert_resource(WorldFolder(folder.clone()))
+            .insert_resource(DataFolder(data.clone()))
             .add_plugins((
                 default_plugins(false).disable::<bevy::log::LogPlugin>(),
                 crate::GamePlugin,
@@ -56,19 +62,24 @@ fn the_player_is_saved_with_the_world() {
     assert_eq!(second, first);
     // Back in survival, with survival's weight limit.
     assert_eq!(second.0.max_weight, Some(PLAYER_MAX_WEIGHT));
-    assert!(folder.join(file::PLAYER_FILE).exists());
+    let id = LocalIdentity::load(Some(&data)).identity.id;
+    assert!(file::path(&folder, id).exists());
 }
 
-/// A `player.json5` the game can't read (here, from a newer build) is
+/// A player's file the game can't read (here, from a newer build) is
 /// left as it is: the player starts new, and nothing saves over it.
 #[test]
 fn an_unreadable_player_file_is_kept() {
     let folder = temp_folder("player-newer-kept");
-    let path = folder.join(file::PLAYER_FILE);
+    let data = temp_folder("player-newer-kept-data");
+    let id = LocalIdentity::load(Some(&data)).identity.id;
+    let path = file::path(&folder, id);
     let newer = "{ format: 99, active_slot: 0, hotbar: [], inventory: [] }";
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, newer).unwrap();
     let mut app = App::new();
     app.insert_resource(WorldFolder(folder.clone()))
+        .insert_resource(DataFolder(data))
         .add_plugins((
             default_plugins(false).disable::<bevy::log::LogPlugin>(),
             crate::GamePlugin,
@@ -90,6 +101,8 @@ fn an_unreadable_player_file_is_kept() {
             break;
         }
     }
-    assert!(crate::headless::server_world(&app).contains_resource::<KeepPlayerFile>());
+    let server = crate::headless::server(&mut app);
+    let mut kept = server.query_filtered::<(), With<KeepSavedPlayer>>();
+    assert_eq!(kept.iter(server).count(), 1);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
 }

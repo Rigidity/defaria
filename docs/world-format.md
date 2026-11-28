@@ -10,13 +10,17 @@ The data folder is:
 | Windows | `%APPDATA%\Defaria` |
 | Linux | `$XDG_DATA_HOME/defaria`, or `~/.local/share/defaria` |
 
-Headless runs (`cargo headless`) keep their world in memory and save nothing,
-unless they're given `--world`.
+`--data <folder>` uses another data folder. Headless runs (`cargo
+headless`) keep their world in memory and save nothing, unless they're
+given `--world`, and use a new data folder in the temporary folder each
+run, unless they're given `--data`.
 
 ```text
 world/
   world.json5          the world's seed and format version
-  player.json5         what the player carries
+  server.pem           a dedicated server's key (see "Identity" below)
+  players/
+    3f9a…c2.json5      each player's things and where they were, by id
   regions/
     r.0.0.0.dfr        chunks 0..16 on every axis
     r.-1.0.0.dfr       chunks -16..0 in X, 0..16 in Y and Z
@@ -25,7 +29,8 @@ world/
 
 The code is in `crates/defaria_core/src/save.rs` (folders and `world.json5`),
 `crates/defaria_server/src/save.rs` (the store), `crates/defaria_server/src/save/region.rs`,
-`crates/defaria_server/src/save/chunk.rs` and `crates/defaria_server/src/save/player.rs`. Every format here has a version
+`crates/defaria_server/src/save/chunk.rs` and `crates/defaria_server/src/save/player.rs`; the
+data folder's files in `src/identity.rs`. Every format here has a version
 number. When a format changes, bump its version and keep reading the old one. A build that finds a
 version newer than it knows leaves the file alone: a newer `world.json5` means
 the world is played without saving; a newer region file or chunk means that
@@ -36,10 +41,14 @@ can't read at all is treated the same way.
 
 ```json5
 {
-  format: 1,          // this file's format
+  format: 2,          // this file's format
   seed: 233808922,    // the terrain's seed
 }
 ```
+
+Format 2 keeps players by id in `players/`. A format 1 world is played
+(and written back as format 2), but the single `player.json5` it kept is
+left alone, unread: its player starts as a new one.
 
 Written when the world is created, and written again (unchanged) each time
 it's opened, so when it was last written is when the world was last played:
@@ -50,11 +59,20 @@ Worlds are folders in the game's `worlds` folder, named after the world: the
 name given on the new world screen, with characters folder names can't have
 left out, and a number after it if one of that name is there already.
 
-## `player.json5`
+## `players/<id>.json5`
+
+One file per player who has played in the world, named by their id: the
+SHA-256 hash of their install's public key, as 64 lowercase hex digits
+(see "Identity" below). The same install is the same player in single
+player and on any server.
 
 ```json5
 {
-  format: 2,          // this file's format
+  format: 3,          // this file's format
+  name: "Player",     // what they were called, for people reading this
+  // Where their feet were, and whether they were flying. Left out for a
+  // player who's never been anywhere.
+  position: { feet: [64.5, 54.38, 92.5], flying: false },
   game_mode: "survival", // or "creative" (the default)
   active_slot: 2,     // the hotbar slot in hand, 0 to 8
   // Each hotbar slot's item, or null for an empty slot.
@@ -85,11 +103,82 @@ property values in brackets, sorted by property name, if it has any. An item
 no mod defines any more is left out when the file is read (with a warning); one
 whose properties changed comes back in its default state.
 
-Written every 30 seconds and when the game exits, to `player.json5.tmp` and then
-renamed over the old file. A world without one (a new world) gives the player
-a new player's inventory and hotbar. A `player.json5` that can't be read (newer
-than the build, or damaged) is reported and left alone: the player starts as a
-new player, and nothing is saved over the file while the world is open.
+Each player's is written when they leave, every 30 seconds while they
+play and when the server stops, to `<id>.json5.tmp` and then renamed over
+the old file; a player who joins gets what it says. A player without one
+(new to the world) starts as a new player, where new players start, in
+creative, with a new player's inventory and hotbar. Which way a player
+looks isn't saved: the client keeps it. A player's file that can't be
+read (newer than the build, or damaged) is reported and left alone: that
+player starts as a new player, and nothing is saved over the file while
+they play. The name is only for reading: who a player is is the file's
+name.
+
+Format 3 moved the file from the world's `player.json5` to
+`players/<id>.json5` and added `name` and `position`.
+
+## Identity: the data folder's own files
+
+```text
+<data folder>/
+  identity.pem         this install's key pair
+  profile.json5        the player's name
+  servers.json5        the servers it has played on, and their keys
+  worlds/              the saved worlds
+  server-world/        a dedicated server's world, unless given --world
+```
+
+`identity.pem` is an ECDSA P-256 key pair, PKCS#8 PEM, made the first time
+the game needs it and readable only by its owner: on macOS and Linux it's
+created with mode 600 (never readable by others, even while it's being
+written); on Windows it relies on the per-user permissions of `%APPDATA%`.
+It's only ever put in place if there's no file yet, so two copies of the
+game starting for the first time end up with the same key. The game presents it to
+servers as a self-signed TLS client certificate (made afresh from the key
+each time), and the player's id is the SHA-256 hash of its public key (the
+certificate's DER `SubjectPublicKeyInfo`): the server reads it from the
+handshake, so a client can't claim someone else's id. Single player, with
+no handshake, uses the same id, so a world played alone and then hosted
+keeps its player. Losing the file loses that player everywhere; a file that
+can't be read is reported and left alone, and the game plays single player
+as someone new, and refuses to join servers (where it would be a stray
+player), until it's fixed.
+
+`profile.json5`, written with the default name if it isn't there:
+
+```json5
+{
+  format: 1,
+  name: "Player",     // shown to others: at most 32 characters, trimmed
+}
+```
+
+`servers.json5`: each server played on, by the address it was given, with
+its key's fingerprint (the SHA-256 hash of its public key, as for players).
+A server's certificate is self-signed, so the first connection to an
+address trusts it and remembers it here; after that, a server at that
+address with another key is refused, with an error saying so, until its
+entry is removed (as SSH's `known_hosts`). It's read again just before a
+new server is added, so what another copy of the game added meanwhile is
+kept. The server list (#52) builds on
+this file: entries may gain fields, such as a name, with a format bump.
+
+```json5
+{
+  format: 1,
+  servers: [
+    { address: "example.org:25575", fingerprint: "9c1e…4b" },
+  ],
+}
+```
+
+A file of a newer format, or one that can't be read, is an error: the
+game won't connect anywhere rather than trust a server it can't check.
+
+A dedicated server's key is `server.pem` in the world's folder, the same
+kind of file as `identity.pem`, made the first time, so the server keeps
+its fingerprint across restarts (and when its world is moved). A server
+with its world in memory makes a new key each start.
 
 ## Chunks and regions
 
@@ -188,7 +277,7 @@ The parts the base game saves:
 | `data` | 1 | blocks with `block_entity: { data }`, and scripts | a table of plain values |
 | `energy` | 1 | machines with `energy` | the integer energy stored |
 | `tanks` | 1 | machines with `tanks` | a table by tank name of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block; an empty tank is left out |
-| `slots` | 2 | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in `player.json5`), with `fluid` (a block id) and `amount` for a fluid container holding some |
+| `slots` | 2 | machines with `slots` | a table by group name of lists, a table per slot: `{}` when empty, or `{ item, count }`, the item by its saved name (as in players' files), with `fluid` (a block id) and `amount` for a fluid container holding some |
 | `recipe` | 1 | machines with `recipes` | `{ recipe, ticks }` while one is running: the recipe's id (`defaria:smelt_ore[ore=defaria:iron]` for one of a templated recipe's materials) and how many of its network ticks have run; `{}` when none is. Its inputs were taken when it started, so they're in no slot |
 | `pipe` | 1 | conduits on a network the `fluid` solver runs (pipes) | a list of `{ fluid, amount }`, the fluid's block id and the amount in thousandths of a block: the pipe's share of its network's fluid when its chunk was saved; an empty list when it held none |
 | `blocked_faces` | 1 | conduits with a face blocked with a wrench | an int, a bit for each side, `1 << side` with up 0, down 1, north 2, south 3, east 4, west 5; only while some face is blocked: a conduit with every face open has none |
