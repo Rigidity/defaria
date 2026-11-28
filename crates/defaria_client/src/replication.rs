@@ -2,11 +2,16 @@
 //! other players now. Each is spawned as a [`Replica`] when the server
 //! says it came into range, and despawned when it says it left.
 //!
-//! The server sends where they are in snapshots, a few a second, which may
-//! be lost or late. The client draws every replica [`DELAY`] behind the
-//! server's clock ([`Playback`]), between the two snapshots around that
-//! moment, so they move smoothly through a lost snapshot or two. Past the
-//! newest it holds them there rather than guess.
+//! The server sends where they are in snapshots, twenty a second, which
+//! may be lost or late. The client draws every replica a little behind
+//! the server's clock ([`Playback`]), between the two snapshots around
+//! that moment, so they move smoothly through lost snapshots. How far
+//! behind follows how late snapshots have been arriving lately
+//! (`Arrivals`): just over a snapshot's time on a good connection, up to
+//! [`MAX_DELAY`] on a bad one. The playback clock runs a few percent
+//! slower or faster to change it, so the change doesn't show. Past the
+//! newest snapshot it holds them there rather than guess, and the clock
+//! waits there too.
 //!
 //! A player is drawn as a box as tall and wide as its body, turned the way
 //! it looks, lower while it sneaks: placeholder art.
@@ -22,12 +27,32 @@ use defaria_core::{
 
 use crate::{net::FromServer, session::GameState};
 
-/// How far behind the server's clock replicas are drawn: two snapshots'
-/// time, so one can be lost without a stop.
-pub const DELAY: f64 = 2.0 * SNAPSHOT_INTERVAL;
+/// The least replicas are drawn behind the server's clock: a snapshot's
+/// time and half again, so on a steady connection the next snapshot is
+/// always there before it's needed, with room for a frame's rounding.
+pub const MIN_DELAY: f64 = 1.5 * SNAPSHOT_INTERVAL;
+/// The most replicas are drawn behind the server's clock: a run of lost
+/// snapshots longer than this holds them each time.
+pub const MAX_DELAY: f64 = 0.4;
+/// How much more than the latest a snapshot arrived lately the delay is,
+/// for frames and jitter.
+const MARGIN: f64 = 0.02;
+/// How far back, in seconds, [`Arrivals`] looks at how late snapshots
+/// arrived.
+const WINDOW: f64 = 10.0;
+/// A gap between snapshots longer than this is the server having had
+/// nothing to send (nobody in range), not snapshots lost.
+const BREAK: f64 = 1.0;
+/// How much faster or slower than time passes the playback clock may run
+/// to reach the delay it should be at.
+const MAX_RATE: f64 = 0.05;
+/// How quickly the playback clock closes on where it should be: the
+/// change in its rate, per second it's off.
+const GAIN: f64 = 1.0;
 /// How far the playback clock may drift from where it should be before
-/// it's put there, rather than eased there.
-const MAX_DRIFT: f64 = 0.5;
+/// it's put there, rather than eased there (which would take five
+/// seconds).
+const MAX_DRIFT: f64 = 0.25;
 
 pub struct ReplicationPlugin;
 
@@ -61,18 +86,166 @@ struct Replicas(HashMap<u64, Entity>);
 #[derive(Component, Debug, Default)]
 struct Snapshots(VecDeque<(f64, Pose)>);
 
-/// The server time replicas are drawn at, and the newest snapshot's.
+/// The server time replicas are drawn at, and when snapshots arrived.
 #[derive(Resource, Debug, Default)]
 pub struct Playback {
     pub time: Option<f64>,
-    newest: f64,
+    arrivals: Arrivals,
 }
 
 impl Playback {
-    /// Whether the clock has passed the newest snapshot, so replicas hold
+    /// Whether the clock has reached the newest snapshot, so replicas hold
     /// where it put them until the next comes (after a run of lost ones).
     pub fn holding(&self) -> bool {
-        self.time.is_some_and(|time| time >= self.newest)
+        self.time
+            .zip(self.arrivals.newest)
+            .is_some_and(|(time, newest)| time >= newest)
+    }
+
+    /// How far behind the server's clock replicas should be drawn now.
+    pub fn delay(&self) -> f64 {
+        self.arrivals.delay()
+    }
+
+    /// The newest snapshot's time, on the server's clock.
+    pub fn newest(&self) -> Option<f64> {
+        self.arrivals.newest
+    }
+
+    /// Notes that the snapshot of server time `time` arrived at `now` on
+    /// the client's clock.
+    fn arrived(&mut self, time: f64, now: f64) {
+        self.arrivals.arrived(time, now);
+    }
+
+    /// Moves the clock on by `elapsed` seconds, to `now` on the client's
+    /// clock: toward the delay behind the server's clock it should be,
+    /// a few percent faster or slower than time passes, and never past
+    /// the newest snapshot. It starts (or, far off, is put) where it
+    /// should be.
+    fn advance(&mut self, now: f64, elapsed: f64) {
+        self.arrivals.forget(now);
+        let Some(newest) = self.arrivals.newest else {
+            return;
+        };
+        let target = self.arrivals.target(now);
+        let time = match (self.time, target) {
+            (Some(time), Some(target)) => {
+                let time = time + elapsed;
+                if (target - time).abs() > MAX_DRIFT {
+                    target
+                } else {
+                    time + elapsed * (GAIN * (target - time)).clamp(-MAX_RATE, MAX_RATE)
+                }
+            }
+            (Some(time), None) => time + elapsed,
+            (None, Some(target)) => target,
+            (None, None) => return,
+        };
+        self.time = Some(time.min(newest));
+    }
+}
+
+/// When snapshots arrived lately, which says how far behind the server's
+/// clock to draw replicas so the next snapshot is there before it's
+/// needed.
+///
+/// Each snapshot's offset is when it arrived, on the client's clock, less
+/// its time on the server's. The earliest of the last [`WINDOW`] seconds
+/// is the server's clock as seen from here, at its quickest: snapshots
+/// arriving evenly all have it, and one that arrives late has a bigger
+/// one. How stale the newest snapshot was just before one arrived is that
+/// one's offset over the earliest (how late it was) plus the time since
+/// the one before (how many were lost before it). The delay covers the
+/// stalest of the window, with a [`MARGIN`], between [`MIN_DELAY`] and
+/// [`MAX_DELAY`]: so a run of lost snapshots holds replicas once, the
+/// first time it's that long, and not again while it's remembered.
+#[derive(Debug, Default, Clone)]
+struct Arrivals {
+    /// The snapshots of the last [`WINDOW`] seconds that were the newest
+    /// when they arrived, oldest first.
+    recent: VecDeque<Arrival>,
+    /// The newest snapshot's time, on the server's clock.
+    newest: Option<f64>,
+}
+
+/// A snapshot's arrival: when, on the client's clock; its offset; and the
+/// time since the newest before it, on the server's clock.
+#[derive(Debug, Clone, Copy)]
+struct Arrival {
+    at: f64,
+    offset: f64,
+    gap: f64,
+}
+
+impl Arrivals {
+    /// Notes that the snapshot of server time `time` arrived at `now` on
+    /// the client's clock; whether it's the newest yet (one behind a
+    /// newer one is too late to draw, and doesn't count).
+    fn arrived(&mut self, time: f64, now: f64) -> bool {
+        if self.newest.is_some_and(|newest| time <= newest) {
+            return false;
+        }
+        let gap = self
+            .newest
+            .map(|newest| time - newest)
+            .filter(|gap| *gap <= BREAK)
+            .unwrap_or(0.0);
+        self.newest = Some(time);
+        self.forget(now);
+        let offset = now - time;
+        // Earlier or later than any lately by more than the cap: the
+        // clocks have moved apart (a hitch on one side, or a pause), so
+        // what arrived before says nothing of what's to come.
+        if self
+            .base()
+            .is_some_and(|base| (offset - base).abs() > MAX_DELAY)
+        {
+            self.recent.clear();
+        }
+        self.recent.push_back(Arrival {
+            at: now,
+            offset,
+            gap,
+        });
+        true
+    }
+
+    /// The earliest offset lately: the client's clock less the server's,
+    /// as the quickest snapshots saw it.
+    fn base(&self) -> Option<f64> {
+        self.recent
+            .iter()
+            .map(|arrival| arrival.offset)
+            .reduce(f64::min)
+    }
+
+    /// How far behind the server's clock replicas should be drawn.
+    fn delay(&self) -> f64 {
+        let Some(base) = self.base() else {
+            return MIN_DELAY;
+        };
+        let stalest = (self.recent.iter())
+            .map(|arrival| arrival.offset - base + arrival.gap)
+            .fold(0.0, f64::max);
+        (stalest + MARGIN).clamp(MIN_DELAY, MAX_DELAY)
+    }
+
+    /// The server time replicas should be drawn at, at `now` on the
+    /// client's clock; `None` with no snapshots lately.
+    fn target(&self, now: f64) -> Option<f64> {
+        Some(now - self.base()? - self.delay())
+    }
+
+    /// Forgets the arrivals more than [`WINDOW`] before `now`.
+    fn forget(&mut self, now: f64) {
+        while self
+            .recent
+            .front()
+            .is_some_and(|arrival| now - arrival.at > WINDOW)
+        {
+            self.recent.pop_front();
+        }
     }
 }
 
@@ -85,6 +258,7 @@ fn forget(mut playback: ResMut<Playback>, mut replicas: ResMut<Replicas>) {
 /// Spawns and despawns replicas, and adds snapshots' poses to them.
 fn take_entities(
     mut commands: Commands,
+    time: Res<Time>,
     mut messages: MessageReader<FromServer>,
     mut playback: ResMut<Playback>,
     mut ids: ResMut<Replicas>,
@@ -93,6 +267,7 @@ fn take_entities(
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     mut look: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
 ) {
+    let now = time.elapsed_secs_f64();
     for FromServer(message) in messages.read() {
         match message {
             ServerMessage::Spawn { id, kind, pose } => {
@@ -124,8 +299,7 @@ fn take_entities(
                 }
             }
             ServerMessage::Snapshot { time, entities } => {
-                playback.newest = playback.newest.max(*time);
-                playback.time.get_or_insert(*time - DELAY);
+                playback.arrived(*time, now);
                 for entity in entities {
                     // (One spawned this frame isn't there yet: it starts
                     // from where it came into range.)
@@ -166,25 +340,16 @@ fn player_look(
     look.clone()
 }
 
-/// Moves the playback clock on, easing it toward [`DELAY`] behind the
-/// newest snapshot, and draws each replica at it.
+/// Moves the playback clock on and draws each replica at it.
 fn play_back(
     time: Res<Time>,
     mut playback: ResMut<Playback>,
     mut replicas: Query<(&Replica, &mut Snapshots, &mut Transform)>,
 ) {
-    let Some(mut now) = playback.time else {
+    playback.advance(time.elapsed_secs_f64(), time.delta_secs_f64());
+    let Some(now) = playback.time else {
         return;
     };
-    let dt = time.delta_secs_f64();
-    let target = playback.newest - DELAY;
-    now += dt;
-    if (target - now).abs() > MAX_DRIFT {
-        now = target;
-    } else {
-        now += (target - now) * (2.0 * dt).min(1.0);
-    }
-    playback.time = Some(now);
     for (replica, mut snapshots, mut transform) in &mut replicas {
         let snapshots = &mut snapshots.0;
         // Only the last before now is needed of those already past.
@@ -289,5 +454,191 @@ mod tests {
         );
         send(&mut app, [ServerMessage::Despawn(7)]);
         assert_eq!(replicas(&mut app), 0);
+    }
+
+    /// Plays `seconds` of snapshots into `playback` at 60 frames a second
+    /// from frame `start`: one every third frame, the server's clock 100
+    /// seconds (and `skew`) ahead of the client's, arriving six frames
+    /// later and `late(index)` more, unless `lost(index)`. Gives each
+    /// frame's playback clock and whether it held.
+    fn feed(
+        playback: &mut Playback,
+        start: u32,
+        skew: f64,
+        seconds: u32,
+        lost: impl Fn(u32) -> bool,
+        late: impl Fn(u32) -> u32,
+    ) -> Vec<(f64, bool)> {
+        let mut coming: Vec<(u32, f64)> = Vec::new();
+        let mut played = Vec::new();
+        for frame in start..start + seconds * 60 {
+            let now = frame as f64 / 60.0;
+            if frame % 3 == 0 && !lost(frame / 3) {
+                coming.push((frame + 6 + late(frame / 3), 100.0 + skew + now));
+            }
+            coming.sort_by_key(|(due, _)| *due);
+            while coming.first().is_some_and(|(due, _)| *due <= frame) {
+                let (_, time) = coming.remove(0);
+                playback.arrived(time, now);
+            }
+            playback.advance(now, 1.0 / 60.0);
+            played.push((playback.time.unwrap_or(f64::NAN), playback.holding()));
+        }
+        played
+    }
+
+    /// How fast the playback clock ran each frame, over how fast time
+    /// passed.
+    fn rates(played: &[(f64, bool)]) -> Vec<f64> {
+        (played.windows(2))
+            .map(|pair| (pair[1].0 - pair[0].0) * 60.0)
+            .filter(|rate| !rate.is_nan())
+            .collect()
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    /// Snapshots arriving evenly are drawn at the least delay, a snapshot
+    /// and a half behind, and the clock runs as time does.
+    #[test]
+    fn a_steady_connection_plays_at_the_floor() {
+        let mut playback = Playback::default();
+        let played = feed(&mut playback, 0, 0.0, 20, |_| false, |_| 0);
+        assert!(close(playback.delay(), MIN_DELAY), "{}", playback.delay());
+        assert!(played[1..].iter().all(|(_, held)| !held));
+        let last = rates(&played[600..]);
+        assert!(last.iter().all(|rate| close(*rate, 1.0)), "{last:?}");
+        // As far behind the newest snapshot as the delay says, less the
+        // frames since it arrived (two at most).
+        let behind = playback.newest().unwrap() - playback.time.unwrap();
+        assert!(
+            behind > MIN_DELAY - 2.0 / 60.0 - 1e-6 && behind < MIN_DELAY + 1e-6,
+            "{behind}"
+        );
+    }
+
+    /// A run of three lost snapshots holds the replicas once, the first
+    /// time; the delay then covers it, so the runs after it don't, and the
+    /// clock changes speed by at most 5% to get there.
+    #[test]
+    fn runs_of_losses_are_covered() {
+        let mut playback = Playback::default();
+        // Three lost every two seconds, from the fourth second.
+        let lost = |index: u32| index >= 80 && (10..13).contains(&(index % 40));
+        let played = feed(&mut playback, 0, 0.0, 20, lost, |_| 0);
+        // Four snapshots' time since the one before, and the margin.
+        assert!(
+            close(playback.delay(), 0.2 + MARGIN),
+            "{}",
+            playback.delay()
+        );
+        let holds: Vec<usize> = (0..played.len()).filter(|frame| played[*frame].1).collect();
+        assert!(!holds.is_empty() && holds.iter().all(|frame| (240..300).contains(frame)));
+        // Within 5% of time but where it holds.
+        let unheld: Vec<(f64, bool)> = played[7..].to_vec();
+        for (frame, pair) in unheld.windows(2).enumerate() {
+            let rate = (pair[1].0 - pair[0].0) * 60.0;
+            if !pair[0].1 && !pair[1].1 {
+                assert!((rate - 1.0).abs() < MAX_RATE + 1e-9, "{rate} at {frame}");
+            }
+        }
+    }
+
+    /// Snapshots arriving late (some two frames later than the rest) are
+    /// covered too.
+    #[test]
+    fn late_arrivals_are_covered() {
+        let mut playback = Playback::default();
+        let late = |index: u32| if index % 7 == 3 { 2 } else { 0 };
+        let played = feed(&mut playback, 0, 0.0, 10, |_| false, late);
+        let expected = SNAPSHOT_INTERVAL + 2.0 / 60.0 + MARGIN;
+        assert!(close(playback.delay(), expected), "{}", playback.delay());
+        assert!(played[300..].iter().all(|(_, held)| !held));
+    }
+
+    /// Once the losses stop, the delay comes back down to the floor a
+    /// window later, and the clock catches up a few percent faster than
+    /// time passes, no faster.
+    #[test]
+    fn the_delay_recovers() {
+        let mut playback = Playback::default();
+        feed(&mut playback, 0, 0.0, 5, |index| index % 20 < 3, |_| 0);
+        assert!(playback.delay() > 0.15, "{}", playback.delay());
+        let played = feed(&mut playback, 300, 0.0, 20, |_| false, |_| 0);
+        assert!(close(playback.delay(), MIN_DELAY), "{}", playback.delay());
+        assert!(played.iter().all(|(_, held)| !held));
+        let rates = rates(&played);
+        assert!(
+            (rates.iter()).all(|rate| (rate - 1.0).abs() < MAX_RATE + 1e-9),
+            "{:?}",
+            (rates.iter()).find(|rate| (*rate - 1.0).abs() >= MAX_RATE + 1e-9)
+        );
+        assert!(rates.iter().any(|rate| *rate > 1.0 + MAX_RATE / 2.0));
+        // Caught up, but for the last of its easing.
+        let last = &rates[rates.len() - 60..];
+        assert!(
+            last.iter().all(|rate| (rate - 1.0).abs() < 1e-3),
+            "{last:?}"
+        );
+    }
+
+    /// However long a run of losses, the delay stays under the cap; and a
+    /// gap of more than a second is nothing to send, not losses, so it
+    /// leaves the delay alone.
+    #[test]
+    fn the_delay_is_capped() {
+        let mut playback = Playback::default();
+        feed(
+            &mut playback,
+            0,
+            0.0,
+            4,
+            |index| (40..52).contains(&index),
+            |_| 0,
+        );
+        assert!(close(playback.delay(), MAX_DELAY), "{}", playback.delay());
+
+        let mut playback = Playback::default();
+        let played = feed(
+            &mut playback,
+            0,
+            0.0,
+            6,
+            |index| (40..70).contains(&index),
+            |_| 0,
+        );
+        assert!(close(playback.delay(), MIN_DELAY), "{}", playback.delay());
+        // The clock is put where it should be when they start again.
+        assert!(played[300..].iter().all(|(_, held)| !held));
+    }
+
+    /// When the clocks move apart (here, the client's loses a second, as
+    /// in a hitch longer than a frame can be), snapshots are timed afresh,
+    /// rather than all seeming a second early (or late) for a window.
+    #[test]
+    fn a_hitch_times_snapshots_afresh() {
+        let mut playback = Playback::default();
+        feed(&mut playback, 0, 0.0, 5, |_| false, |_| 0);
+        // The client loses a second: the server is a second further ahead.
+        let played = feed(&mut playback, 300, 1.0, 5, |_| false, |_| 0);
+        assert!(close(playback.delay(), MIN_DELAY), "{}", playback.delay());
+        // (Held only until the first after it arrives: those on the way
+        // were lost.)
+        assert!(played[10..].iter().all(|(_, held)| !held));
+        let rates = rates(&played[60..]);
+        assert!(rates.iter().all(|rate| close(*rate, 1.0)), "{rates:?}");
+    }
+
+    /// A snapshot behind a newer one is too late to draw, and doesn't
+    /// count as arriving.
+    #[test]
+    fn a_snapshot_out_of_order_is_ignored() {
+        let mut arrivals = Arrivals::default();
+        assert!(arrivals.arrived(10.0, 0.0));
+        assert!(arrivals.arrived(10.05, 0.05));
+        assert!(!arrivals.arrived(10.02, 0.5));
+        assert!(close(arrivals.delay(), MIN_DELAY));
     }
 }

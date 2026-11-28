@@ -73,10 +73,9 @@ pub(super) fn send_entities(
                 });
             }
         }
-        if seen.is_empty() || (now < interest.next_snapshot && !new) {
+        if seen.is_empty() || !(snapshot_due(&mut interest.next_snapshot, now) || new) {
             continue;
         }
-        interest.next_snapshot = now + SNAPSHOT_INTERVAL;
         let entities = seen
             .iter()
             .map(|(id, _, _, pose)| EntityPose {
@@ -88,5 +87,54 @@ pub(super) fn send_entities(
             time: now,
             entities,
         });
+    }
+}
+
+/// How close to its time a snapshot must be to be sent, for rounding.
+const EPSILON: f64 = 1e-6;
+
+/// Whether a snapshot is due at `now`, with the next due at `next`; if so,
+/// the one after is set an interval on, so they keep to twenty a second
+/// whatever the frame rate (at 60 fps, every third frame), unless they've
+/// fallen more than an interval behind (the first, or after a long
+/// frame), when it's an interval from now.
+fn snapshot_due(next: &mut f64, now: f64) -> bool {
+    if now + EPSILON < *next {
+        return false;
+    }
+    *next = if now - *next < SNAPSHOT_INTERVAL {
+        *next + SNAPSHOT_INTERVAL
+    } else {
+        now + SNAPSHOT_INTERVAL
+    };
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A snapshot goes every third frame at 60 frames a second, twenty a
+    /// second, however the frames' times round; every seventh or eighth
+    /// at 144, and every frame or two at 30: twenty a second still.
+    #[test]
+    fn snapshots_keep_to_twenty_a_second() {
+        for (fps, gaps) in [(60.0, &[3][..]), (144.0, &[7, 8][..]), (30.0, &[1, 2][..])] {
+            let (mut next, mut now, mut sent) = (0.0, 0.0, Vec::new());
+            for frame in 0..(fps as usize * 10) {
+                if snapshot_due(&mut next, now) {
+                    sent.push(frame);
+                }
+                now += 1.0 / fps;
+            }
+            assert!(
+                (199..=201).contains(&sent.len()),
+                "{fps} fps: {}",
+                sent.len()
+            );
+            for pair in sent.windows(2) {
+                assert!(gaps.contains(&(pair[1] - pair[0])), "{fps} fps: {sent:?}");
+            }
+        }
     }
 }

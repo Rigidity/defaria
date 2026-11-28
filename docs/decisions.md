@@ -249,7 +249,7 @@ bandwidth for light or chunks shows up in the `net` report.
   one message (a datagram when it fits). Clients draw them a tenth of a
   second behind the server's clock, between the snapshots around it,
   easing their clock toward that; past the newest they hold rather than
-  extrapolate. Interest is the chunks a client has, the same set as for
+  extrapolate. (#234 makes the delay follow the connection: see below.) Interest is the chunks a client has, the same set as for
   blocks; entities further than that aren't sent.
 - What's lost or late only shows in the tests through the in-memory
   harness's `Conditions`: a fixed delay in frames and a share of the
@@ -792,6 +792,58 @@ bandwidth for light or chunks shows up in the `net` report.
   least 1/60 s of wall-clock time: the server steps players in real
   time, and a run's frames back to back made inputs several times
   faster, which piled up there and were corrected away.
+
+*As built in #234*, a playback delay that follows the connection:
+
+- The client's playback clock is timed from when snapshots arrive, not
+  from the newest one. Each snapshot's offset is its arrival on the
+  client's clock less its time on the server's; the earliest of the
+  last 10 seconds is the server's clock as seen from here
+  (`replication::Arrivals`), as the server's input `Playout` does. So
+  the clock runs as time does, rather than chasing the newest snapshot
+  in 50 ms jumps.
+- The delay covers the stalest the newest snapshot got lately: for each
+  arrival, how late it was (its offset over the earliest) plus the time
+  since the one before it (the snapshots lost in between), the most of
+  the window, plus 20 ms for frames and jitter. It's at least 75 ms (a
+  snapshot and a half, so on a steady connection, and in single player,
+  the next is always there before it's needed) and at most 0.4 s. A run
+  of lost snapshots longer than any lately holds replicas once, for the
+  frames the delay was short of it, and not again while it's
+  remembered; once the window has forgotten it the delay comes back
+  down. The maximum rather than a percentile: a percentile would leave
+  the runs it doesn't cover to hold every time.
+- The delay changes by running the clock up to 5% fast or slow (the
+  rate off by the seconds it's off, at most 5%), never by moving it, so
+  a change shows only as a slightly faster or slower walk. While
+  replicas hold, the clock waits at the newest snapshot, so after a hold
+  they go on from where they stopped rather than jumping, and the delay
+  has grown by the wait. More than 0.25 s off (five seconds of easing),
+  it's put where it should be. An arrival earlier or later than any
+  lately by more than the cap means the clocks moved apart (a hitch or
+  pause on one side), so the window starts afresh; a gap of more than
+  a second between snapshots is the server having had nobody to send,
+  not losses.
+- No extrapolation past the newest snapshot. With the delay covering
+  the runs lately, holds are rare (above), and they're a pause of a
+  frame or two; guessing ahead would overshoot every start, stop and
+  turn and pull back, which shows more.
+- Snapshots were going out every fourth frame at 60 fps (15 a second),
+  because the next was due an interval after the frame that sent one,
+  and rounding put the third frame a hair short. They now keep to their
+  own schedule (`snapshot_due`), twenty a second at any frame rate.
+- Measured in `another_player_moves_smoothly`, over 40 seeds: before,
+  the other player held in 26 runs, for up to 19 frames of 80, and the
+  frames that didn't hold were up to 36% off the mean. After (given
+  three seconds of the losses first), it held in none of most runs, five
+  frames at most over 80 runs, and every frame that didn't hold was
+  within 3% of the mean (7% once), but where the server stepped the
+  walker unevenly. At a quarter lost the delay settles at 0.22 to 0.32
+  s; with nothing lost (`a_good_connection_plays_at_the_least_delay`),
+  75 ms.
+- What's left: the delay is the same for every replica (one clock), and
+  it isn't shown anywhere (a network overlay could). Players who lose a
+  quarter of their snapshots see others a quarter of a second behind.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 
