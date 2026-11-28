@@ -656,16 +656,14 @@ fn scripted_machine_mods() -> Vec<defaria_core::content::load::ModFiles> {
 /// the click and neither happens.
 #[test]
 fn a_scripted_machine_is_used_rather_than_opened() {
+    use defaria_core::script::{ScriptRuntime, ScriptSettings, ScriptSources, Side};
     use defaria_core::{block_entity::Value, content::load::order};
-    use defaria_server::{
-        block_entity::BlockData,
-        script::{ScriptIndex, ScriptRuntime, ScriptSettings, ScriptSources},
-    };
+    use defaria_server::{block_entity::BlockData, script::ScriptIndex};
     let content = Content::from_mods(scripted_machine_mods());
     assert!(content.errors.is_empty(), "{:?}", content.errors);
     let runtime = || {
         let sources = ScriptSources::from_mods(&order(scripted_machine_mods(), &mut Vec::new()));
-        ScriptRuntime::new(sources, ScriptSettings::untimed())
+        ScriptRuntime::new(Side::Server, sources, ScriptSettings::untimed())
     };
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
     // The server runs the scripts (it starts on the first frame); both
@@ -748,11 +746,9 @@ fn scripted_item_mods() -> Vec<defaria_core::content::load::ModFiles> {
 /// on a scripted machine runs the machine's `on_used`.
 #[test]
 fn a_scripted_item_comes_after_the_block_it_is_used_on() {
+    use defaria_core::script::{ScriptRuntime, ScriptSettings, ScriptSources, Side};
     use defaria_core::{block_entity::Value, content::load::order};
-    use defaria_server::{
-        block_entity::BlockData,
-        script::{ScriptIndex, ScriptRuntime, ScriptSettings, ScriptSources},
-    };
+    use defaria_server::{block_entity::BlockData, script::ScriptIndex};
     let content = Content::from_mods(scripted_item_mods());
     assert!(content.errors.is_empty(), "{:?}", content.errors);
     let state = |id: &str| content.default_state(id).unwrap();
@@ -760,7 +756,7 @@ fn a_scripted_item_comes_after_the_block_it_is_used_on() {
         ["defaria:stone", "test:crate", "test:box", "test:marker"].map(state);
     let runtime = || {
         let sources = ScriptSources::from_mods(&order(scripted_item_mods(), &mut Vec::new()));
-        ScriptRuntime::new(sources, ScriptSettings::untimed())
+        ScriptRuntime::new(Side::Server, sources, ScriptSettings::untimed())
     };
     let mut app = test_game(Script::parse("camera 64.5 70.5 92.5 0 0\nwait 2").unwrap());
     // The server runs the scripts (it starts on the first frame); both

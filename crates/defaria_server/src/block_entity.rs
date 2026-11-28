@@ -49,7 +49,7 @@ use defaria_core::block_entity::{BlockEntityData, BlockEntityPart, SavedPart, Va
 
 pub mod value;
 
-pub use value::{MAX_DEPTH, read_text, read_value, write_text, write_value};
+pub use value::{read_text, read_value, write_text, write_value};
 
 pub struct BlockEntityPlugin;
 

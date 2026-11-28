@@ -2638,6 +2638,7 @@ dependencies = [
  "bevy",
  "defaria_core",
  "defaria_server",
+ "mlua",
  "serde",
  "tracing",
 ]
@@ -2648,6 +2649,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "json5",
+ "mlua",
  "postcard",
  "serde",
  "tracing",

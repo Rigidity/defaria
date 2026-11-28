@@ -1,11 +1,8 @@
 //! Scripts in the game.
 
 use bevy::prelude::*;
-use defaria_core::{block_entity::Value, machine::EnergyBuffer};
-use defaria_server::{
-    block_entity::{BlockData, BlockEntities},
-    script::ScriptRuntime,
-};
+use defaria_core::{block_entity::Value, machine::EnergyBuffer, script::ScriptRuntime};
+use defaria_server::block_entity::{BlockData, BlockEntities};
 
 use crate::headless::{Script, run_more, settle, test_game};
 

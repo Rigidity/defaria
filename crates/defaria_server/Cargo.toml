@@ -1,6 +1,6 @@
 [package]
 name = "defaria_server"
-description = "What only the server runs: terrain, streaming and saving, light, fluid flow, networks, machines, scripts and players' connections."
+description = "What only the server runs: terrain, streaming and saving, light, fluid flow, networks, machines, the gameplay script hooks and players' connections."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

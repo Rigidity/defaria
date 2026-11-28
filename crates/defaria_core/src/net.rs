@@ -21,6 +21,7 @@ use std::sync::{
 use bevy::prelude::*;
 
 use crate::{
+    block_entity::Value,
     content::BlockState,
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
@@ -68,6 +69,9 @@ pub enum ClientMessage {
     CloseScreen(IVec3),
     /// The player paused (its pause menu is open), or stopped.
     Paused(bool),
+    /// A mod's client script sent its server's scripts a message
+    /// (`net.send`, see `script::channel`).
+    Script(ScriptMessage),
 }
 
 impl ClientMessage {
@@ -175,6 +179,9 @@ pub enum ServerMessage {
         time: f64,
         entities: Vec<EntityPose>,
     },
+    /// A mod's server script sent this client's scripts a message
+    /// (`net.send` or `net.broadcast`, see `script::channel`).
+    Script(ScriptMessage),
 }
 
 impl ServerMessage {
@@ -205,6 +212,121 @@ pub struct MachineContents {
     pub energy: Option<EnergyBuffer>,
     pub progress: Option<RecipeProgress>,
     pub active: Option<MachineActive>,
+}
+
+/// A message from a mod's scripts on one side to the same mod's on the
+/// other: on a `channel` the mod names, a plain value or none. See
+/// `script::channel` for its limits.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptMessage {
+    pub mod_id: String,
+    pub channel: String,
+    #[serde(with = "flat")]
+    pub value: Option<Value>,
+}
+
+/// A plain value as a flat list of tokens, for [`ScriptMessage`]: decoding
+/// a nested form would recurse as deep as the bytes say, so a client could
+/// overflow the server's stack; this one is read back no deeper than
+/// [`MAX_DEPTH`].
+mod flat {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+    use crate::block_entity::{MAX_DEPTH, Value};
+
+    #[derive(Serialize, Deserialize)]
+    enum Token {
+        Bool(bool),
+        Int(i64),
+        Float(f64),
+        Text(String),
+        /// A list of this many values, which follow.
+        List(u32),
+        /// A table of this many entries, which follow: each a `Text` key,
+        /// then its value.
+        Table(u32),
+    }
+
+    fn flatten(value: &Value, out: &mut Vec<Token>) {
+        match value {
+            Value::Bool(b) => out.push(Token::Bool(*b)),
+            Value::Int(n) => out.push(Token::Int(*n)),
+            Value::Float(n) => out.push(Token::Float(*n)),
+            Value::Text(text) => out.push(Token::Text(text.clone())),
+            Value::List(items) => {
+                out.push(Token::List(items.len() as u32));
+                for item in items {
+                    flatten(item, out);
+                }
+            }
+            Value::Table(entries) => {
+                out.push(Token::Table(entries.len() as u32));
+                for (key, value) in entries {
+                    out.push(Token::Text(key.clone()));
+                    flatten(value, out);
+                }
+            }
+        }
+    }
+
+    fn build(tokens: &mut std::vec::IntoIter<Token>, depth: usize) -> Result<Value, String> {
+        if depth > MAX_DEPTH {
+            return Err(format!("a value nests deeper than {MAX_DEPTH} tables"));
+        }
+        Ok(match tokens.next().ok_or("a value ends early")? {
+            Token::Bool(b) => Value::Bool(b),
+            Token::Int(n) => Value::Int(n),
+            Token::Float(n) => Value::Float(n),
+            Token::Text(text) => Value::Text(text),
+            Token::List(len) => {
+                // No more items than there are tokens left.
+                let len = (len as usize).min(tokens.len());
+                let mut items = Vec::with_capacity(len);
+                for _ in 0..len {
+                    items.push(build(tokens, depth + 1)?);
+                }
+                Value::List(items)
+            }
+            Token::Table(len) => {
+                let mut entries = BTreeMap::new();
+                for _ in 0..len {
+                    let Some(Token::Text(key)) = tokens.next() else {
+                        return Err("a table's key isn't text".into());
+                    };
+                    entries.insert(key, build(tokens, depth + 1)?);
+                }
+                Value::Table(entries)
+            }
+        })
+    }
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<Value>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let tokens = value.as_ref().map(|value| {
+            let mut tokens = Vec::new();
+            flatten(value, &mut tokens);
+            tokens
+        });
+        tokens.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Value>, D::Error> {
+        let Some(tokens) = Option::<Vec<Token>>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let mut tokens = tokens.into_iter();
+        let value = build(&mut tokens, 0).map_err(D::Error::custom)?;
+        if tokens.len() > 0 {
+            return Err(D::Error::custom("a value has more after it"));
+        }
+        Ok(Some(value))
+    }
 }
 
 /// A message as bytes, for the network.
@@ -309,6 +431,43 @@ mod tests {
         assert!(client.is_closed());
     }
 
+    /// A message between scripts with every kind of plain value in it.
+    fn script_message() -> ScriptMessage {
+        use std::collections::BTreeMap;
+        let mut table = BTreeMap::new();
+        table.insert("n".into(), Value::Int(-3));
+        table.insert("x".into(), Value::Float(0.25));
+        table.insert(
+            "list".into(),
+            Value::List(vec![Value::Bool(true), Value::Text("two".into())]),
+        );
+        table.insert("empty".into(), Value::Table(BTreeMap::new()));
+        ScriptMessage {
+            mod_id: "test".into(),
+            channel: "ping".into(),
+            value: Some(Value::Table(table)),
+        }
+    }
+
+    /// A value nested deeper than a script could make is refused, rather
+    /// than read as deep as the bytes say.
+    #[test]
+    fn a_message_nested_too_deep_is_refused() {
+        let mut value = Value::Int(1);
+        for _ in 0..crate::block_entity::MAX_DEPTH {
+            value = Value::List(vec![value]);
+        }
+        let message = |value| ScriptMessage {
+            mod_id: "test".into(),
+            channel: "c".into(),
+            value: Some(value),
+        };
+        let fits = encode(&message(value.clone()));
+        assert!(decode::<ScriptMessage>(&fits).is_ok());
+        let deep = encode(&message(Value::List(vec![value])));
+        assert!(decode::<ScriptMessage>(&deep).is_err());
+    }
+
     /// Every kind of message comes back from its bytes as it went, and a
     /// chunk of one block (most chunks: air or rock) is a few bytes.
     #[test]
@@ -384,6 +543,7 @@ mod tests {
                 entities: vec![EntityPose { id: 42, pose }],
             },
             ServerMessage::Despawn(42),
+            ServerMessage::Script(script_message()),
         ];
         for message in server {
             let back: ServerMessage = decode(&encode(&message)).unwrap();
@@ -403,6 +563,10 @@ mod tests {
             ClientMessage::Mining(true),
             ClientMessage::ToggleGameMode,
             ClientMessage::Paused(true),
+            ClientMessage::Script(ScriptMessage {
+                value: None,
+                ..script_message()
+            }),
             ClientMessage::CloseScreen(IVec3::new(1, -2, 3)),
             ClientMessage::Transfer(Transfer::Catalog {
                 kind: ItemStack::new(stone, 1),

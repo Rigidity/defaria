@@ -261,10 +261,10 @@ bandwidth for light or chunks shows up in the `net` report.
   `block_edit`, `block_entity`, `game_mode`, `inventory`,
   `fluid_container`). The server's module imports core's items and never
   re-exports them, so every type has one path.
-- The script runtime went to the server whole, not to core as the plan
-  above says: no client hooks exist yet, and it keeps Luau out of the
-  client's build. The shared part moves back to core when client hooks
-  come.
+- The script runtime went to the server whole at first, not to core as
+  the plan above says: no client hooks existed yet, and it kept Luau out
+  of the client's build. #215 moved the shared part back to core (see
+  below).
 - The client is sent machines' parts, so they and `BlockEntityPart`,
   `Value` and `BlockEntityData` (what a chunk keeps of a block entity)
   are core's; the block entities themselves, a machine's `Ports`, and
@@ -284,6 +284,71 @@ bandwidth for light or chunks shows up in the `net` report.
   client's (mining, scripts, the generated test patch, a streamed
   world). `ClientPlugin` and `ServerPlugin` each bring in only their own
   crates' modules, so one reaching into the other's fails to build.
+
+*As built in #215*, scripts on both sides:
+
+- The runtime is core's (`defaria_core::script`): loading, the sandbox,
+  budgets, errors, reloading, what every side reads (block handles and
+  `world` over a `WorldView`), and the message channel. Each app makes
+  its own `ScriptRuntime` for its `Side`, from every mod's `scripts/`
+  (every mod counts as `both` until #217 gives mods a `side`), so
+  modules are shared and a script is loaded on both. Scripts see which
+  with the `side` global. The server's hooks and writes stay in
+  `defaria_server::script`; the client's hooks are
+  `defaria_client::script`, so the client now builds Luau (through core
+  and its own `mlua`, the same compiled crate).
+- A hook belongs to a side by who calls it, not by its name or file:
+  the server's systems call the gameplay hooks, the client's call
+  `on_join` (once a world, when the player's first state arrives) and
+  `on_message`, which both sides have. Nothing on a client calls a
+  gameplay hook, so a script loaded there never runs one. More client
+  hooks (display effects, screens) come as features need them.
+- A client's world is read-only by construction: its call
+  (`call_read_only`) answers only reads, over the client's chunk copies
+  (`ChunkReader`), and every write fails the hook with "the world is
+  read-only on a client". `block.data` is nil there: a client isn't sent
+  blocks' data (it lives in the server's block entities). Sending it,
+  for the blocks in range, is for when a client feature needs it.
+- Messages: `net.send(channel, value?)` on a client,
+  `net.send(player, channel, value?)` and `net.broadcast(channel,
+  value?)` on the server, run the same mod's `on_message(channel, value,
+  player)` on the other side (`player` nil on a client). They ride the
+  game's protocol as `ClientMessage::Script` and `ServerMessage::Script`
+  (reliable, on the control stream over QUIC), the value as a flat list
+  of tokens so decoding can't recurse deeper than `MAX_DEPTH`. Limits:
+  4 KiB a message encoded, 64 bytes a channel name, 16 messages a hook
+  call, and a client's scripts 20 a second in bursts of 40; past the
+  budget `net.send` returns false. The server holds each connection to
+  the same rate with twice the burst (a client needn't be the game's,
+  and a well-behaved one's messages can arrive bunched up, a frame late
+  or behind a lost packet), and drops what's over it, so only a client
+  that ignores its own limit loses messages. The server's sends aren't
+  rate-limited beyond the per-call cap: they're its own mods'.
+- A player is named by `player.id`, its entity's bits, as replication
+  names it. A Luau number holds it exactly while the entity's
+  generation is under 2^21; ids from the players' keys (#216) would be
+  steadier, and a script that keeps one across a player leaving and
+  another joining could reach the wrong player if the entity is reused.
+- The server's `on_message` runs in `Update`, not on the simulation's
+  ticks, with no block to change (it reads the world and sends);
+  changing the world from a message, within some reach of the player, is
+  for when a feature needs it. The rate alone doesn't bound its cost
+  (each message runs every matching script under a whole call's
+  budget, from every player at once), so messages wait in a queue and
+  run a frame at a time within as many steps and as much time as block
+  hooks get in a tick (`HookSettings`); the queue holds at most 1,024,
+  and 80 of one player's, and drops new ones past that.
+- What a player's messages disabled (`Caller::script(id, Some(player))`)
+  and what it sent that hasn't run are forgotten when its `Connection`
+  goes.
+- A client's `on_join` runs again after its scripts reload in play
+  (they start afresh), and the server's messages that arrive before it
+  has run are held (up to 256) until it has, so `on_join` always comes
+  first.
+- Both message budgets refill from `Time<Real>`, not the virtual clock:
+  the server's virtual clock stops while its players are paused, and
+  their clients may still send. Headless runs step real time by the
+  fixed frame (`ManualDuration`), so they stay deterministic.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 
@@ -1709,7 +1774,7 @@ machine passed as userdata borrowed for the call (`Lua::scope`), as the
 engine will; 'static userdata made once is 0.22 ms. At 20 Hz that's
 under 1% of a core for 1,000 scripted machines. A Luau state with the
 script and 1,000 userdata uses about 650 KiB. The runtime as built
-(`crates/defaria_server/src/script/`: a scope and a budget per call, a globals table per
+(`crates/defaria_core/src/script/`: a scope and a budget per call, a globals table per
 script, in a dev build) takes 0.58 ms mean and 1.0 ms worst for 1,000
 calls of a hook that fills a tank.
 
@@ -1725,7 +1790,8 @@ so `cargo dist` still makes one binary: on macOS it needs only
 prototype), on Linux `libstdc++` like any C++ program, and on Windows
 the MSVC runtime the Rust binary already uses. Each mod gets its own
 Luau state (own globals, own memory cap) and each script its own
-globals table within it. The runtime is `crates/defaria_server/src/script/`; how it looks to
+globals table within it. The runtime is `crates/defaria_core/src/script/` (the server's hooks
+`crates/defaria_server/src/script/`); how it looks to
 modders is `docs/scripting.md`.
 
 Rhai is pure Rust but 2.5 times slower per tick and per call, with worse

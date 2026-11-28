@@ -13,6 +13,7 @@ mod multiplayer;
 mod player_save;
 mod prediction;
 mod script;
+mod script_channel;
 mod support;
 mod ui;
 mod wrench;

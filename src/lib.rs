@@ -74,6 +74,7 @@ impl Plugin for ClientPlugin {
             defaria_client::replication::ReplicationPlugin,
             edit_prediction::EditPredictionPlugin,
             prediction::PredictionPlugin,
+            defaria_client::script::ClientScriptPlugin,
         ));
     }
 }

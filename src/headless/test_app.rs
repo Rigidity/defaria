@@ -15,7 +15,7 @@ pub fn test_game(script: Script) -> App {
     let mut app = App::new();
     // Before the game's plugins, so its scripts load with them: what a
     // script may do then doesn't depend on how busy the machine is.
-    app.insert_resource(defaria_server::script::ScriptSettings::untimed())
+    app.insert_resource(defaria_core::script::ScriptSettings::untimed())
         .insert_resource(defaria_server::script::hooks::HookSettings::untimed());
     app.add_plugins((
         default_plugins(false).disable::<bevy::log::LogPlugin>(),
@@ -236,7 +236,7 @@ pub fn test_multiplayer(clients: usize) -> Multiplayer {
 pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multiplayer {
     let mut server = App::new();
     server
-        .insert_resource(defaria_server::script::ScriptSettings::untimed())
+        .insert_resource(defaria_core::script::ScriptSettings::untimed())
         .insert_resource(defaria_server::script::hooks::HookSettings::untimed())
         .insert_resource(defaria_core::streaming::StreamingSettings {
             radius: 4,

@@ -2,11 +2,12 @@
 
 use bevy::prelude::*;
 use mlua::{
-    AnyUserData, Lua, MetaMethod, MultiValue, Table, UserData, UserDataFields, Value, Vector,
+    AnyUserData, Lua, MetaMethod, MultiValue, ObjectLike, Table, UserData, UserDataFields, Value,
+    Vector,
 };
 
 use super::world::{Op, current_serial, world_op};
-use defaria_core::content::Direction;
+use crate::content::Direction;
 
 /// A block, as a script sees it: its position, and through the call it
 /// was made in, its id, state, stats and data, and changing it.
@@ -43,7 +44,7 @@ impl BlockRef {
     }
 
     /// A handle on the block at `pos`, or nil if it isn't loaded.
-    pub(super) fn loaded(lua: &Lua, pos: IVec3) -> mlua::Result<Value> {
+    pub fn loaded(lua: &Lua, pos: IVec3) -> mlua::Result<Value> {
         let serial = current_serial(lua);
         if world_op(lua, serial, Op::Loaded, pos, ())? != Value::Boolean(true) {
             return Ok(Value::Nil);
@@ -58,7 +59,7 @@ pub fn vector(pos: IVec3) -> Vector {
 }
 
 /// A position from a vector or three numbers, rounded down to the block.
-pub(super) fn position(lua: &Lua, args: MultiValue) -> mlua::Result<IVec3> {
+pub fn position(lua: &Lua, args: MultiValue) -> mlua::Result<IVec3> {
     let args: Vec<Value> = args.into_iter().collect();
     let pos = match args.as_slice() {
         [Value::Vector(v), ..] => Vec3::new(v.x(), v.y(), v.z()),
@@ -104,7 +105,7 @@ pub fn face_named(name: &str) -> mlua::Result<Direction> {
 
 /// A handle on a block by position, made in some call: a [`BlockRef`], or
 /// a machine's handle, which is a block handle and more.
-pub(super) trait Located: 'static {
+pub trait Located: 'static {
     fn pos(&self) -> IVec3;
     fn serial(&self) -> u64;
 
@@ -125,7 +126,7 @@ impl Located for BlockRef {
 
 /// A block handle's fields: `pos`, `id`, `name`, `state`, `data`, `light`
 /// and `fluid`.
-pub(super) fn add_block_fields<T: Located, F: UserDataFields<T>>(fields: &mut F) {
+pub fn add_block_fields<T: Located, F: UserDataFields<T>>(fields: &mut F) {
     fields.add_field_method_get("pos", |_, block| Ok(vector(block.pos())));
     fields.add_field_method_get("id", |lua, block| block.op(lua, Op::Id, ()));
     fields.add_field_method_get("name", |lua, block| block.op(lua, Op::Name, ()));
@@ -137,7 +138,7 @@ pub(super) fn add_block_fields<T: Located, F: UserDataFields<T>>(fields: &mut F)
 
 /// A block handle's methods: `stat`, `set_state`, `set`, `neighbour`, and
 /// comparing and printing handles.
-pub(super) fn add_block_methods<T: Located, M: mlua::UserDataMethods<T>>(methods: &mut M) {
+pub fn add_block_methods<T: Located, M: mlua::UserDataMethods<T>>(methods: &mut M) {
     methods.add_method("stat", |lua, block, name: String| {
         block.op(lua, Op::Stat, name)
     });
@@ -161,15 +162,14 @@ pub(super) fn add_block_methods<T: Located, M: mlua::UserDataMethods<T>>(methods
     });
 }
 
-/// The position of a block or machine handle.
-pub(super) fn handle_pos(handle: &AnyUserData) -> Option<IVec3> {
+/// The position of a block handle, or of any handle that is one and more
+/// (a machine's, which has a block handle's `pos`).
+pub fn handle_pos(handle: &AnyUserData) -> Option<IVec3> {
     if let Ok(block) = handle.borrow::<BlockRef>() {
         return Some(block.pos);
     }
-    handle
-        .borrow::<super::machine::MachineRef>()
-        .ok()
-        .map(|machine| machine.pos())
+    let pos: Vector = handle.get("pos").ok()?;
+    Some(Vec3::new(pos.x(), pos.y(), pos.z()).as_ivec3())
 }
 
 impl UserData for BlockRef {

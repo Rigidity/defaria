@@ -21,10 +21,13 @@ use bevy::{
     app::MainScheduleOrder, ecs::schedule::ScheduleLabel, prelude::*, time::TimeUpdateStrategy,
 };
 use defaria_client::{net::ServerConnection, pause::Paused, session::GameState};
-use defaria_core::{content::Content, net::link, save::WorldFolder, streaming::StreamingSettings};
+use defaria_core::{
+    content::Content, net::link, save::WorldFolder, script::ScriptSettings,
+    streaming::StreamingSettings,
+};
 use defaria_server::{
     fluid::FluidSettings,
-    script::{ScriptSettings, hooks::HookSettings, random_tick::RandomTicks},
+    script::{hooks::HookSettings, random_tick::RandomTicks},
     server::{Incoming, PauseWithPlayers},
     worldgen::TerrainSettings,
 };

@@ -1,11 +1,13 @@
 //! What both sides of the game know: content and mods, the world's chunks
 //! and how they're read and written ([`world::Voxels`]), physics and the
 //! player model, the messages between server and client ([`net`]) and
-//! what they carry (inventories, the hotbar, machines' parts, light), and
-//! the rules a client predicts by. What only the server runs (terrain,
-//! streaming and saving, light, fluid flow, networks, machines, scripts,
-//! players' connections) is `defaria_server`; drawing, UI and input are
-//! `defaria_client`. Nothing here draws, shows UI or reads input.
+//! what they carry (inventories, the hotbar, machines' parts, light), the
+//! script runtime both sides run mods' scripts in ([`script`]), and the
+//! rules a client predicts by. What only the server runs (terrain,
+//! streaming and saving, light, fluid flow, networks, machines, the
+//! gameplay script hooks, players' connections) is `defaria_server`;
+//! drawing, UI and input are `defaria_client`. Nothing here draws, shows
+//! UI or reads input.
 
 pub mod block_edit;
 pub mod block_entity;
@@ -26,6 +28,7 @@ pub mod player;
 pub mod recipe;
 pub mod replication;
 pub mod save;
+pub mod script;
 pub mod streaming;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

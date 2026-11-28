@@ -14,7 +14,7 @@ use crate::content::{BlockState, Content};
 
 mod value;
 
-pub use value::Value;
+pub use value::{MAX_DEPTH, Value};
 
 /// A block entity as it's kept in a chunk that isn't spawned, and saved.
 #[derive(Reflect, Debug, Clone, Default, PartialEq, Eq)]

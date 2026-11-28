@@ -1,6 +1,7 @@
 //! How the game is shown and played: drawing chunks and the sky, the
-//! camera and fog, the UI and its screens, and the keyboard and mouse
-//! turned into the local player's intents. Built on `defaria_core`.
+//! camera and fog, the UI and its screens, the keyboard and mouse turned
+//! into the local player's intents, and mods' client scripts. Built on
+//! `defaria_core`.
 
 pub mod block_texture;
 pub mod cracks;
@@ -20,6 +21,7 @@ pub mod net;
 pub mod pause;
 pub mod prediction;
 pub mod replication;
+pub mod script;
 pub mod session;
 pub mod ui;
 pub mod view_bob;

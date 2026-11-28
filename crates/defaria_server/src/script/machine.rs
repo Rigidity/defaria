@@ -30,7 +30,6 @@ use bevy::prelude::*;
 use mlua::Lua;
 
 use super::{
-    Caller, ScriptRuntime,
     api::{MachineRef, ScriptWorld},
     hooks::{DropWarning, HookSettings, HookSystems, ON_RECIPE_FINISHED, ON_TICK, ScriptIndex},
 };
@@ -41,7 +40,11 @@ use crate::{
     network::{ItemSystems, NetworkClock, NetworkTick, Networks, TICK, on_network_tick},
     recipe::{RecipeFinished, RecipeSystems},
 };
-use defaria_core::{content::Content, machine::MachineActive};
+use defaria_core::{
+    content::Content,
+    machine::MachineActive,
+    script::{Caller, ScriptRuntime},
+};
 
 pub struct MachineScriptPlugin;
 
