@@ -306,14 +306,15 @@ The code is a Cargo workspace of four crates:
   protocol (`net`) and replication's types, and what the client is sent
   (inventories, the hotbar, game modes, machines' parts, a recipe's
   progress, `ChunkLight`), with the rules a client predicts by
-  (`block_edit::placing_for`). Nothing in it draws, shows UI or reads
+  (`block_edit::placing_for`), and the script runtime both sides run
+  mods' scripts in (`script`). Nothing in it draws, shows UI or reads
   the keyboard or mouse: gameplay acts on a player's intents
   (`Controls`, `UseAction`, `Mining::holding`, the active slot), so it
   works the same for any player.
 - **`defaria_server`** (`crates/defaria_server/`): what only the server
   app runs. Terrain, streaming and saving, light propagation, fluid
   flow, networks and their solvers, machines' and recipes' logic,
-  scripts and their hooks, mining, placing, support, the wrench, and
+  the gameplay script hooks and what scripts change, mining, placing, support, the wrench, and
   every player's connection (`server`). A module named as one in core
   (`light`, `streaming`, `save`, `fluid`, `machine`, `recipe`,
   `mining`, `block_edit`, `block_entity`, `game_mode`, `inventory`,
@@ -321,8 +322,8 @@ The code is a Cargo workspace of four crates:
   and the server module imports them, never re-exports them.
 - **`defaria_client`** (`crates/defaria_client/`): how the game is shown
   and played. Meshing and materials, the camera and fog, the UI and its
-  screens, and `input`, which turns the keys and mouse into the local
-  player's intents.
+  screens, `input`, which turns the keys and mouse into the local
+  player's intents, and the client's script hooks (`script`).
 - **`defaria`** (the root: `src/`): the one binary. `GamePlugin`, headless
   mode, dev tools, and the end-to-end tests that need the whole game.
 
@@ -629,15 +630,26 @@ relative path.
   region, chunk and player formats, documented in
   `docs/world-format.md`. Keep the two in step, and bump a format's
   version when it changes.
-- `crates/defaria_server/src/script/`: mod scripts (Luau, through `mlua`): loading each mod's
-  `scripts/`, the sandbox, budgets and errors. `api/` is what hooks are
-  handed (block handles, the `world` global, players, items, blocks'
-  `data`) and `ScriptWorld::call`, which calls a hook with it; `hooks.rs`
-  calls blocks' and items' scripts (`on_used`, `on_placed`, `on_broken`,
+- `crates/defaria_core/src/script.rs` (and `crates/defaria_core/src/script/`):
+  mod scripts (Luau, through `mlua`), the runtime both sides load every
+  mod's `scripts/` into (`ScriptRuntime`, for a `Side`): the sandbox,
+  budgets, errors and reloading. `api/` is what every side reads with
+  (block handles, the `world` global, `WorldView`; `call_read_only` is a
+  client's call, where writing is an error); `channel.rs` is the mod
+  message channel (`net.send`, `on_message`), its limits and the
+  `Outbox` each side empties onto the connection.
+  `crates/defaria_server/src/script/`: the server's hooks and writes.
+  `api/` adds what the server's hooks are handed (changing blocks,
+  players, items, blocks' `data`, machines' handles) and
+  `ScriptWorld::call`, which calls a hook with it; `hooks.rs` calls
+  blocks' and items' scripts (`on_used`, `on_placed`, `on_broken`,
   `on_neighbour_changed`, items' `on_use`) and `random_tick.rs` gives
   blocks random ticks; `using.rs` is the steps of a use (see
-  `use_action`) for scripted blocks and items (after every block use).
-  Documented in `docs/scripting.md`.
+  `use_action`) for scripted blocks and items (after every block use);
+  `message.rs` runs `on_message` for what clients send and sends what
+  the server's scripts send. `crates/defaria_client/src/script.rs`: the
+  client's hooks (`on_join`, `on_message`). Documented in
+  `docs/scripting.md`.
 - `scenarios/`: reusable scenario scripts for `cargo headless`.
 - `crates/defaria_core/src/content.rs` (and `crates/defaria_core/src/content/`): mod loading and the `Content`
   registry.

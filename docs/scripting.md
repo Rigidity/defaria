@@ -45,8 +45,30 @@ everything that uses the script and they're lost when the scripts reload,
 so state that belongs to one block goes in its saved data ([Data](#data)).
 
 The hooks themselves and what they're passed are below, for
-[blocks and items](#block-and-item-hooks) and for
-[machines](#machines).
+[blocks and items](#block-and-item-hooks), for
+[machines](#machines) and for [the client](#the-client).
+
+## Sides
+
+The game always runs as a server and a client, even in single player
+(see "Multiplayer" in `docs/decisions.md`): the server decides the
+world, and a client draws its copy of it and sends what its player
+does. Every mod's scripts load on both, the same way, with the same
+sandbox and limits, so a module one side uses the other can too. The
+`side` global says which a script is running on: `"server"` or
+`"client"`.
+
+Each hook belongs to a side. The gameplay hooks, the
+[block, item](#block-and-item-hooks) and [machine](#machines) hooks,
+run only on the server; a client never calls them, even though it has
+the same scripts. A client calls [its own](#the-client): `on_join` and
+`on_message`. `on_message` is on both sides, for what the other sent
+([Messages](#messages)).
+
+Each side can read the world the same way: [block handles](#blocks) and
+[`world`](#the-world). Changing it is the server's: on a client the
+world is read-only, and a client script asks the server's scripts to
+change something by sending them a message.
 
 ## Block and item hooks
 
@@ -125,9 +147,10 @@ variable and using it in a later call is an error.
 
 ### Players and items
 
-`player` is a table: `pos` (the eyes) and `look` (the way they look)
-are vectors, `mode` is `"creative"` or `"survival"`, `sneaking` a
-boolean, and `target` the block they look at (a handle, or nil) with
+`player` is a table: `id`, which [`net.send`](#messages) sends to,
+`pos` (the eyes) and `look` (the way they look), vectors, `mode`,
+`"creative"` or `"survival"`, `sneaking`, a boolean, and `target`, the
+block they look at (a handle, or nil; always nil in `on_message`), with
 `face`, the face of it they look at. `item` is `{ id, name, state }`.
 
 ### Data
@@ -273,7 +296,86 @@ machines a tick add up.
 }
 ```
 
-## Modules
+## The client
+
+A client's scripts get these hooks:
+
+| Hook | When |
+|---|---|
+| `on_join()` | The client has joined a world: its player is in it. Once a world. Chunks are still arriving. |
+| `on_message(channel, value)` | The same mod's server scripts sent this client a message ([Messages](#messages)). |
+
+They read the client's copy of the world with [block handles](#blocks)
+and [`world`](#the-world), as the server's hooks do: `block.id`, `.state`,
+`.light`, `.fluid`, `:stat`, `:neighbour` and `world.block_def` and the
+like all work, on what the client has loaded (the chunks around its
+player). Changing a block (`block:set`, `block:set_state`) is an error:
+
+```text
+ERROR mods/mymod/scripts/hud.luau:4: the world is read-only on a client: `block:set` can't change it here (ask the server's scripts with `net.send`) (mod `mymod`, in `on_message` of `mymod:hud`)
+```
+
+As with any error, the hook stops there and the script's hooks on the
+client are disabled until the scripts reload (a `pcall` around it
+catches it, as it would any error). A block's `data` is nil on a
+client: it's kept on the server.
+
+A client's scripts reload when it leaves a world, so each world starts
+them afresh.
+
+## Messages
+
+A mod's scripts on a client and on its server talk through messages: a
+**channel**, a name the mod picks (at most 64 bytes), and a **value**, a
+plain value as a block's [data](#data) keeps (a number, string, boolean,
+or table of them), or nothing. A message goes to the same mod's scripts
+on the other side, and runs every one of them that defines
+`on_message`, in order of their ids.
+
+| | |
+|---|---|
+| `net.send(channel, value?)` | On a client: sends the server's scripts a message. Returns whether it went (see the budget below). |
+| `net.send(player, channel, value?)` | On the server: sends one player's client a message. `player` is a `player` a hook was handed, or its `id`. |
+| `net.broadcast(channel, value?)` | On the server: sends every player's client a message. |
+
+On the server, `on_message(channel, value, player)` gets the player whose
+client sent it, as a [player](#players-and-items) table with `id`, so it
+can answer that player:
+
+```lua
+-- scripts/greeter.luau, on both sides.
+function on_join()
+	net.send("hello", { name = "me" })
+end
+
+function on_message(channel, value, player)
+	if side == "server" and channel == "hello" then
+		net.send(player, "welcome", { players = 1 })
+	elseif side == "client" and channel == "welcome" then
+		log.info("welcomed")
+	end
+end
+```
+
+Messages arrive in the order they were sent, and none is lost while the
+client stays connected. They're taken as they arrive, once a frame, not
+on the simulation's ticks. The server's `on_message` reads the world
+but has no block to change: it's about a player, not a block. Any hook
+on the server can send (an `on_used` telling the player's client
+something).
+
+Limits ([Limits](#limits) has the rest):
+
+- A message is at most 4 KiB, encoded with its mod's id and channel;
+  more, or a channel name past 64 bytes, is an error.
+- One hook call sends at most 16 messages; the 17th is an error.
+- A client's scripts send at most 20 messages a second, in bursts of up
+  to 40 after a quiet spell; past that `net.send` returns false and the
+  message is dropped. The server holds every client to the same budget
+  whatever it runs, and drops what's over it.
+
+A message from a client is a player's say, not the server's: check it as
+a server checks anything a player asks for.
 
 `require` loads another script and returns what it returns, so shared code
 can live in a module:
@@ -319,16 +421,17 @@ the game: `coroutine`, `table`, `string`, `utf8`, `bit32`, `math`,
 `buffer` and `vector`, and the base functions. There's no `os` (so no
 clock or date), `io`, `debug`, `loadstring`, `getfenv`/`setfenv`,
 `collectgarbage` or `print`. Scripts can't read files, start programs or
-use the network.
+use the network beyond their own mod's [messages](#messages).
 
 Each mod's scripts run in a Luau state of their own, and each script has
 its own globals within it: a global one script sets, no other script sees,
 in its mod or any other. The shared globals (the libraries, `log`,
-`require`) are read-only.
+`require`, `world`, `net`, `side`) are read-only. Each side has its own
+states: what a script keeps on the server, its copy on a client doesn't
+see.
 
 Scripts change only game state, through what the hooks hand them, never
-rendering or the UI. That's so they can run on the server once the game
-is split into a client and a server.
+rendering or the UI.
 
 ## Limits
 
@@ -367,6 +470,10 @@ is split into a client and a server.
   running out of steps or time counts as its whole step budget against
   the tick's steps, however few it used.
 
+- **Messages.** 4 KiB a message, 64 bytes a channel name, 16 messages a
+  hook call, and 20 a second (in bursts of 40) from each client
+  ([Messages](#messages)). Fixed, in `script::channel`.
+
 The limits are in the `ScriptSettings` resource (and the per-tick ones
 in `HookSettings`); changing `ScriptSettings` reloads the scripts.
 
@@ -395,7 +502,10 @@ script file needs a restart. Shipping builds load scripts once.
 
 ## For engine code
 
-The runtime is `ScriptRuntime` (`crates/defaria_server/src/script/`), a resource. Hooks are
+The runtime is `ScriptRuntime` (`crates/defaria_core/src/script/`), a
+resource on each side, made for its `Side` (`ScriptRuntimePlugin`, which
+the server's `ScriptPlugin` and the client's `ClientScriptPlugin` add).
+Hooks are
 called with `ScriptRuntime::call(caller, script_id, hook, args)`: `args`
 gets the call's `mlua::Scope` and wraps engine state as userdata in it
 (`scope.create_userdata_ref_mut(&mut tank)`, or `scope.create_userdata`
@@ -405,8 +515,25 @@ arguments. A `Caller` is what gets disabled when a call fails: an entity,
 a block position, or anything else. Call hooks from `FixedUpdate`, with
 the rest of the simulation. `ScriptsReloaded` is sent after a reload.
 
-Blocks' and items' hooks are called in `script::hooks`, with
-`ScriptWorld::call` (`crates/defaria_server/src/script/api/`): a system parameter with the
+What every side reads is `defaria_core::script::api`: block handles
+reach the world through `with_world`, which puts a dispatch function in
+reach for the call and answers each `Op`; `read` answers the reads over
+any `WorldView`. A client's hooks are called with `call_read_only`
+(`crates/defaria_client/src/script.rs`), over the client's chunks
+(`ChunkReader`), which answers nothing else.
+
+Messages are `script::channel`: `net.send` puts them in the runtime's
+`Outbox`, which each side empties onto its connection once a frame
+(`defaria_server::script::message`, `defaria_client::script`) as
+`ClientMessage::Script` and `ServerMessage::Script`; each side checks
+what it receives with `channel::check`, and the server holds each
+connection to a `MessageBudget`. `on_message` is called with
+`Caller::script(id, player)`, so a failure disables that script for that
+player.
+
+The server's blocks' and items' hooks are called in
+`defaria_server::script::hooks`, with `ScriptWorld::call`
+(`crates/defaria_server/src/script/api/`): a system parameter with the
 voxels, the content and blocks' data, which puts the world in reach of
 the script for the call and saves the `data` it changed after. Its
 `origin` is the block the call may change around. Handles are made with
@@ -437,6 +564,9 @@ machine make up to `n` joules (`on_tick` gives it the tick's share of
 `RecipeFinished` messages, from the recipe machines, run
 `on_recipe_finished`.
 
-Tests use the test mods in `crates/defaria_server/tests/fixtures/script-mods/`, and the hooks'
-and machines' tests test mods of their own (`crates/defaria_server/src/script/hooks/tests.rs`,
-`crates/defaria_server/src/script/machine/tests.rs`).
+Tests use the test mods in `crates/defaria_core/tests/fixtures/script-mods/`,
+and the hooks' and machines' tests test mods of their own
+(`crates/defaria_server/src/script/hooks/tests.rs`,
+`crates/defaria_server/src/script/machine/tests.rs`). Scripts on both
+sides, and messages between them, are tested through the whole game in
+`src/headless/tests/script_channel.rs`.
