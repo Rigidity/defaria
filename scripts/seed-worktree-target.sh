@@ -23,6 +23,12 @@
 # join the ones main still uses (cargo keeps each version under its own
 # hash). To start the seed over, delete it and save.
 #
+# On macOS a dylib is named by the path it was built at, and binaries linked
+# against it load it from there, so a cloned Bevy dylib still names the
+# checkout it was first built in. Seeding renames each to where it now is;
+# running this again in a seeded worktree does just that, for one seeded
+# before it did.
+#
 # T3 Code runs this when it creates a worktree. DEFARIA_TARGET_SEED overrides
 # where the seed lives.
 set -eu
@@ -55,6 +61,41 @@ check_target_dir() {
         echo "  Remove the target-dir setting (or CARGO_TARGET_DIR) that shares it." >&2
         exit 1
     fi
+}
+
+# Names each dylib binaries link against (those cargo puts at the top of a
+# profile directory, such as libbevy_dylib.dylib, and their copies under
+# build/) by its own path rather than the one it was built at: its install
+# name, which binaries linked against it record and load it from. Otherwise
+# the game here loads another checkout's Bevy while that one exists, and
+# finds this one only through the fallback path cargo sets once it's gone.
+# Renaming breaks a dylib's ad-hoc signature, so it's signed again, and it
+# keeps its mtime, so cargo doesn't think it changed. Proc macros are left
+# alone: rustc opens them by path.
+own_dylibs() {
+    [ "$(uname)" = Darwin ] || return 0
+    for profile in "$target"/*/; do
+        [ -e "$profile.cargo-lock" ] || continue
+        for linked in "$profile"*.dylib; do
+            [ -e "$linked" ] || continue
+            find "$profile" -name "$(basename "$linked")" \
+                -not -path '*/incremental/*'
+        done
+    done | while read -r lib; do
+        name=$(otool -D "$lib" | sed -n 2p)
+        case $name in
+        "$lib" | '' | @*) continue ;;
+        esac
+        stamp=$(mktemp)
+        touch -r "$lib" "$stamp"
+        if install_name_tool -id "$lib" "$lib" 2>/dev/null &&
+            codesign --force --sign - "$lib" 2>/dev/null; then
+            touch -r "$stamp" "$lib"
+        else
+            echo "seed-worktree-target: couldn't rename $lib" >&2
+        fi
+        rm -f "$stamp"
+    done
 }
 
 save() {
@@ -114,12 +155,15 @@ seed_here() {
         exit 0
     fi
     if [ -d "$target/debug" ]; then
+        own_dylibs
         echo "seed-worktree-target: $target/debug already exists, skipping"
+        echo "  (its dylibs are named by their own paths)"
         exit 0
     fi
     mkdir -p "$target"
     cp -cR "$seed/" "$target"
     game_artifacts "$target" | while read -r path; do rm -rf "$path"; done
+    own_dylibs
     echo "seed-worktree-target: seeded $target from $seed"
 }
 
