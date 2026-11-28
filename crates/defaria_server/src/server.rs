@@ -562,7 +562,8 @@ fn send_chunks(
         // New in range: the whole range when it's moved, else what was
         // held back and what loaded.
         let mut fresh = HashSet::new();
-        let mut room = connection.link.backlog().room();
+        // What the link has room for: each chunk sent counts at once.
+        let backlog = connection.link.backlog().clone();
         let mut candidates: Vec<IVec3> = if moved {
             connection.waiting.clear();
             settings.window(center).collect()
@@ -576,7 +577,7 @@ fn send_chunks(
                 .filter(|&coord| !moved && settings.reaches(coord - center, 0)),
         );
         // Held back, the nearest go first.
-        if room != usize::MAX && moved {
+        if backlog.room() != usize::MAX && moved {
             candidates.sort_by_key(|&coord| (coord - center).length_squared());
         }
         let mut candidates = candidates.into_iter();
@@ -584,10 +585,12 @@ fn send_chunks(
             if connection.sent.contains(&coord) {
                 continue;
             }
-            if room == 0 {
-                // Behind: the rest wait (any gone by then are skipped).
+            if backlog.room() == 0 {
+                // Behind: the rest it doesn't have wait (any gone by then
+                // are skipped).
                 connection.waiting.push(coord);
-                connection.waiting.extend(candidates);
+                let sent = &connection.sent;
+                (connection.waiting).extend(candidates.filter(|coord| !sent.contains(coord)));
                 break;
             }
             let Some((chunk, light)) = map
@@ -596,7 +599,6 @@ fn send_chunks(
             else {
                 continue;
             };
-            room = room.saturating_sub(wire_bytes(chunk, light));
             connection.sent.insert(coord);
             fresh.insert(coord);
             send(
@@ -633,14 +635,6 @@ fn send_chunks(
             }
         }
     }
-}
-
-/// About how many bytes a chunk takes to send, at most: what its blocks,
-/// fluid and light hold, before they're deflated.
-fn wire_bytes(chunk: &Chunk, light: &ChunkLight) -> usize {
-    64 + chunk.voxels().heap_bytes()
-        + chunk.fluid_layer().heap_bytes()
-        + light.levels().heap_bytes()
 }
 
 /// Sends each client its player's state when it changes.
@@ -855,11 +849,12 @@ mod tests {
         let (mut client, server) = link();
         // A budget of a byte, all of it taken: no room.
         client.backlog().set_budget(1);
-        client.backlog().set_queued(1);
+        client.backlog().carried(0, 1);
         app.world_mut().resource_mut::<Incoming>().0.push(Joining {
             id: PlayerId([1; 32]),
             name: "Tester".into(),
             link: server,
+            in_process: false,
         });
         let mut sent = Vec::new();
         for _ in 0..30 {
@@ -873,7 +868,7 @@ mod tests {
         assert!(!sent.contains(&ServerMessage::Settled(true)));
 
         // Room for one: one a frame.
-        client.backlog().set_queued(0);
+        client.backlog().written(1);
         for _ in 0..5 {
             app.update();
             let now = client.receive();
@@ -1018,6 +1013,52 @@ mod tests {
         );
         let home = ChunkCoord::split(START_POSITION.floor().as_ivec3()).0;
         assert!(sent.contains(&ServerMessage::Unload(home)));
+    }
+
+    /// A player who moves while the network is behind holds back only the
+    /// chunks new to its range, never those it has, and gets them once
+    /// there's room.
+    #[test]
+    fn moving_while_behind_holds_back_only_new_chunks() {
+        let (mut app, mut client, _) = server();
+        client.backlog().set_budget(1);
+        client.backlog().carried(0, 1);
+        let feet = DVec3::new(64.5 + 16.0, 56.0 - EYE_HEIGHT, 92.5);
+        let motion = Motion {
+            feet,
+            velocity: DVec3::ZERO,
+            on_ground: false,
+            flying: true,
+            sneaking: false,
+            sprinting: false,
+            eye_height: EYE_HEIGHT,
+        };
+        client.send(ClientMessage::Inputs {
+            inputs: vec![input(1, Controls::default(), Some(motion))],
+            made_after: 0,
+        });
+        let mut sent = Vec::new();
+        for _ in 0..30 {
+            app.update();
+            crate::streaming::finish_loads(app.world_mut());
+            sent.extend(client.receive());
+        }
+        assert!(chunks_in(&sent).is_empty());
+        let connection = app
+            .world_mut()
+            .query::<&Connection>()
+            .single(app.world())
+            .unwrap();
+        assert!(connection.held_back() > 0);
+        assert!(
+            (connection.waiting.iter()).all(|coord| !connection.sent.contains(coord)),
+            "held back chunks it has"
+        );
+
+        client.backlog().set_budget(0);
+        until(&mut app, &mut client, |message| {
+            matches!(message, ServerMessage::Settled(true))
+        });
     }
 
     /// Each input is a step of the player, applied once however often it's

@@ -50,8 +50,8 @@
 //! (more waiting than a stream takes, or nothing written for a while) is
 //! dropped, and told why (in a last control message, `Dropped`, then in
 //! closing). Unreliable messages that find their queue full are dropped.
-//! What arrives waits in a bounded queue for the game, so a peer sending
-//! faster than it's taken is slowed by QUIC's flow control.
+//! What arrives waits in a bounded queue for the network thread to hand
+//! the game (see the note on #225 in `docs/decisions.md`).
 
 use std::{
     io,
@@ -70,7 +70,10 @@ use smol::future::FutureExt as _;
 use bevy::prelude::*;
 use defaria_core::{
     identity::{PlayerId, clean_name},
-    net::{ClientLink, ClientMessage, ServerLink, ServerMessage, decode, encode, link},
+    net::{
+        Backlog, ClientLink, ClientMessage, ServerLink, ServerMessage, Weigh as _, decode, encode,
+        link,
+    },
 };
 use defaria_server::server::Joining;
 use quinn::{
@@ -134,9 +137,9 @@ const MAX_HANDSHAKES_PER_ADDRESS: usize = 4;
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 /// How often the background thread looks for messages the game sent.
 const POLL: Duration = Duration::from_millis(1);
-/// The most messages from a client that wait for the server's game, and
-/// from a server for the client's: past them, the stream isn't read until
-/// the game catches up (datagrams are dropped).
+/// The most messages from a client that wait for the network thread to
+/// hand the server's game, and from a server the client's: past them, the
+/// stream isn't read until it does (datagrams are dropped).
 const SERVER_INBOX: usize = 256;
 const CLIENT_INBOX: usize = 4096;
 /// How long a closing connection's writers have to write what's waiting.
@@ -207,15 +210,7 @@ pub enum Handshake {
 
 /// Whether a server message goes on the bulk stream.
 fn bulk(message: &ServerMessage) -> bool {
-    matches!(
-        message,
-        ServerMessage::Chunk { .. }
-            | ServerMessage::ChunkChanged { .. }
-            | ServerMessage::LightChanged { .. }
-            | ServerMessage::Unload(_)
-            | ServerMessage::Settled(_)
-            | ServerMessage::EditDone(_)
-    )
+    message.bulk()
 }
 
 /// A server listening for clients: each that connects, takes its mods and
@@ -904,8 +899,9 @@ async fn carry_for_server(
 ) {
     // Control first, where both have something to send.
     let _ = control.set_priority(1);
-    let control = Outbox::new(control);
-    let bulk_out = Outbox::new(bulk_stream);
+    let control = Outbox::new(control, None);
+    let backlog = game.backlog().clone();
+    let bulk_out = Outbox::new(bulk_stream, Some(backlog.clone()));
     game.backlog().set_budget(limits.bulk_budget);
     let (to_game, from_net) = smol::channel::bounded::<ClientMessage>(SERVER_INBOX);
     let _datagrams = {
@@ -953,7 +949,9 @@ async fn carry_for_server(
             game.send(message);
         }
         let mut why = None;
-        for message in game.receive() {
+        // Still counted in the backlog until each is carried.
+        for message in game.receive_counted() {
+            let weight = message.weight();
             let bytes = encode(&message);
             if !message.reliable() {
                 if fits(&connection, &bytes) {
@@ -969,15 +967,19 @@ async fn carry_for_server(
             } else {
                 (&control, limits.control_cap, "too many messages waiting")
             };
-            if !outbox.push(frame(&bytes), cap) {
+            let frame = frame(&bytes);
+            let length = frame.len();
+            if !outbox.push(frame, cap) {
                 why = Some(what);
                 break;
+            }
+            if weight > 0 {
+                backlog.carried(weight, length);
             }
         }
         if let Some(why) = why {
             break why;
         }
-        game.backlog().set_queued(bulk_out.queued());
         if control.stalled(limits.stall) || bulk_out.stalled(limits.stall) {
             break "it took nothing for too long";
         }
@@ -1002,7 +1004,9 @@ async fn carry_for_server(
         "dropped the client at {}: {why}",
         connection.remote_address()
     );
-    drop(bulk_out);
+    // What waits for it, and what quinn holds of it, is let go at once,
+    // so it doesn't hold up the reason.
+    bulk_out.reset();
     let dropped = ServerMessage::Dropped(FELL_BEHIND.to_string());
     control.push(frame(&encode(&dropped)), usize::MAX);
     control.close().await;
@@ -1018,7 +1022,7 @@ async fn play(
     closed: CloseReason,
 ) {
     let limits = Limits::default();
-    let control = Outbox::new(control);
+    let control = Outbox::new(control, None);
     let (to_game, from_net) = smol::channel::bounded::<ServerMessage>(CLIENT_INBOX);
     let _datagrams = {
         let connection = connection.clone();
@@ -1123,6 +1127,8 @@ struct Outbox {
     frames: smol::channel::Sender<Vec<u8>>,
     flow: Arc<Flow>,
     writer: smol::Task<()>,
+    /// Tells the writer to reset its stream.
+    reset: smol::channel::Sender<()>,
 }
 
 /// How an [`Outbox`]'s writer is getting on.
@@ -1140,8 +1146,11 @@ impl Flow {
 }
 
 impl Outbox {
-    fn new(mut stream: SendStream) -> Self {
+    /// The outbox of `stream`; a world stream's also says what it's
+    /// written to its link's `backlog`.
+    fn new(mut stream: SendStream, backlog: Option<Arc<Backlog>>) -> Self {
         let (frames, waiting) = smol::channel::unbounded::<Vec<u8>>();
+        let (reset, told) = smol::channel::bounded::<()>(1);
         let flow = Arc::new(Flow {
             queued: AtomicUsize::new(0),
             moved: std::sync::Mutex::new(Instant::now()),
@@ -1149,22 +1158,59 @@ impl Outbox {
         let writer = {
             let flow = flow.clone();
             smol::spawn(async move {
-                while let Ok(frame) = waiting.recv().await {
-                    if stream.write_all(&frame).await.is_err() {
-                        return;
+                // Done once it's told to reset; never if it can't be.
+                let reset_asked = || {
+                    let told = told.clone();
+                    async move {
+                        if told.recv().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
                     }
-                    flow.moved_now();
-                    flow.queued.fetch_sub(frame.len(), Ordering::SeqCst);
+                };
+                loop {
+                    let next = async { Some(waiting.recv().await) }
+                        .or(async {
+                            reset_asked().await;
+                            None
+                        })
+                        .await;
+                    let frame = match next {
+                        Some(Ok(frame)) => frame,
+                        // Closed, with everything written: finished.
+                        Some(Err(_)) => {
+                            let _ = stream.finish();
+                            within(FLUSH, stream.stopped()).await;
+                            return;
+                        }
+                        None => break,
+                    };
+                    let wrote = async { Some(stream.write_all(&frame).await) }
+                        .or(async {
+                            reset_asked().await;
+                            None
+                        })
+                        .await;
+                    match wrote {
+                        Some(Ok(())) => {
+                            flow.moved_now();
+                            flow.queued.fetch_sub(frame.len(), Ordering::SeqCst);
+                            if let Some(backlog) = &backlog {
+                                backlog.written(frame.len());
+                            }
+                        }
+                        Some(Err(_)) => return,
+                        None => break,
+                    }
                 }
-                // Closed, with everything written: finished.
-                let _ = stream.finish();
-                within(FLUSH, stream.stopped()).await;
+                // Told to reset: what's unsent, here and in quinn, goes.
+                let _ = stream.reset(2u32.into());
             })
         };
         Self {
             frames,
             flow,
             writer,
+            reset,
         }
     }
 
@@ -1202,8 +1248,22 @@ impl Outbox {
     /// Writes what's waiting and finishes the stream, for [`FLUSH`] at
     /// most: closing the connection then drops anything still unsent.
     async fn close(self) {
-        drop(self.frames);
-        within(FLUSH, self.writer).await;
+        let Self {
+            frames,
+            writer,
+            reset,
+            ..
+        } = self;
+        drop(frames);
+        within(FLUSH, writer).await;
+        drop(reset);
+    }
+
+    /// Resets the stream: nothing more of it is sent, what was waiting
+    /// included.
+    fn reset(self) {
+        let _ = self.reset.try_send(());
+        self.writer.detach();
     }
 }
 
@@ -1593,7 +1653,12 @@ mod tests {
                     x ^= x << 13;
                     x ^= x >> 17;
                     x ^= x << 5;
-                    chunk.set(i, j, k, defaria_core::content::BlockState(x as u16 | 1));
+                    chunk.set(
+                        i,
+                        j,
+                        k,
+                        defaria_core::content::BlockState((x as u16 & 0x3fff) | 1),
+                    );
                 }
             }
         }
@@ -1699,7 +1764,7 @@ mod tests {
             if stuck {
                 while_stuck += arrived;
             }
-            most = most.max(server.backlog().queued());
+            most = most.max(server.backlog().waiting());
             thread::sleep(Duration::from_millis(1));
         }
         assert!(
@@ -1707,9 +1772,12 @@ mod tests {
             "only {while_stuck} control messages arrived while the chunks were stuck"
         );
         assert!(started.elapsed() >= limits.stall);
-        // Within the budget, but for what's sent before the backlog's
-        // next looked at: some chunks.
-        assert!(most <= limits.bulk_budget * 2, "{most} bytes waited");
+        // Within the budget, but for the chunk sent while there was room
+        // for less than it.
+        assert!(
+            most <= limits.bulk_budget + noisy_chunk(0).weight(),
+            "{most} bytes waited"
+        );
         let told = told_why(&connection, &messages, told);
         assert_eq!(told.as_deref(), Some(FELL_BEHIND));
     }
