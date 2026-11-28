@@ -2,7 +2,7 @@
 //! the other.
 
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
-use defaria_client::replication::{Playback, Replica};
+use defaria_client::replication::{MIN_DELAY, Playback, Replica};
 use defaria_core::{
     content::{BlockState, block},
     physics::Body,
@@ -226,9 +226,9 @@ fn off_the_mean(steps: &[f32], share: f32) -> (f32, Vec<usize>) {
 /// One player flies along over a connection a tenth of a second each way
 /// that loses a quarter of the inputs and snapshots. The server steps it
 /// the same distance every frame, holding its inputs a little to even out
-/// the losses, and the other player sees it glide there, a little behind,
-/// stopping only when a run of lost snapshots outlasts the tenth of a
-/// second it's drawn behind (it holds then, rather than guess ahead).
+/// the losses, and the other player sees it glide there, a little behind:
+/// as far behind as the runs of lost snapshots lately need, so it doesn't
+/// stop for them.
 #[test]
 fn another_player_moves_smoothly() {
     let mut game = crate::headless::test_multiplayer_over(
@@ -248,13 +248,27 @@ fn another_player_moves_smoothly() {
     game.run(1, "camera 60.5 66 92.5 0 0\nwait 20");
     game.settle();
     game.run(0, "wait 30");
-    // The same losses from here on, however many messages loading took.
+    // The same losses from here on, however many messages loading took;
+    // then long enough (three seconds) for the playback delay to have seen
+    // what they're like.
     game.reseed(1);
-    let (mut on_server, mut seen, mut holding) = (Vec::new(), Vec::new(), Vec::new());
+    game.run(0, "wait 180");
+    let mut frames = Vec::new();
     game.run_watching(0, "hold KeyW 150", |game| {
-        on_server.push(players_on_server(game));
-        seen.push(other_player(game, 1));
-        holding.push(game.clients[1].world().resource::<Playback>().holding());
+        let playback = game.clients[1].world().resource::<Playback>();
+        let (holding, playing, newest) = (
+            playback.holding(),
+            playback.time.unwrap(),
+            playback.newest(),
+        );
+        frames.push(Frame {
+            on_server: players_on_server(game),
+            server_time: game.server.world().resource::<Time>().elapsed_secs_f64(),
+            seen: other_player(game, 1),
+            holding,
+            playing,
+            newest,
+        });
     });
     // Once it's up to speed, and for as long as it's seen at speed.
     let cruising = 60..140;
@@ -262,38 +276,110 @@ fn another_player_moves_smoothly() {
     // On the server, the walker (the one that moved) goes the same
     // distance every frame but where a run of losses is longer than any
     // lately: each such run stops it once. Measured over 40 seeds: none in
-    // most runs, two at most; four leaves room for the seeds and timing
+    // most runs, three at most; four leaves room for the seeds and timing
     // to change, and is still a tenth of what stepping inputs as they
     // arrive gave (26 to 53).
-    let walker = (0..on_server[0].len())
+    let last = frames.len() - 1;
+    let walker = (0..frames[0].on_server.len())
         .max_by(|a, b| {
-            let moved = |player: usize| on_server[0][player].distance(on_server[149][player]);
+            let moved = |player: usize| {
+                frames[0].on_server[player].distance(frames[last].on_server[player])
+            };
             moved(*a).total_cmp(&moved(*b))
         })
         .unwrap();
-    let walked: Vec<Vec3> = on_server.iter().map(|players| players[walker]).collect();
-    let walked = &steps(&walked)[cruising.clone()];
-    let (mean, off) = off_the_mean(walked, 0.05);
+    let walked: Vec<Vec3> = frames.iter().map(|frame| frame.on_server[walker]).collect();
+    let walked = steps(&walked);
+    let (mean, uneven) = off_the_mean(&walked[cruising.clone()], 0.05);
     assert!(mean > 0.05, "it moved: {mean} a frame");
     assert!(
-        off.len() <= 4,
-        "the server stepped it unevenly in frames {off:?}: {walked:?}"
+        uneven.len() <= 4,
+        "the server stepped it unevenly in frames {uneven:?}: {walked:?}"
     );
 
-    // Seen by the other: every frame within 40% of the mean but where it
-    // holds (measured: within 20% in most runs, 31% at worst, as the
-    // playback clock eases toward the snapshots). Drawn at the newest
-    // snapshot, rather than between them, frames would be two or three
-    // times the mean, then none.
-    let seen = &steps(&seen)[cruising.clone()];
-    let held =
-        |frame: usize| holding[cruising.start + frame] || holding[cruising.start + frame + 1];
-    let holds = (0..seen.len()).filter(|frame| held(*frame)).count();
-    assert!(holds <= seen.len() / 5, "held {holds} frames");
-    let (mean, off) = off_the_mean(seen, 0.4);
-    let off: Vec<usize> = off.into_iter().filter(|frame| !held(*frame)).collect();
+    // Seen by the other: every frame within 10% of the mean but where the
+    // server stepped it unevenly and where it holds. Drawn between two
+    // snapshots, an uneven step on the server spreads over the frames
+    // drawn between them, up to about 30% off; those are the server's.
+    // Each uneven step on the server (four at most, above) excuses the
+    // frames drawn between the snapshots either side of it: three frames
+    // a snapshot, and one more where a frame straddles one (measured over
+    // 40 seeds: 4 to 13, a span with three snapshots lost; 16 allows
+    // four). It holds only when a run of lost snapshots is longer
+    // than any the playback delay remembers, and only for the frames the
+    // delay was short of it: the playback clock waits, so it goes on from
+    // there rather than jumping. Measured over three rounds of 40 seeds:
+    // no hold in 113 runs, two frames in six, five in one; every other
+    // frame within 3% of the mean (the clock runs at most 5% fast or slow
+    // while the delay changes). Ten frames allows one hold of a run three
+    // snapshots longer than the delay. (Before the delay adapted, 26 of
+    // 40 held, for up to 19 frames, and frames that didn't hold were up
+    // to 36% off as the clock eased toward each new snapshot.) Drawn at
+    // the newest snapshot, rather than between them, frames would be two
+    // or three times the mean, then none.
+    let server_uneven: Vec<(f64, f64)> = (0..walked.len())
+        .filter(|frame| (walked[*frame] - mean).abs() > mean * 0.05)
+        .map(|frame| (frames[frame].server_time, frames[frame + 1].server_time))
+        .collect();
+    // Every snapshot the watcher had (they arrive in order, one at most a
+    // frame), and the span between the two each frame is drawn between.
+    let mut snapshots: Vec<f64> = frames.iter().filter_map(|frame| frame.newest).collect();
+    snapshots.dedup();
+    let between = |frame: usize| {
+        let (from, to) = (frames[frame].playing, frames[frame + 1].playing);
+        let before = (snapshots.iter().rev()).find(|time| **time <= from)?;
+        let after = snapshots.iter().find(|time| **time >= to)?;
+        Some((*before, *after))
+    };
+    let spans = |frame: usize, (start, end): (f64, f64)| {
+        between(frame).is_none_or(|(before, after)| start < after && end > before)
+    };
+    let follows_the_server =
+        |frame: usize| (server_uneven.iter()).any(|uneven| spans(frame, *uneven));
+    let seen: Vec<Vec3> = frames.iter().map(|frame| frame.seen).collect();
+    let seen = steps(&seen);
+    let held = |frame: usize| frames[frame].holding || frames[frame + 1].holding;
+    let holds: Vec<usize> = cruising.clone().filter(|frame| held(*frame)).collect();
+    let (mean, off) = off_the_mean(&seen[cruising.clone()], 0.1);
+    let off: Vec<usize> = (off.into_iter())
+        .map(|frame| frame + cruising.start)
+        .filter(|frame| !held(*frame) && !follows_the_server(*frame))
+        .collect();
+    assert!(holds.len() <= 10, "held in frames {holds:?}");
+    for uneven in &server_uneven {
+        let excused = cruising.clone().filter(|frame| spans(*frame, *uneven));
+        assert!(excused.count() <= 16, "{uneven:?} excused too many");
+    }
     assert!(
         off.is_empty(),
         "frames {off:?} are off the mean of {mean} a frame: {seen:?}"
     );
+}
+
+/// On a connection that neither delays nor loses anything, as in single
+/// player, other players are drawn at the least delay, a snapshot and a
+/// half behind, and never held.
+#[test]
+fn a_good_connection_plays_at_the_least_delay() {
+    let mut game = crate::headless::test_multiplayer(2);
+    game.settle();
+    let mut held = 0;
+    game.run_watching(0, "hold KeyW 120", |game| {
+        held += game.clients[1].world().resource::<Playback>().holding() as usize;
+    });
+    assert_eq!(held, 0);
+    let delay = game.clients[1].world().resource::<Playback>().delay();
+    assert!((delay - MIN_DELAY).abs() < 1e-9, "{delay}");
+}
+
+/// What [`another_player_moves_smoothly`] watches each frame: where the
+/// players are on the server, and the server's clock; where the other
+/// player sees the walker, and its playback clock.
+struct Frame {
+    on_server: Vec<Vec3>,
+    server_time: f64,
+    seen: Vec3,
+    holding: bool,
+    playing: f64,
+    newest: Option<f64>,
 }
