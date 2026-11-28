@@ -49,10 +49,13 @@ const MAX_RATE: f64 = 0.05;
 /// How quickly the playback clock closes on where it should be: the
 /// change in its rate, per second it's off.
 const GAIN: f64 = 1.0;
-/// How far the playback clock may drift from where it should be before
-/// it's put there, rather than eased there (which would take five
-/// seconds).
-const MAX_DRIFT: f64 = 0.25;
+/// How much earlier than any lately a snapshot can arrive before it means
+/// the clocks moved apart (the client's lost time in a long frame, say)
+/// rather than the connection getting quicker.
+const EARLIER: f64 = 0.1;
+/// How quickly the typical frame time follows each frame's: the share of
+/// the difference taken a frame.
+const FRAME_EASING: f64 = 0.1;
 
 pub struct ReplicationPlugin;
 
@@ -113,26 +116,37 @@ impl Playback {
     }
 
     /// Notes that the snapshot of server time `time` arrived at `now` on
-    /// the client's clock.
-    fn arrived(&mut self, time: f64, now: f64) {
-        self.arrivals.arrived(time, now);
+    /// the client's clock, in a frame `elapsed` seconds long.
+    fn arrived(&mut self, time: f64, now: f64, elapsed: f64) {
+        self.arrivals.arrived(time, now, elapsed);
+    }
+
+    /// The server's clock now, as far as the snapshots lately say: when a
+    /// message sent now on the server's clock would have arrived.
+    fn server_now(&self, now: f64) -> Option<f64> {
+        Some(now - self.arrivals.base()?)
     }
 
     /// Moves the clock on by `elapsed` seconds, to `now` on the client's
     /// clock: toward the delay behind the server's clock it should be,
     /// a few percent faster or slower than time passes, and never past
-    /// the newest snapshot. It starts (or, far off, is put) where it
-    /// should be.
+    /// the newest snapshot. It's put where it should be only when it
+    /// starts, and when snapshots are timed afresh (the clocks moved
+    /// apart, or snapshots start again after a break) and that's ahead
+    /// of it: so a delay coming down, however far, comes down a few
+    /// percent of the time passing, and replicas never jump.
     fn advance(&mut self, now: f64, elapsed: f64) {
         self.arrivals.forget(now);
+        self.arrivals.frame(elapsed);
         let Some(newest) = self.arrivals.newest else {
             return;
         };
+        let retimed = std::mem::take(&mut self.arrivals.retimed);
         let target = self.arrivals.target(now);
         let time = match (self.time, target) {
             (Some(time), Some(target)) => {
                 let time = time + elapsed;
-                if (target - time).abs() > MAX_DRIFT {
+                if retimed && target > time {
                     target
                 } else {
                     time + elapsed * (GAIN * (target - time)).clamp(-MAX_RATE, MAX_RATE)
@@ -160,6 +174,11 @@ impl Playback {
 /// stalest of the window, with a [`MARGIN`], between [`MIN_DELAY`] and
 /// [`MAX_DELAY`]: so a run of lost snapshots holds replicas once, the
 /// first time it's that long, and not again while it's remembered.
+///
+/// The client's own frames aren't the network's lateness: snapshots that
+/// arrived during a long frame are all taken at its end, so each counts
+/// as arriving as much earlier as the frame was longer than usual (but
+/// not earlier than the earliest lately).
 #[derive(Debug, Default, Clone)]
 struct Arrivals {
     /// The snapshots of the last [`WINDOW`] seconds that were the newest
@@ -167,6 +186,11 @@ struct Arrivals {
     recent: VecDeque<Arrival>,
     /// The newest snapshot's time, on the server's clock.
     newest: Option<f64>,
+    /// How long the client's frames usually are, in seconds.
+    usual_frame: Option<f64>,
+    /// Whether the snapshots were timed afresh since the clock last moved
+    /// on: the first, the window cleared, or the first after a break.
+    retimed: bool,
 }
 
 /// A snapshot's arrival: when, on the client's clock; its offset; and the
@@ -180,28 +204,41 @@ struct Arrival {
 
 impl Arrivals {
     /// Notes that the snapshot of server time `time` arrived at `now` on
-    /// the client's clock; whether it's the newest yet (one behind a
-    /// newer one is too late to draw, and doesn't count).
-    fn arrived(&mut self, time: f64, now: f64) -> bool {
+    /// the client's clock, in a frame `elapsed` seconds long; whether it's
+    /// the newest yet (one behind a newer one is too late to draw, and
+    /// doesn't count).
+    fn arrived(&mut self, time: f64, now: f64, elapsed: f64) -> bool {
         if self.newest.is_some_and(|newest| time <= newest) {
             return false;
         }
-        let gap = self
-            .newest
-            .map(|newest| time - newest)
-            .filter(|gap| *gap <= BREAK)
-            .unwrap_or(0.0);
+        let gap = match self.newest {
+            Some(newest) if time - newest <= BREAK => time - newest,
+            _ => {
+                self.retimed = true;
+                0.0
+            }
+        };
         self.newest = Some(time);
         self.forget(now);
-        let offset = now - time;
-        // Earlier or later than any lately by more than the cap: the
-        // clocks have moved apart (a hitch on one side, or a pause), so
-        // what arrived before says nothing of what's to come.
-        if self
-            .base()
-            .is_some_and(|base| (offset - base).abs() > MAX_DELAY)
+        let mut offset = now - time;
+        // Much earlier than any lately, or later by more than the cap:
+        // the clocks have moved apart (a hitch on one side, or a pause),
+        // so what arrived before says nothing of what's to come.
+        if let Some(base) = self.base()
+            && (offset < base - EARLIER || offset > base + MAX_DELAY)
         {
             self.recent.clear();
+            self.retimed = true;
+        }
+        // Taken at the end of a long frame, it may have come any time in
+        // it.
+        let long = self
+            .usual_frame
+            .map_or(0.0, |usual| (elapsed - usual).max(0.0));
+        if long > 0.0 {
+            offset = self
+                .base()
+                .map_or(offset, |base| (offset - long).max(base).min(offset));
         }
         self.recent.push_back(Arrival {
             at: now,
@@ -209,6 +246,12 @@ impl Arrivals {
             gap,
         });
         true
+    }
+
+    /// Notes a frame `elapsed` seconds long, for how long they usually are.
+    fn frame(&mut self, elapsed: f64) {
+        let usual = self.usual_frame.get_or_insert(elapsed);
+        *usual += (elapsed - *usual) * FRAME_EASING;
     }
 
     /// The earliest offset lately: the client's clock less the server's,
@@ -267,12 +310,14 @@ fn take_entities(
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     mut look: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
 ) {
-    let now = time.elapsed_secs_f64();
+    let (now, elapsed) = (time.elapsed_secs_f64(), time.delta_secs_f64());
     for FromServer(message) in messages.read() {
         match message {
             ServerMessage::Spawn { id, kind, pose } => {
-                // Where it was when it came into range, from now on.
-                let since = playback.time.unwrap_or(f64::NEG_INFINITY);
+                // Where it was when it came into range: on the server's
+                // clock, about when the message was sent (or, before any
+                // snapshot, from the start).
+                let since = playback.server_now(now).unwrap_or(f64::NEG_INFINITY);
                 if let Some(old) = ids.0.remove(id) {
                     commands.entity(old).despawn();
                 }
@@ -299,7 +344,7 @@ fn take_entities(
                 }
             }
             ServerMessage::Snapshot { time, entities } => {
-                playback.arrived(*time, now);
+                playback.arrived(*time, now, elapsed);
                 for entity in entities {
                     // (One spawned this frame isn't there yet: it starts
                     // from where it came into range.)
@@ -479,7 +524,7 @@ mod tests {
             coming.sort_by_key(|(due, _)| *due);
             while coming.first().is_some_and(|(due, _)| *due <= frame) {
                 let (_, time) = coming.remove(0);
-                playback.arrived(time, now);
+                playback.arrived(time, now, 1.0 / 60.0);
             }
             playback.advance(now, 1.0 / 60.0);
             played.push((playback.time.unwrap_or(f64::NAN), playback.holding()));
@@ -631,14 +676,85 @@ mod tests {
         assert!(rates.iter().all(|rate| close(*rate, 1.0)), "{rates:?}");
     }
 
+    /// A run of losses long enough to put the delay at the cap: once the
+    /// window forgets it, the delay comes down to the floor, the clock
+    /// running at most 5% fast to get there, so replicas never move much
+    /// faster than they did.
+    #[test]
+    fn the_delay_comes_down_from_the_cap_smoothly() {
+        let mut playback = Playback::default();
+        // Twelve lost at the second second.
+        let played = feed(
+            &mut playback,
+            0,
+            0.0,
+            30,
+            |index| (40..52).contains(&index),
+            |_| 0,
+        );
+        assert!(close(playback.delay(), MIN_DELAY), "{}", playback.delay());
+        let after_the_hold = (0..played.len()).rfind(|frame| played[*frame].1).unwrap() + 1;
+        let rates = rates(&played[after_the_hold..]);
+        let fastest = rates.iter().copied().fold(0.0, f64::max);
+        assert!(fastest < 1.0 + MAX_RATE + 1e-9, "{fastest}");
+        assert!(fastest > 1.0 + MAX_RATE / 2.0, "it caught up: {fastest}");
+        let last = &rates[rates.len() - 60..];
+        assert!(
+            last.iter().all(|rate| (rate - 1.0).abs() < 1e-3),
+            "{last:?}"
+        );
+    }
+
+    /// The client's own long frame (a quarter of a second, the longest
+    /// that loses no time) isn't the network's lateness: the five
+    /// snapshots it takes at once don't raise the delay.
+    #[test]
+    fn a_long_frame_isnt_lateness() {
+        let mut playback = Playback::default();
+        let mut last: i32 = -1;
+        let mut played = Vec::new();
+        // Frames 301 to 314 never happen: 315 comes a quarter of a second
+        // after 300.
+        for frame in (0..900i32).filter(|frame| !(301..315).contains(frame)) {
+            let (now, elapsed) = (frame as f64 / 60.0, (frame - last) as f64 / 60.0);
+            // Each sent every third frame, arriving six frames later: those
+            // due since the last frame.
+            for sent in (last + 1 - 6..=frame - 6).filter(|sent| *sent >= 0 && sent % 3 == 0) {
+                playback.arrived(100.0 + sent as f64 / 60.0, now, elapsed);
+            }
+            last = frame;
+            playback.advance(now, elapsed);
+            played.push(playback.holding());
+        }
+        assert!(close(playback.delay(), MIN_DELAY), "{}", playback.delay());
+        // (It holds for that frame: the snapshots ran out a little into
+        // it.)
+        assert!(played[302..].iter().all(|held| !held));
+    }
+
+    /// The server's clock now, as the snapshots say, is the time of a
+    /// snapshot arriving now: what a replica spawned now is stamped with,
+    /// so the snapshots after it carry on from it rather than back.
+    #[test]
+    fn the_servers_clock_now() {
+        let mut playback = Playback::default();
+        feed(&mut playback, 0, 0.0, 5, |_| false, |_| 0);
+        // The last frame was 299: a snapshot arriving then was sent in
+        // 293, six frames before.
+        let now = 299.0 / 60.0;
+        let server_now = playback.server_now(now).unwrap();
+        assert!(close(server_now, 100.0 + 293.0 / 60.0), "{server_now}");
+    }
+
     /// A snapshot behind a newer one is too late to draw, and doesn't
     /// count as arriving.
     #[test]
     fn a_snapshot_out_of_order_is_ignored() {
         let mut arrivals = Arrivals::default();
-        assert!(arrivals.arrived(10.0, 0.0));
-        assert!(arrivals.arrived(10.05, 0.05));
-        assert!(!arrivals.arrived(10.02, 0.5));
+        let frame = 1.0 / 60.0;
+        assert!(arrivals.arrived(10.0, 0.0, frame));
+        assert!(arrivals.arrived(10.05, 0.05, frame));
+        assert!(!arrivals.arrived(10.02, 0.5, frame));
         assert!(close(arrivals.delay(), MIN_DELAY));
     }
 }

@@ -818,12 +818,25 @@ bandwidth for light or chunks shows up in the `net` report.
   a change shows only as a slightly faster or slower walk. While
   replicas hold, the clock waits at the newest snapshot, so after a hold
   they go on from where they stopped rather than jumping, and the delay
-  has grown by the wait. More than 0.25 s off (five seconds of easing),
-  it's put where it should be. An arrival earlier or later than any
-  lately by more than the cap means the clocks moved apart (a hitch or
-  pause on one side), so the window starts afresh; a gap of more than
-  a second between snapshots is the server having had nobody to send,
-  not losses.
+  has grown by the wait. However far the delay falls (from the cap to
+  the floor when the window forgets a long run: about 6.5 s at 5%), it
+  comes down that way, so replicas never move much faster than they
+  did. The clock is only put where it should be (and only forward) when
+  snapshots are timed afresh: at the first, after a gap of more than a
+  second between them (the server had nobody to send, not losses), or
+  when an arrival is more than 0.1 s earlier than any lately, or later
+  by more than the cap, which means the clocks moved apart (a hitch or
+  pause on one side) and the window starts afresh.
+- The client's own long frames aren't the network's lateness: the
+  snapshots taken at the end of a frame longer than usual (an eased
+  average of the frames) count as arriving that much earlier, but no
+  earlier than the earliest lately, so a hitch that bunches five
+  snapshots into one frame doesn't raise the delay. (The lesson #232
+  applied to inputs.)
+- A replica spawned is stamped with the server's clock now as the
+  snapshots say (when a snapshot arriving now was sent), not the
+  playback clock, which is the delay behind: so one moving as it comes
+  into range doesn't drift back to its spawn pose first.
 - No extrapolation past the newest snapshot. With the delay covering
   the runs lately, holds are rare (above), and they're a pause of a
   frame or two; guessing ahead would overshoot every start, stop and
@@ -835,10 +848,11 @@ bandwidth for light or chunks shows up in the `net` report.
 - Measured in `another_player_moves_smoothly`, over 40 seeds: before,
   the other player held in 26 runs, for up to 19 frames of 80, and the
   frames that didn't hold were up to 36% off the mean. After (given
-  three seconds of the losses first), it held in none of most runs, five
-  frames at most over 80 runs, and every frame that didn't hold was
-  within 3% of the mean (7% once), but where the server stepped the
-  walker unevenly. At a quarter lost the delay settles at 0.22 to 0.32
+  three seconds of the losses first), it held in 113 of 120 runs not
+  at all, and for five frames at most, and every frame that didn't hold
+  was within 3% of the mean, but where the server stepped the walker
+  unevenly (each such step excuses the frames drawn between the
+  snapshots either side of it: 4 to 13). At a quarter lost the delay settles at 0.22 to 0.32
   s; with nothing lost (`a_good_connection_plays_at_the_least_delay`),
   75 ms.
 - What's left: the delay is the same for every replica (one clock), and

@@ -300,20 +300,23 @@ fn another_player_moves_smoothly() {
     // Seen by the other: every frame within 10% of the mean but where the
     // server stepped it unevenly and where it holds. Drawn between two
     // snapshots, an uneven step on the server spreads over the frames
-    // drawn between them, up to about 30% off; those are the server's
-    // (measured: up to 23 frames, 0 in most runs; half the frames is
-    // too many). It holds only when a run of lost snapshots is longer
+    // drawn between them, up to about 30% off; those are the server's.
+    // Each uneven step on the server (four at most, above) excuses the
+    // frames drawn between the snapshots either side of it: three frames
+    // a snapshot, and one more where a frame straddles one (measured over
+    // 40 seeds: 4 to 13, a span with three snapshots lost; 16 allows
+    // four). It holds only when a run of lost snapshots is longer
     // than any the playback delay remembers, and only for the frames the
     // delay was short of it: the playback clock waits, so it goes on from
-    // there rather than jumping. Measured over two rounds of 40 seeds: no
-    // hold in 75 runs, two frames in four, five in one; every other frame
-    // within 3% of the mean but one at 7% (the clock runs at most 5% fast
-    // or slow while the delay changes). Ten frames allows one hold of a
-    // run three snapshots longer than the delay. (Before the delay adapted, 26 of 40 held, for up to 19
-    // frames, and frames that didn't hold were up to 36% off as the clock
-    // eased toward each new snapshot.) Drawn at the newest snapshot,
-    // rather than between them, frames would be two or three times the
-    // mean, then none.
+    // there rather than jumping. Measured over three rounds of 40 seeds:
+    // no hold in 113 runs, two frames in six, five in one; every other
+    // frame within 3% of the mean (the clock runs at most 5% fast or slow
+    // while the delay changes). Ten frames allows one hold of a run three
+    // snapshots longer than the delay. (Before the delay adapted, 26 of
+    // 40 held, for up to 19 frames, and frames that didn't hold were up
+    // to 36% off as the clock eased toward each new snapshot.) Drawn at
+    // the newest snapshot, rather than between them, frames would be two
+    // or three times the mean, then none.
     let server_uneven: Vec<(f64, f64)> = (0..walked.len())
         .filter(|frame| (walked[*frame] - mean).abs() > mean * 0.05)
         .map(|frame| (frames[frame].server_time, frames[frame + 1].server_time))
@@ -322,15 +325,17 @@ fn another_player_moves_smoothly() {
     // frame), and the span between the two each frame is drawn between.
     let mut snapshots: Vec<f64> = frames.iter().filter_map(|frame| frame.newest).collect();
     snapshots.dedup();
-    let follows_the_server = |frame: usize| {
+    let between = |frame: usize| {
         let (from, to) = (frames[frame].playing, frames[frame + 1].playing);
-        let before = (snapshots.iter().rev()).find(|time| **time <= from);
-        let after = snapshots.iter().find(|time| **time >= to);
-        let (Some(before), Some(after)) = (before, after) else {
-            return true;
-        };
-        (server_uneven.iter()).any(|(start, end)| start < after && end > before)
+        let before = (snapshots.iter().rev()).find(|time| **time <= from)?;
+        let after = snapshots.iter().find(|time| **time >= to)?;
+        Some((*before, *after))
     };
+    let spans = |frame: usize, (start, end): (f64, f64)| {
+        between(frame).is_none_or(|(before, after)| start < after && end > before)
+    };
+    let follows_the_server =
+        |frame: usize| (server_uneven.iter()).any(|uneven| spans(frame, *uneven));
     let seen: Vec<Vec3> = frames.iter().map(|frame| frame.seen).collect();
     let seen = steps(&seen);
     let held = |frame: usize| frames[frame].holding || frames[frame + 1].holding;
@@ -341,11 +346,10 @@ fn another_player_moves_smoothly() {
         .filter(|frame| !held(*frame) && !follows_the_server(*frame))
         .collect();
     assert!(holds.len() <= 10, "held in frames {holds:?}");
-    let excused = cruising.clone().filter(|frame| follows_the_server(*frame));
-    assert!(
-        excused.count() <= 40,
-        "the server stepped it unevenly too often"
-    );
+    for uneven in &server_uneven {
+        let excused = cruising.clone().filter(|frame| spans(*frame, *uneven));
+        assert!(excused.count() <= 16, "{uneven:?} excused too many");
+    }
     assert!(
         off.is_empty(),
         "frames {off:?} are off the mean of {mean} a frame: {seen:?}"
