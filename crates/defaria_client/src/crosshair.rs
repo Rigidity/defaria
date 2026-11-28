@@ -15,8 +15,8 @@ use crate::{
     ui::{UiScreen, playing},
 };
 use defaria_core::{
-    block_edit::{aims_at_fluid, crosshair_target, fluid_shape, fluid_target, target_at},
-    content::{BlockState, Content, Direction},
+    block_edit::{aims_at_fluid, around, crosshair_target, fluid_shape, fluid_target, target_at},
+    content::{BlockState, Content},
     hotbar::{ActiveSlot, Hotbar},
     player::{Eyes, LocalPlayer},
     world::Voxels,
@@ -81,9 +81,8 @@ fn outline_target(
         .get_with_fluid(hit.block)
         .unwrap_or((BlockState::AIR, None));
     let pos = hit.block;
-    let next = |side: Direction| voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR);
     let shape = if at_fluid {
-        fluid_shape(&content, state, partial, next)
+        fluid_shape(&content, state, partial, &around(&voxels, pos))
     } else {
         let boxes = target_at(&content, &voxels, pos).boxes;
         match content.halves(state) {

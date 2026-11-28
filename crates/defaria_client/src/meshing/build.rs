@@ -56,7 +56,8 @@ use crate::meshing::{
 };
 use defaria_core::{
     content::{
-        BakedFace, BlockState, Content, Direction, FULL_FLUID, Fluid, MAX_LIGHT, Render, Vertex,
+        Around, BakedFace, BlockState, Content, Direction, FULL_FLUID, Fluid, MAX_LIGHT, Render,
+        Vertex,
     },
     fluid,
     light::{CHANNELS, ChunkLight, Light, part_full_dim},
@@ -446,8 +447,9 @@ impl Neighborhood {
             // Its own faces, then those of its parts drawn by the blocks
             // next to it, numbered after its own in the face table.
             let own = state.faces.iter().enumerate();
+            let around = Around::read(|side| self.block(pos + side.normal()));
             let by_next = content
-                .next_faces(voxel, |side| self.block(pos + side.normal()))
+                .next_faces(voxel, &around)
                 .map(|(index, face)| (state.faces.len() + index, face));
             for (index, face) in own.chain(by_next) {
                 if face.hidden_by(|side| self.hides(content, voxel, pos + side.normal(), side)) {

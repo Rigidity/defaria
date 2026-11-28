@@ -24,6 +24,15 @@ fn vines() -> Content {
     ])
 }
 
+/// Air all round but `east` and `west`.
+fn around(east: BlockState, west: BlockState) -> Around {
+    Around::read(|side| match side {
+        Direction::East => east,
+        Direction::West => west,
+        _ => BlockState::AIR,
+    })
+}
+
 /// Parts with a `next` are kept apart from the state's own: their faces
 /// and boxes, covering nothing.
 #[test]
@@ -73,22 +82,15 @@ fn neighbours_pick_the_boxes_bumped_into() {
     let tall = content
         .block_state("test:post", &[("tall", "yes")])
         .unwrap();
-    let boxes = |east: BlockState, west: BlockState| {
-        content
-            .collision(vine, |side| match side {
-                Direction::East => east,
-                Direction::West => west,
-                _ => BlockState::AIR,
-            })
-            .len()
-    };
+    let boxes =
+        |east: BlockState, west: BlockState| content.collision(vine, &around(east, west)).len();
     assert_eq!(boxes(tall, BlockState::AIR), 2);
     assert_eq!(boxes(BlockState::AIR, BlockState::AIR), 1);
     assert_eq!(boxes(BlockState::AIR, tall), 0);
     // A block without such parts lends its own.
     let post = content.default_state("test:post").unwrap();
     assert!(matches!(
-        content.collision(post, |_| BlockState::AIR),
+        content.collision(post, &Around::AIR),
         std::borrow::Cow::Borrowed(_)
     ));
 }
@@ -104,11 +106,7 @@ fn neighbours_pick_the_parts_drawn() {
     let short = content.default_state("test:post").unwrap();
     let drawn = |east: BlockState, west: BlockState| -> Vec<usize> {
         content
-            .next_faces(vine, |side| match side {
-                Direction::East => east,
-                Direction::West => west,
-                _ => BlockState::AIR,
-            })
+            .next_faces(vine, &around(east, west))
             .map(|(i, _)| i)
             .collect()
     };
@@ -149,6 +147,6 @@ fn bad_rules_are_errors() {
             "{errors}"
         );
         let vine = content.default_state("test:vine").unwrap();
-        assert_eq!(content.next_faces(vine, |_| BlockState::AIR).count(), 0);
+        assert_eq!(content.next_faces(vine, &Around::AIR).count(), 0);
     }
 }

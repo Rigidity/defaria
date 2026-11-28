@@ -55,7 +55,7 @@ pub use machine::{
     Emits, EnergySpec, FACING, ItemFilter, MAX_SLOTS, Machine, MachinePort, MachineRecipes,
     SlotGroupSpec, TankSpec, resolve_face,
 };
-pub use next::{NextPart, NextRule, Target};
+pub use next::{Around, NextPart, NextRule, Target};
 use palette::Palette;
 pub use place::Placement;
 pub use reaction::Reaction;

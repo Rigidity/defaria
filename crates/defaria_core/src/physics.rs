@@ -38,7 +38,7 @@ use std::{borrow::Cow, time::Duration};
 use bevy::{ecs::system::SystemParam, math::DVec3, prelude::*};
 
 use crate::{
-    content::{BlockBox, BlockState, Content},
+    content::{Around, BlockBox, BlockState, Content},
     world::{Chunk, ChunkCoord, ChunkMap},
 };
 
@@ -252,9 +252,9 @@ impl Shapes for WorldShapes<'_, '_> {
     /// air).
     fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>> {
         let state = self.state(block)?;
-        Some(self.content.collision(state, |side| {
-            self.state(block + side.normal()).unwrap_or(BlockState::AIR)
-        }))
+        let around =
+            Around::read(|side| self.state(block + side.normal()).unwrap_or(BlockState::AIR));
+        Some(self.content.collision(state, &around))
     }
 }
 

@@ -37,7 +37,7 @@ use std::borrow::Cow;
 use bevy::prelude::*;
 
 use crate::{
-    content::{BlockBox, BlockState, Content, Direction, ItemState, Target},
+    content::{Around, BlockBox, BlockState, Content, Direction, ItemState, Target},
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
     machine::has_screen,
@@ -175,26 +175,29 @@ pub fn ray_box(origin: Vec3, dir: Vec3, b: &BlockBox) -> Option<(f32, IVec3)> {
     Some((enter, normal))
 }
 
-/// What the crosshair picks in a block of `state`, with the blocks `next`
-/// gives on each side: its target boxes (its model's `target`, or its
-/// collision boxes, or the whole block for one you walk through), with
-/// those of its parts drawn by its neighbours ([`Content::target`]).
-/// Nothing for air or a fluid, which the crosshair passes through.
-pub fn target_shape(
-    content: &Content,
+/// What the crosshair picks in a block of `state` with the blocks
+/// `around` it: its target boxes (its model's `target`, or its collision
+/// boxes, or the whole block for one you walk through), with those of its
+/// parts drawn by its neighbours ([`Content::target`]). Nothing for air
+/// or a fluid, which the crosshair passes through.
+pub fn target_shape<'c>(
+    content: &'c Content,
     state: BlockState,
-    next: impl FnMut(Direction) -> BlockState,
-) -> Cow<'_, [BlockBox]> {
-    content.target(state, next).boxes
+    around: &Around,
+) -> Cow<'c, [BlockBox]> {
+    content.target(state, around).boxes
+}
+
+/// The blocks around the voxel at `pos` (unloaded ones count as air).
+pub fn around(voxels: &Voxels, pos: IVec3) -> Around {
+    Around::read(|side| voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR))
 }
 
 /// What the crosshair picks in the voxel at `pos` ([`Content::target`]),
-/// with the voxels around it (unloaded ones count as air).
+/// with the voxels around it.
 pub fn target_at<'c>(content: &'c Content, voxels: &Voxels, pos: IVec3) -> Target<'c> {
     let state = voxels.get(pos).unwrap_or(BlockState::AIR);
-    content.target(state, |side| {
-        voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR)
-    })
+    content.target(state, &around(voxels, pos))
 }
 
 /// Fluid as the crosshair picks it while aiming at fluid (with a fluid
@@ -218,15 +221,15 @@ const FLUID_BOXES: [BlockBox; FLUID_STEPS as usize] = {
 /// What the crosshair picks in a voxel of `state` holding `fluid` while
 /// aiming at fluid: the fluid there, as high as it stands up the room the
 /// block leaves it ([`FLUID_BOXES`]), or what it always picks
-/// ([`target_shape`], with the blocks `next` gives on each side).
-pub fn fluid_shape(
-    content: &Content,
+/// ([`target_shape`], with the blocks `around` it).
+pub fn fluid_shape<'c>(
+    content: &'c Content,
     state: BlockState,
     fluid: Option<VoxelFluid>,
-    next: impl FnMut(Direction) -> BlockState,
-) -> Cow<'_, [BlockBox]> {
+    around: &Around,
+) -> Cow<'c, [BlockBox]> {
     let Some(fluid) = fluid else {
-        return target_shape(content, state, next);
+        return target_shape(content, state, around);
     };
     let room = content.state(state).fluid_room;
     let step = fluid_step(filled(fluid.amount, room));
@@ -242,9 +245,7 @@ pub fn fluid_shape(
 pub fn fluid_target(transform: &Transform, content: &Content, voxels: &Voxels) -> Option<Hit> {
     let ray = Ray3d::new(transform.translation, transform.forward());
     raycast(ray, REACH, |pos| match voxels.get_with_fluid(pos) {
-        Some((state, partial)) => fluid_shape(content, state, partial, |side| {
-            voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR)
-        }),
+        Some((state, partial)) => fluid_shape(content, state, partial, &around(voxels, pos)),
         None => Cow::Borrowed(&[][..]),
     })
 }
@@ -547,7 +548,7 @@ mod tests {
             [4, 0, 0] => stone,
             _ => BlockState::AIR,
         };
-        let shape = |pos| target_shape(content, at(pos), |_| BlockState::AIR);
+        let shape = |pos| target_shape(content, at(pos), &Around::AIR);
         // Over the slab, at y = 0.75.
         let hit = raycast(ray(Vec3::new(0.5, 0.75, 0.5), Vec3::X), 8.0, shape).unwrap();
         assert_eq!(hit.block, IVec3::new(4, 0, 0));
@@ -582,13 +583,10 @@ mod tests {
         let ghost = content.default_state("test:ghost").unwrap();
         assert!(content.state(ghost).collision.is_empty());
         assert_eq!(
-            *target_shape(&content, ghost, |_| BlockState::AIR),
+            *target_shape(&content, ghost, &Around::AIR),
             [BlockBox::FULL]
         );
-        assert_eq!(
-            *target_shape(&content, BlockState::AIR, |_| BlockState::AIR),
-            []
-        );
+        assert_eq!(*target_shape(&content, BlockState::AIR, &Around::AIR), []);
         let at = |pos: IVec3| {
             if pos == IVec3::new(3, 0, 0) {
                 ghost
@@ -597,7 +595,7 @@ mod tests {
             }
         };
         let hit = raycast(ray(Vec3::splat(0.5), Vec3::X), 8.0, |pos| {
-            target_shape(&content, at(pos), |_| BlockState::AIR)
+            target_shape(&content, at(pos), &Around::AIR)
         })
         .unwrap();
         assert_eq!((hit.block, hit.normal), (IVec3::new(3, 0, 0), IVec3::NEG_X));
@@ -622,7 +620,7 @@ mod tests {
             [4, 0, 0] => block("stone"),
             _ => BlockState::AIR,
         };
-        let shape = |pos| target_shape(content, at(pos), |_| BlockState::AIR);
+        let shape = |pos| target_shape(content, at(pos), &Around::AIR);
         let hit = |origin: Vec3| raycast(ray(origin, Vec3::X), 8.0, shape).unwrap();
         // Through its middle, it's hit on the face of its box.
         let middle = hit(Vec3::new(0.5, 0.5, 0.5));

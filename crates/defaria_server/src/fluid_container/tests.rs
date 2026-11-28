@@ -211,9 +211,14 @@ fn the_fluid_is_saved() {
 fn the_crosshair_picks_fluid_by_its_height() {
     let water = |amount| VoxelFluid::of(block("water"), amount);
     let height = |state, fluid| {
-        defaria_core::block_edit::fluid_shape(base(), state, fluid, |_| BlockState::AIR)[0]
-            .max
-            .y
+        defaria_core::block_edit::fluid_shape(
+            base(),
+            state,
+            fluid,
+            &defaria_core::content::Around::AIR,
+        )[0]
+        .max
+        .y
     };
     let air = BlockState::AIR;
     assert_eq!(height(air, water(FULL_FLUID)), 1.0);
@@ -222,7 +227,7 @@ fn the_crosshair_picks_fluid_by_its_height() {
     // Up the room a slab leaves: its half full reaches the top.
     assert_eq!(height(block("stone_slab"), water(500)), 1.0);
     assert_eq!(height(block("stone_slab"), water(250)), 0.75);
-    let air = |_| BlockState::AIR;
+    let air = &defaria_core::content::Around::AIR;
     assert!(defaria_core::block_edit::fluid_shape(base(), BlockState::AIR, None, air).is_empty());
     assert_eq!(
         defaria_core::block_edit::fluid_shape(base(), block("stone"), None, air),

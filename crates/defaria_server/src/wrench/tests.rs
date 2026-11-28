@@ -10,7 +10,7 @@ use crate::{
     testing::world_app,
 };
 use defaria_core::{
-    content::{BlockBox, BlockState, base, block},
+    content::{Around, BlockBox, BlockState, base, block},
     testing::temp_folder,
 };
 
@@ -32,16 +32,11 @@ fn ray(from: Vec3, to: Vec3) -> Ray3d {
 }
 
 /// The side a wrench aimed from `from` at `to` works on, in the conduit
-/// of `state` at the origin, with `next` giving the blocks around it.
-fn side_beside(
-    state: BlockState,
-    next: impl Fn(Direction) -> BlockState,
-    from: Vec3,
-    to: Vec3,
-) -> Option<Direction> {
+/// of `state` at the origin, with the blocks `around` it.
+fn side_beside(state: BlockState, around: Around, from: Vec3, to: Vec3) -> Option<Direction> {
     let content = base();
     let ray = ray(from, to);
-    let target = content.target(state, &next);
+    let target = content.target(state, &around);
     let hit = defaria_core::block_edit::raycast(ray, 8.0, |pos| {
         if pos == IVec3::ZERO {
             target.boxes.clone()
@@ -55,7 +50,7 @@ fn side_beside(
 
 /// [`side_beside`], with nothing around it.
 fn side_of(state: BlockState, from: Vec3, to: Vec3) -> Option<Direction> {
-    side_beside(state, |_| BlockState::AIR, from, to)
+    side_beside(state, Around::AIR, from, to)
 }
 
 /// On an arm, the wrench works on the side the arm reaches, whichever of

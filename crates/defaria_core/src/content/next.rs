@@ -52,6 +52,33 @@ impl Target<'_> {
     }
 }
 
+/// The blocks on the six sides of a voxel, read once, for the rules of
+/// its parts drawn by their neighbours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Around([BlockState; 6]);
+
+impl Around {
+    /// Air all round: what a block shows with nothing next to it.
+    pub const AIR: Around = Around([BlockState::AIR; 6]);
+
+    /// The blocks `at` gives on each side.
+    pub fn read(mut at: impl FnMut(Direction) -> BlockState) -> Self {
+        Around(Direction::ALL.map(&mut at))
+    }
+
+    /// Air all round but `block` on `side`.
+    pub fn only(side: Direction, block: BlockState) -> Self {
+        let mut around = Self::AIR;
+        around.0[side as usize] = block;
+        around
+    }
+
+    /// The block on `side`.
+    pub fn on(&self, side: Direction) -> BlockState {
+        self.0[side as usize]
+    }
+}
+
 /// What a part's neighbours must be: for each side it names, the states
 /// that match, sorted, and whether the neighbour must be one of them or
 /// anything else.
@@ -61,11 +88,11 @@ pub struct NextRule {
 }
 
 impl NextRule {
-    /// Whether the neighbours `next` gives on each side match.
-    pub fn matches(&self, mut next: impl FnMut(Direction) -> BlockState) -> bool {
+    /// Whether the blocks `around` match.
+    pub fn matches(&self, around: &Around) -> bool {
         self.sides
             .iter()
-            .all(|(side, states, is)| states.binary_search(&next(*side)).is_ok() == *is)
+            .all(|(side, states, is)| states.binary_search(&around.on(*side)).is_ok() == *is)
     }
 }
 
@@ -119,35 +146,30 @@ fn rule(
 
 impl Content {
     /// The parts of `state` drawn by their neighbours whose rules match
-    /// the blocks `next` gives on each side.
-    fn next_parts_matching(
-        &self,
+    /// the blocks `around` it.
+    fn next_parts_matching<'a>(
+        &'a self,
         state: BlockState,
-        mut next: impl FnMut(Direction) -> BlockState,
-    ) -> impl Iterator<Item = &NextPart> {
+        around: &'a Around,
+    ) -> impl Iterator<Item = &'a NextPart> {
         let rules = &self.block_of(state).next;
         self.state(state).next_parts.iter().filter(move |part| {
             rules
                 .get(part.rule)
-                .is_some_and(|rule| rule.matches(&mut next))
+                .is_some_and(|rule| rule.matches(around))
         })
     }
 
     /// What things bump into in a voxel of `state`: its collision boxes,
     /// and those of its parts drawn by their neighbours whose rules match
-    /// the blocks `next` gives on each side. Borrowed for a block without
-    /// such parts.
-    pub fn collision(
-        &self,
-        state: BlockState,
-        next: impl FnMut(Direction) -> BlockState,
-    ) -> Cow<'_, [BlockBox]> {
+    /// the blocks `around` it. Borrowed for a block without such parts.
+    pub fn collision(&self, state: BlockState, around: &Around) -> Cow<'_, [BlockBox]> {
         let baked: &State = self.state(state);
         if baked.next_parts.is_empty() {
             return Cow::Borrowed(&baked.collision);
         }
         let mut boxes = baked.collision.clone();
-        for part in self.next_parts_matching(state, next) {
+        for part in self.next_parts_matching(state, around) {
             boxes.extend_from_slice(&baked.next_collision[part.collision.clone()]);
         }
         Cow::Owned(boxes)
@@ -155,14 +177,10 @@ impl Content {
 
     /// What the crosshair picks in a voxel of `state`: its target boxes,
     /// and those of its parts drawn by their neighbours whose rules match
-    /// the blocks `next` gives on each side, each with the side its part
-    /// reaches; the whole block if that leaves none, as for any block with
-    /// nothing else to aim at. Borrowed for a block without such parts.
-    pub fn target(
-        &self,
-        state: BlockState,
-        next: impl FnMut(Direction) -> BlockState,
-    ) -> Target<'_> {
+    /// the blocks `around` it, each with the side its part reaches; the
+    /// whole block if that leaves none, as for any block with nothing else
+    /// to aim at. Borrowed for a block without such parts.
+    pub fn target(&self, state: BlockState, around: &Around) -> Target<'_> {
         let baked: &State = self.state(state);
         if baked.next_parts.is_empty() {
             return Target {
@@ -170,10 +188,10 @@ impl Content {
                 reaches: Cow::Borrowed(&baked.target_reaches),
             };
         }
+        debug_assert_eq!(baked.target.len(), baked.target_reaches.len());
         let mut boxes = baked.target.clone();
         let mut reaches = baked.target_reaches.clone();
-        reaches.resize(boxes.len(), None);
-        for part in self.next_parts_matching(state, next) {
+        for part in self.next_parts_matching(state, around) {
             boxes.extend_from_slice(&baked.next_target[part.target.clone()]);
             reaches.extend_from_slice(&baked.next_target_reaches[part.target.clone()]);
         }
@@ -188,15 +206,15 @@ impl Content {
     }
 
     /// The faces of `state`'s parts drawn by their neighbours whose rules
-    /// match the blocks `next` gives on each side, each with its index in
+    /// match the blocks `around` it, each with its index in
     /// [`State::next_faces`].
-    pub fn next_faces(
-        &self,
+    pub fn next_faces<'a>(
+        &'a self,
         state: BlockState,
-        next: impl FnMut(Direction) -> BlockState,
-    ) -> impl Iterator<Item = (usize, &super::BakedFace)> {
+        around: &'a Around,
+    ) -> impl Iterator<Item = (usize, &'a super::BakedFace)> {
         let baked: &State = self.state(state);
-        self.next_parts_matching(state, next)
+        self.next_parts_matching(state, around)
             .flat_map(move |part| part.faces.clone().map(move |i| (i, &baked.next_faces[i])))
     }
 }
