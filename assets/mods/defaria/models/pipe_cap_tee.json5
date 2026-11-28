@@ -1,0 +1,21 @@
+// The north face of a pipe's middle cube at a tee: `tee`, at its own
+// position, the band running top to bottom (up and down) with a
+// branch to the right (west).
+// Its box is `pipe_core`'s.
+// Written by scripts/pipe-models.py; change it there.
+{
+  slots: { tee: null },
+  occludes: [],
+  collision: [],
+  faces: [
+    {
+      texture: "tee",
+      vertices: [
+        { pos: [0.3125, 0.6875, 0.3125], uv: [0.6875, 0.3125] },
+        { pos: [0.6875, 0.6875, 0.3125], uv: [0.3125, 0.3125] },
+        { pos: [0.6875, 0.3125, 0.3125], uv: [0.3125, 0.6875] },
+        { pos: [0.3125, 0.3125, 0.3125], uv: [0.6875, 0.6875] },
+      ],
+    },
+  ],
+}

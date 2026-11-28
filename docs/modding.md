@@ -679,7 +679,7 @@ a model for each of the 64 ways its arms can go:
 {
   properties: { connect: { connections: true } },
   conduit: { network: "fluid", capacity: 0.5, throughput: 1 },
-  textures: { all: "pipe_core", side: "pipe_side", end: "pipe_end" },
+  textures: { side: "pipe_side", end: "pipe_end" },
   parts: [
     { model: "pipe_core" },                          // no `when`: always
     { when: { north: "true" }, model: "pipe_arm" },
@@ -688,6 +688,9 @@ a model for each of the 64 ways its arms can go:
     { when: { east: "true" }, model: "pipe_arm", rotate: [0, 270, 0] },
     { when: { up: "true" }, model: "pipe_arm", rotate: [90, 0, 0] },
     { when: { down: "true" }, model: "pipe_arm", rotate: [270, 0, 0] },
+    // ...and the middle cube's faces on the sides it isn't joined on,
+    // `pipe_cap`, each part's `when` naming several properties; the
+    // base game's blocks/pipe.json5 has them all.
   ],
 }
 ```
@@ -708,7 +711,7 @@ a model for each of the 64 ways its arms can go:
   Each part's faces cull against the neighbours as they would on their
   own; parts in the same block don't hide each other's faces, so leave
   out faces one part covers inside another (the pipe's arm has no face
-  against the core). The crosshair outlines the union of the
+  against the middle cube). The crosshair outlines the union of the
   target boxes as one shape, so a shape built of several boxes shows no
   seams between them.
 - A part whose `when` needs exactly one of the block's

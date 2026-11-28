@@ -1,6 +1,6 @@
 # Multipart models and connections: pipes placed on a flat stone platform
-# built in the air, each joining the pipes next to it, so each is a core
-# plus an arm for every side it's joined on. Along the front, west to
+# built in the air, each joining the pipes next to it, so each is a middle
+# cube plus an arm for every side it's joined on, as thick as the cube. Along the front, west to
 # east: a lone core, a straight run of three (north–south), a corner, a
 # tee, a cross with an arm up, and a pipe in the air with a pipe on all six
 # sides. Behind them: a vertical run of three standing on the platform, an

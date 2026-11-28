@@ -1,0 +1,6 @@
+// The face of a pipe's middle cube where it meets three arms: the band top to bottom with a branch to the right.
+{
+  layers: [
+    { image: "pipe_tee", material: "$metal" },
+  ],
+}

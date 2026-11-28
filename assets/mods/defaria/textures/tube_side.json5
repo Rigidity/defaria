@@ -1,4 +1,9 @@
-// The side of a tube's arm: a glass band across the middle of the tile.
+// The side of a tube's arm: a glass band across the middle of the tile,
+// with a collar of the frame's metal at each end, where it meets the next
+// block.
 {
-  layers: [{ image: "tube_side", material: "glass" }],
+  layers: [
+    { image: "tube_side", material: "glass" },
+    { image: "tube_collar", material: "$metal" },
+  ],
 }
