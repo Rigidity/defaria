@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use bevy::{
     input::{
-        InputSystems,
+        ButtonState, InputSystems,
         keyboard::{KeyboardFocusLost, KeyboardInput},
     },
     platform::collections::HashSet,
@@ -70,18 +70,26 @@ fn keep_keys_through_focus(
 ) {
     let state = &mut *state;
     let now = time.elapsed();
-    // A key that went up or down since is where its events left it. (The
-    // ups Bevy makes up as focus goes come before it's noted.)
+    // Bevy's window backend lets go of the held keys at the end of the
+    // frame focus goes, so the next frame's key events start with one up
+    // for each, before any real ones (focus may be back by then). The first
+    // up of each key held is Bevy's; anything after is real.
+    let mut made_up = HashSet::new();
+    if focus_lost.read().count() > 0 {
+        made_up.clone_from(&state.held);
+        state.lost = Some(Lost {
+            at: now,
+            keys: state.held.clone(),
+        });
+    }
     for input in inputs.read() {
+        if input.state == ButtonState::Released && made_up.remove(&input.key_code) {
+            continue;
+        }
+        // A key that went up or down since is where its events left it.
         if let Some(lost) = &mut state.lost {
             lost.keys.remove(&input.key_code);
         }
-    }
-    if focus_lost.read().count() > 0 {
-        state.lost = Some(Lost {
-            at: now,
-            keys: std::mem::take(&mut state.held),
-        });
     }
     if focus.read().any(|event| event.focused)
         && let Some(lost) = state.lost.take()
@@ -94,20 +102,14 @@ fn keep_keys_through_focus(
             }
         }
     }
-    if state
-        .lost
-        .as_ref()
-        .is_some_and(|lost| now - lost.at > FOCUS_GRACE)
-    {
-        state.lost = None;
-    }
-    state.held = keys.get_pressed().copied().collect();
+    state.held.clear();
+    state.held.extend(keys.get_pressed().copied());
 }
 
 #[cfg(test)]
 mod tests {
     use bevy::{
-        input::{ButtonState, InputPlugin, keyboard::Key},
+        input::{InputPlugin, keyboard::Key},
         time::TimeUpdateStrategy,
     };
 
@@ -219,6 +221,42 @@ mod tests {
         app.update();
         assert!(keys(&app).pressed(KeyCode::KeyW));
         assert!(!keys(&app).pressed(KeyCode::KeyA));
+    }
+
+    /// Focus back by the frame Bevy lets go of the keys (the shortest
+    /// blip that loses them): they're held again.
+    #[test]
+    fn keys_come_back_when_focus_returns_with_their_release() {
+        let mut app = app();
+        key(&mut app, KeyCode::KeyW, ButtonState::Pressed);
+        frames(&mut app, 2);
+        focused(&mut app, false);
+        app.update();
+        key(&mut app, KeyCode::KeyW, ButtonState::Released);
+        app.world_mut().write_message(KeyboardFocusLost);
+        focused(&mut app, true);
+        app.update();
+        assert!(keys(&app).pressed(KeyCode::KeyW));
+    }
+
+    /// A key really let go of as focus comes back, in the frame Bevy lets
+    /// go of it too, stays up: only the first up is Bevy's.
+    #[test]
+    fn a_real_release_beside_bevys_is_kept() {
+        let mut app = app();
+        key(&mut app, KeyCode::KeyW, ButtonState::Pressed);
+        key(&mut app, KeyCode::KeyA, ButtonState::Pressed);
+        frames(&mut app, 2);
+        focused(&mut app, false);
+        app.update();
+        key(&mut app, KeyCode::KeyW, ButtonState::Released);
+        key(&mut app, KeyCode::KeyA, ButtonState::Released);
+        app.world_mut().write_message(KeyboardFocusLost);
+        focused(&mut app, true);
+        key(&mut app, KeyCode::KeyW, ButtonState::Released);
+        app.update();
+        assert!(!keys(&app).pressed(KeyCode::KeyW));
+        assert!(keys(&app).pressed(KeyCode::KeyA));
     }
 
     /// Keys not held when focus went aren't held after.
