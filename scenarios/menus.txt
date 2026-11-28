@@ -14,7 +14,7 @@ hold MouseLeft 1
 wait 3
 screenshot target/scenarios/menus/1-main-menu.png
 wait 1
-cursor 640 352                     # Singleplayer: the (empty) world list
+cursor 640 328                     # Singleplayer: the (empty) world list
 wait 30
 hold MouseLeft 1
 wait 3
@@ -53,7 +53,7 @@ cursor 640 398
 wait 30
 hold MouseLeft 1
 wait 3
-cursor 640 352
+cursor 640 328
 wait 30
 hold MouseLeft 1
 wait 3

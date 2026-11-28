@@ -34,7 +34,7 @@ use super::{
     script::{Button, Command, Script},
     world_commands::apply_world_commands,
 };
-use defaria_client::fog::ChunkFog;
+use defaria_client::{connecting::ConnectStatus, fog::ChunkFog};
 use defaria_core::streaming::StreamingStatus;
 
 pub struct HeadlessPlugin {
@@ -103,6 +103,11 @@ impl Plugin for HeadlessPlugin {
     }
 }
 
+/// Give up on a `joined` after this long: connecting has ten seconds to
+/// get an answer and five minutes for the mods, but a scenario's server
+/// is on this machine.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(60);
+
 #[derive(Resource, Default)]
 pub(super) struct ScriptRunner {
     pub(super) commands: VecDeque<Command>,
@@ -123,6 +128,8 @@ pub(super) struct ScriptRunner {
     pub(super) fluid_reports: Vec<Option<(IVec3, IVec3)>>,
     /// Whether a `memory` report is due at the end of this frame.
     pub(super) memory_report: bool,
+    /// Waiting for joining a server to finish, since when.
+    pub(super) joining: Option<Instant>,
     /// When the current settle began.
     pub(super) settle_started: Option<Instant>,
     /// Voxels `fill` has changed since the last `timing`, and how long the
@@ -151,6 +158,7 @@ impl ScriptRunner {
     pub(super) fn finished(&self) -> bool {
         self.commands.is_empty()
             && self.settling.is_none()
+            && self.joining.is_none()
             && self.waiting == 0
             && self.captures.is_empty()
             && self.inspections.is_empty()
@@ -184,7 +192,39 @@ fn run_script(
     mut cursor_moved: MessageWriter<CursorMoved>,
     mut exit: MessageWriter<AppExit>,
     frame: Option<Res<bevy::diagnostic::FrameCount>>,
+    joining: Option<Res<ConnectStatus>>,
+    mut connect_settings: Option<ResMut<crate::connecting::ConnectSettings>>,
 ) {
+    let connecting = joining
+        .as_ref()
+        .is_some_and(|status| status.is_connecting());
+    // Joining a server (`--connect`) happens in the background, as fast
+    // as the network goes, while the menu's frames fly by: they don't
+    // count towards giving up on loading.
+    if runner.settling.is_some() && connecting {
+        return;
+    }
+    if let Some(started) = runner.joining {
+        if connecting {
+            if started.elapsed() > JOIN_TIMEOUT {
+                error!("joining a server took more than {JOIN_TIMEOUT:?}; giving up");
+                exit.write(AppExit::error());
+                runner.joining = None;
+                runner.commands.clear();
+            }
+            return;
+        }
+        runner.joining = None;
+        let frame = frame.as_ref().map_or(0, |frame| frame.0);
+        let how = match joining.as_deref() {
+            Some(ConnectStatus::Playing { server }) => format!("joined {}", server.address),
+            Some(ConnectStatus::Failed { server, error, .. }) => {
+                format!("couldn't join {}: {error}", server.address)
+            }
+            _ => "not joining a server".to_string(),
+        };
+        println!("[frame {frame}] {how}");
+    }
     if let Some(frames) = runner.settling {
         let started = *runner.settle_started.get_or_insert_with(Instant::now);
         // Without streaming there's nothing to wait for. The status is last
@@ -361,6 +401,15 @@ fn run_script(
             Command::Settle => {
                 runner.settling = Some(0);
                 break;
+            }
+            Command::Joined => {
+                runner.joining = Some(Instant::now());
+                break;
+            }
+            Command::ConnectTimeout(seconds) => {
+                if let Some(settings) = connect_settings.as_deref_mut() {
+                    settings.timeout = Duration::from_secs_f32(seconds);
+                }
             }
         }
     }

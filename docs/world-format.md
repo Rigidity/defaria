@@ -123,7 +123,7 @@ Format 3 moved the file from the world's `player.json5` to
 <data folder>/
   identity.pem         this install's key pair
   profile.json5        the player's name
-  servers.json5        the servers it has played on, and their keys
+  servers.json5        the saved servers, and their keys
   mod-cache/           mods fetched from servers, by hash (see below)
   worlds/              the saved worlds
   server-world/        a dedicated server's world, unless given --world
@@ -154,27 +154,39 @@ player), until it's fixed.
 }
 ```
 
-`servers.json5`: each server played on, by the address it was given, with
-its key's fingerprint (the SHA-256 hash of its public key, as for players).
-A server's certificate is self-signed, so the first connection to an
-address trusts it and remembers it here; after that, a server at that
-address with another key is refused, with an error saying so, until its
-entry is removed (as SSH's `known_hosts`). It's read again just before a
-new server is added, so what another copy of the game added meanwhile is
-kept. The server list (#52) builds on
-this file: entries may gain fields, such as a name, with a format bump.
+`servers.json5`: the saved servers, as the Multiplayer screen lists them
+(in the file's order, new ones last), each with its name (only shown;
+the list shows the address of one without), its address, and once the
+game has connected to it, its key's fingerprint (the SHA-256 hash of its
+public key, as for players). Addresses are kept as `host:port`, with the
+default port (25575) added to one given without a port and brackets
+around a bare IPv6 address, and no two servers share one: the address is
+what a server is known by. A server's certificate is self-signed, so the
+first connection to an address trusts its key and remembers it here;
+after that, a server at that address with another key is refused, with
+an error saying so, until its key is forgotten (as SSH's `known_hosts`):
+**Trust new key** on the error screen, or removing the `fingerprint`.
+Giving a server another address on the edit screen forgets its key too,
+and removing it forgets the server. Connecting to an address that isn't
+on the list (`--connect`) adds it, unnamed. The file is read again just
+before every change, and written whole through a temporary file of its
+own, so what another copy of the game changed meanwhile is kept.
 
 ```json5
 {
-  format: 1,
+  format: 2,
   servers: [
-    { address: "example.org:25575", fingerprint: "9c1e…4b" },
+    { name: "Home", address: "example.org:25575", fingerprint: "9c1e…4b" },
+    { name: "LAN party", address: "192.168.1.20:25575" },
   ],
 }
 ```
 
-A file of a newer format, or one that can't be read, is an error: the
-game won't connect anywhere rather than trust a server it can't check.
+Format 2 gave servers names; a format 1 file (addresses and
+fingerprints alone) reads as a list of unnamed servers, and is written as
+format 2 at the next change. A file of a newer format, or one that can't
+be read, is an error: the game won't connect anywhere rather than trust a
+server it can't check, and the list can't be changed until it's fixed.
 
 A dedicated server's key is `server.pem` in the world's folder, the same
 kind of file as `identity.pem`, made the first time, so the server keeps

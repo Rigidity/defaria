@@ -6,7 +6,7 @@ use defaria_core::{
     hotbar::{ActiveSlot, Hotbar},
     inventory::{Inventory, player::*},
     player::LocalPlayer,
-    save::WorldFolder,
+    save::{DataFolder, WorldFolder},
     streaming::StreamingSettings,
     testing::temp_folder,
 };
@@ -14,7 +14,7 @@ use defaria_server::{inventory::player::KeepSavedPlayer, save::player as file};
 
 use crate::{
     headless::{HeadlessPlugin, Script, default_plugins},
-    identity::{DataFolder, LocalIdentity},
+    identity::LocalIdentity,
 };
 
 /// Through the real game, in a world on disk: the active slot is saved

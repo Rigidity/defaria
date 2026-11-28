@@ -2,14 +2,14 @@ use std::time::Duration;
 
 use bevy::{app::ScheduleRunnerPlugin, prelude::*, window::PresentMode};
 use defaria::{
-    Cli, DevToolsPlugin, GamePlugin, dedicated,
+    Cli, DevToolsPlugin, GamePlugin,
+    connecting::ConnectOnStart,
+    dedicated,
     headless::{self, HeadlessPlugin, Script},
-    identity::DataFolder,
-    integrated::RemoteServer,
 };
 use defaria_client::session::{StartAtMenu, WorldsFolder};
 use defaria_core::{
-    save::{self, WorldFolder},
+    save::{self, DataFolder, WorldFolder},
     streaming::StreamingSettings,
 };
 
@@ -24,8 +24,15 @@ fn main() -> AppExit {
         });
     }
     let mut app = App::new();
+    // `--connect` waits at the menu, connecting in the background, and
+    // plays once it has (a headless run with nobody to read why it failed
+    // exits).
     if let Some(address) = cli.connect.clone() {
-        app.insert_resource(RemoteServer(address));
+        app.insert_resource(ConnectOnStart {
+            address,
+            exit_on_failure: cli.headless.is_some(),
+        })
+        .insert_resource(StartAtMenu);
     }
     // `--world` plays that world at once. Otherwise the game opens at the
     // main menu, and headless runs play a world in memory, so every run of
@@ -36,7 +43,7 @@ fn main() -> AppExit {
             app.insert_resource(WorldFolder(folder));
         }
         // A windowed screenshot (`cargo shot`) is of a world, in memory.
-        None if cli.headless.is_none() && cli.screenshot.is_none() && cli.connect.is_none() => {
+        None if cli.headless.is_none() && cli.screenshot.is_none() => {
             app.insert_resource(StartAtMenu);
         }
         None => {}

@@ -29,7 +29,7 @@ fn game(name: &str) -> (App, std::path::PathBuf) {
 }
 
 /// Where the UI node named `name` is on screen.
-fn at(app: &mut App, name: &str) -> Vec2 {
+pub(super) fn at(app: &mut App, name: &str) -> Vec2 {
     let mut nodes = app.world_mut().query::<(&Name, &UiGlobalTransform)>();
     nodes
         .iter(app.world())
@@ -41,7 +41,7 @@ fn at(app: &mut App, name: &str) -> Vec2 {
 
 /// Clicks the button named `name`, a moment after its page opened (menu
 /// buttons don't take clicks before: see `menu::MenuClick`).
-fn click(app: &mut App, name: &str) {
+pub(super) fn click(app: &mut App, name: &str) {
     let at = at(app, name);
     run_more(
         app,
@@ -53,7 +53,7 @@ fn click(app: &mut App, name: &str) {
 }
 
 /// Clicks a text field and types `text` into it.
-fn type_into<F: Component>(app: &mut App, text: &str) {
+pub(super) fn type_into<F: Component>(app: &mut App, text: &str) {
     let mut fields = app
         .world_mut()
         .query_filtered::<&UiGlobalTransform, With<F>>();
@@ -67,16 +67,16 @@ fn type_into<F: Component>(app: &mut App, text: &str) {
     );
 }
 
-fn state(app: &App) -> GameState {
+pub(super) fn state(app: &App) -> GameState {
     *app.world().resource::<State<GameState>>().get()
 }
 
-fn count<T: Component>(app: &mut App) -> usize {
+pub(super) fn count<T: Component>(app: &mut App) -> usize {
     let mut query = app.world_mut().query_filtered::<(), With<T>>();
     query.iter(app.world()).count()
 }
 
-fn page(app: &mut App) -> Option<MenuPage> {
+pub(super) fn page(app: &mut App) -> Option<MenuPage> {
     let mut pages = app.world_mut().query::<&MenuPage>();
     pages.iter(app.world()).next().copied()
 }

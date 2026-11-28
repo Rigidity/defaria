@@ -12,9 +12,10 @@
 //! (`GameState::Playing`), so settings given after the plugins count. When
 //! play ends (back to the main menu), the server saves the world and goes.
 //!
-//! With a [`RemoteServer`] (`--connect`), play is on that server instead,
-//! over the network (`quic`), and no server starts here. The client plays
-//! there with the content built from that server's mods
+//! With a [`RemoteServer`] (joined from the Multiplayer screen or with
+//! `--connect`, in the background: `connecting`), play is on that server
+//! instead, over the network (`quic`), and no server starts here. The
+//! client plays there with the content built from that server's mods
 //! (`mod_transfer`), fetched into the data folder's cache as needed, and
 //! its own again (single player's, [`SinglePlayerContent`]) once it
 //! leaves.
@@ -23,8 +24,8 @@
 //! server in the game's own process takes its id as it is (there's no
 //! handshake in memory), so a world played alone and then hosted keeps
 //! the same player. A remote server's key is checked against the one
-//! remembered for its address (`servers.json5`), or remembered, the
-//! first time.
+//! remembered for its address (`servers.json5`,
+//! `defaria_core::server_list`), or remembered, the first time.
 
 use std::time::Duration;
 
@@ -36,7 +37,7 @@ use defaria_client::{
 };
 use defaria_core::{
     content::Content, net::link, save::WorldFolder, script::ScriptSettings,
-    streaming::StreamingSettings,
+    server_list::ServerList, streaming::StreamingSettings,
 };
 use defaria_server::{
     fluid::FluidSettings,
@@ -46,9 +47,10 @@ use defaria_server::{
 };
 
 use crate::{
-    identity::{DataFolder, KnownServers, LocalIdentity, local_identity},
+    connecting::{RemoteServer, leave_the_server},
+    identity::{LocalIdentity, local_identity},
     mod_transfer::Library,
-    quic::{ConnectError, Connected},
+    quic::{ConnectError, ConnectOptions, Connected},
 };
 
 pub struct IntegratedServerPlugin;
@@ -77,50 +79,18 @@ pub struct IntegratedServer {
     pub app: App,
 }
 
-/// The server to play on, over the network, instead of one in the game's
-/// own process: a host and port (`--connect`).
-#[derive(Resource, Debug, Clone, PartialEq, Eq)]
-pub struct RemoteServer(pub String);
-
 /// The client's own content, while it plays with a server's: put back
 /// when it leaves.
 #[derive(Resource)]
 pub struct SinglePlayerContent(pub Content);
 
-/// Builds the server, connects to it, and lets its first frame run; or,
-/// with a [`RemoteServer`], connects to that, and plays with its mods.
+/// Builds the server, connects to it, and lets its first frame run;
+/// unless the client is playing on a [`RemoteServer`], already connected.
 fn start_server(world: &mut World) {
-    let local = local_identity(world);
-    if let Some(RemoteServer(address)) = world.get_resource::<RemoteServer>().cloned() {
-        let folder = world.get_resource::<DataFolder>().map(|f| f.0.clone());
-        let own = world
-            .get_resource::<SinglePlayerContent>()
-            .map(|own| &own.0)
-            .unwrap_or_else(|| world.resource::<Content>());
-        let library = Library::new(own, folder.as_deref());
-        match connect_remembering(&address, library, &local, folder.as_deref()) {
-            Ok(connected) => {
-                info!(
-                    "playing on {address}, with its {} mods ({} fetched)",
-                    connected.content.mods.len(),
-                    connected.fetched.len()
-                );
-                if let Some(own) = swap_content(world, connected.content)
-                    && !world.contains_resource::<SinglePlayerContent>()
-                {
-                    world.insert_resource(SinglePlayerContent(own));
-                }
-                world.insert_resource(ServerConnection(connected.link));
-            }
-            Err(error) => {
-                error!("{error}");
-                world
-                    .resource_mut::<NextState<GameState>>()
-                    .set(GameState::Menu);
-            }
-        }
+    if world.contains_resource::<RemoteServer>() {
         return;
     }
+    let local = local_identity(world);
     let mut app = App::new();
     forward::<Content>(world, &mut app);
     forward::<WorldFolder>(world, &mut app);
@@ -146,7 +116,7 @@ fn start_server(world: &mut World) {
 
 /// Connects to the server at `address` as `local`, taking its mods from
 /// `library` where it has them, checking the server's key against the
-/// one the known servers in `folder` remember for it, and remembering it
+/// one the saved servers in `folder` remember for it, and remembering it
 /// if there's none yet (the file read again just before it's written, so
 /// what another copy of the game added meanwhile is kept). An install
 /// whose key couldn't be read doesn't connect: on a server its stand-in
@@ -157,15 +127,33 @@ pub fn connect_remembering(
     local: &LocalIdentity,
     folder: Option<&std::path::Path>,
 ) -> Result<Connected, ConnectError> {
+    connect_remembering_with(address, library, local, folder, ConnectOptions::default())
+}
+
+/// [`connect_remembering`], as `options` say (`quic::connect_with`).
+pub fn connect_remembering_with(
+    address: &str,
+    library: Library,
+    local: &LocalIdentity,
+    folder: Option<&std::path::Path>,
+    options: ConnectOptions,
+) -> Result<Connected, ConnectError> {
     if let Some(error) = &local.damaged {
         return Err(ConnectError::Failed(format!(
             "not joining {address}: this game's key couldn't be read ({error}), so the \
              server wouldn't know you. Fix or move that file and start the game again"
         )));
     }
-    let mut known = KnownServers::load(folder)?;
+    let mut known = ServerList::load(folder)?;
     let expected = known.fingerprint(address);
-    let connected = crate::quic::connect(address, library, &local.identity, &local.name, expected)?;
+    let connected = crate::quic::connect_with(
+        address,
+        library,
+        &local.identity,
+        &local.name,
+        expected,
+        options,
+    )?;
     if expected.is_none() {
         info!(
             "trusting {address}, the first time, as the server with fingerprint {}",
@@ -226,6 +214,7 @@ fn stop_server(world: &mut World) {
         server.app.world_mut().write_message(AppExit::Success);
         server.app.update();
     }
+    leave_the_server(world);
     world.remove_resource::<ServerConnection>();
     world.remove_resource::<WorldFolder>();
     // Off a server: single player's content again.

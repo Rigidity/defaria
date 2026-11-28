@@ -48,6 +48,12 @@ pub fn data_dir() -> Option<PathBuf> {
     }
 }
 
+/// The game's data folder ([`data_dir`], or `--data`): where the
+/// install's identity, profile and saved servers are kept (and, for the
+/// game itself, its worlds). Without it, they're kept in memory.
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct DataFolder(pub PathBuf);
+
 /// The folder of the world to load and save. Without this resource the
 /// world is kept in memory only.
 #[derive(Resource, Debug, Clone, PartialEq, Eq)]
@@ -214,6 +220,61 @@ pub fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
     let temp = PathBuf::from(temp);
     std::fs::write(&temp, data)?;
     std::fs::rename(&temp, path)
+}
+
+/// A temporary file's name next to `path`, unique to this process and
+/// call, so two writers never share one.
+fn temp_beside(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.subsec_nanos());
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(
+        ".{}.{}.{nanos}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    PathBuf::from(name)
+}
+
+/// Writes `data` to a new temporary file next to `path`, of its own (no
+/// other writer shares its name), synced to disk, and returns its path.
+/// A `secret` one is readable only by its owner from the start (on unix;
+/// on Windows the data folder's own per-user permissions keep it).
+pub fn write_temp(path: &Path, data: &[u8], secret: bool) -> io::Result<PathBuf> {
+    use std::io::Write;
+    let temp = temp_beside(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if secret {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = secret;
+    let written = options.open(&temp).and_then(|mut file| {
+        file.write_all(data)?;
+        file.sync_all()
+    });
+    match written {
+        Ok(()) => Ok(temp),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(error)
+        }
+    }
+}
+
+/// Writes `data` to `path` whole, through a temporary file of its own (so
+/// two writers don't trip over each other's), replacing what's there.
+pub fn write_replacing(path: &Path, data: &[u8]) -> io::Result<()> {
+    let temp = write_temp(path, data, false)?;
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
 }
 
 #[cfg(test)]

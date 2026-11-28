@@ -30,6 +30,7 @@ pub mod recipe;
 pub mod replication;
 pub mod save;
 pub mod script;
+pub mod server_list;
 pub mod streaming;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

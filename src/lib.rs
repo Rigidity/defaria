@@ -10,6 +10,7 @@
 //! client builds from `defaria_core` and `defaria_client` alone, the
 //! server from `defaria_core` and `defaria_server`.
 
+pub mod connecting;
 pub mod dedicated;
 mod devtools;
 pub mod headless;
@@ -30,7 +31,11 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((ClientPlugin, IntegratedServerPlugin));
+        app.add_plugins((
+            ClientPlugin,
+            IntegratedServerPlugin,
+            connecting::ConnectingPlugin,
+        ));
     }
 }
 
@@ -77,6 +82,7 @@ impl Plugin for ClientPlugin {
             edit_prediction::EditPredictionPlugin,
             prediction::PredictionPlugin,
             defaria_client::script::ClientScriptPlugin,
+            connecting::ConnectingPlugin,
         ));
     }
 }
