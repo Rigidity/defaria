@@ -8,6 +8,7 @@ mod fluid_container;
 mod game_mode;
 mod identity;
 mod inventory_screen;
+mod joining;
 mod light;
 mod machine_screen;
 mod menus;
@@ -366,4 +367,30 @@ fn walking_sways_and_sprinting_widens_the_eye_view() {
     };
     let fov = projection.fov.to_degrees();
     assert!(fov > FOV * 1.1, "{fov}");
+}
+
+/// Playing on a server over the network, frames take at least a frame's
+/// time, as that server steps the player in real time; otherwise they go
+/// as fast as they can.
+#[test]
+fn frames_keep_pace_with_a_server_over_the_network() {
+    use std::time::Instant;
+    let four_frames = |remote: bool| {
+        let mut app = App::new();
+        app.add_systems(Update, super::runner::keep_pace_with_the_server);
+        if remote {
+            app.insert_resource(crate::connecting::RemoteServer {
+                server: default(),
+                closed: default(),
+            });
+        }
+        let start = Instant::now();
+        for _ in 0..4 {
+            app.update();
+        }
+        start.elapsed()
+    };
+    // The first frame has no frame before it to wait out.
+    assert!(four_frames(true) >= super::FRAME_TIME * 3);
+    assert!(four_frames(false) < super::FRAME_TIME);
 }

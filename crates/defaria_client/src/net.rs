@@ -20,7 +20,7 @@ use defaria_core::{
     hotbar::{ActiveSlot, Hotbar},
     mining::Mining,
     net::{ClientLink, ClientMessage, PlayerState, ServerMessage},
-    player::LocalPlayer,
+    player::{EYE_HEIGHT, LocalPlayer},
     streaming::{StreamingSettings, StreamingStatus},
     use_action::UseAction,
     world::{AwaitingNeighbours, ChunkCoord, ChunkMap, spawn_chunk},
@@ -43,7 +43,11 @@ impl Plugin for ClientNetPlugin {
                 PreUpdate,
                 (receive, update_awaiting, leave_when_the_server_goes)
                     .chain()
-                    .in_set(ReceiveSystems),
+                    .in_set(ReceiveSystems)
+                    // Joining from the menu, the connection is in place a
+                    // frame before the world (and the local player) is:
+                    // what the server sends waits for it.
+                    .run_if(not(in_state(GameState::Menu))),
             )
             .add_systems(
                 PostUpdate,
@@ -94,11 +98,19 @@ impl Joined {
     }
 }
 
-/// Whether the server last said everything around the player is loaded
-/// and sent. The client's [`StreamingStatus`] starts from it each frame
-/// (drawing then unsettles it while chunks wait to be meshed).
+/// Around which chunk the server last said everything is loaded and
+/// sent, if it has. The client's [`StreamingStatus`] starts from it each
+/// frame, settled only while that's the chunk the local player's eyes are
+/// in (drawing then unsettles it while chunks wait to be meshed).
 #[derive(Resource, Debug, Default)]
-struct ServerSettled(bool);
+struct ServerSettled(Option<IVec3>);
+
+/// The chunk a player's eyes are in, worked out as the server's chunk
+/// loader (a child of the player at eye height) works out its own.
+fn eye_chunk(player: &GlobalTransform) -> IVec3 {
+    let eyes = player.mul_transform(Transform::from_xyz(0.0, EYE_HEIGHT as f32, 0.0));
+    ChunkCoord::split(eyes.translation().floor().as_ivec3()).0.0
+}
 
 /// A world left: the next one's server starts afresh.
 fn forget_the_server(mut joined: ResMut<Joined>, mut settled: ResMut<ServerSettled>) {
@@ -144,6 +156,7 @@ fn receive(
             Option<&mut Mining>,
             Option<&mut Hotbar>,
             Option<&mut ActiveSlot>,
+            &GlobalTransform,
         ),
         With<LocalPlayer>,
     >,
@@ -192,7 +205,7 @@ fn receive(
             }
             ServerMessage::Settled(now) => settled.0 = now,
             ServerMessage::PlayerState(state) => {
-                let Ok((entity, _, hotbar, active)) = player.single_mut() else {
+                let Ok((entity, _, hotbar, active, _)) = player.single_mut() else {
                     continue;
                 };
                 let sent = (state.hotbar.clone(), state.active);
@@ -201,7 +214,7 @@ fn receive(
                 *joined = Joined(true, Some(sent));
             }
             ServerMessage::Mining { target, progress } => {
-                if let Ok((_, Some(mut mining), _, _)) = player.single_mut() {
+                if let Ok((_, Some(mut mining), _, _, _)) = player.single_mut() {
                     // Holding the button is the client's own.
                     mining.target = target;
                     mining.progress = progress;
@@ -213,7 +226,11 @@ fn receive(
         }
     }
     status.loaded_chunks = map.len();
-    status.settled = settled.0;
+    status.settled = settled.0.is_some_and(|around| {
+        player
+            .single()
+            .is_ok_and(|(.., transform)| eye_chunk(transform) == around)
+    });
     commands.insert_resource(Touched(std::mem::take(&mut *touched)));
 }
 
@@ -476,6 +493,55 @@ mod tests {
             )),
             "{echoes:?}"
         );
+    }
+
+    /// The client is settled only once the server says it's settled
+    /// around the chunk the player's eyes are in: not around where the
+    /// server last had the player (before a teleport reached it), nor
+    /// before it has said so at all.
+    #[test]
+    fn settled_only_around_the_player() {
+        let (mut app, mut server) = client();
+        let settled = |app: &App| app.world().resource::<StreamingStatus>().settled;
+        assert!(!settled(&app));
+        server.send(ServerMessage::Settled(Some(IVec3::new(5, 0, 0))));
+        app.update();
+        assert!(!settled(&app), "settled around somewhere else");
+        // Feet at y 0, so the eyes are in chunk 0.
+        server.send(ServerMessage::Settled(Some(IVec3::ZERO)));
+        app.update();
+        assert!(settled(&app));
+        server.send(ServerMessage::Settled(None));
+        app.update();
+        assert!(!settled(&app));
+    }
+
+    /// What the server sends while the client is still at the menu (it
+    /// has just joined, and plays from the next frame) waits for the
+    /// world: the player's state isn't lost for want of a player.
+    #[test]
+    fn what_comes_at_the_menu_waits_for_the_world() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .insert_resource(base().clone())
+            .add_plugins((WorldPlugin, ClientNetPlugin))
+            .insert_state(GameState::Menu);
+        let (client, mut server) = link();
+        app.insert_resource(ServerConnection(client));
+        app.update();
+        server.send(state(Hotbar::default(), 2, GameMode::Survival));
+        app.update();
+        app.world_mut()
+            .resource_mut::<NextState<GameState>>()
+            .set(GameState::Playing);
+        app.world_mut()
+            .spawn(local_player(DVec3::new(0.5, 0.0, 0.5), Look::default()));
+        // Playing from this frame's state transition, after `PreUpdate`;
+        // the state is taken the next.
+        app.update();
+        app.update();
+        assert_eq!(local::<GameMode>(&mut app), GameMode::Survival);
+        assert_eq!(local::<ActiveSlot>(&mut app), ActiveSlot(2));
     }
 
     /// A server that goes takes the client back to the menu.

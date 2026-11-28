@@ -231,6 +231,12 @@ struct NewChunk {
 }
 
 impl Chunks {
+    /// Whether the chunks wanted were last worked out with a loader in
+    /// `center`, so [`StreamingStatus`] covers the world around it.
+    pub fn plans_around(&self, center: IVec3) -> bool {
+        self.centers.contains(&center)
+    }
+
     /// Whether `chunk` is loaded, loading, or loaded and waiting to spawn.
     fn has(&self, chunk: IVec3) -> bool {
         self.loaded.contains_key(&chunk)
