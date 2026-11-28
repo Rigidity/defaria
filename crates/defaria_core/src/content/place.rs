@@ -188,6 +188,26 @@ mod tests {
         assert_eq!(content.placed(stone, Direction::East, Vec3::X), stone);
     }
 
+    /// A wire rests on the block it's placed against: on top of a block
+    /// it lies on its floor, under one on its ceiling, against a side on
+    /// that wall. It keeps its metal.
+    #[test]
+    fn wires_rest_on_the_face_they_are_placed_against() {
+        let content = base();
+        let wire = content.block("defaria:wire").unwrap();
+        let iron = wire.state(&[("metal", "defaria:iron")]).unwrap();
+        for face in Direction::ALL {
+            let placed = content.placed(iron, face, Vec3::NEG_Y);
+            let on = face.opposite().name();
+            assert_eq!(
+                placed,
+                wire.state(&[("metal", "defaria:iron"), ("on", on)])
+                    .unwrap(),
+                "{face:?}"
+            );
+        }
+    }
+
     #[test]
     fn look_and_explicit_values() {
         let content = test_mod(&[

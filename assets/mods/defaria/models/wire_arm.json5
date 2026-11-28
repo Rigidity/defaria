@@ -1,56 +1,55 @@
-// A wire's arm to the north side of its block: a 4-pixel box (6/16 to
-// 10/16 across) from the north face of `wire_core` (at 5/16) out to the
-// block's north side. Its sides show `side`, an arm image whose band runs
-// left to right across the middle of the tile (the same layout as
-// `pipe_arm`, at half the width); its end shows `end` and is hidden when
-// the neighbour covers that side. Turn it as `pipe_arm` is turned.
+// A wire lying on the floor, from its core (`wire_core`) to the
+// north side, along the floor. It has no face against the core; its
+// end is hidden when the neighbour covers the north side.
+// Written by scripts/wire-models.py; change it there.
 {
-  slots: { side: null, end: null },
+  slots: { wire: null },
   occludes: [],
+  collision: [{ from: [0.375, 0, 0], to: [0.625, 0.125, 0.375] }],
   faces: [
     {
-      texture: "end", cull: "north",
+      texture: "wire",
       vertices: [
-        { pos: [0.625, 0.375, 0], uv: [0.375, 0.625] },
-        { pos: [0.375, 0.375, 0], uv: [0.625, 0.625] },
-        { pos: [0.375, 0.625, 0], uv: [0.625, 0.375] },
-        { pos: [0.625, 0.625, 0], uv: [0.375, 0.375] },
+        { pos: [0.375, 0.125, 0.375], uv: [0.375, 0.625] },
+        { pos: [0.625, 0.125, 0.375], uv: [0.375, 0.375] },
+        { pos: [0.625, 0.125, 0], uv: [0, 0.375] },
+        { pos: [0.375, 0.125, 0], uv: [0, 0.625] },
       ],
     },
     {
-      texture: "side",
+      texture: "wire",
       vertices: [
-        { pos: [0.625, 0.375, 0.3125], uv: [0.6875, 0.625] },
-        { pos: [0.625, 0.375, 0], uv: [1, 0.625] },
-        { pos: [0.625, 0.625, 0], uv: [1, 0.375] },
-        { pos: [0.625, 0.625, 0.3125], uv: [0.6875, 0.375] },
+        { pos: [0.625, 0, 0], uv: [1, 1] },
+        { pos: [0.625, 0.125, 0], uv: [1, 0.875] },
+        { pos: [0.625, 0.125, 0.375], uv: [0.625, 0.875] },
+        { pos: [0.625, 0, 0.375], uv: [0.625, 1] },
       ],
     },
     {
-      texture: "side",
+      texture: "wire",
       vertices: [
-        { pos: [0.375, 0.375, 0], uv: [0, 0.625] },
-        { pos: [0.375, 0.375, 0.3125], uv: [0.3125, 0.625] },
-        { pos: [0.375, 0.625, 0.3125], uv: [0.3125, 0.375] },
-        { pos: [0.375, 0.625, 0], uv: [0, 0.375] },
+        { pos: [0.375, 0, 0.375], uv: [0.375, 1] },
+        { pos: [0.375, 0.125, 0.375], uv: [0.375, 0.875] },
+        { pos: [0.375, 0.125, 0], uv: [0, 0.875] },
+        { pos: [0.375, 0, 0], uv: [0, 1] },
       ],
     },
     {
-      texture: "side",
+      texture: "wire", cull: "down",
       vertices: [
-        { pos: [0.375, 0.625, 0.3125], uv: [0.3125, 0.625] },
-        { pos: [0.625, 0.625, 0.3125], uv: [0.3125, 0.375] },
-        { pos: [0.625, 0.625, 0], uv: [0, 0.375] },
-        { pos: [0.375, 0.625, 0], uv: [0, 0.625] },
+        { pos: [0.375, 0, 0], uv: [1, 0.625] },
+        { pos: [0.625, 0, 0], uv: [1, 0.375] },
+        { pos: [0.625, 0, 0.375], uv: [0.625, 0.375] },
+        { pos: [0.375, 0, 0.375], uv: [0.625, 0.625] },
       ],
     },
     {
-      texture: "side",
+      texture: "wire", cull: "north",
       vertices: [
-        { pos: [0.375, 0.375, 0], uv: [0, 0.375] },
-        { pos: [0.625, 0.375, 0], uv: [0, 0.625] },
-        { pos: [0.625, 0.375, 0.3125], uv: [0.3125, 0.625] },
-        { pos: [0.375, 0.375, 0.3125], uv: [0.3125, 0.375] },
+        { pos: [0.375, 0.125, 0], uv: [0.625, 0.875] },
+        { pos: [0.625, 0.125, 0], uv: [0.375, 0.875] },
+        { pos: [0.625, 0, 0], uv: [0.375, 1] },
+        { pos: [0.375, 0, 0], uv: [0.625, 1] },
       ],
     },
   ],

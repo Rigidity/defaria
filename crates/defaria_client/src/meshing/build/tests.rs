@@ -1521,3 +1521,45 @@ fn parts_are_meshed_where_their_neighbours_match() {
     chunk.set(3, 3, 4, post);
     assert_eq!(halfway(&chunk), 4);
 }
+
+/// A part drawn by its neighbours is meshed where the block next to it
+/// matches: a wire on the floor joined up to a wire on the floor above
+/// rises through the middle of its voxel (its core's 6 faces and the
+/// riser's 5), and joined up to one on a wall climbs that wall (its
+/// core's and the climb's 10). The wire above draws its core, and on the
+/// wall an arm down to meet the climb.
+#[test]
+fn parts_are_drawn_by_their_neighbours() {
+    let wire = |values: &[(&str, &str)]| base().block_state("defaria:wire", values).unwrap();
+    let below = wire(&[("on", "down"), ("up", "true")]);
+    let cutout = |above: BlockState| {
+        let meshes =
+            neighborhood(&[(A, below), (A + IVec3::Y, above)], |_| OPEN_SKY).meshes(base());
+        faces(meshes.get(Render::Cutout))
+    };
+    assert_eq!(cutout(wire(&[("on", "down"), ("down", "true")])), 6 + 5 + 6);
+    assert_eq!(
+        cutout(wire(&[("on", "north"), ("down", "true")])),
+        6 + 10 + 6 + 5
+    );
+}
+
+/// A wire beside one resting on a surface that wins (a wall wire beside
+/// a floor wire) goes over to it instead of reaching out along its own:
+/// down the wall, along the floor to its middle and on to the side.
+#[test]
+fn wires_go_over_to_the_surface_that_wins() {
+    let wire = |values: &[(&str, &str)]| base().block_state("defaria:wire", values).unwrap();
+    let wall = wire(&[("on", "north"), ("east", "true")]);
+    let floor = wire(&[("on", "down"), ("west", "true")]);
+    let cutout = |east: BlockState| {
+        let meshes = neighborhood(&[(A, wall), (A + IVec3::X, east)], |_| OPEN_SKY).meshes(base());
+        faces(meshes.get(Render::Cutout))
+    };
+    // Beside another wall wire: its core and an arm, and the other's.
+    let along = wire(&[("on", "north"), ("west", "true")]);
+    assert_eq!(cutout(along), 2 * (6 + 5));
+    // Beside a floor wire: its core, then an arm down the wall, the core
+    // on the floor and two arms on it, then the floor wire's core and arm.
+    assert_eq!(cutout(floor), 6 + 5 + 6 + 5 + 5 + 6 + 5);
+}

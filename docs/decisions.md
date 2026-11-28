@@ -3199,15 +3199,19 @@ face culling see only the state.
 
 The wrench takes the side to work on from the part aimed at, not from
 the boxes' shapes: a part whose `when` needs exactly one connection side
-joined reaches that side (`bake::parts::reaches`).
+joined reaches that side (`bake::parts::reaches`). A `joined_conduits_meet`
+test checks every pair of joined base conduit states draws one piece
+each, meeting at the side between them, since the wire's bends are
+generated per wire by `scripts/wire-models.py`.
 
 **What's wrong with it.** A part that ought to change what light passes
 or what hides a neighbour's faces can't use `next`. Each voxel with such
 parts checks their rules whenever it's meshed, bumped into or aimed at
 (a binary search per side named, and its boxes copied), which is cheap
-for a few dozen such parts, but grows with the parts a block has. The
-rules see only the six blocks touching the voxel, not diagonal ones, and
-match blocks by id and properties, not by what they are (solid, say).
+for the 5 to 49 such parts a wire has on each side it can rest on, but
+grows with the parts a block has. The rules see only the six blocks
+touching the voxel, not diagonal ones, and match blocks by id and
+properties, not by what they are (solid, say).
 
 **What should replace it.** If a block needs neighbour-dependent light
 or culling, store what the neighbours decide in the voxel (a property

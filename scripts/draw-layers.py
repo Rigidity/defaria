@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Draw the procedural layer images: glass, stained glass, water, lava, a
-grass tuft, an ingot, moss, a bucket and a dead bush.
+grass tuft, an ingot, moss, a bucket, a dead bush and a wire.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
 crates/defaria_client/src/block_texture/layer.rs checks) into OUT_DIR:
@@ -30,6 +30,9 @@ crates/defaria_client/src/block_texture/layer.rs checks) into OUT_DIR:
 - dead_bush.png: bare twigs, one pixel wide, forking up and out from one
   point on the bottom edge, transparent around them, for the
   crossed-quad plant model.
+- wire.png: dull metal, soft blotches in the darker levels (2 to 4,
+  mostly 3), fully solid, with no direction to them: the wire's faces
+  show the tile turned different ways. Wraps at the edges.
 
 Each tiles with itself where it needs to (water and lava wrap at the
 edges, in every frame). Deterministic: the same seed always draws the same
@@ -339,6 +342,22 @@ def dead_bush():
     return rows
 
 
+def wire(rng):
+    """Dull metal: soft blotches of levels 2 to 4, mostly 3, with no
+    direction to them, so the wire reads the same whichever way its faces
+    show the tile."""
+    soft = wrapping_noise(rng, 4)
+    fine = wrapping_noise(rng, 8)
+    rows = []
+    for y in range(SIZE):
+        row = []
+        for x in range(SIZE):
+            t = 0.65 * soft(x, y) + 0.35 * fine(x, y)
+            row.append(px(2 if t < 0.36 else 4 if t > 0.64 else 3))
+        rows.append(row)
+    return rows
+
+
 def preview(path, images):
     """Each image's frames down a column (a still image is one frame)."""
     scale, gap = 8, 8
@@ -382,6 +401,7 @@ def main():
         "moss": moss(rng),
         "items/bucket": bucket(),
         "dead_bush": dead_bush(),
+        "wire": wire(random.Random(0xDEFA41A + 3)),
     }
     for name, rows in images.items():
         path = os.path.join(args.out_dir, f"{name}.png")

@@ -468,6 +468,33 @@ mod tests {
         }
     }
 
+    /// Mining the stone a wire lies on, on its side, in survival gives the
+    /// wire too.
+    #[test]
+    fn mining_the_wall_under_a_wire_harvests_it_too() {
+        let mut app = app();
+        let stone = IVec3::new(5, 1, 5);
+        let wire = base()
+            .block_state("defaria:wire", &[("on", "north")])
+            .unwrap();
+        let on_wall = stone + IVec3::Z;
+        set(&mut app, on_wall, wire);
+        let player = defaria_core::player::tests::local(&mut app);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((Inventory::new(), GameMode::Survival));
+        look_at(&mut app, stone.as_vec3() + Vec3::new(0.5, 0.9, 0.5));
+        frame(&mut app, true);
+        for _ in 0..frames_to_break(block("stone")) {
+            frame(&mut app, false);
+        }
+        assert_eq!(at(&mut app, stone), BlockState::AIR);
+        assert_eq!(at(&mut app, on_wall), BlockState::AIR);
+        let item = defaria_core::game_mode::item_for_block(base(), wire).unwrap();
+        let inventory = app.world().get::<Inventory>(player).unwrap();
+        assert_eq!(inventory.count(item), 1);
+    }
+
     /// In survival, a plant whose item doesn't fit breaks anyway, giving
     /// nothing, as long as the ground under it fits.
     #[test]

@@ -241,6 +241,41 @@ mod tests {
         }
     }
 
+    /// A wire rests on the solid face on the side it lies on: on a wall it
+    /// stays while the wall does, whatever goes under it, and breaks when
+    /// the wall goes; one put against no solid face breaks at once.
+    #[test]
+    fn wires_break_when_their_face_goes() {
+        let mut app = app();
+        let wire = |on: &str| base().block_state("defaria:wire", &[("on", on)]).unwrap();
+        let wall = IVec3::new(3, 4, 3);
+        let on_wall = wall + IVec3::Z;
+        edit(
+            &mut app,
+            &[(wall, block("stone")), (on_wall, wire("north"))],
+        );
+        assert_eq!(at(&mut app, on_wall), wire("north"));
+        edit(&mut app, &[(on_wall - IVec3::Y, block("stone"))]);
+        edit(&mut app, &[(on_wall - IVec3::Y, BlockState::AIR)]);
+        assert_eq!(at(&mut app, on_wall), wire("north"));
+        edit(&mut app, &[(wall, BlockState::AIR)]);
+        assert_eq!(at(&mut app, on_wall), BlockState::AIR);
+        // Against air, or another wire: no solid face.
+        let floating = IVec3::new(6, 8, 6);
+        edit(&mut app, &[(floating, wire("down"))]);
+        assert_eq!(at(&mut app, floating), BlockState::AIR);
+        edit(
+            &mut app,
+            &[
+                (floating, wire("up")),
+                (floating + IVec3::Y, block("stone")),
+            ],
+        );
+        edit(&mut app, &[(floating - IVec3::Y, wire("up"))]);
+        assert_eq!(at(&mut app, floating), wire("up"));
+        assert_eq!(at(&mut app, floating - IVec3::Y), BlockState::AIR);
+    }
+
     /// A block turned in place to rest on another side is checked there:
     /// turned to hang from nothing, it breaks.
     #[test]

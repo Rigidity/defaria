@@ -17,7 +17,8 @@ fill 30 43 30 31 43 30 tube                               # from its bottom, ove
 fill 30 42 30 30 42 30 electric_furnace[facing=south]     # takes in through its top
 fill 31 42 30 31 42 30 crate                              # and to this crate's top
 fill 31 44 29 31 44 29 creative_generator[facing=north]
-fill 30 41 29 30 44 29 wire                               # the furnaces' backs, to the generator
+fill 30 41 28 30 44 28 stone                              # a pillar behind them
+fill 30 41 29 30 44 29 wire[on=north]                     # on it, the furnaces' backs, to the generator
 wait 2
 put 30 46 30 items 4 soil[soil=defaria:sand]
 put 30 46 30 items 4 stone[ore=defaria:iron]

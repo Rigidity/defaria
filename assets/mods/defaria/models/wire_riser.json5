@@ -1,0 +1,56 @@
+// A wire lying on the floor, joined up: from the top of its core
+// (`wire_core`) straight up to the middle of the block's top side.
+// Drawn unless the wire above rests across it (a part's `next`).
+// Written by scripts/wire-models.py; change it there.
+{
+  slots: { wire: null },
+  occludes: [],
+  collision: [{ from: [0.375, 0.125, 0.375], to: [0.625, 1, 0.625] }],
+  faces: [
+    {
+      texture: "wire",
+      vertices: [
+        { pos: [0.375, 1, 0.375], uv: [0, 0.375] },
+        { pos: [0.625, 1, 0.375], uv: [0, 0.625] },
+        { pos: [0.625, 0.125, 0.375], uv: [0.875, 0.625] },
+        { pos: [0.375, 0.125, 0.375], uv: [0.875, 0.375] },
+      ],
+    },
+    {
+      texture: "wire",
+      vertices: [
+        { pos: [0.375, 0.125, 0.625], uv: [0.875, 0.625] },
+        { pos: [0.625, 0.125, 0.625], uv: [0.875, 0.375] },
+        { pos: [0.625, 1, 0.625], uv: [0, 0.375] },
+        { pos: [0.375, 1, 0.625], uv: [0, 0.625] },
+      ],
+    },
+    {
+      texture: "wire",
+      vertices: [
+        { pos: [0.625, 0.125, 0.375], uv: [0.875, 0.375] },
+        { pos: [0.625, 1, 0.375], uv: [0, 0.375] },
+        { pos: [0.625, 1, 0.625], uv: [0, 0.625] },
+        { pos: [0.625, 0.125, 0.625], uv: [0.875, 0.625] },
+      ],
+    },
+    {
+      texture: "wire",
+      vertices: [
+        { pos: [0.375, 0.125, 0.625], uv: [0.875, 0.375] },
+        { pos: [0.375, 1, 0.625], uv: [0, 0.375] },
+        { pos: [0.375, 1, 0.375], uv: [0, 0.625] },
+        { pos: [0.375, 0.125, 0.375], uv: [0.875, 0.625] },
+      ],
+    },
+    {
+      texture: "wire", cull: "up",
+      vertices: [
+        { pos: [0.375, 1, 0.625], uv: [0.375, 0.625] },
+        { pos: [0.625, 1, 0.625], uv: [0.625, 0.625] },
+        { pos: [0.625, 1, 0.375], uv: [0.625, 0.375] },
+        { pos: [0.375, 1, 0.375], uv: [0.375, 0.375] },
+      ],
+    },
+  ],
+}
