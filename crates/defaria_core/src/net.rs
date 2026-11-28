@@ -14,7 +14,8 @@
 //! where only the newest matters, may be lost.
 
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
     mpsc::{Receiver, Sender, TryRecvError, channel},
 };
 
@@ -184,6 +185,12 @@ pub enum ServerMessage {
     /// A mod's server script sent this client's scripts a message
     /// (`net.send` or `net.broadcast`, see `script::channel`).
     Script(ScriptMessage),
+    /// The network is dropping the client, and why (it fell too far
+    /// behind): the last thing on its control stream before the
+    /// connection closes, so the reason arrives even if the close is
+    /// lost. `quic`'s own: the client's network end takes it, and the game
+    /// never sees it.
+    Dropped(String),
 }
 
 impl ServerMessage {
@@ -348,6 +355,45 @@ pub struct Link<Out, In> {
     // must be shareable between threads; one system at a time uses it.
     receive: Mutex<Receiver<In>>,
     closed: bool,
+    backlog: Arc<Backlog>,
+}
+
+/// How far behind the network is with a link's chunks: the bytes of them
+/// waiting to be written to the client, and how many may wait before the
+/// server holds back new ones. Shared by both ends of a link: `quic` keeps
+/// it up to date at the network's end, and the server's chunk sender
+/// reads it at the game's. A link in memory has no budget, so it's never
+/// behind.
+#[derive(Debug, Default)]
+pub struct Backlog {
+    queued: AtomicUsize,
+    /// 0 for none.
+    budget: AtomicUsize,
+}
+
+impl Backlog {
+    /// Holds back new chunks once `bytes` of them are waiting.
+    pub fn set_budget(&self, bytes: usize) {
+        self.budget.store(bytes, Ordering::Relaxed);
+    }
+
+    /// How many bytes of chunks are waiting now.
+    pub fn set_queued(&self, bytes: usize) {
+        self.queued.store(bytes, Ordering::Relaxed);
+    }
+
+    pub fn queued(&self) -> usize {
+        self.queued.load(Ordering::Relaxed)
+    }
+
+    /// How many more bytes of new chunks may be sent now: unlimited with
+    /// no budget.
+    pub fn room(&self) -> usize {
+        match self.budget.load(Ordering::Relaxed) {
+            0 => usize::MAX,
+            budget => budget.saturating_sub(self.queued()),
+        }
+    }
 }
 
 /// The client's end of a link.
@@ -360,16 +406,19 @@ pub type ServerLink = Link<ServerMessage, ClientMessage>;
 pub fn link() -> (ClientLink, ServerLink) {
     let (to_server, from_client) = channel();
     let (to_client, from_server) = channel();
+    let backlog = Arc::new(Backlog::default());
     (
         Link {
             send: to_server,
             receive: Mutex::new(from_server),
             closed: false,
+            backlog: backlog.clone(),
         },
         Link {
             send: to_client,
             receive: Mutex::new(from_client),
             closed: false,
+            backlog,
         },
     )
 }
@@ -403,6 +452,11 @@ impl<Out, In> Link<Out, In> {
     pub fn is_closed(&self) -> bool {
         self.closed
     }
+
+    /// How far behind the network is with this link's chunks.
+    pub fn backlog(&self) -> &Backlog {
+        &self.backlog
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +485,19 @@ mod tests {
         assert!(client.is_closed());
         client.send(ClientMessage::CloseScreen(IVec3::ZERO));
         assert!(client.is_closed());
+    }
+
+    /// A link in memory is never behind; one with a budget has room for
+    /// what's left of it, shared by both ends.
+    #[test]
+    fn a_backlog_has_room_for_what_its_budget_leaves() {
+        let (client, server) = link();
+        assert_eq!(server.backlog().room(), usize::MAX);
+        client.backlog().set_budget(100);
+        client.backlog().set_queued(30);
+        assert_eq!(server.backlog().room(), 70);
+        client.backlog().set_queued(150);
+        assert_eq!(server.backlog().room(), 0);
     }
 
     /// A message between scripts with every kind of plain value in it.
@@ -546,6 +613,7 @@ mod tests {
             },
             ServerMessage::Despawn(42),
             ServerMessage::Script(script_message()),
+            ServerMessage::Dropped("why".into()),
         ];
         for message in server {
             let back: ServerMessage = decode(&encode(&message)).unwrap();
