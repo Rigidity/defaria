@@ -55,7 +55,7 @@ use defaria_core::streaming::{StreamingSettings, StreamingStatus, StreamingStatu
 
 use crate::{
     block_entity::{BlockEntityChanged, BlockEntitySystems, ChunkSaver},
-    light::{LightTable, Prelit, light_alone, sky::Sky},
+    light::{LightQueue, LightTable, Prelit, light_alone, sky::Sky},
     save::{WorldStore, region},
     worldgen::{Terrain, TerrainBlocks, TerrainSettings},
 };
@@ -195,6 +195,9 @@ pub struct Chunks {
     centers: Vec<IVec3>,
     /// Chunks out of reach left to unload on later frames.
     waiting_to_unload: usize,
+    /// Chunks were spawned this frame, so their light is still to settle:
+    /// it's queued when they're seen next frame (see `light`).
+    spawned_this_frame: bool,
     flush: Option<Task<()>>,
     since_save: f32,
 }
@@ -475,6 +478,7 @@ fn spawn_loaded_chunks(
     mut map: ResMut<ChunkMap>,
 ) {
     let chunks = &mut *chunks;
+    chunks.spawned_this_frame = false;
     chunks
         .loading
         .retain(|&coord, task| match check_ready(task) {
@@ -513,6 +517,7 @@ fn spawn_loaded_chunks(
         );
         spawned.insert(coord);
     }
+    chunks.spawned_this_frame = !spawned.is_empty();
     let candidates: HashSet<IVec3> = spawned.iter().flat_map(|&c| around(c).chain([c])).collect();
     update_completeness(&mut commands, chunks, candidates);
 }
@@ -643,13 +648,22 @@ pub fn finish_loads(world: &mut World) {
     }
 }
 
-/// Works out [`StreamingStatus`].
-fn update_status(chunks: Res<Chunks>, mut status: ResMut<StreamingStatus>) {
+/// Works out [`StreamingStatus`]. Settled includes the light: chunks
+/// spawned this frame are lit across their borders next frame, and
+/// chunks unloaded this frame have queued the light they take away, so
+/// streaming isn't settled until a frame after the last of them.
+fn update_status(
+    chunks: Res<Chunks>,
+    light: Option<Res<LightQueue>>,
+    mut status: ResMut<StreamingStatus>,
+) {
     status.loaded_chunks = chunks.loaded.len();
     status.settled = chunks.queue.is_empty()
         && chunks.waiting_to_unload == 0
         && chunks.loading.is_empty()
         && chunks.ready.is_empty()
+        && !chunks.spawned_this_frame
+        && light.is_none_or(|light| light.is_empty())
         && !chunks.centers.is_empty();
 }
 
@@ -667,6 +681,7 @@ mod tests {
     use defaria_core::{
         content::{BlockState, base, block},
         light::MAX_LIGHT,
+        streaming::SETTLE_TIMEOUT_FRAMES,
         testing::temp_folder,
         world::Voxels,
     };
@@ -1032,14 +1047,18 @@ mod tests {
             let saved = WorldStore::new(Some(&folder), base()).load(coord.0)?;
             Some(saved.at(local))
         };
-        for _ in 0..200 {
+        // The write is on the IO pool, which other tests share: wait for
+        // it, with a deadline only against a hang.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while on_disk() != Some(block("blue_lamp")) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the edit never reached the disk: {:?}",
+                on_disk()
+            );
             app.update();
-            if on_disk() == Some(block("blue_lamp")) {
-                return;
-            }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        panic!("the edit never reached the disk: {:?}", on_disk());
     }
 
     /// Chunks lit on their loading tasks and joined to the world end up
@@ -1055,6 +1074,46 @@ mod tests {
                 assert!(light(&streamed, coord) == light(&patch, coord), "{coord}");
             }
         }
+    }
+
+    /// Streaming isn't settled until the light of the chunks it spawned
+    /// last has spread, the next frame: here a roof's chunk spawns on the
+    /// same frame as every other, the last, and the moment streaming says
+    /// it's settled the roof already shades what's under it. Loads are
+    /// finished before each frame, so the last frame always spawns
+    /// something, however fast the machine is.
+    #[test]
+    fn settled_includes_the_light_of_the_last_chunks_spawned() {
+        let mut app = app(None, Vec3::new(8.0, 20.5 * 16.0, 8.0));
+        for x in 0..16 {
+            for z in 0..16 {
+                set(&mut app, IVec3::new(x, 22 * 16 + 8, z), block("stone"));
+            }
+        }
+        let (probe, local) = (IVec3::new(0, 18, 0), IVec3::new(8, 12, 8));
+        let sky = |app: &App| light(app, probe).at(local).sky();
+        move_loader(&mut app, Vec3::new(8.0, 17.5 * 16.0, 8.0));
+        assert_eq!(sky(&app), MAX_LIGHT);
+        app.world_mut()
+            .resource_mut::<StreamingSettings>()
+            .spawns_per_frame = 1000;
+        let mut loaders = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<ChunkLoader>>();
+        loaders.single_mut(app.world_mut()).unwrap().translation = Vec3::new(8.0, 20.5 * 16.0, 8.0);
+        app.update();
+        app.update();
+        let mut frames = 0;
+        loop {
+            finish_loads(app.world_mut());
+            app.update();
+            if app.world().resource::<StreamingStatus>().settled {
+                break;
+            }
+            frames += 1;
+            assert!(frames < SETTLE_TIMEOUT_FRAMES, "never settled");
+        }
+        assert!(sky(&app) < MAX_LIGHT, "the roof's light hadn't spread");
     }
 
     /// Flying up and down moves where the sky comes in: a roof that's
