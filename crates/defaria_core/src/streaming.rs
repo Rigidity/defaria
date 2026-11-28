@@ -100,7 +100,7 @@ impl StreamingSettings {
     }
 }
 
-/// Whether everything the loaders want is loaded (and drawn, where the
+/// Whether everything the loaders want is loaded and lit (and drawn, where the
 /// chunks are drawn: drawing unsettles it after [`StreamingStatusSystems`]
 /// while chunks wait for their meshes), and what they don't want (past
 /// the margin) unloaded.
