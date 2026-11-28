@@ -6,8 +6,8 @@
 //!   doesn't support it (in `block_edit`), so nothing is used up.
 //! - After every edit ([`VoxelChanged`], from the player, scripts, fluids,
 //!   a scenario's `fill`), the edited voxel and the six around it are
-//!   checked, and the six around every block whose state was updated in
-//!   place ([`PropertiesUpdated`]: a script's `set_state`, a machine
+//!   checked, and every block whose state was updated in place and the
+//!   six around it ([`PropertiesUpdated`]: a script's `set_state`, a machine
 //!   turning on): a block there that needs support and doesn't have it
 //!   is broken, and so is anything resting on it in turn. That's the same
 //!   frame for edits made in `Update`, and across chunk borders, as long
@@ -64,9 +64,9 @@ pub fn around(pos: IVec3) -> impl Iterator<Item = IVec3> {
 }
 
 /// Each edited voxel (a plant placed where it can't stand) and the six
-/// around it (resting on what changed), and the six around each voxel
-/// whose state changed in place (grass turned to sand by a script's
-/// `set`).
+/// around it (resting on what changed), and each voxel whose state changed
+/// in place (grass turned to sand by a script's `set`, or a block turned
+/// to rest on another side) and the six around it.
 fn note_edits(
     mut changes: MessageReader<VoxelChanged>,
     mut updates: MessageReader<PropertiesUpdated>,
@@ -77,6 +77,8 @@ fn note_edits(
         unchecked.0.extend(around(change.pos));
     }
     for update in updates.read() {
+        // Itself too: the side it rests on can come from its own state.
+        unchecked.0.insert(update.pos);
         unchecked.0.extend(around(update.pos));
     }
 }
@@ -237,6 +239,39 @@ mod tests {
         for (at_pos, _) in row {
             assert_eq!(at(&mut app, at_pos), BlockState::AIR, "{at_pos}");
         }
+    }
+
+    /// A block turned in place to rest on another side is checked there:
+    /// turned to hang from nothing, it breaks.
+    #[test]
+    fn a_block_turned_in_place_is_checked() {
+        let content = test_mod(&[
+            (
+                "models/solid.json5",
+                r#"{ faces: [], occludes: ["up", "down", "north", "south", "east", "west"] }"#,
+            ),
+            ("blocks/wall.json5", r#"{ model: "solid" }"#),
+            (
+                "blocks/lamp.json5",
+                r#"{ model: "quad", textures: { all: "a" },
+                     properties: { on: ["down", "up"] },
+                     support: { side: "{on}", solid: true } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let wall = content.default_state("test:wall").unwrap();
+        let lamp = |on: &str| content.block_state("test:lamp", &[("on", on)]).unwrap();
+        let (down, up) = (lamp("down"), lamp("up"));
+        let mut app = app();
+        app.insert_resource(content);
+        let pos = IVec3::new(3, 4, 3);
+        edit(&mut app, &[(pos - IVec3::Y, wall), (pos, down)]);
+        assert_eq!(at(&mut app, pos), down);
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| voxels.update(pos, up))
+            .unwrap();
+        app.update();
+        assert_eq!(at(&mut app, pos), BlockState::AIR);
     }
 
     /// A support changed in place (a script's `set_state`, or `set` to
