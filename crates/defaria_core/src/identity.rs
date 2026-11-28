@@ -73,13 +73,44 @@ pub const MAX_NAME: usize = 32;
 /// The name of a player who didn't give one.
 pub const DEFAULT_NAME: &str = "Player";
 
-/// `name` as it's shown: trimmed, without control characters, at most
-/// [`MAX_NAME`] characters, and [`DEFAULT_NAME`] if nothing's left. Names
-/// come from clients, so the server cleans them too.
+/// Whether `c` is a Unicode format character (general category Cf): one
+/// that shows nothing itself but changes how text around it shows, such as
+/// bidirectional overrides and zero-width characters, which could make
+/// one name look like another.
+pub fn is_format(c: char) -> bool {
+    matches!(
+        c as u32,
+        0xAD | 0x600..=0x605
+            | 0x61C
+            | 0x6DD
+            | 0x70F
+            | 0x890..=0x891
+            | 0x8E2
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0001
+            | 0xE0020..=0xE007F
+    )
+}
+
+/// `name` as it's shown: trimmed, without control or format characters
+/// ([`is_format`]), at most [`MAX_NAME`] characters, and [`DEFAULT_NAME`]
+/// if nothing's left. Names come from clients, so the server cleans them
+/// too.
 pub fn clean_name(name: &str) -> String {
     let clean: String = name
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_format(*c))
         .collect::<String>()
         .trim()
         .chars()
@@ -117,6 +148,10 @@ mod tests {
     fn names_are_cleaned() {
         assert_eq!(clean_name("  Ada \n"), "Ada");
         assert_eq!(clean_name("a\u{7}b"), "ab");
+        // Bidi overrides, zero-width characters and the like.
+        assert_eq!(clean_name("Ad\u{202E}a\u{200B}\u{2066}\u{FEFF}"), "Ada");
+        assert_eq!(clean_name("\u{200D}\u{E0041}"), DEFAULT_NAME);
+        assert_eq!(clean_name("Zoë 日本"), "Zoë 日本");
         assert_eq!(clean_name(""), DEFAULT_NAME);
         assert_eq!(clean_name(" \t "), DEFAULT_NAME);
         assert_eq!(clean_name(&"x".repeat(100)).chars().count(), MAX_NAME);

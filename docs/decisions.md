@@ -401,6 +401,18 @@ bandwidth for light or chunks shows up in the `net` report.
   reconnects and restarts, so scripts may keep it. A player without one
   (a test's) has a nil id. The server finds the recipient among the
   players playing, one by one: fine for tens of players.
+- The key is written to a temporary file of its own, created mode 600
+  (on unix; Windows relies on `%APPDATA%`'s per-user permissions), and
+  hard-linked into place, which fails if a key is already there: two
+  games starting at once both use the one that won. A key that can't be
+  read plays single player as a stand-in, but refuses `--connect`.
+  `servers.json5` is read again just before a server is added and
+  written through a temporary file of its own; two copies adding at the
+  very same moment can still lose one entry (there's no file lock),
+  which only means trusting that server again next time.
+- Names drop control and Unicode format characters (bidi overrides,
+  zero-width), so one can't be made to look like another that way;
+  look-alike letters from other scripts still can.
 - What's still open: teleports a client sends (a scenario's `camera`)
   are still taken as they are; checking them by permission needs
   permissions, which can now be given by id. There are no accounts or key

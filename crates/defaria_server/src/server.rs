@@ -172,13 +172,26 @@ impl Connection {
 /// before, is `inventory::player`'s, as they're added.) A player who's
 /// already playing, joining again (from a game that stopped without
 /// saying so, or a second copy), takes over: the old connection goes,
-/// saving them first.
+/// saving them first. Of several connections with one id at once, the
+/// last takes over; the others are closed.
 fn accept(
     mut commands: Commands,
     mut incoming: ResMut<Incoming>,
     playing: Query<(Entity, &PlayerId), With<Connection>>,
 ) {
-    for Joining { id, name, link } in incoming.0.drain(..) {
+    let mut joining: Vec<Joining> = Vec::new();
+    for join in incoming.0.drain(..) {
+        if let Some(earlier) = joining.iter().position(|j| j.id == join.id) {
+            // Dropping its link closes it.
+            let earlier = joining.remove(earlier);
+            info!(
+                "{} ({}) joined twice at once; the earlier connection goes",
+                earlier.name, earlier.id
+            );
+        }
+        joining.push(join);
+    }
+    for Joining { id, name, link } in joining {
         for (entity, _) in playing.iter().filter(|(_, playing)| **playing == id) {
             info!("{name} ({id}) joined again; the old connection goes");
             commands.entity(entity).despawn();
@@ -796,6 +809,34 @@ mod tests {
         assert!(first.is_closed());
         second.receive();
         assert!(!second.is_closed());
+    }
+
+    /// Two connections with one id at once: one player, on the later one.
+    #[test]
+    fn two_joining_at_once_as_one_player_are_one() {
+        let (mut app, _client, _) = server();
+        let id = PlayerId([2; 32]);
+        let (mut earlier, first) = link();
+        let (mut later, second) = link();
+        for link in [first, second] {
+            app.world_mut().resource_mut::<Incoming>().0.push(Joining {
+                id,
+                name: "Twice".into(),
+                link,
+            });
+        }
+        app.update();
+        let world = app.world_mut();
+        let ids: Vec<PlayerId> = world
+            .query_filtered::<&PlayerId, With<Connection>>()
+            .iter(world)
+            .copied()
+            .collect();
+        assert_eq!(ids.iter().filter(|playing| **playing == id).count(), 1);
+        earlier.receive();
+        assert!(earlier.is_closed());
+        later.receive();
+        assert!(!later.is_closed());
     }
 
     /// An input of a step `tick`, holding `controls`, putting the player

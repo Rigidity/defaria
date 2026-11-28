@@ -395,7 +395,10 @@ async fn serve(connection: Connection, content: u64, accepted: mpsc::Sender<Join
     let Ok(bulk_stream) = connection.open_uni().await else {
         return;
     };
-    info!("{name} ({id}) connected from {}", connection.remote_address());
+    info!(
+        "{name} ({id}) connected from {}",
+        connection.remote_address()
+    );
     let (net_end, game_end) = link();
     if accepted
         .send(Joining {

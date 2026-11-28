@@ -129,15 +129,20 @@ Format 3 moved the file from the world's `player.json5` to
 ```
 
 `identity.pem` is an ECDSA P-256 key pair, PKCS#8 PEM, made the first time
-the game needs it and readable only by its owner. The game presents it to
+the game needs it and readable only by its owner: on macOS and Linux it's
+created with mode 600 (never readable by others, even while it's being
+written); on Windows it relies on the per-user permissions of `%APPDATA%`.
+It's only ever put in place if there's no file yet, so two copies of the
+game starting for the first time end up with the same key. The game presents it to
 servers as a self-signed TLS client certificate (made afresh from the key
 each time), and the player's id is the SHA-256 hash of its public key (the
 certificate's DER `SubjectPublicKeyInfo`): the server reads it from the
 handshake, so a client can't claim someone else's id. Single player, with
 no handshake, uses the same id, so a world played alone and then hosted
 keeps its player. Losing the file loses that player everywhere; a file that
-can't be read is reported and left alone, and the game plays as someone new
-until it's fixed.
+can't be read is reported and left alone, and the game plays single player
+as someone new, and refuses to join servers (where it would be a stray
+player), until it's fixed.
 
 `profile.json5`, written with the default name if it isn't there:
 
@@ -153,7 +158,9 @@ its key's fingerprint (the SHA-256 hash of its public key, as for players).
 A server's certificate is self-signed, so the first connection to an
 address trusts it and remembers it here; after that, a server at that
 address with another key is refused, with an error saying so, until its
-entry is removed (as SSH's `known_hosts`). The server list (#52) builds on
+entry is removed (as SSH's `known_hosts`). It's read again just before a
+new server is added, so what another copy of the game added meanwhile is
+kept. The server list (#52) builds on
 this file: entries may gain fields, such as a name, with a format bump.
 
 ```json5

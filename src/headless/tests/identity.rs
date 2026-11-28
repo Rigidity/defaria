@@ -205,3 +205,20 @@ fn a_server_whose_key_changed_is_refused() {
     let still = crate::identity::KnownServers::load(Some(&data)).unwrap();
     assert_eq!(still.fingerprint(&address), Some(remembered));
 }
+
+/// An install whose key can't be read doesn't join a server as a stand-in
+/// (a stray player there), and says why; nothing is remembered.
+#[test]
+fn a_damaged_key_joins_no_server() {
+    let data = temp_folder("identity-damaged-join");
+    std::fs::write(data.join(crate::identity::KEY_FILE), "not a key").unwrap();
+    let (mut game, listener) = start(None, "127.0.0.1:0".parse().unwrap());
+    let address = listener.address.to_string();
+    take_clients_from(&mut game.server, listener);
+    let error = join(&mut game, &address, &data).unwrap_err();
+    assert!(
+        error.to_string().contains("key couldn't be read"),
+        "{error}"
+    );
+    assert!(!data.join(crate::identity::SERVERS_FILE).exists());
+}

@@ -121,13 +121,22 @@ fn start_server(world: &mut World) {
 
 /// Connects to the server at `address` as `local`, checking its key
 /// against the one the known servers in `folder` remember for it, and
-/// remembering it if there's none yet.
+/// remembering it if there's none yet (the file read again just before
+/// it's written, so what another copy of the game added meanwhile is
+/// kept). An install whose key couldn't be read doesn't connect: on a
+/// server its stand-in would be a stray player, not them.
 pub fn connect_remembering(
     address: &str,
     content: u64,
     local: &LocalIdentity,
     folder: Option<&std::path::Path>,
 ) -> Result<defaria_core::net::ClientLink, ConnectError> {
+    if let Some(error) = &local.damaged {
+        return Err(ConnectError::Failed(format!(
+            "not joining {address}: this game's key couldn't be read ({error}), so the \
+             server wouldn't know you. Fix or move that file and start the game again"
+        )));
+    }
     let mut known = KnownServers::load(folder)?;
     let expected = known.fingerprint(address);
     let connected = crate::quic::connect(address, content, &local.identity, &local.name, expected)?;
