@@ -6,7 +6,9 @@
 use std::{net::SocketAddr, thread, time::Duration};
 
 use bevy::{ecs::system::RunSystemOnce, prelude::*};
-use defaria_client::{content_swap::swap_content, net::ServerConnection, session::GameState};
+use defaria_client::{
+    content_swap::swap_content, meshing::ModelFaces, net::ServerConnection, session::GameState,
+};
 use defaria_core::{
     content::{BlockState, Content, load::ModFiles},
     script::ScriptRuntime,
@@ -234,6 +236,17 @@ fn the_game_swaps_in_a_servers_content_and_back() {
     assert!(playing.block("test:tinted").is_some());
     assert!(app.world().contains_resource::<ServerConnection>());
     assert!(scripts(&app).contains(&"test:greet".to_string()));
+    // Chunks are meshed with a model face table of the server's content.
+    let faces = |app: &mut App| {
+        app.update();
+        let table = app.world().resource::<ModelFaces>().words.clone();
+        (
+            table,
+            ModelFaces::new(app.world().resource::<Content>()).words,
+        )
+    };
+    let (server_table, expected) = faces(&mut app);
+    assert_eq!(server_table, expected);
 
     // Leaving, it has its own again.
     app.world_mut()
@@ -244,5 +257,10 @@ fn the_game_swaps_in_a_servers_content_and_back() {
     assert_eq!(back.fingerprint(), own);
     assert!(back.block("test:tinted").is_none());
     assert!(!scripts(&app).contains(&"test:greet".to_string()));
+    // (Mod `test`'s block reuses a cube and texture of the base game's, so
+    // here the two tables hold the same faces; a table that differs with
+    // its content is `voxel_material`'s test.)
+    let (own_table, expected) = faces(&mut app);
+    assert_eq!(own_table, expected);
     drop(listener);
 }

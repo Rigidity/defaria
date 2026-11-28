@@ -26,13 +26,9 @@ use super::packed::{FACE_BITS, Vertex};
 /// can name.
 pub const MAX_MODEL_FACES: usize = 1 << FACE_BITS;
 
-/// Set in an entry's `layer` when the face is a triangle: its third
-/// vertex is the fourth corner, for blending light.
-pub const TRIANGLE: u32 = 1 << 31;
-
 /// 32-bit words a table entry takes in the shader's `ModelFace`: each
 /// corner's position and `u`, then the four `v`s, then the normal and
-/// layer.
+/// texture.
 pub const FACE_WORDS: usize = 24;
 
 /// One entry: a model face as the shader reads it.
@@ -43,28 +39,23 @@ pub struct ModelFace {
     pub positions: [Vec3; 4],
     pub uvs: [Vec2; 4],
     pub normal: Vec3,
-    /// The texture's index, with [`TRIANGLE`] on a triangle.
-    pub layer: u32,
+    /// The texture's index.
+    pub texture: u32,
+    /// Whether it has three corners rather than four. The shader needn't
+    /// know: a triangle has no twist (see [`super::packed`]).
+    pub triangle: bool,
 }
 
 impl ModelFace {
     fn of(face: &BakedFace) -> Self {
         let corner = |i: usize| &face.vertices[i.min(face.vertices.len() - 1)];
-        let triangle = face.vertices.len() == 3;
         Self {
             positions: std::array::from_fn(|i| corner(i).pos),
             uvs: std::array::from_fn(|i| corner(i).uv),
             normal: face.normal,
-            layer: face.layer | if triangle { TRIANGLE } else { 0 },
+            texture: face.layer,
+            triangle: face.vertices.len() == 3,
         }
-    }
-
-    pub fn is_triangle(&self) -> bool {
-        self.layer & TRIANGLE != 0
-    }
-
-    pub fn texture(&self) -> u32 {
-        self.layer & !TRIANGLE
     }
 
     /// The entry's words, as the shader's `ModelFace` lays them out.
@@ -76,13 +67,8 @@ impl ModelFace {
             words[16 + i] = uv.y.to_bits();
         }
         words[20..23].copy_from_slice(&self.normal.to_array().map(f32::to_bits));
-        words[23] = self.layer;
+        words[23] = self.texture;
         words
-    }
-
-    /// The bits that tell entries apart.
-    fn key(&self) -> [u32; FACE_WORDS] {
-        self.words()
     }
 }
 
@@ -136,26 +122,34 @@ impl FaceIndex {
 pub struct ModelFaces {
     pub index: Arc<FaceIndex>,
     /// Every entry's words, for the shader's storage buffer.
-    pub words: Arc<Vec<u32>>,
+    pub words: Vec<u32>,
 }
 
 impl ModelFaces {
     pub fn new(content: &Content) -> Self {
+        Self::with_limit(content, MAX_MODEL_FACES)
+    }
+
+    /// The table, with at most `limit` entries: faces past it get none,
+    /// and aren't drawn.
+    fn with_limit(content: &Content, limit: usize) -> Self {
         let mut index = FaceIndex::default();
-        let mut found: HashMap<[u32; FACE_WORDS], u16> = HashMap::new();
+        let mut found: HashMap<([u32; FACE_WORDS], bool), u16> = HashMap::new();
         let mut words = Vec::new();
         let mut left_out = 0;
         for state in &content.states {
             index.starts.push(index.ids.len() as u32);
             for face in &state.faces {
                 let entry = ModelFace::of(face);
-                let id = match found.get(&entry.key()) {
+                let entry_words = entry.words();
+                let key = (entry_words, entry.triangle);
+                let id = match found.get(&key) {
                     Some(&id) => Some(id),
-                    None if index.faces.len() < MAX_MODEL_FACES => {
+                    None if index.faces.len() < limit => {
                         let id = index.faces.len() as u16;
-                        found.insert(entry.key(), id);
+                        found.insert(key, id);
                         index.faces.push(entry);
-                        words.extend_from_slice(&entry.words());
+                        words.extend_from_slice(&entry_words);
                         Some(id)
                     }
                     None => {
@@ -168,13 +162,13 @@ impl ModelFaces {
         }
         if left_out > 0 {
             error!(
-                "the blocks' models have more distinct faces than the {MAX_MODEL_FACES} a chunk \
-                 mesh can name; {left_out} faces aren't drawn"
+                "the blocks' models have more distinct faces than the {limit} a chunk mesh can \
+                 name; {left_out} faces aren't drawn"
             );
         }
         Self {
             index: Arc::new(index),
-            words: Arc::new(words),
+            words,
         }
     }
 
@@ -214,8 +208,8 @@ mod tests {
                     assert_eq!(entry.positions[corner], vertex.pos);
                     assert_eq!(entry.uvs[corner], vertex.uv);
                 }
-                assert_eq!(entry.texture(), face.layer);
-                assert_eq!(entry.is_triangle(), face.vertices.len() == 3);
+                assert_eq!(entry.texture, face.layer);
+                assert_eq!(entry.triangle, face.vertices.len() == 3);
                 total += 1;
             }
         }
@@ -238,6 +232,63 @@ mod tests {
         assert!(!stone.contains(&soil));
     }
 
+    /// Faces past the table's limit get no entry, while faces that share
+    /// an entry already made still find it; and a mesh leaves the faces
+    /// without one out.
+    #[test]
+    fn faces_past_the_limit_get_no_entry_and_arent_drawn() {
+        use crate::meshing::build::Neighborhood;
+        use defaria_core::light::Light;
+        let content = base();
+        let full = ModelFaces::new(content);
+        let limit = 6;
+        let small = ModelFaces::with_limit(content, limit);
+        assert_eq!(small.index.len(), limit);
+        assert_eq!(small.words.len(), limit * FACE_WORDS);
+        let mut kept = 0;
+        for (i, state) in content.states.iter().enumerate() {
+            for f in 0..state.faces.len() {
+                let state = BlockState(i as u16);
+                match small.index.id(state, f) {
+                    Some(id) => {
+                        kept += 1;
+                        let entry = full.index.face(full.index.id(state, f).unwrap());
+                        assert_eq!(small.index.face(id), entry);
+                    }
+                    None => assert!(full.index.id(state, f).unwrap() as usize >= limit),
+                }
+            }
+        }
+        assert!(
+            kept > limit,
+            "states sharing the first entries still find them"
+        );
+        // A block whose faces are all past the limit draws nothing; one
+        // within it draws all six.
+        let mesh = |block: BlockState| {
+            let pos = IVec3::splat(4);
+            Neighborhood::from_fn(|p| (if p == pos { block } else { BlockState::AIR }, Light::DARK))
+                .build(content, &small.index)
+                .opaque
+                .count_vertices()
+        };
+        let cube =
+            |s: &BlockState| content.state(*s).faces.len() == 6 && content.state(*s).is_opaque();
+        let states = || {
+            (1..content.states.len() as u16)
+                .map(BlockState)
+                .filter(cube)
+        };
+        let drawn = states()
+            .find(|&s| (0..6).all(|f| small.index.id(s, f).is_some()))
+            .unwrap();
+        let left_out = states()
+            .find(|&s| (0..6).all(|f| small.index.id(s, f).is_none()))
+            .unwrap();
+        assert_eq!(mesh(drawn), 24);
+        assert_eq!(mesh(left_out), 0);
+    }
+
     /// The words are laid out as the shader's `ModelFace` reads them.
     #[test]
     fn words_follow_the_shader_struct() {
@@ -250,7 +301,8 @@ mod tests {
                 Vec2::ONE,
             ],
             normal: Vec3::NEG_Y,
-            layer: 7 | TRIANGLE,
+            texture: 7,
+            triangle: false,
         };
         let words = face.words();
         let f = |w: u32| f32::from_bits(w);
@@ -258,6 +310,6 @@ mod tests {
         assert_eq!(f(words[7]), 0.3);
         assert_eq!(f(words[17]), 0.4);
         assert_eq!([f(words[20]), f(words[21]), f(words[22])], [0.0, -1.0, 0.0]);
-        assert_eq!(words[23], 7 | TRIANGLE);
+        assert_eq!(words[23], 7);
     }
 }

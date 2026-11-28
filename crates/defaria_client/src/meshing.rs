@@ -30,7 +30,6 @@ use std::sync::Arc;
 
 use bevy::{
     asset::RenderAssetUsages,
-    mesh::Indices,
     platform::collections::HashSet,
     prelude::*,
     tasks::{AsyncComputeTaskPool, ComputeTaskPool, Task, futures::check_ready},
@@ -328,13 +327,7 @@ impl MeshSize {
         Self {
             vertices: mesh.count_vertices(),
             vertex_bytes: mesh.get_vertex_buffer_size(),
-            index_bytes: mesh.indices().map_or(0, |indices| {
-                indices.len()
-                    * match indices {
-                        Indices::U16(_) => 2,
-                        Indices::U32(_) => 4,
-                    }
-            }),
+            index_bytes: mesh.get_index_buffer_bytes().map_or(0, <[u8]>::len),
         }
     }
 }

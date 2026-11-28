@@ -41,7 +41,7 @@
 //! at `(0, 0)`, 1 at `(1, 0)`, 2 at `(1, 1)`, 3 at `(0, 1)`), and the quad
 //! split along its 0-2 diagonal, the bilinear blend is the interpolated
 //! value less `min(s, t) · (1 − max(s, t)) · twist`, exactly, in either
-//! triangle, whatever the quad's shape. A triangle (corners 0, 1 and 3) is
+//! triangle, whatever the quad's shape. A triangle (corners 0, 1 and 2) is
 //! blended flat, with no twist. Light's twist runs from −510 to 510 in
 //! light bytes (10 bits, signed), ambient occlusion's from −6 to 6 (4
 //! bits).
@@ -154,32 +154,39 @@ pub const HEIGHT: Field = Field::new(3, 16, 16);
 /// powers of two divide it.
 pub const HEIGHT_STEPS: u32 = 3 << 14;
 
-/// Every field, for checking they don't overlap.
-const FIELDS: [Field; 17] = [
-    LIGHT,
-    LIGHT_TWIST[0],
-    LIGHT_TWIST[1],
-    LIGHT_TWIST[2],
-    LIGHT_TWIST[3],
-    AO,
-    AO_TWIST,
-    VOXEL[0],
-    VOXEL[1],
-    VOXEL[2],
-    CORNER,
-    BACK,
-    FLOWING,
-    WRAPPED,
-    FACE,
-    HEIGHT,
-    Field::new(2, 31, 1), // spare
+/// The word's one bit no field uses.
+const SPARE: Field = Field::new(2, 31, 1);
+
+/// Every field, by the name the shader gives it, for checking they don't
+/// overlap and that the shader reads them where they are.
+pub const FIELDS: [(&str, Field); 16] = [
+    ("LIGHT", LIGHT),
+    ("LIGHT_TWIST_SKY", LIGHT_TWIST[0]),
+    ("LIGHT_TWIST_RED", LIGHT_TWIST[1]),
+    ("LIGHT_TWIST_GREEN", LIGHT_TWIST[2]),
+    ("LIGHT_TWIST_BLUE", LIGHT_TWIST[3]),
+    ("AO", AO),
+    ("AO_TWIST", AO_TWIST),
+    ("VOXEL_X", VOXEL[0]),
+    ("VOXEL_Y", VOXEL[1]),
+    ("VOXEL_Z", VOXEL[2]),
+    ("CORNER", CORNER),
+    ("BACK", BACK),
+    ("FLOWING", FLOWING),
+    ("WRAPPED", WRAPPED),
+    ("FACE", FACE),
+    ("HEIGHT", HEIGHT),
 ];
 
 const fn fields_fit() -> bool {
     let mut used = [0u32; 4];
     let mut i = 0;
-    while i < FIELDS.len() {
-        let field = FIELDS[i];
+    while i <= FIELDS.len() {
+        let field = if i == FIELDS.len() {
+            SPARE
+        } else {
+            FIELDS[i].1
+        };
         if field.offset + field.bits > 32 || used[field.word] & field.mask() != 0 {
             return false;
         }
@@ -198,7 +205,6 @@ const _: () = assert!(HEIGHT_STEPS < 1 << HEIGHT.bits);
 const _: () = assert!(HEIGHT_STEPS.is_multiple_of(16 * 3 * 4));
 const _: () = assert!((2 * u8::MAX as i32) < 1 << (LIGHT_TWIST_BITS - 1));
 const _: () = assert!(2 * 3 < 1 << (AO_TWIST_BITS - 1));
-const _: () = assert!((defaria_core::content::MAX_TILES as u32) < super::model_faces::TRIANGLE);
 
 /// What one vertex carries, before packing.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -273,15 +279,12 @@ pub fn twist(corners: [i32; 4]) -> i32 {
 }
 
 /// Where corner `corner` of a face is, for blending: `(0, 0)`, `(1, 0)`,
-/// `(1, 1)` and `(0, 1)` round a quad. A triangle's third vertex is the
-/// fourth corner.
-pub fn corner_position(corner: u8, triangle: bool) -> Vec2 {
-    match (corner, triangle) {
-        (0, _) => Vec2::ZERO,
-        (1, _) => Vec2::X,
-        (2, false) => Vec2::ONE,
-        _ => Vec2::Y,
-    }
+/// `(1, 1)` and `(0, 1)` round it. As the shader's `corner_position`.
+pub fn corner_position(corner: u8) -> Vec2 {
+    Vec2::new(
+        (corner == 1 || corner == 2) as u8 as f32,
+        (corner >= 2) as u8 as f32,
+    )
 }
 
 /// The bilinear blend at `at` on a face, from the value the GPU

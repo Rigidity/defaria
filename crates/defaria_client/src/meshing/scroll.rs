@@ -136,6 +136,9 @@ pub fn corner_toward(normal: Vec3, vertex: Vec3) -> IVec2 {
 /// plane, wrapping every block, so the texture lines up from one tile to
 /// the next. Tops and bottoms run along X and Z; sides across, and down
 /// (an image's rows go down).
+///
+/// The shader works these out itself (`uv_at` in `voxel.wesl`); this is
+/// what it follows, and what tests check meshes by.
 pub fn uv_at(normal: Vec3, pos: Vec3) -> Vec2 {
     to_uv(normal, pos)
 }

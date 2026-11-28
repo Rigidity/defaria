@@ -4,6 +4,10 @@
 //! corners' ambient occlusion, as attributes of their own beside the
 //! packed ones. Unpacking also checks that every vertex of a face agrees
 //! on what's the same across it, the twist among them.
+//!
+//! The attributes and flag bits here are a view for tests only, laid out
+//! as the tests read them; nothing draws with them. The mesh itself has
+//! only [`ATTRIBUTE_PACKED`] and [`ATTRIBUTE_FLOW`].
 
 use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues, VertexFormat};
 
@@ -41,20 +45,13 @@ pub fn with_attributes(mut mesh: Mesh, faces: &FaceIndex) -> Mesh {
     while start < vertices.len() {
         let first = vertices[start];
         let face = faces.face(first.face);
-        let triangle = face.is_triangle();
+        let triangle = face.triangle;
         let group = &vertices[start..start + if triangle { 3 } else { 4 }];
-        let corner_of = |v: &Vertex| {
-            if triangle && v.corner == 2 {
-                3
-            } else {
-                v.corner as usize
-            }
-        };
         let mut light = [0u32; 4];
         let mut occlusion = [0u8; 4];
         for vertex in group {
-            light[corner_of(vertex)] = u32::from_le_bytes(vertex.light);
-            occlusion[corner_of(vertex)] = vertex.ao;
+            light[vertex.corner as usize] = u32::from_le_bytes(vertex.light);
+            occlusion[vertex.corner as usize] = vertex.ao;
         }
         let expected = if triangle {
             ([0; 4], 0)
@@ -97,7 +94,7 @@ pub fn with_attributes(mut mesh: Mesh, faces: &FaceIndex) -> Mesh {
                 face.uvs[vertex.corner as usize]
             };
             uvs.push(uv.to_array());
-            corners.push(corner_position(vertex.corner, triangle).to_array());
+            corners.push(corner_position(vertex.corner).to_array());
             lights.push(light);
             let flags = [
                 (vertex.back, BACK_FACE),
@@ -107,7 +104,7 @@ pub fn with_attributes(mut mesh: Mesh, faces: &FaceIndex) -> Mesh {
             .into_iter()
             .filter(|(set, _)| *set)
             .fold(0, |bits, (_, flag)| bits | flag);
-            layers.push([face.texture() | flags, u32::from_le_bytes(occlusion)]);
+            layers.push([face.texture | flags, u32::from_le_bytes(occlusion)]);
         }
         start += group.len();
     }

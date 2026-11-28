@@ -55,7 +55,14 @@ impl Plugin for VoxelMaterialPlugin {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .init_resource::<BlockMaterial>()
             .init_resource::<BlockTiles>()
-            .add_systems(Update, (build_block_texture, upload_model_faces));
+            .add_systems(
+                Update,
+                (
+                    build_block_texture,
+                    // The table built this frame, before chunks drawn with it.
+                    upload_model_faces.after(crate::meshing::RemeshChunks),
+                ),
+            );
     }
 }
 
@@ -441,37 +448,12 @@ mod tests {
         assert!(shader.contains("@binding(4) var<storage, read> faces: array<ModelFace>"));
         // The packed vertex's fields, where the mesher puts them.
         use crate::meshing::{model_faces, packed};
-        let fields = [
-            ("LIGHT", packed::LIGHT),
-            ("LIGHT_TWIST_SKY", packed::LIGHT_TWIST[0]),
-            ("LIGHT_TWIST_RED", packed::LIGHT_TWIST[1]),
-            ("LIGHT_TWIST_GREEN", packed::LIGHT_TWIST[2]),
-            ("LIGHT_TWIST_BLUE", packed::LIGHT_TWIST[3]),
-            ("AO", packed::AO),
-            ("AO_TWIST", packed::AO_TWIST),
-            ("VOXEL_X", packed::VOXEL[0]),
-            ("VOXEL_Y", packed::VOXEL[1]),
-            ("VOXEL_Z", packed::VOXEL[2]),
-            ("CORNER", packed::CORNER),
-            ("BACK", packed::BACK),
-            ("FLOWING", packed::FLOWING),
-            ("WRAPPED", packed::WRAPPED),
-            ("FACE", packed::FACE),
-            ("HEIGHT", packed::HEIGHT),
-        ];
-        let mut constants: Vec<String> = fields
-            .iter()
-            .map(|(name, field)| {
-                format!(
-                    "const {name}: vec3<u32> = vec3<u32>({}u, {}u, {}u);",
-                    field.word, field.offset, field.bits
-                )
-            })
-            .collect();
-        constants.push(format!(
-            "const TRIANGLE: u32 = 0x{:08x}u;",
-            model_faces::TRIANGLE
-        ));
+        let constants = packed::FIELDS.iter().map(|(name, field)| {
+            format!(
+                "const {name}: vec3<u32> = vec3<u32>({}u, {}u, {}u);",
+                field.word, field.offset, field.bits
+            )
+        });
         for constant in constants {
             assert!(
                 shader.contains(&constant),
@@ -500,14 +482,31 @@ mod tests {
                 "corners: array<vec4<f32>, 4>,",
                 "v: vec4<f32>,",
                 "normal: vec3<f32>,",
-                "layer: u32,",
+                "texture: u32,",
             ]
         );
         assert_eq!(model_faces::FACE_WORDS, 4 * 4 + 4 + 3 + 1);
-        // The bilinear blend, as `packed::untwist` works it out.
-        assert!(shader.contains(
-            "return interpolated - min(corner.x, corner.y) * (1.0 - max(corner.x, corner.y)) * twist;"
-        ));
+        // What the shader works out as the mesh tests' decoder does
+        // (`meshing::build::decoded`): the bilinear blend as
+        // `packed::untwist`, corners as `packed::corner_position`, a
+        // fluid's texture coordinates as `scroll::uv_at`, a back's normal,
+        // and light and its twist in the same levels.
+        for line in [
+            "return interpolated - min(corner.x, corner.y) * (1.0 - max(corner.x, corner.y)) * twist;",
+            "return vec2<f32>(select(0.0, 1.0, corner == 1u || corner == 2u), select(0.0, 1.0, corner >= 2u));",
+            "return vec3<f32>(-round(normal.z), 0.0, round(normal.x));",
+            "return position.xz;",
+            "return vec2<f32>(dot(position, across(normal)), -position.y);",
+            "local.y = local.y * f32(field(words, HEIGHT)) / HEIGHT_STEPS;",
+            "let position = voxel + local;",
+            "out.world_normal = mesh_normal_local_to_world(select(normal, -normal, back), vertex.instance_index);",
+            "out.uv = select(vec2<f32>(model.w, faces[face].v[corner]), uv_at(normal, position), wrapped);",
+            "out.light = unpack4x8unorm(field(words, LIGHT)) * MAX_LIGHT;",
+            ") / 255.0 * MAX_LIGHT;",
+            "let model = faces[face].corners[corner];",
+        ] {
+            assert!(shader.contains(line), "the shader doesn't say {line}");
+        }
         // The animation table's entries, word by word as `words` writes
         // them: the struct's fields in order, each 32 bits.
         let start = shader.find("struct Animation {").unwrap();

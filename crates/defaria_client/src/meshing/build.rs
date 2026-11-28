@@ -66,28 +66,17 @@ use defaria_core::{
 /// full sky light, so faces at the edge of the world are lit.
 const OPEN_SKY: Light = Light::new(MAX_LIGHT, [0; 3]);
 
-/// `face` (of a block from 0 to 1 high) squeezed to run from the bottom
-/// up to `top`, with its texture cut off rather than squashed: a vertex
-/// keeps the texture coordinate it had at its new height, along the face's
-/// vertical edge.
+/// Where `face` (of a block from 0 to 1 high) is once squeezed to run from
+/// the bottom up to `top`, as the shader draws a fluid's faces: for
+/// shading it, sorting it and its mesh's bounds. Its texture coordinates
+/// are left alone; a fluid's come from where it is.
 fn cut_face(face: &BakedFace, top: &FluidTop) -> BakedFace {
     let vertices = face
         .vertices
         .iter()
-        .map(|vertex| {
-            let y = vertex.pos.y * top.at_vertex(vertex.pos);
-            let partner = face
-                .vertices
-                .iter()
-                .find(|other| other.pos.xz() == vertex.pos.xz() && other.pos.y != vertex.pos.y);
-            let uv = partner.map_or(vertex.uv, |other| {
-                let along = (y - vertex.pos.y) / (other.pos.y - vertex.pos.y);
-                vertex.uv.lerp(other.uv, along)
-            });
-            Vertex {
-                pos: vertex.pos.with_y(y),
-                uv,
-            }
+        .map(|vertex| Vertex {
+            pos: vertex.pos.with_y(vertex.pos.y * top.at_vertex(vertex.pos)),
+            uv: vertex.uv,
         })
         .collect();
     BakedFace {
@@ -524,12 +513,7 @@ impl Neighborhood {
         } else {
             pos
         };
-        for (i, vertex) in face.vertices.iter().enumerate() {
-            let corner = if face.vertices.len() == 3 && i == 2 {
-                3
-            } else {
-                i
-            };
+        for (corner, vertex) in face.vertices.iter().enumerate() {
             corners[corner] = if axis_aligned {
                 self.shade_corner(content, front, normal, vertex.pos, opaque)
             } else {
@@ -538,8 +522,8 @@ impl Neighborhood {
                 CornerShading::from_light(self.light(pos), 1, OPEN)
             };
         }
-        // A triangle has no third corner: it's blended flat (see
-        // `packed`), and corner 2 is left dark.
+        // A triangle has no fourth corner: it's blended flat (see
+        // `packed`), and corner 3 is left dark.
         if glows {
             for corner in &mut corners {
                 corner.light[1..].fill(u8::MAX);
@@ -761,7 +745,6 @@ impl MeshBuilder {
         let base = self.vertices.len() as u32;
         let count = face.vertices.len();
         let triangle = count == 3;
-        let corner_of = |index: usize| if triangle && index == 2 { 3 } else { index };
         let light: [[u8; 4]; 4] = shading.light.map(u32::to_le_bytes);
         let occlusion = shading.occlusion.to_le_bytes();
         let (light_twist, ao_twist) = if triangle {
@@ -786,7 +769,6 @@ impl MeshBuilder {
                 Some((min, max)) => (min.min(pos), max.max(pos)),
                 None => (pos, pos),
             });
-            let corner = corner_of(index);
             let vertex = packed::Vertex {
                 voxel: voxel.as_uvec3(),
                 corner: index as u8,
@@ -795,9 +777,9 @@ impl MeshBuilder {
                 flowing: surface.is_some_and(|surface| surface.flowing),
                 wrapped: surface.is_some(),
                 height: surface.map_or(0.0, |surface| surface.heights[index]),
-                light: light[corner],
+                light: light[index],
                 light_twist,
-                ao: occlusion[corner],
+                ao: occlusion[index],
                 ao_twist,
             };
             self.vertices.push(vertex.pack());
@@ -852,7 +834,7 @@ const LEVEL_STEP: f32 = u8::MAX as f32 / MAX_LIGHT as f32;
 
 /// The light and ambient occlusion at a face's four corners, in order
 /// round it: sky, red, green and blue bytes from the lowest, and the
-/// levels a byte each from the lowest. A triangle's third corner is dark.
+/// levels a byte each from the lowest. A triangle's fourth corner is dark.
 struct FaceShading {
     light: [u32; 4],
     occlusion: u32,

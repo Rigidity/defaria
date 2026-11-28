@@ -615,16 +615,16 @@ fn light_sources_glow() {
     assert_eq!(shading.light, [[0, 255, 255, 255]; 4]);
 }
 
-/// A triangle's three vertices are corners 0, 1 and 3 of a face, each
-/// with its own light, and it blends flat across them: no twist (which
-/// unpacking checks).
+/// A triangle's three vertices are its first three corners, each with its
+/// own light, and it blends flat across them: no twist (which unpacking
+/// checks).
 #[test]
 fn triangles_blend_flat_between_their_corners() {
     let mesh = shapes();
     let mut chunk = Chunk::default();
     chunk.set(2, 2, 2, shape(&mesh, "tri"));
     let corners: Vec<Vec2> = vec2s(&chunk_mesh(&chunk, &mesh, air), ATTRIBUTE_CORNER);
-    assert_eq!(corners, [Vec2::ZERO, Vec2::X, Vec2::Y]);
+    assert_eq!(corners, [Vec2::ZERO, Vec2::X, Vec2::ONE]);
 
     // In a mesh, with light differing at each corner.
     let pos = IVec3::new(2, 2, 2);
@@ -637,8 +637,8 @@ fn triangles_blend_flat_between_their_corners() {
     };
     let sky = lights[0].map(|corner| corner.to_le_bytes()[0] as i32);
     assert_ne!(sky[0], sky[1]);
-    assert_ne!(sky[0], sky[3]);
-    assert_eq!(sky[2], 0, "there's no third corner");
+    assert_ne!(sky[0], sky[2]);
+    assert_eq!(sky[3], 0, "there's no fourth corner");
 }
 
 /// Faces per mesh, opaque, cut-out and translucent, of `blocks` (by
@@ -1369,4 +1369,117 @@ fn a_plant_in_a_film_is_shaded_as_on_dry_ground() {
         lights[0].map(|corner| corner.to_le_bytes()[0])
     };
     assert_eq!(plant_light(FULL_FLUID / 16), plant_light(0));
+}
+
+/// Each quad's triangles, front and back, split it along its corners 0-2
+/// diagonal, which untwisting the light relies on: at points across each
+/// triangle, the light interpolated between its vertices' own corners,
+/// untwisted, is the bilinear blend of the face's four corners.
+#[test]
+fn quads_split_along_the_diagonal_untwisting_expects() {
+    let blocks = [
+        (A, block("water")),
+        (B, block("glass")),
+        (A - IVec3::Y, block("stone")),
+    ];
+    let light = |p: IVec3| Light::new((p.x * 5 + 2 * p.z + 3 * p.y) as u8 % 16, [0; 3]);
+    let meshes = neighborhood(&blocks, light).meshes(base());
+    let mut checked = 0;
+    for mesh in [&meshes.opaque, &meshes.translucent] {
+        let corners = vec2s(mesh, ATTRIBUTE_CORNER);
+        let Some(VertexAttributeValues::Uint32x4(lights)) = mesh.attribute(ATTRIBUTE_LIGHT) else {
+            panic!("no light attribute");
+        };
+        let Some(VertexAttributeValues::Uint32x4(packed)) = mesh.attribute(ATTRIBUTE_PACKED) else {
+            panic!("no vertices");
+        };
+        let vertices: Vec<_> = packed.iter().map(|w| packed::Vertex::unpack(*w)).collect();
+        let indices: Vec<usize> = mesh.indices().unwrap().iter().collect();
+        for triangle in indices.chunks(3) {
+            let sky = |i: usize| f32::from(vertices[i].light[0]);
+            let twist = f32::from(vertices[triangle[0]].light_twist[0]);
+            let four = lights[triangle[0]].map(|c| f32::from(c.to_le_bytes()[0]));
+            let bilinear = |at: Vec2| {
+                let bottom = four[0] + (four[1] - four[0]) * at.x;
+                let top = four[3] + (four[2] - four[3]) * at.x;
+                bottom + (top - bottom) * at.y
+            };
+            for weights in [
+                [1.0, 1.0, 1.0],
+                [4.0, 1.0, 1.0],
+                [1.0, 4.0, 1.0],
+                [1.0, 1.0, 4.0],
+            ] {
+                let total: f32 = weights.iter().sum();
+                let w = weights.map(|w| w / total);
+                let at: Vec2 = (0..3).map(|k| corners[triangle[k]] * w[k]).sum();
+                let interpolated: f32 = (0..3).map(|k| sky(triangle[k]) * w[k]).sum();
+                let blended = packed::untwist(interpolated, twist, at);
+                assert!(
+                    (blended - bilinear(at)).abs() < 1e-3,
+                    "{at}: {blended} vs {}",
+                    bilinear(at)
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 20, "{checked} triangles");
+}
+
+/// A mesh's bounds, which culling goes by (it has no positions Bevy could
+/// find them from), hold exactly its faces, chunk-local: a slab off the
+/// origin, and a fluid at its height.
+#[test]
+fn meshes_carry_their_bounds() {
+    let bounds = |mesh: &Mesh| {
+        let aabb = mesh.final_aabb.expect("no bounds");
+        (Vec3::from(aabb.min), Vec3::from(aabb.max))
+    };
+    let at = IVec3::new(2, 3, 4);
+    let slab = neighborhood(&[(at, block("stone_slab"))], |_| OPEN_SKY).mesh(base());
+    assert_eq!(
+        bounds(&slab),
+        (Vec3::new(2.0, 3.0, 4.0), Vec3::new(3.0, 3.5, 5.0))
+    );
+
+    let half = fluid_mesh(&[(at, "water", Some(FULL_FLUID / 2))]);
+    let (min, max) = bounds(&half);
+    let positions = vec3s(&half, Mesh::ATTRIBUTE_POSITION);
+    let lowest = positions.iter().fold(Vec3::MAX, |a, &b| a.min(b));
+    let highest = positions.iter().fold(Vec3::MIN, |a, &b| a.max(b));
+    assert!(
+        min.distance(lowest) < 1e-4 && max.distance(highest) < 1e-4,
+        "{min} {max}"
+    );
+    assert!(max.y < at.y as f32 + 0.75, "the fluid's height: {max}");
+    assert!(
+        Neighborhood::from_fn(|_| (BlockState::AIR, OPEN_SKY))
+            .mesh(base())
+            .final_aabb
+            .is_none()
+    );
+}
+
+/// Indices are 16-bit while every vertex fits, and 32-bit past that, the
+/// same when a translucent mesh's faces are put in order.
+#[test]
+fn indices_widen_past_16_bits_of_vertices() {
+    let list: Vec<u32> = vec![0, 1, 2, 65_535];
+    assert!(matches!(indices(list.clone(), 1 << 16), Indices::U16(_)));
+    let wide = indices(vec![0, 1, 2, 65_536], (1 << 16) + 1);
+    assert!(matches!(wide, Indices::U32(_)));
+    assert_eq!(wide.iter().collect::<Vec<_>>(), [0, 1, 2, 65_536]);
+    let face = |first: u32, y: f32| SortFace {
+        center: Vec3::new(0.5, y, 0.5),
+        sort_at: Vec3::new(0.5, y, 0.5),
+        normal: Vec3::Y,
+        first,
+        indices: &[0, 1, 2, 0, 2, 3],
+    };
+    let faces = |vertices| TranslucentFaces::new(vec![face(0, 5.0), face(69_996, 7.0)], vertices);
+    let sorted = faces(70_000).indices_from(Vec3::ZERO);
+    assert!(matches!(sorted, Indices::U32(_)));
+    assert_eq!(sorted.iter().next(), Some(69_996), "the farther face first");
+    assert!(matches!(faces(8).indices_from(Vec3::ZERO), Indices::U16(_)));
 }

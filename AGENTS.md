@@ -142,7 +142,8 @@ changes.
    seconds that took) and `memory` (what the loaded chunks hold: how many,
    how many are one block or light throughout, the bytes of their blocks,
    light, fluid and meshes, what the meshes sent the GPU (bytes a face
-   and a chunk), and how many chunks of one value are still kept dense) and `lookups` (time reading every voxel in a box of at
+   and a chunk), and how many chunks of one value are still kept
+   dense) and `lookups` (time reading every voxel in a box of at
    most 256³ by world position and a chunk at a time) and `random-ticks` (pick more
    voxels a chunk for random ticks, so scripted blocks grow or spread
    quickly enough to watch) and `joined` (wait until joining a server is

@@ -311,6 +311,14 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     assert_eq!(faces(parts.cutout), 6);
     // Two panes of glass.
     assert_eq!(faces(parts.translucent), 12);
+    // What each part sent the GPU: its packed vertices and 16-bit indices.
+    for part in [see_through, parts.cutout, parts.translucent] {
+        let size = world.get::<MeshSize>(part).unwrap();
+        let faces = faces(part);
+        assert_eq!(size.vertices, faces * 4);
+        assert_eq!(size.vertex_bytes, faces * 4 * packed::VERTEX_BYTES);
+        assert_eq!(size.index_bytes, faces * 6 * 2);
+    }
     assert_eq!(material(see_through), materials.material);
     assert_eq!(material(parts.cutout), materials.cutout);
     assert_eq!(material(parts.translucent), materials.translucent);

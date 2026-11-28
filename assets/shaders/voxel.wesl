@@ -83,13 +83,11 @@ struct ModelFace {
     // Each corner's v.
     v: vec4<f32>,
     normal: vec3<f32>,
-    // The texture's index, with TRIANGLE on a triangle.
-    layer: u32,
+    // The texture's index.
+    texture: u32,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(4) var<storage, read> faces: array<ModelFace>;
-
-const TRIANGLE: u32 = 0x80000000u;
 
 // The packed vertex's fields: word, lowest bit and width. Must match
 // crates/defaria_client/src/meshing/packed.rs.
@@ -185,12 +183,10 @@ fn uv_at(normal: vec3<f32>, position: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(dot(position, across(normal)), -position.y);
 }
 
-// Where corner `corner` of a face is: see `corner` in VertexOutput. A
-// triangle's third vertex is the fourth corner.
-fn corner_position(corner: u32, triangle: bool) -> vec2<f32> {
-    let x = corner == 1u || (corner == 2u && !triangle);
-    let y = corner >= 2u;
-    return vec2<f32>(select(0.0, 1.0, x), select(0.0, 1.0, y));
+// Where corner `corner` of a face is: see `corner` in VertexOutput. As
+// `corner_position` in crates/defaria_client/src/meshing/packed.rs.
+fn corner_position(corner: u32) -> vec2<f32> {
+    return vec2<f32>(select(0.0, 1.0, corner == 1u || corner == 2u), select(0.0, 1.0, corner >= 2u));
 }
 
 @vertex
@@ -201,7 +197,6 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let corner = field(words, CORNER);
     let model = faces[face].corners[corner];
     let normal = faces[face].normal;
-    let layer = faces[face].layer;
     let voxel = vec3<f32>(vec3<u32>(field(words, VOXEL_X), field(words, VOXEL_Y), field(words, VOXEL_Z)));
     let wrapped = field(words, WRAPPED) != 0u;
     var local = model.xyz;
@@ -222,7 +217,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.world_position = world_position.xyz;
     out.world_normal = mesh_normal_local_to_world(select(normal, -normal, back), vertex.instance_index);
     out.uv = select(vec2<f32>(model.w, faces[face].v[corner]), uv_at(normal, position), wrapped);
-    out.corner = corner_position(corner, (layer & TRIANGLE) != 0u);
+    out.corner = corner_position(corner);
     out.light = unpack4x8unorm(field(words, LIGHT)) * MAX_LIGHT;
     out.light_twist = vec4<f32>(
         signed_field(words, LIGHT_TWIST_SKY),
@@ -233,7 +228,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.occlusion = f32(field(words, AO));
     out.occlusion_twist = signed_field(words, AO_TWIST);
     let flags = select(0u, WRAPS, wrapped) | select(0u, FLOWS, field(words, FLOWING) != 0u);
-    out.face = vec2<u32>(layer & ~TRIANGLE, flags);
+    out.face = vec2<u32>(faces[face].texture, flags);
     out.flow = vertex.flow;
     return out;
 }
