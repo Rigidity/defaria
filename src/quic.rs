@@ -82,7 +82,7 @@ pub use defaria_core::server_list::DEFAULT_PORT;
 
 /// The protocol's version: a client and server of different ones refuse
 /// each other.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 const ALPN: &[u8] = b"defaria/3";
 /// Frames bigger than this are deflated.
@@ -757,6 +757,7 @@ async fn serve(
             id,
             name,
             link: game_end,
+            in_process: false,
         })
         .is_err()
     {
@@ -1336,15 +1337,18 @@ mod tests {
         assert_eq!(bulk, [ServerMessage::Settled(false), big]);
         assert!(got.contains(&ServerMessage::CloseScreen));
 
-        client.send(ClientMessage::Inputs(vec![defaria_core::net::Input {
-            tick: 1,
-            controls: default(),
-            look: default(),
-            teleport: None,
-        }]));
+        client.send(ClientMessage::Inputs {
+            inputs: vec![defaria_core::net::Input {
+                tick: 1,
+                controls: default(),
+                look: default(),
+                teleport: None,
+            }],
+            made_after: 0,
+        });
         assert!(matches!(
             wait_for(|| server.receive(), 1)[0],
-            ClientMessage::Inputs(_)
+            ClientMessage::Inputs { .. }
         ));
 
         // The client goes: the server's end sees it.

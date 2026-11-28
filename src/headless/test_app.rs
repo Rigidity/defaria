@@ -287,6 +287,7 @@ pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multipla
                     id: test_player_id(index),
                     name: format!("Player {}", index + 1),
                     link: at_server,
+                    in_process: false,
                 });
             let relay = Relay {
                 client: client_side,
@@ -328,6 +329,16 @@ impl Multiplayer {
         self.pump();
         for relay in &mut self.relays {
             relay.frame += 1;
+        }
+    }
+
+    /// Starts each link's losses afresh from `seed`, so which messages are
+    /// lost from here on doesn't depend on how many were sent before (how
+    /// long the world took to load, say).
+    pub fn reseed(&mut self, seed: u64) {
+        for (index, relay) in self.relays.iter_mut().enumerate() {
+            // (xorshift never leaves zero.)
+            relay.random = (seed ^ 0x9E37_79B9_7F4A_7C15 ^ index as u64).max(1);
         }
     }
 
