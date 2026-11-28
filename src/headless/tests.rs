@@ -5,6 +5,7 @@ mod cracks;
 mod editing;
 mod fluid_container;
 mod game_mode;
+mod identity;
 mod inventory_screen;
 mod light;
 mod machine_screen;

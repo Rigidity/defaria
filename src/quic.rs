@@ -4,10 +4,15 @@
 //! [`ServerLink`] or [`ClientLink`] it does in single player; a background
 //! thread moves what goes in one end over the network and out the other.
 //!
-//! A connection's client opens a stream both ways, the control stream,
-//! and says who it is ([`Handshake::Hello`]: the protocol and its
-//! content's fingerprint); the server answers on it, accepting or refusing.
-//! Then:
+//! Both ends present a self-signed certificate for their key
+//! (`identity`): the client's says which player it is (its id is the
+//! key's hash, which the server reads from the handshake, never from what
+//! the client says), and the server's is checked against the fingerprint
+//! the client remembers for it ([`connect`]'s `expected`), so a server
+//! whose key changed is refused. A connection's client then opens a
+//! stream both ways, the control stream, and says hello
+//! ([`Handshake::Hello`]: the protocol, its content's fingerprint and the
+//! player's name); the server answers on it, accepting or refusing. Then:
 //!
 //! - chunks, their changes and drops, whether the client's settled, and
 //!   which of its predicted edits are done (after the chunks they
@@ -25,9 +30,6 @@
 //! isn't timed out; a server takes only small frames from clients, and a
 //! tiny hello within a few seconds; and either end finishes writing before
 //! it closes. A stopping server closes every connection.
-//!
-//! The server's certificate is made afresh each time it starts, and the
-//! client accepts any: who the server is, and remembering it, is #216.
 
 use std::{
     io,
@@ -40,25 +42,27 @@ use std::{
 use smol::future::FutureExt as _;
 
 use bevy::prelude::*;
-use defaria_core::net::{
-    ClientLink, ClientMessage, ServerLink, ServerMessage, decode, encode, link,
+use defaria_core::{
+    identity::{PlayerId, clean_name},
+    net::{ClientLink, ClientMessage, ServerLink, ServerMessage, decode, encode, link},
 };
+use defaria_server::server::Joining;
 use quinn::{
     ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
 };
 use serde::{Deserialize, Serialize};
 
+use crate::identity::{CERT_NAME, Fingerprint, Identity, key_hash};
+
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 25_575;
 
 /// The protocol's version: a client and server of different ones refuse
 /// each other.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
-const ALPN: &[u8] = b"defaria/1";
-/// The name the client asks the server's certificate for.
-const SERVER_NAME: &str = "defaria";
+const ALPN: &[u8] = b"defaria/2";
 /// Frames bigger than this are deflated.
 const COMPRESS_OVER: usize = 512;
 /// The biggest frame a client accepts from its server, so a bad length
@@ -80,7 +84,12 @@ const POLL: Duration = Duration::from_millis(1);
 /// What a client and server say first, on the control stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Handshake {
-    Hello { protocol: u32, content: u64 },
+    Hello {
+        protocol: u32,
+        content: u64,
+        /// The player's name, only shown (who they are is their key).
+        name: String,
+    },
     Welcome,
     Refused(String),
 }
@@ -99,16 +108,16 @@ fn bulk(message: &ServerMessage) -> bool {
 }
 
 /// A server listening for clients: each that connects, and says it has the
-/// same content, comes out of [`Listener::accept`] as a link to it.
+/// same content, comes out of [`Listener::accept`] as a player joining.
 pub struct Listener {
     pub address: SocketAddr,
-    incoming: mpsc::Receiver<ServerLink>,
+    incoming: mpsc::Receiver<Joining>,
     endpoint: Endpoint,
 }
 
 impl Listener {
     /// The clients that connected since the last call.
-    pub fn accept(&self) -> Vec<ServerLink> {
+    pub fn accept(&self) -> Vec<Joining> {
         self.incoming.try_iter().collect()
     }
 
@@ -121,9 +130,10 @@ impl Listener {
 }
 
 /// Listens on `address` (port 0 for any free one) for clients whose
-/// content has the fingerprint `content`.
-pub fn listen(address: SocketAddr, content: u64) -> io::Result<Listener> {
-    let config = server_config().map_err(io::Error::other)?;
+/// content has the fingerprint `content`, as the server whose key is
+/// `identity`.
+pub fn listen(address: SocketAddr, content: u64, identity: &Identity) -> io::Result<Listener> {
+    let config = server_config(identity).map_err(io::Error::other)?;
     let endpoint = Endpoint::server(config, address)?;
     let address = endpoint.local_addr()?;
     let (send, incoming) = mpsc::channel();
@@ -145,7 +155,10 @@ pub fn listen(address: SocketAddr, content: u64) -> io::Result<Listener> {
                 }
             });
         })?;
-    info!("listening on {address}");
+    info!(
+        "listening on {address}, as the server with fingerprint {}",
+        Fingerprint(identity.id.0)
+    );
     Ok(Listener {
         address,
         incoming,
@@ -153,19 +166,80 @@ pub fn listen(address: SocketAddr, content: u64) -> io::Result<Listener> {
     })
 }
 
-/// Connects to the server at `address` (a host and port), saying our
-/// content has the fingerprint `content`, and returns the link to it once
-/// the server has accepted. Blocks until then. A name with several
-/// addresses (`localhost`: IPv6 and IPv4) is tried at each, IPv4 first.
-pub fn connect(address: &str, content: u64) -> Result<ClientLink, String> {
+/// Why [`connect`] didn't.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectError {
+    /// The server's key isn't the one remembered for it: it may be
+    /// someone else's server, pretending.
+    ChangedKey {
+        address: String,
+        expected: Fingerprint,
+        found: Fingerprint,
+    },
+    /// Anything else: no answer, refused, a broken connection.
+    Failed(String),
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChangedKey {
+                address,
+                expected,
+                found,
+            } => write!(
+                f,
+                "the server at {address} isn't the one played on before: its key changed \
+                 (fingerprint {found}, expected {expected}). It may be someone else's \
+                 server; if its owner says they changed its key, forget it (remove it from \
+                 servers.json5 in the game's folder) and connect again"
+            ),
+            Self::Failed(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl From<String> for ConnectError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+/// A connection made by [`connect`].
+pub struct Connected {
+    /// The link to the server.
+    pub link: ClientLink,
+    /// The server's key's fingerprint, to remember.
+    pub fingerprint: Fingerprint,
+}
+
+/// Connects to the server at `address` (a host and port) as `identity`,
+/// named `name`, saying our content has the fingerprint `content`, and
+/// returns the link to it once the server has accepted. Blocks until
+/// then. With `expected`, a server whose key's fingerprint isn't it is
+/// refused ([`ConnectError::ChangedKey`]); without, any is trusted (the
+/// first connection), and the caller remembers the one it got. A name
+/// with several addresses (`localhost`: IPv6 and IPv4) is tried at each,
+/// IPv4 first.
+pub fn connect(
+    address: &str,
+    content: u64,
+    identity: &Identity,
+    name: &str,
+    expected: Option<Fingerprint>,
+) -> Result<Connected, ConnectError> {
+    let given = address.to_string();
     let mut addresses: Vec<SocketAddr> = address
         .to_socket_addrs()
         .map_err(|error| format!("{address}: {error}"))?
         .collect();
     addresses.sort_by_key(SocketAddr::is_ipv6);
     if addresses.is_empty() {
-        return Err(format!("{address}: no such address"));
+        return Err(format!("{address}: no such address").into());
     }
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let config = client_config(identity, expected, seen.clone())?;
+    let name = name.to_string();
     let (result_send, result) = mpsc::channel();
     thread::Builder::new()
         .name("client network".into())
@@ -177,7 +251,10 @@ pub fn connect(address: &str, content: u64) -> Result<ClientLink, String> {
                         smol::Timer::after(HANDSHAKE_TIMEOUT).await;
                         Err(format!("{address} didn't answer"))
                     };
-                    match open(address, content).or(timeout).await {
+                    match open(address, content, &name, config.clone())
+                        .or(timeout)
+                        .await
+                    {
                         Ok((connection, control, server_end, game_end)) => {
                             let _ = result_send.send(Ok(game_end));
                             play(connection, control, server_end).await;
@@ -190,9 +267,22 @@ pub fn connect(address: &str, content: u64) -> Result<ClientLink, String> {
             });
         })
         .map_err(|error| error.to_string())?;
-    result
+    let outcome = result
         .recv()
-        .map_err(|_| "the network thread stopped".to_string())?
+        .map_err(|_| "the network thread stopped".to_string())?;
+    let found = *seen.lock().unwrap_or_else(|e| e.into_inner());
+    match (outcome, found) {
+        (Ok(link), Some(fingerprint)) => Ok(Connected { link, fingerprint }),
+        (Ok(_), None) => Err("the server showed no certificate".to_string().into()),
+        (Err(_), Some(found)) if expected.is_some_and(|expected| expected != found) => {
+            Err(ConnectError::ChangedKey {
+                address: given,
+                expected: expected.unwrap(),
+                found,
+            })
+        }
+        (Err(error), _) => Err(error.into()),
+    }
 }
 
 /// The client's side of setting up: connects, says hello, and waits for
@@ -200,6 +290,8 @@ pub fn connect(address: &str, content: u64) -> Result<ClientLink, String> {
 async fn open(
     address: SocketAddr,
     content: u64,
+    name: &str,
+    config: ClientConfig,
 ) -> Result<(Connection, (SendStream, RecvStream), ServerLink, ClientLink), String> {
     let bind: SocketAddr = if address.is_ipv6() {
         "[::]:0".parse().unwrap()
@@ -207,9 +299,9 @@ async fn open(
         "0.0.0.0:0".parse().unwrap()
     };
     let mut endpoint = Endpoint::client(bind).map_err(|error| error.to_string())?;
-    endpoint.set_default_client_config(client_config()?);
+    endpoint.set_default_client_config(config);
     let connection = endpoint
-        .connect(address, SERVER_NAME)
+        .connect(address, CERT_NAME)
         .map_err(|error| error.to_string())?
         .await
         .map_err(|error| format!("can't connect to {address}: {error}"))?;
@@ -220,6 +312,7 @@ async fn open(
     let hello = Handshake::Hello {
         protocol: PROTOCOL,
         content,
+        name: name.to_string(),
     };
     write_frame(&mut send, &encode(&hello))
         .await
@@ -236,9 +329,24 @@ async fn open(
     Ok((connection, (send, receive), server_end, game_end))
 }
 
+/// The id of the player whose certificate `connection`'s client showed.
+fn player_id(connection: &Connection) -> Option<PlayerId> {
+    let certs = connection
+        .peer_identity()?
+        .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()
+        .ok()?;
+    key_hash(certs.first()?).ok().map(PlayerId)
+}
+
 /// The server's side of a connection: hears the client out, and if it's
 /// welcome, carries its messages until either side goes.
-async fn serve(connection: Connection, content: u64, accepted: mpsc::Sender<ServerLink>) {
+async fn serve(connection: Connection, content: u64, accepted: mpsc::Sender<Joining>) {
+    // Checked in the handshake: a client without a certificate can't get
+    // this far.
+    let Some(id) = player_id(&connection) else {
+        connection.close(1u32.into(), b"no certificate");
+        return;
+    };
     let Ok((mut send, mut receive)) = connection.accept_bi().await else {
         return;
     };
@@ -250,11 +358,14 @@ async fn serve(connection: Connection, content: u64, accepted: mpsc::Sender<Serv
         connection.close(1u32.into(), b"no hello");
         return;
     };
+    let mut name = String::new();
     let refusal = match decode::<Handshake>(&hello) {
         Ok(Handshake::Hello {
             protocol,
             content: theirs,
+            name: theirs_called,
         }) => {
+            name = clean_name(&theirs_called);
             if protocol != PROTOCOL {
                 Some(format!(
                     "this server speaks protocol {PROTOCOL}, the game {protocol}"
@@ -284,9 +395,16 @@ async fn serve(connection: Connection, content: u64, accepted: mpsc::Sender<Serv
     let Ok(bulk_stream) = connection.open_uni().await else {
         return;
     };
-    info!("{} joined", connection.remote_address());
+    info!("{name} ({id}) connected from {}", connection.remote_address());
     let (net_end, game_end) = link();
-    if accepted.send(game_end).is_err() {
+    if accepted
+        .send(Joining {
+            id,
+            name,
+            link: game_end,
+        })
+        .is_err()
+    {
         return;
     }
     carry_for_server(connection, (send, receive), bulk_stream, net_end).await;
@@ -506,19 +624,17 @@ async fn read_frame(stream: &mut RecvStream, max: usize) -> io::Result<Vec<u8>> 
     }
 }
 
-/// A server's config: a certificate made just now, for [`SERVER_NAME`].
-fn server_config() -> Result<ServerConfig, String> {
-    let certified = rcgen::generate_simple_self_signed(vec![SERVER_NAME.to_string()])
+/// A server's config: a certificate for its key, and every client asked
+/// for one of theirs.
+fn server_config(identity: &Identity) -> Result<ServerConfig, String> {
+    let (cert, key) = identity.certificate()?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut tls = rustls::ServerConfig::builder_with_provider(provider.clone())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| error.to_string())?
+        .with_client_cert_verifier(Arc::new(AnyClient(provider)))
+        .with_single_cert(vec![cert], key)
         .map_err(|error| error.to_string())?;
-    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
-    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .map_err(|error| error.to_string())?
-    .with_no_client_auth()
-    .with_single_cert(vec![certified.cert.der().clone()], key.into())
-    .map_err(|error| error.to_string())?;
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = QuicServerConfig::try_from(tls).map_err(|error| error.to_string())?;
     let mut config = ServerConfig::with_crypto(Arc::new(crypto));
@@ -526,15 +642,28 @@ fn server_config() -> Result<ServerConfig, String> {
     Ok(config)
 }
 
-/// A client's config, accepting any server's certificate (for now: #216).
-fn client_config() -> Result<ClientConfig, String> {
+/// A client's config: its certificate, and the server's checked against
+/// `expected` (any trusted without), the fingerprint it had put in
+/// `seen`.
+fn client_config(
+    identity: &Identity,
+    expected: Option<Fingerprint>,
+    seen: Arc<std::sync::Mutex<Option<Fingerprint>>>,
+) -> Result<ClientConfig, String> {
+    let (cert, key) = identity.certificate()?;
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut tls = rustls::ClientConfig::builder_with_provider(provider.clone())
+    let verifier = KnownServer {
+        provider: provider.clone(),
+        expected,
+        seen,
+    };
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|error| error.to_string())?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AnyServer(provider)))
-        .with_no_client_auth();
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_client_auth_cert(vec![cert], key)
+        .map_err(|error| error.to_string())?;
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = QuicClientConfig::try_from(tls).map_err(|error| error.to_string())?;
     let mut config = ClientConfig::new(Arc::new(crypto));
@@ -549,21 +678,90 @@ fn transport() -> Arc<quinn::TransportConfig> {
     Arc::new(transport)
 }
 
-/// Takes any server at its word, checking only that it holds the key its
-/// certificate names (until #216 remembers servers).
+/// Checks a server's certificate is for the key remembered for it, or
+/// takes any the first time, noting which it was. Self-signed: there's no
+/// authority to ask, so who a server is is its key, as with SSH. The
+/// handshake's signature (checked below) proves the server holds it.
 #[derive(Debug)]
-struct AnyServer(Arc<rustls::crypto::CryptoProvider>);
+struct KnownServer {
+    provider: Arc<rustls::crypto::CryptoProvider>,
+    expected: Option<Fingerprint>,
+    seen: Arc<std::sync::Mutex<Option<Fingerprint>>>,
+}
 
-impl rustls::client::danger::ServerCertVerifier for AnyServer {
+impl rustls::client::danger::ServerCertVerifier for KnownServer {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
         _intermediates: &[rustls::pki_types::CertificateDer<'_>],
         _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
+        let found = Fingerprint(key_hash(end_entity).map_err(rustls::Error::General)?);
+        *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = Some(found);
+        match self.expected {
+            Some(expected) if expected != found => Err(rustls::Error::General(
+                "the server's key isn't the one remembered for it".into(),
+            )),
+            _ => Ok(rustls::client::danger::ServerCertVerified::assertion()),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Takes any client's self-signed certificate, so long as the client
+/// proves it holds the key (the handshake's signature, checked below):
+/// which key it is says which player it is, and any key may play.
+#[derive(Debug)]
+struct AnyClient(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::server::danger::ClientCertVerifier for AnyClient {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        key_hash(end_entity).map_err(rustls::Error::General)?;
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -612,6 +810,24 @@ mod tests {
         "127.0.0.1:0".parse().unwrap()
     }
 
+    /// A server, listening on this machine with a key of its own.
+    fn server(content: u64) -> Listener {
+        listen(local(), content, &Identity::generate()).unwrap()
+    }
+
+    /// Connects to `listener` as `identity`, trusting any server.
+    fn join(listener: &Listener, content: u64, identity: &Identity) -> Result<ClientLink, String> {
+        connect(
+            &listener.address.to_string(),
+            content,
+            identity,
+            "Tester",
+            None,
+        )
+        .map(|connected| connected.link)
+        .map_err(|error| error.to_string())
+    }
+
     /// Waits for what `receive` gets to be `count` messages long.
     fn wait_for<T>(mut receive: impl FnMut() -> Vec<T>, count: usize) -> Vec<T> {
         let mut got = Vec::new();
@@ -630,10 +846,14 @@ mod tests {
     /// player's inputs as a datagram.
     #[test]
     fn messages_cross_the_network() {
-        let listener = listen(local(), 7).unwrap();
-        let address = listener.address.to_string();
-        let mut client = connect(&address, 7).unwrap();
-        let mut server = wait_for(|| listener.accept(), 1).pop().unwrap();
+        let listener = server(7);
+        let me = Identity::generate();
+        let mut client = join(&listener, 7, &me).unwrap();
+        let joining = wait_for(|| listener.accept(), 1).pop().unwrap();
+        // Who it is comes from its key; what it's called from its hello.
+        assert_eq!(joining.id, me.id);
+        assert_eq!(joining.name, "Tester");
+        let mut server = joining.link;
 
         client.send(ClientMessage::ToggleGameMode);
         client.send(ClientMessage::Mining(true));
@@ -687,8 +907,8 @@ mod tests {
     /// A client whose content isn't the server's is refused, and told why.
     #[test]
     fn different_content_is_refused() {
-        let listener = listen(local(), 7).unwrap();
-        let error = connect(&listener.address.to_string(), 8).err().unwrap();
+        let listener = server(7);
+        let error = join(&listener, 8, &Identity::generate()).err().unwrap();
         assert!(error.contains("mods"), "{error}");
         assert!(listener.accept().is_empty());
     }
@@ -696,8 +916,8 @@ mod tests {
     /// A server that stops tells its clients, who see their link close.
     #[test]
     fn clients_see_the_server_stop() {
-        let listener = listen(local(), 7).unwrap();
-        let mut client = connect(&listener.address.to_string(), 7).unwrap();
+        let listener = server(7);
+        let mut client = join(&listener, 7, &Identity::generate()).unwrap();
         let _server = wait_for(|| listener.accept(), 1);
         listener.close();
         for _ in 0..5000 {
@@ -708,5 +928,61 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         panic!("the client never saw the server stop");
+    }
+
+    /// Two installs are two players, and the same install is the same
+    /// player each time it connects.
+    #[test]
+    fn players_are_who_their_keys_say() {
+        let listener = server(7);
+        let (first, second) = (Identity::generate(), Identity::generate());
+        let _a = join(&listener, 7, &first).unwrap();
+        let _b = join(&listener, 7, &second).unwrap();
+        let mut ids: Vec<PlayerId> = wait_for(|| listener.accept(), 2)
+            .into_iter()
+            .map(|joining| joining.id)
+            .collect();
+        ids.sort();
+        let mut expected = vec![first.id, second.id];
+        expected.sort();
+        assert_eq!(ids, expected);
+        assert_ne!(first.id, second.id);
+        let _again = join(&listener, 7, &first).unwrap();
+        assert_eq!(wait_for(|| listener.accept(), 1)[0].id, first.id);
+    }
+
+    /// A client learns the server's fingerprint on first connecting;
+    /// connecting expecting it works, and a server whose key isn't the one
+    /// expected (another server at the same address) is refused, saying
+    /// so.
+    #[test]
+    fn a_changed_server_key_is_refused() {
+        let key = Identity::generate();
+        let listener = listen(local(), 7, &key).unwrap();
+        let address = listener.address.to_string();
+        let me = Identity::generate();
+        let first = connect(&address, 7, &me, "Tester", None).unwrap();
+        assert_eq!(first.fingerprint, Fingerprint(key.id.0));
+        let again = connect(&address, 7, &me, "Tester", Some(first.fingerprint));
+        assert!(again.is_ok());
+        let _ = wait_for(|| listener.accept(), 2);
+        drop(listener);
+
+        // A server with another key, where that one was.
+        let impostor = listen(local(), 7, &Identity::generate()).unwrap();
+        let address = impostor.address.to_string();
+        let error = connect(&address, 7, &me, "Tester", Some(first.fingerprint))
+            .err()
+            .unwrap();
+        let ConnectError::ChangedKey {
+            expected, found, ..
+        } = &error
+        else {
+            panic!("{error}");
+        };
+        assert_eq!(*expected, first.fingerprint);
+        assert_ne!(*found, first.fingerprint);
+        assert!(error.to_string().contains("key changed"), "{error}");
+        assert!(impostor.accept().is_empty());
     }
 }

@@ -14,6 +14,13 @@
 //!
 //! With a [`RemoteServer`] (`--connect`), play is on that server instead,
 //! over the network (`quic`), and no server starts here.
+//!
+//! Either way the player is this install's ([`local_identity`]): the
+//! server in the game's own process takes its id as it is (there's no
+//! handshake in memory), so a world played alone and then hosted keeps
+//! the same player. A remote server's key is checked against the one
+//! remembered for its address (`servers.json5`), or remembered, the
+//! first time.
 
 use std::time::Duration;
 
@@ -28,8 +35,13 @@ use defaria_core::{
 use defaria_server::{
     fluid::FluidSettings,
     script::{hooks::HookSettings, random_tick::RandomTicks},
-    server::{Incoming, PauseWithPlayers},
+    server::{Incoming, Joining, PauseWithPlayers},
     worldgen::TerrainSettings,
+};
+
+use crate::{
+    identity::{DataFolder, KnownServers, LocalIdentity, local_identity},
+    quic::ConnectError,
 };
 
 pub struct IntegratedServerPlugin;
@@ -66,9 +78,11 @@ pub struct RemoteServer(pub String);
 /// Builds the server, connects to it, and lets its first frame run; or,
 /// with a [`RemoteServer`], connects to that.
 fn start_server(world: &mut World) {
+    let local = local_identity(world);
     if let Some(RemoteServer(address)) = world.get_resource::<RemoteServer>().cloned() {
         let content = world.resource::<Content>().fingerprint();
-        match crate::quic::connect(&address, content) {
+        let folder = world.get_resource::<DataFolder>().map(|f| f.0.clone());
+        match connect_remembering(&address, content, &local, folder.as_deref()) {
             Ok(link) => {
                 info!("playing on {address}");
                 world.insert_resource(ServerConnection(link));
@@ -96,9 +110,37 @@ fn start_server(world: &mut World) {
     // In single player, pausing pauses the game.
     app.insert_resource(PauseWithPlayers(true));
     let (client, server) = link();
-    app.world_mut().resource_mut::<Incoming>().0.push(server);
+    app.world_mut().resource_mut::<Incoming>().0.push(Joining {
+        id: local.identity.id,
+        name: local.name,
+        link: server,
+    });
     world.insert_resource(ServerConnection(client));
     world.insert_non_send(IntegratedServer { app });
+}
+
+/// Connects to the server at `address` as `local`, checking its key
+/// against the one the known servers in `folder` remember for it, and
+/// remembering it if there's none yet.
+pub fn connect_remembering(
+    address: &str,
+    content: u64,
+    local: &LocalIdentity,
+    folder: Option<&std::path::Path>,
+) -> Result<defaria_core::net::ClientLink, ConnectError> {
+    let mut known = KnownServers::load(folder)?;
+    let expected = known.fingerprint(address);
+    let connected = crate::quic::connect(address, content, &local.identity, &local.name, expected)?;
+    if expected.is_none() {
+        info!(
+            "trusting {address}, the first time, as the server with fingerprint {}",
+            connected.fingerprint
+        );
+        if let Err(error) = known.remember(address, connected.fingerprint) {
+            error!("{error}; it won't be remembered");
+        }
+    }
+    Ok(connected.link)
 }
 
 /// Copies the client's `R`, if it has one, to the server app.

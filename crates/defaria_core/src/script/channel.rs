@@ -27,7 +27,7 @@ use bevy::reflect::Reflect;
 use mlua::{Lua, Table, Value};
 
 use super::{Side, api::from_lua, sandbox::Meter};
-use crate::{block_entity, net::ScriptMessage};
+use crate::{block_entity, identity::PlayerId, net::ScriptMessage};
 
 /// The hook each side calls for a message from the other:
 /// `on_message(channel, value, player)`, `player` nil on a client.
@@ -50,9 +50,8 @@ pub const MESSAGE_BURST: f64 = 40.0;
 pub enum Recipient {
     /// The server's scripts: what a client sends.
     Server,
-    /// The client of the player with this id: the bits of its entity on
-    /// the server, as `player.id` gives it.
-    Player(u64),
+    /// The client of the player with this id, as `player.id` gives it.
+    Player(PlayerId),
     /// Every player's client.
     Everyone,
 }
@@ -249,15 +248,18 @@ fn message(lua: &Lua, mod_id: &str, channel: String, value: Value) -> mlua::Resu
 
 /// The id of the player a script names: a player table (its `id`) or the
 /// id itself.
-fn player_id(player: &Value) -> mlua::Result<u64> {
+fn player_id(player: &Value) -> mlua::Result<PlayerId> {
     let id = match player {
         Value::Table(table) => table.raw_get::<Value>("id")?,
         other => other.clone(),
     };
+    let id = match &id {
+        Value::String(text) => text.to_str().ok().and_then(|text| text.parse().ok()),
+        _ => None,
+    };
     match id {
-        Value::Integer(n) if n >= 0 => Ok(n as u64),
-        Value::Number(n) if n >= 0.0 && n.fract() == 0.0 && n < (1u64 << 53) as f64 => Ok(n as u64),
-        _ => Err(mlua::Error::runtime(
+        Some(id) => Ok(id),
+        None => Err(mlua::Error::runtime(
             "`net.send` on the server sends to a player: the `player` a hook was handed, or its \
              `id`",
         )),
@@ -394,14 +396,15 @@ mod tests {
     fn the_server_sends_to_a_player_or_everyone() {
         let mut runtime = runtime(
             Side::Server,
-            "function on_reply(player) net.send(player, 'hi', 'there') net.send(7, 'hi') end\n\
+            "function on_reply(player) net.send(player, 'hi', 'there') \
+             net.send(string.rep('07', 32), 'hi') end\n\
              function on_all() net.broadcast('news', { a = { 1, 2 } }) end\n\
              function on_nobody() net.send('hi', 1) end",
         );
         runtime
             .call_scoped::<()>(CALLER, "m:s", "on_reply", |lua, _, hook| {
                 let player = lua.create_table()?;
-                player.raw_set("id", 42)?;
+                player.raw_set("id", "2a".repeat(32))?;
                 hook.call(player)
             })
             .unwrap();
@@ -413,8 +416,8 @@ mod tests {
         assert_eq!(
             to,
             [
-                Recipient::Player(42),
-                Recipient::Player(7),
+                Recipient::Player(PlayerId([42; 32])),
+                Recipient::Player(PlayerId([7; 32])),
                 Recipient::Everyone
             ]
         );

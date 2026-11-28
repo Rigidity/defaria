@@ -19,6 +19,7 @@ pub use world::{ScriptWorld, WorldCall};
 use defaria_core::{
     content::{Content, Direction, ItemState},
     game_mode::GameMode,
+    identity::PlayerId,
     script::api::BlockRef,
 };
 
@@ -35,10 +36,9 @@ pub fn handle(lua: &Lua, pos: IVec3, machine: bool) -> mlua::Result<mlua::AnyUse
 /// A player, as a hook's `player` argument sees them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerView {
-    /// Their id, which `net.send` sends to: their entity's bits, as
-    /// replication names them. `None` for one that isn't a player's
-    /// entity (a test's).
-    pub id: Option<u64>,
+    /// Their id, which `net.send` sends to: their key's hash, the same
+    /// every time they play. `None` for a player without one (a test's).
+    pub id: Option<PlayerId>,
     /// Their eyes.
     pub pos: Vec3,
     /// The way they look.
@@ -56,9 +56,8 @@ pub struct PlayerView {
 /// the face of it they look at.
 pub fn player_table(lua: &Lua, player: &PlayerView) -> mlua::Result<Table> {
     let table = lua.create_table()?;
-    // A whole number, which a Luau number holds exactly while the
-    // entity's generation is under 2^21.
-    table.raw_set("id", player.id.map(|id| id as f64))?;
+    // 64 hex digits.
+    table.raw_set("id", player.id.map(|id| id.to_string()))?;
     let v = |v: Vec3| mlua::Vector::new(v.x, v.y, v.z);
     table.raw_set("pos", v(player.pos))?;
     table.raw_set("look", v(player.look))?;

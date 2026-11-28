@@ -70,6 +70,9 @@
 //! run fails if the world doesn't settle within [`SETTLE_TIMEOUT_FRAMES`].
 //! Headless runs play a world kept in memory, so every run starts from the
 //! same world; `--world <folder>` plays (and saves) one on disk instead.
+//! Each run is a new install (a new key, in a temporary data folder), so
+//! it's a new player there; `--data <folder>` plays as the install whose
+//! data folder that is, to come back as the same player.
 //!
 //! `fill` and `camera` set up exact situations (a sealed room, a lamp, a
 //! view) without steering there with input. Edits go through the same path
@@ -126,7 +129,7 @@ pub use script::Script;
 #[cfg(test)]
 pub use test_app::{
     Conditions, Multiplayer, run_more, server, server_world, settle, test_client, test_game,
-    test_multiplayer, test_multiplayer_over,
+    test_multiplayer, test_multiplayer_over, test_player_id, test_server,
 };
 
 /// Fixed time step for every headless frame.

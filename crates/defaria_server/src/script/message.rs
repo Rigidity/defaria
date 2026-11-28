@@ -31,6 +31,7 @@ use super::{
 use crate::server::Connection;
 use defaria_core::{
     game_mode::GameMode,
+    identity::PlayerId,
     net::{ClientMessage, ScriptMessage, ServerMessage},
     player::{Look, Player, eyes},
     script::{
@@ -138,7 +139,14 @@ fn run_messages(
     runtime: Option<ResMut<ScriptRuntime>>,
     mut pending: ResMut<PendingMessages>,
     mut world: ScriptWorld,
-    players: Query<(Option<(&Transform, &Player, &Look)>, Option<&GameMode>), With<Connection>>,
+    players: Query<
+        (
+            Option<&PlayerId>,
+            Option<(&Transform, &Player, &Look)>,
+            Option<&GameMode>,
+        ),
+        With<Connection>,
+    >,
 ) {
     let Some(mut runtime) = runtime else {
         pending.0.clear();
@@ -155,11 +163,11 @@ fn run_messages(
         };
         count += 1;
         // A player who's gone since is forgotten, with what they sent.
-        let Ok((body, mode)) = players.get(entity) else {
+        let Ok((id, body, mode)) = players.get(entity) else {
             continue;
         };
         let view = PlayerView {
-            id: Some(entity.to_bits()),
+            id: id.copied(),
             pos: body.map_or(Vec3::ZERO, |(t, p, l)| eyes(t, p, l).translation),
             look: body.map_or(Vec3::NEG_Z, |(t, p, l)| *eyes(t, p, l).forward()),
             mode: mode.copied().unwrap_or_default(),
@@ -210,7 +218,7 @@ fn forget_players(
 /// Sends what the server's scripts sent this frame to the players' clients.
 fn send_messages(
     runtime: Option<Res<ScriptRuntime>>,
-    mut players: Query<(Entity, &mut Connection)>,
+    mut players: Query<(Option<&PlayerId>, &mut Connection)>,
 ) {
     // Each id that isn't a player's logged once a frame.
     let mut unknown = HashSet::new();
@@ -220,7 +228,9 @@ fn send_messages(
     for sent in runtime.outbox().take() {
         match sent.to {
             Recipient::Player(id) => {
-                let player = Entity::try_from_bits(id).and_then(|e| players.get_mut(e).ok());
+                let player = players
+                    .iter_mut()
+                    .find(|(playing, _)| playing.is_some_and(|playing| *playing == id));
                 match player {
                     Some((_, mut connection)) => {
                         connection.send(ServerMessage::Script(sent.message));

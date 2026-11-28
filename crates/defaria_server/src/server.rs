@@ -25,6 +25,7 @@ use defaria_core::{
     content::{BlockState, Content},
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
+    identity::PlayerId,
     inventory::{Inventory, transfer::transfer},
     light::ChunkLight,
     machine::{
@@ -46,7 +47,8 @@ pub struct ServerNetPlugin;
 
 impl Plugin for ServerNetPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Incoming>()
+        app.register_type::<PlayerId>()
+            .init_resource::<Incoming>()
             .init_resource::<PauseWithPlayers>()
             .add_systems(
                 PreUpdate,
@@ -95,7 +97,17 @@ pub struct PauseWithPlayers(pub bool);
 
 /// New connections, which join as players on the next frame.
 #[derive(Resource, Default)]
-pub struct Incoming(pub Vec<ServerLink>);
+pub struct Incoming(pub Vec<Joining>);
+
+/// A player joining: who they are, from their connection (their key's
+/// hash over the network, the install's own in single player; never what
+/// a client says), what they're called, and the link to their client.
+pub struct Joining {
+    pub id: PlayerId,
+    /// Only shown.
+    pub name: String,
+    pub link: ServerLink,
+}
 
 /// A player's connection to its client, and what the client has been sent.
 #[derive(Component)]
@@ -156,13 +168,27 @@ impl Connection {
 }
 
 /// Each new connection joins as a player where new players start, moved
-/// by its client's inputs.
-fn accept(mut commands: Commands, mut incoming: ResMut<Incoming>) {
-    for link in incoming.0.drain(..) {
+/// by its client's inputs. (Where they left off, if they've played here
+/// before, is `inventory::player`'s, as they're added.) A player who's
+/// already playing, joining again (from a game that stopped without
+/// saying so, or a second copy), takes over: the old connection goes,
+/// saving them first.
+fn accept(
+    mut commands: Commands,
+    mut incoming: ResMut<Incoming>,
+    playing: Query<(Entity, &PlayerId), With<Connection>>,
+) {
+    for Joining { id, name, link } in incoming.0.drain(..) {
+        for (entity, _) in playing.iter().filter(|(_, playing)| **playing == id) {
+            info!("{name} ({id}) joined again; the old connection goes");
+            commands.entity(entity).despawn();
+        }
+        info!("{name} ({id}) joined");
         let eyes = Transform::from_translation(START_POSITION).looking_at(START_TARGET, Vec3::Y);
         let feet = feet_below(START_POSITION.as_dvec3(), defaria_core::player::EYE_HEIGHT);
         commands.spawn((
-            Name::new("Player"),
+            Name::new(name),
+            id,
             player(feet, Look::from_rotation(eyes.rotation)),
             MovedByInputs,
             PlayerInputs::default(),
@@ -174,11 +200,14 @@ fn accept(mut commands: Commands, mut incoming: ResMut<Incoming>) {
 }
 
 /// Takes what each client sent; a client that's gone leaves.
-fn receive(mut commands: Commands, mut connections: Query<(Entity, &mut Connection)>) {
-    for (entity, mut connection) in &mut connections {
+fn receive(
+    mut commands: Commands,
+    mut connections: Query<(Entity, &mut Connection, Option<&Name>)>,
+) {
+    for (entity, mut connection, name) in &mut connections {
         let messages = connection.link.receive();
         if connection.link.is_closed() {
-            info!("a player left");
+            info!("{} left", name.map_or("a player", Name::as_str));
             commands.entity(entity).despawn();
             continue;
         }
@@ -681,7 +710,11 @@ mod tests {
             ))
             .build();
         let (mut client, server) = link();
-        app.world_mut().resource_mut::<Incoming>().0.push(server);
+        app.world_mut().resource_mut::<Incoming>().0.push(Joining {
+            id: PlayerId([1; 32]),
+            name: "Tester".into(),
+            link: server,
+        });
         let sent = until(&mut app, &mut client, |message| {
             matches!(message, ServerMessage::Settled(true))
         });
@@ -742,6 +775,27 @@ mod tests {
         assert_eq!(state.inventory.count(stone), STARTING_COUNT);
         assert_eq!(state.game_mode, GameMode::Creative);
         assert!(app.world().get::<Player>(player).is_some());
+    }
+
+    /// A player who joins while already playing (their game stopped
+    /// without saying so, or it's a second copy) takes over: one player,
+    /// on the new connection, and the old one's closed.
+    #[test]
+    fn a_player_joining_again_takes_over() {
+        let (mut app, mut first, _) = server();
+        let (mut second, link) = link();
+        app.world_mut().resource_mut::<Incoming>().0.push(Joining {
+            id: PlayerId([1; 32]),
+            name: "Tester".into(),
+            link,
+        });
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(world.query::<&Connection>().iter(world).count(), 1);
+        first.receive();
+        assert!(first.is_closed());
+        second.receive();
+        assert!(!second.is_closed());
     }
 
     /// An input of a step `tick`, holding `controls`, putting the player

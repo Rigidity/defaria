@@ -13,6 +13,7 @@
 pub mod dedicated;
 mod devtools;
 pub mod headless;
+pub mod identity;
 pub mod integrated;
 pub mod quic;
 pub mod server;

@@ -4,6 +4,7 @@ use bevy::{app::ScheduleRunnerPlugin, prelude::*, window::PresentMode};
 use defaria::{
     Cli, DevToolsPlugin, GamePlugin, dedicated,
     headless::{self, HeadlessPlugin, Script},
+    identity::DataFolder,
     integrated::RemoteServer,
 };
 use defaria_client::session::{StartAtMenu, WorldsFolder};
@@ -19,6 +20,7 @@ fn main() -> AppExit {
             port: cli.port,
             world: cli.world,
             radius: cli.radius,
+            data: cli.data.or_else(save::data_dir),
         });
     }
     let mut app = App::new();
@@ -39,14 +41,18 @@ fn main() -> AppExit {
         }
         None => {}
     }
-    let run_worlds =
-        std::env::temp_dir().join(format!("defaria-headless-worlds-{}", std::process::id()));
-    let worlds = match cli.headless {
-        Some(_) => Some(run_worlds.clone()),
-        None => save::worlds_dir(),
+    // The game's data folder: the install's identity and the worlds. A
+    // headless run's is its own, never the player's, so it plays as
+    // someone new and its world list is empty.
+    let run_data = std::env::temp_dir().join(format!("defaria-headless-{}", std::process::id()));
+    let data = match (&cli.data, &cli.headless) {
+        (Some(data), _) => Some(data.clone()),
+        (None, Some(_)) => Some(run_data.clone()),
+        (None, None) => save::data_dir(),
     };
-    if let Some(worlds) = worlds {
-        app.insert_resource(WorldsFolder(worlds));
+    if let Some(data) = data {
+        app.insert_resource(WorldsFolder(data.join("worlds")))
+            .insert_resource(DataFolder(data));
     }
 
     if let Some(path) = cli.headless {
@@ -97,7 +103,7 @@ fn main() -> AppExit {
     }
 
     let exit = app.run();
-    // A headless run's worlds are its own, and go with it.
-    let _ = std::fs::remove_dir_all(run_worlds);
+    // A headless run's data is its own, and goes with it.
+    let _ = std::fs::remove_dir_all(run_data);
     exit
 }

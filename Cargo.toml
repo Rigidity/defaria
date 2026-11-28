@@ -60,6 +60,11 @@ tracing = { workspace = true }
 quinn = { version = "0.11", default-features = false, features = ["runtime-smol", "rustls-ring", "log"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Hashing certificates' public keys into players' ids and servers'
+# fingerprints (`identity`): the versions and features rustls already builds.
+ring = { version = "0.17", default-features = false }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc"] }
+json5 = { workspace = true }
 smol = "2"
 bytes = "1"
 miniz_oxide = { workspace = true }

@@ -1,7 +1,7 @@
 //! What a new player has: [`DEFAULT_HOTBAR`] in their hotbar and
 //! [`STARTING_COUNT`] of each of those items, carrying at most
 //! [`PLAYER_MAX_WEIGHT`] (in survival; see `game_mode`). Giving players
-//! theirs, and saving them in the world's `player.json5`, is the
+//! theirs, and saving them in the world's `players/<id>.json5`, is the
 //! server's (`defaria_server::inventory::player`).
 
 use bevy::prelude::*;
