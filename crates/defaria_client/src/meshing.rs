@@ -11,7 +11,10 @@
 //! mark comes off, since its faces against the missing chunks would be
 //! wrong.
 //!
-//! A mesh is built from a [`Neighborhood`] (see [`build`]). Opaque faces
+//! A mesh is built from a [`Neighborhood`] (see [`build`]), its vertices
+//! packed ([`packed`]) and naming their faces in the model face table
+//! ([`model_faces`]), which is built again whenever the content changes.
+//! Opaque faces
 //! are drawn on the chunk's own entity, cut-out and translucent ones on
 //! child entities ([`ChunkParts`]), with the translucent faces sorted back
 //! to front ([`sort_translucent_faces`]).
@@ -44,18 +47,21 @@ use defaria_core::{
 };
 
 mod build;
+pub mod model_faces;
+pub mod packed;
 pub mod scroll;
 
-pub use build::BACK_FACE;
-pub use build::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_FLOW, ATTRIBUTE_LIGHT};
 use build::{ChunkMeshes, Neighborhood, TranslucentFaces};
 pub use defaria_core::world::{AwaitingNeighbours, RemeshChunks};
+pub use model_faces::ModelFaces;
+pub use packed::{ATTRIBUTE_FLOW, ATTRIBUTE_PACKED};
 
 pub struct MeshingPlugin;
 
 impl Plugin for MeshingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, set_sky_color)
+        app.init_resource::<ModelFaces>()
+            .add_systems(Startup, set_sky_color)
             .add_systems(
                 PostUpdate,
                 unsettle_while_meshing.after(StreamingStatusSystems),
@@ -63,6 +69,7 @@ impl Plugin for MeshingPlugin {
             .add_systems(
                 Update,
                 (
+                    model_faces::update_model_faces,
                     remesh_changed_chunks,
                     apply_finished_meshes,
                     sort_translucent_faces,
@@ -119,6 +126,7 @@ pub fn remesh_changed_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<BlockMaterial>,
     content: Res<Content>,
+    faces: Res<ModelFaces>,
     mut shared: Local<Option<Arc<Content>>>,
 ) {
     // Other content (a server's mods): background meshing takes it anew.
@@ -174,15 +182,16 @@ pub fn remesh_changed_chunks(
         let pool = AsyncComputeTaskPool::get();
         for (entity, neighborhood) in later {
             let content = shared.clone();
-            let task = pool.spawn(async move { neighborhood.meshes(&content) });
+            let faces = faces.index.clone();
+            let task = pool.spawn(async move { neighborhood.build(&content, &faces) });
             commands.entity(entity).insert(MeshTask(task));
         }
     }
 
     let built = ComputeTaskPool::get().scope(|scope| {
         for (entity, neighborhood) in &now {
-            let content = &content;
-            scope.spawn(async move { (*entity, neighborhood.meshes(content)) });
+            let (content, faces) = (&content, &faces.index);
+            scope.spawn(async move { (*entity, neighborhood.build(content, faces)) });
         }
     });
     for (entity, built) in built {
@@ -302,6 +311,34 @@ fn render_only(mut mesh: Mesh) -> Mesh {
     mesh
 }
 
+/// What a chunk mesh sends the GPU, kept beside it for the headless
+/// `memory` command: the main world drops the data itself once it's
+/// drawn.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+#[reflect(Component)]
+pub struct MeshSize {
+    pub vertices: usize,
+    /// Of vertex data, and of indices.
+    pub vertex_bytes: usize,
+    pub index_bytes: usize,
+}
+
+impl MeshSize {
+    fn of(mesh: &Mesh) -> Self {
+        Self {
+            vertices: mesh.count_vertices(),
+            vertex_bytes: mesh.get_vertex_buffer_size(),
+            index_bytes: mesh.indices().map_or(0, |indices| {
+                indices.len()
+                    * match indices {
+                        Indices::U16(_) => 2,
+                        Indices::U32(_) => 4,
+                    }
+            }),
+        }
+    }
+}
+
 /// Draws `mesh` on `entity`, or nothing if it has no faces: chunks with
 /// nothing visible (all air, or buried) get no mesh, since the renderer
 /// warns about meshes with no vertices.
@@ -314,9 +351,13 @@ fn show_mesh(
 ) {
     let mut part = commands.entity(entity);
     if mesh.count_vertices() > 0 {
-        part.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
+        part.insert((
+            MeshSize::of(&mesh),
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material.clone()),
+        ));
     } else {
-        part.remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>)>();
+        part.remove::<(Mesh3d, MeshMaterial3d<VoxelMaterial>, MeshSize)>();
     }
 }
 
@@ -377,7 +418,7 @@ fn sort_translucent_faces(
         }
         sorted.0 = Some(at);
         if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
-            mesh.insert_indices(Indices::U32(faces.indices_from(eye)));
+            mesh.insert_indices(faces.indices_from(eye));
         }
     }
 }
@@ -418,6 +459,21 @@ pub mod testing {
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+    }
+
+    /// Where each of a chunk mesh's vertices is in its chunk, unpacked
+    /// with the app's model face table.
+    pub fn positions(app: &App, mesh: &Mesh) -> Vec<Vec3> {
+        let Some(bevy::mesh::VertexAttributeValues::Uint32x4(words)) =
+            mesh.attribute(super::ATTRIBUTE_PACKED)
+        else {
+            panic!("no packed vertices");
+        };
+        let faces = &app.world().resource::<ModelFaces>().index;
+        words
+            .iter()
+            .map(|w| faces.position(&super::packed::Vertex::unpack(*w)))
+            .collect()
     }
 
     /// Updates the app until no mesh is being built in the background.

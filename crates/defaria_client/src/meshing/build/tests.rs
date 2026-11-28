@@ -1,3 +1,4 @@
+use super::decoded::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT, BACK_FACE, TEXTURE_BITS};
 use super::*;
 use bevy::mesh::{MeshVertexAttribute, VertexAttributeValues};
 use defaria_core::{
@@ -436,10 +437,8 @@ fn triangles_mesh_as_one_triangle() {
     chunk.set(4, 2, 2, shape(&content, "lid"));
     let mesh = chunk_mesh(&chunk, &content, air);
     assert_eq!(mesh.count_vertices(), 3 + 4);
-    let Some(Indices::U32(indices)) = mesh.indices() else {
-        panic!("no indices");
-    };
-    assert_eq!(indices, &[0, 1, 2, 3, 4, 5, 3, 5, 6]);
+    let indices: Vec<usize> = mesh.indices().unwrap().iter().collect();
+    assert_eq!(indices, [0, 1, 2, 3, 4, 5, 3, 5, 6]);
 }
 
 /// One face's shading, read back from the mesh: each corner's ambient
@@ -616,33 +615,18 @@ fn light_sources_glow() {
     assert_eq!(shading.light, [[0, 255, 255, 255]; 4]);
 }
 
-/// A triangle's three corners are its own; the made-up fourth keeps the
-/// blend flat across the triangle.
+/// A triangle's three vertices are corners 0, 1 and 3 of a face, each
+/// with its own light, and it blends flat across them: no twist (which
+/// unpacking checks).
 #[test]
-fn triangles_extend_their_shading_to_a_fourth_corner() {
-    let a = CornerShading {
-        light: [10, 20, 30, 40],
-        occlusion: 3,
-    };
-    let b = CornerShading {
-        light: [20, 20, 250, 0],
-        occlusion: 1,
-    };
-    let c = CornerShading {
-        light: [30, 20, 10, 0],
-        occlusion: 3,
-    };
-    let d = b.extend(c, a);
-    assert_eq!(d.light, [40, 20, 230, 0]);
-    assert_eq!(d.occlusion, 1);
+fn triangles_blend_flat_between_their_corners() {
     let mesh = shapes();
     let mut chunk = Chunk::default();
     chunk.set(2, 2, 2, shape(&mesh, "tri"));
     let corners: Vec<Vec2> = vec2s(&chunk_mesh(&chunk, &mesh, air), ATTRIBUTE_CORNER);
     assert_eq!(corners, [Vec2::ZERO, Vec2::X, Vec2::Y]);
 
-    // In a mesh, with light differing at each corner: the third packed
-    // corner is the made-up one.
+    // In a mesh, with light differing at each corner.
     let pos = IVec3::new(2, 2, 2);
     let light = |p: IVec3| Light::new((p.x * 3 + p.z) as u8, [0; 3]);
     let tri = shape(&mesh, "tri");
@@ -653,7 +637,8 @@ fn triangles_extend_their_shading_to_a_fourth_corner() {
     };
     let sky = lights[0].map(|corner| corner.to_le_bytes()[0] as i32);
     assert_ne!(sky[0], sky[1]);
-    assert_eq!(sky[2], (sky[1] + sky[3] - sky[0]).clamp(0, 255));
+    assert_ne!(sky[0], sky[3]);
+    assert_eq!(sky[2], 0, "there's no third corner");
 }
 
 /// Faces per mesh, opaque, cut-out and translucent, of `blocks` (by
@@ -1093,9 +1078,9 @@ fn back_faces_mirror_the_front() {
     let faces = faces_of(mesh);
     // The light and occlusion each vertex gets, blended to its corner.
     let at = |i: usize| {
-        let corner = CORNERS
+        let corner = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y]
             .iter()
-            .position(|c| Vec2::from(*c) == corners[i])
+            .position(|c| *c == corners[i])
             .unwrap();
         let occlusion = faces[i][1].to_le_bytes()[corner];
         (lights[i][corner], occlusion)
@@ -1160,8 +1145,8 @@ fn parallel_planes_need_sorting() {
         first,
         indices: &[0, 1, 2, 0, 2, 3],
     };
-    assert!(!TranslucentFaces::new(vec![face(5.0, 0), face(5.0, 4)]).needs_sorting());
-    assert!(TranslucentFaces::new(vec![face(5.0, 0), face(7.0, 4)]).needs_sorting());
+    assert!(!TranslucentFaces::new(vec![face(5.0, 0), face(5.0, 4)], 8).needs_sorting());
+    assert!(TranslucentFaces::new(vec![face(5.0, 0), face(7.0, 4)], 8).needs_sorting());
     // A face and its back share their plane.
     assert_eq!(either_way(Vec3::NEG_Y), Vec3::Y);
     assert_eq!(
@@ -1194,7 +1179,7 @@ fn back_faces_are_flagged() {
             let back = n % 2 == 1;
             assert_eq!(quad[0][0] & BACK_FACE != 0, back, "{name} face {n}");
             // (Falling, it also has flow bits; see `meshing::scroll`.)
-            assert_eq!(quad[0][0] & crate::meshing::scroll::TEXTURE_BITS, layer);
+            assert_eq!(quad[0][0] & TEXTURE_BITS, layer);
         }
     }
 }
@@ -1211,13 +1196,8 @@ fn backs_sort_nearer_than_faces_in_their_plane() {
     let faces = faces_of(&meshes.translucent);
     // In the water, looking at the glass (west, -X).
     let eye = B.as_vec3() + Vec3::new(0.8, 0.5, 0.5);
-    let order = meshes.translucent_faces.indices_from(eye);
-    let at = |pick: &dyn Fn(usize) -> bool| {
-        order
-            .chunks(6)
-            .position(|quad| pick(quad[0] as usize))
-            .unwrap()
-    };
+    let order: Vec<usize> = meshes.translucent_faces.indices_from(eye).iter().collect();
+    let at = |pick: &dyn Fn(usize) -> bool| order.chunks(6).position(|quad| pick(quad[0])).unwrap();
     let plane = |i: usize| (positions[i].x - B.x as f32).abs() < 1e-6;
     let glass_front = at(&|i| plane(i) && normals[i] == Vec3::X && faces[i][0] & BACK_FACE == 0);
     let water_back = at(&|i| plane(i) && normals[i] == Vec3::X && faces[i][0] & BACK_FACE != 0);
@@ -1242,6 +1222,11 @@ fn translucent_faces_sort_back_to_front() {
         Vec3::splat(6.0),
     ] {
         let indices = meshes.translucent_faces.indices_from(eye);
+        assert!(
+            matches!(indices, Indices::U16(_)),
+            "few vertices, small indices"
+        );
+        let indices: Vec<u32> = indices.iter().map(|i| i as u32).collect();
         assert_eq!(indices.len(), 12 * 6);
         let distances: Vec<f32> = indices
             .chunks(6)

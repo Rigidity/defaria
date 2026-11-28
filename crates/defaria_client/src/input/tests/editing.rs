@@ -13,7 +13,10 @@ use crate::{
 };
 use crate::{
     hotbar_ui::select_with_keys,
-    meshing::{apply_finished_meshes, remesh_changed_chunks, testing::finish_meshing},
+    meshing::{
+        ModelFaces, apply_finished_meshes, model_faces::update_model_faces, remesh_changed_chunks,
+        testing::finish_meshing,
+    },
     voxel_material::BlockMaterial,
 };
 use bevy::math::DVec3;
@@ -95,6 +98,7 @@ fn app_with(content: Content, hotbar: Hotbar) -> (App, Entity, Entity) {
         UseInputPlugin,
     ))
     .init_asset::<Mesh>()
+    .init_resource::<ModelFaces>()
     .insert_resource(BlockMaterial::unloaded(Handle::default()))
     .init_resource::<ButtonInput<KeyCode>>()
     .init_resource::<ButtonInput<MouseButton>>()
@@ -104,7 +108,11 @@ fn app_with(content: Content, hotbar: Hotbar) -> (App, Entity, Entity) {
         Update,
         (
             select_with_keys.before(UseSystems).before(RemeshChunks),
-            (remesh_changed_chunks, apply_finished_meshes)
+            (
+                update_model_faces,
+                remesh_changed_chunks,
+                apply_finished_meshes,
+            )
                 .chain()
                 .in_set(RemeshChunks),
         ),

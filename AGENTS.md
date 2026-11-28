@@ -141,8 +141,8 @@ changes.
    after a `camera` jump somewhere new, and print how many frames and
    seconds that took) and `memory` (what the loaded chunks hold: how many,
    how many are one block or light throughout, the bytes of their blocks,
-   light, fluid and meshes, and how many chunks of one value are still
-   kept dense) and `lookups` (time reading every voxel in a box of at
+   light, fluid and meshes, what the meshes sent the GPU (bytes a face
+   and a chunk), and how many chunks of one value are still kept dense) and `lookups` (time reading every voxel in a box of at
    most 256³ by world position and a chunk at a time) and `random-ticks` (pick more
    voxels a chunk for random ticks, so scripted blocks grow or spread
    quickly enough to watch) and `joined` (wait until joining a server is
@@ -533,7 +533,10 @@ relative path.
   showing the meshes: opaque faces on the chunk's entity, cut-out and
   translucent ones on child entities (`ChunkParts`), with the translucent
   faces sorted back to front. `meshing/build.rs` builds the meshes from a
-  `Neighborhood` (culling, face shading, the vertex attributes).
+  `Neighborhood` (culling, face shading); `meshing/packed.rs` is the
+  packed 20-byte vertex they're made of, and `meshing/model_faces.rs` the
+  table of every block model's faces that vertices name theirs in, built
+  from `Content` and read by the shader (`voxel_material`).
 - `crates/defaria_server/src/worldgen.rs` (and `crates/defaria_server/src/worldgen/`): terrain generation (`Terrain`,
   `TerrainSettings`), with the land's shape and the splines it's made of,
   and `worldgen/trees.rs` where trees grow and their shapes.

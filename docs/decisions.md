@@ -859,6 +859,67 @@ bandwidth for light or chunks shows up in the `net` report.
   it isn't shown anywhere (a network overlay could). Players who lose a
   quarter of their snapshots see others a quarter of a second behind.
 
+## Chunk vertices are packed, and name their faces in a shared table (2026-11-28)
+
+**Context.** A chunk mesh's vertex was 68 bytes: position, normal and
+texture coordinates as floats, where it sat on its face, all four of the
+face's corners' light and ambient occlusion, its texture and flags, and
+a fluid's flow; with 32-bit indices a face took 296 bytes on the GPU.
+Most of that is the same wherever a block is, or the same in all four
+vertices of a face.
+
+**Decision.** What's the same wherever a block is goes in the model face
+table (`meshing::model_faces`): every distinct baked face of every
+block state, its corners' positions and texture coordinates as floats,
+its normal and texture, built from `Content` (and again when the
+content changes) and read by the shader as a storage buffer. The base
+game's 25,600 baked faces come to about 1,500 entries, 137 KiB. A vertex
+is 20 bytes (`meshing::packed`): its voxel in the chunk (4 bits an
+axis), which corner of which table entry it is (2 and 16 bits), its own
+corner's light (4 bytes) and ambient occlusion (2 bits), the face's
+*twist* (`c0 - c1 + c2 - c3`, 10 bits a light channel and 4 for
+occlusion), back, flowing and wrapped flags, a fluid face's corner
+height (16 bits, in 3 x 2^14 steps a block, exact for every average of
+fluid steps) and its flow (`Snorm16x2`, as before). The GPU interpolates
+each vertex's own corner across its triangle, and the fragment stage
+subtracts `min(s, t) (1 - max(s, t)) twist`, which gives back the
+bilinear blend of the four corners exactly, in either triangle. Indices
+are 16-bit when a mesh has 65,536 vertices or fewer (nearly all). A face
+is 92 bytes: a third of what it was. Over the mountains, 3.1 million
+vertices take 68.8 MiB rather than 221 MiB (48.5 KiB a meshed chunk
+rather than 156 KiB). Arbitrary model geometry (rotated pipe arms,
+crossed plants) costs nothing: only the voxel is on a grid. Meshes still
+keep no CPU copy once drawn, except sorted translucent ones, whose
+indices sorting rewrites. Renders match the old layout pixel for pixel
+to the eye; single pixels on distant or aliased edges differ by up to
+about 10/255, from the GPU rounding the position worked out from the
+voxel and the table rather than read whole.
+
+**What's wrong with it.** The twist and the face index are the same in
+all four of a face's vertices, so about 9 of each vertex's 20 bytes are
+repeated four times. The table can name 65,536 distinct faces; past
+that (a mod with very many models and textures), the faces that don't
+fit aren't drawn, with an error. A triangle face blends flat between
+its three corners, with no made-up fourth (it used to be extended and
+clamped). Fluid corner heights other than averages of fluid steps (a
+block with a `fluid_room` that isn't a multiple of 1/16) are rounded to
+1/49,152 of a block. Faces still aren't merged (no greedy meshing), so
+flat ground costs a face per voxel.
+
+**What should replace it.** Per-face data in a storage buffer of our
+own, one record per face (voxel, face index, four corners' light and
+occlusion, a fluid's heights and flow) found from `vertex_index / 4`,
+with the vertex buffer gone or down to nothing: about 24 bytes a face.
+That needs each chunk's faces allocated in a shared GPU buffer and its
+offset passed per mesh (Bevy's `MeshTag`), outside Bevy's mesh
+allocator, and translucent sorting would reorder records rather than
+indices. Greedy meshing of flat, evenly lit runs of the same face would
+cut the face count itself.
+
+**When to revisit.** When chunk meshes' GPU memory or upload time
+matters again (a much larger view distance), when mods near the face
+table's limit, or when meshes merge faces.
+
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 
 **Context.** Placing a slab on a slab made two slabs in two voxels, and

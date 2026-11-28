@@ -3,8 +3,8 @@
 
 use bevy::{mesh::VertexAttributeValues, prelude::*};
 
-use super::{ATTRIBUTE_FACE, ATTRIBUTE_FLOW, BACK_FACE, Neighborhood, OPEN_SKY};
-use crate::meshing::scroll::{FLOWING, TEXTURE_BITS, WRAPPED};
+use super::decoded::{ATTRIBUTE_FACE, BACK_FACE, FLOWING, TEXTURE_BITS, WRAPPED};
+use super::{ATTRIBUTE_FLOW, Neighborhood, OPEN_SKY};
 use defaria_core::{
     content::{BlockState, FULL_FLUID, base, block},
     world::{CHUNK_SIZE, FLUID_STEPS, VoxelFluid, filled, fluid_step},

@@ -15,7 +15,7 @@
 //!
 //! The vectors are in the mesh ([`crate::meshing::ATTRIBUTE_FLOW`]), so
 //! flow costs no remeshing to animate, and the shader samples twice only
-//! on faces with [`FLOWING`] set. A face's flow only changes when its
+//! on faces flagged [`FLOWING`](crate::meshing::packed::FLOWING). A face's flow only changes when its
 //! chunk is remeshed. A chunk is remeshed when a voxel's drawn height
 //! changes, but fluid can go on levelling off by a few units without one,
 //! and settle still showing the flow it had at its last remesh. So
@@ -23,20 +23,6 @@
 //! been quiet for [`QUIET`].
 
 use bevy::prelude::*;
-
-/// Set in a fluid face's layer: its texture coordinates come from where
-/// it is ([`uv_at`]) and wrap every block.
-pub const WRAPPED: u32 = 1 << 29;
-/// Set in a fluid face's layer when any of its corners flows: only these
-/// faces pay for the flow map's two samples.
-pub const FLOWING: u32 = 1 << 28;
-/// The bits of a face's layer that hold the texture's index.
-pub const TEXTURE_BITS: u32 = (1 << 24) - 1;
-
-// Every texture's index fits under the flags, and they under the back
-// face's.
-const _: () = assert!(defaria_core::content::MAX_TILES as u32 <= TEXTURE_BITS + 1);
-const _: () = assert!(WRAPPED < crate::meshing::BACK_FACE && FLOWING > TEXTURE_BITS);
 
 /// Which way a fluid voxel flows.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

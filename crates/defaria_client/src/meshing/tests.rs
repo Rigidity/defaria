@@ -337,15 +337,8 @@ fn see_through_faces_draw_on_their_own_parts_sorted() {
     let first_face_z = |app: &App| {
         let mesh = app.world().get::<Mesh3d>(parts.translucent).unwrap();
         let mesh = app.world().resource::<Assets<Mesh>>().get(mesh).unwrap();
-        let Some(Indices::U32(indices)) = mesh.indices() else {
-            panic!("no indices");
-        };
-        let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
-            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-        else {
-            panic!("no positions");
-        };
-        positions[indices[0] as usize][2]
+        let first = mesh.indices().unwrap().iter().next().unwrap();
+        testing::positions(app, mesh)[first].z
     };
     assert!(first_face_z(&app) < 4.0);
     defaria_core::player::tests::put_eyes(
