@@ -14,7 +14,8 @@
 //! where only the newest matters, may be lost.
 
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
     mpsc::{Receiver, Sender, TryRecvError, channel},
 };
 
@@ -184,6 +185,12 @@ pub enum ServerMessage {
     /// A mod's server script sent this client's scripts a message
     /// (`net.send` or `net.broadcast`, see `script::channel`).
     Script(ScriptMessage),
+    /// The network is dropping the client, and why (it fell too far
+    /// behind): the last thing on its control stream before the
+    /// connection closes, so the reason arrives even if the close is
+    /// lost. `quic`'s own: the client's network end takes it, and the game
+    /// never sees it.
+    Dropped(String),
 }
 
 impl ServerMessage {
@@ -194,6 +201,57 @@ impl ServerMessage {
             self,
             ServerMessage::Moved { .. } | ServerMessage::Snapshot { .. }
         )
+    }
+
+    /// Whether it's one of the world's: chunks, their changes and drops,
+    /// whether the client's settled, and its edits done (after the chunks
+    /// they changed). Over the network these go on a stream of their own,
+    /// and count towards the link's [`Backlog`].
+    pub fn bulk(&self) -> bool {
+        matches!(
+            self,
+            ServerMessage::Chunk { .. }
+                | ServerMessage::ChunkChanged { .. }
+                | ServerMessage::LightChanged { .. }
+                | ServerMessage::Unload(_)
+                | ServerMessage::Settled(_)
+                | ServerMessage::EditDone(_)
+        )
+    }
+}
+
+/// What a message counts towards its link's [`Backlog`]: about how many
+/// bytes it takes to send, at most, for the world's messages
+/// ([`ServerMessage::bulk`]), and nothing for the rest.
+pub trait Weigh {
+    fn weight(&self) -> usize;
+}
+
+impl Weigh for ServerMessage {
+    fn weight(&self) -> usize {
+        // What the voxels hold, before they're deflated: postcard writes
+        // each state in no more bytes than it's kept in.
+        const OVERHEAD: usize = 64;
+        match self {
+            ServerMessage::Chunk { chunk, light, .. } => {
+                OVERHEAD
+                    + chunk.voxels().heap_bytes()
+                    + chunk.fluid_layer().heap_bytes()
+                    + light.levels().heap_bytes()
+            }
+            ServerMessage::ChunkChanged { chunk, .. } => {
+                OVERHEAD + chunk.voxels().heap_bytes() + chunk.fluid_layer().heap_bytes()
+            }
+            ServerMessage::LightChanged { light, .. } => OVERHEAD + light.levels().heap_bytes(),
+            message if message.bulk() => 16,
+            _ => 0,
+        }
+    }
+}
+
+impl Weigh for ClientMessage {
+    fn weight(&self) -> usize {
+        0
     }
 }
 
@@ -348,6 +406,77 @@ pub struct Link<Out, In> {
     // must be shareable between threads; one system at a time uses it.
     receive: Mutex<Receiver<In>>,
     closed: bool,
+    backlog: Arc<Backlog>,
+}
+
+/// How far behind the network is with a link's world messages
+/// ([`ServerMessage::bulk`]): about how many bytes of them wait to be
+/// written to the client, and how many may wait before the server holds
+/// back new chunks. Shared by both ends of a link. A message counts from
+/// the moment the game sends it ([`Link::send`] adds its [`Weigh::weight`]
+/// as pending), so nothing the game sent is missed while it waits in the
+/// link; the network moves it from pending to queued (its real bytes) as
+/// it takes it ([`Backlog::carried`]), and takes those off once they're
+/// written ([`Backlog::written`]). A link in memory has no budget, so it's
+/// never behind: its other end's [`Link::receive`] takes the weight off.
+#[derive(Debug, Default)]
+pub struct Backlog {
+    /// Sent by the game, not yet taken by the network: their weights.
+    pending: AtomicUsize,
+    /// Taken by the network, not yet written: their bytes.
+    queued: AtomicUsize,
+    /// 0 for none.
+    budget: AtomicUsize,
+}
+
+impl Backlog {
+    /// Holds back new chunks once `bytes` of them are waiting.
+    pub fn set_budget(&self, bytes: usize) {
+        self.budget.store(bytes, Ordering::Relaxed);
+    }
+
+    /// A message of `weight` the network took, now `bytes` waiting for its
+    /// writer. (Counted as queued before it stops being pending, so it's
+    /// never counted nowhere.)
+    pub fn carried(&self, weight: usize, bytes: usize) {
+        self.queued.fetch_add(bytes, Ordering::SeqCst);
+        self.taken(weight);
+    }
+
+    /// `bytes` that were waiting are written.
+    pub fn written(&self, bytes: usize) {
+        let _ = (self.queued).try_update(Ordering::SeqCst, Ordering::SeqCst, |queued| {
+            Some(queued.saturating_sub(bytes))
+        });
+    }
+
+    fn taken(&self, weight: usize) {
+        if weight > 0 {
+            let _ = (self.pending).try_update(Ordering::SeqCst, Ordering::SeqCst, |pending| {
+                Some(pending.saturating_sub(weight))
+            });
+        }
+    }
+
+    /// How many bytes the network has taken and not yet written.
+    pub fn queued(&self) -> usize {
+        self.queued.load(Ordering::SeqCst)
+    }
+
+    /// About how many bytes wait now, sent by the game or taken by the
+    /// network.
+    pub fn waiting(&self) -> usize {
+        self.pending.load(Ordering::SeqCst) + self.queued.load(Ordering::SeqCst)
+    }
+
+    /// How many more bytes of new chunks may be sent now: unlimited with
+    /// no budget.
+    pub fn room(&self) -> usize {
+        match self.budget.load(Ordering::Relaxed) {
+            0 => usize::MAX,
+            budget => budget.saturating_sub(self.waiting()),
+        }
+    }
 }
 
 /// The client's end of a link.
@@ -360,30 +489,48 @@ pub type ServerLink = Link<ServerMessage, ClientMessage>;
 pub fn link() -> (ClientLink, ServerLink) {
     let (to_server, from_client) = channel();
     let (to_client, from_server) = channel();
+    let backlog = Arc::new(Backlog::default());
     (
         Link {
             send: to_server,
             receive: Mutex::new(from_server),
             closed: false,
+            backlog: backlog.clone(),
         },
         Link {
             send: to_client,
             receive: Mutex::new(from_client),
             closed: false,
+            backlog,
         },
     )
 }
 
-impl<Out, In> Link<Out, In> {
+impl<Out: Weigh, In: Weigh> Link<Out, In> {
     /// Sends a message, if the other end is still there.
     pub fn send(&mut self, message: Out) {
+        let weight = message.weight();
+        if weight > 0 {
+            self.backlog.pending.fetch_add(weight, Ordering::SeqCst);
+        }
         if self.send.send(message).is_err() {
+            self.backlog.taken(weight);
             self.closed = true;
         }
     }
 
-    /// The messages that have arrived, oldest first.
+    /// The messages that have arrived, oldest first, no longer counted in
+    /// the backlog.
     pub fn receive(&mut self) -> Vec<In> {
+        let messages = self.receive_counted();
+        self.backlog.taken(messages.iter().map(Weigh::weight).sum());
+        messages
+    }
+
+    /// The messages that have arrived, oldest first, still counted in the
+    /// backlog as pending: for the network's end, which says when each is
+    /// [`Backlog::carried`].
+    pub fn receive_counted(&mut self) -> Vec<In> {
         let mut messages = Vec::new();
         let receive = self.receive.get_mut().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -398,10 +545,17 @@ impl<Out, In> Link<Out, In> {
         }
         messages
     }
+}
 
+impl<Out, In> Link<Out, In> {
     /// Whether the other end has gone.
     pub fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// How far behind the network is with this link's world messages.
+    pub fn backlog(&self) -> &Arc<Backlog> {
+        &self.backlog
     }
 }
 
@@ -431,6 +585,44 @@ mod tests {
         assert!(client.is_closed());
         client.send(ClientMessage::CloseScreen(IVec3::ZERO));
         assert!(client.is_closed());
+    }
+
+    /// A link in memory is never behind; one with a budget has room for
+    /// what's left of it, shared by both ends.
+    #[test]
+    fn a_backlog_has_room_for_what_its_budget_leaves() {
+        let (mut client, mut server) = link();
+        assert_eq!(server.backlog().room(), usize::MAX);
+        client.backlog().set_budget(100);
+        client.backlog().carried(0, 30);
+        assert_eq!(server.backlog().room(), 70);
+        client.backlog().carried(0, 120);
+        assert_eq!(server.backlog().room(), 0);
+        client.backlog().written(150);
+        assert_eq!(server.backlog().room(), 100);
+
+        // World messages count from when they're sent, until they're
+        // received (in memory), or carried and written (the network).
+        let chunk = ServerMessage::Chunk {
+            coord: ChunkCoord(IVec3::ZERO),
+            chunk: Chunk::default(),
+            light: ChunkLight::default(),
+        };
+        let weight = chunk.weight();
+        assert!(weight > 0);
+        assert_eq!(ServerMessage::CloseScreen.weight(), 0);
+        server.send(chunk.clone());
+        server.send(ServerMessage::CloseScreen);
+        assert_eq!(server.backlog().waiting(), weight);
+        assert_eq!(client.receive().len(), 2);
+        assert_eq!(server.backlog().waiting(), 0);
+        server.send(chunk);
+        assert_eq!(client.receive_counted().len(), 1);
+        assert_eq!(server.backlog().waiting(), weight);
+        client.backlog().carried(weight, 10);
+        assert_eq!(server.backlog().waiting(), 10);
+        client.backlog().written(10);
+        assert_eq!(server.backlog().waiting(), 0);
     }
 
     /// A message between scripts with every kind of plain value in it.
@@ -546,6 +738,7 @@ mod tests {
             },
             ServerMessage::Despawn(42),
             ServerMessage::Script(script_message()),
+            ServerMessage::Dropped("why".into()),
         ];
         for message in server {
             let back: ServerMessage = decode(&encode(&message)).unwrap();

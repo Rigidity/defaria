@@ -174,7 +174,8 @@ incremental builds stay cheap.
 - One loop writes both of a server's streams, so a client slow to take
   its chunks also slows its control messages, and what waits for it
   isn't bounded. A writer per stream, with bounded queues, and dropping a
-  client that falls too far behind, should replace it (#225).
+  client that falls too far behind, should replace it (#225: done, see
+  below).
 - `--connect` connects on the main thread before the world starts, which
   can block a few seconds; the connect screen (#52) should connect in the
   background (done: see below).
@@ -620,6 +621,64 @@ bandwidth for light or chunks shows up in the `net` report.
   on how long loading took. The rest is the client's playback (a run of
   two lost snapshots outlasts its fixed tenth of a second, and its clock
   eases toward the newest snapshot, so speed swings about 20%): #234.
+
+*As built in #225*, backpressure:
+
+- Each stream has a writer task of its own (`quic::Outbox`), fed from an
+  unbounded channel whose bytes are counted, and the control stream has
+  the higher priority, so control messages (inventory, screens, players)
+  never wait on chunks. Datagrams go as before (quinn drops the oldest
+  when its datagram buffer fills).
+- What waits for the writers is bounded by bytes (`quic::Limits`): past
+  2 MiB of the world's messages waiting the server holds back new
+  chunks; past 32 MiB on the bulk stream (changes to chunks the client
+  has still go while new ones are held back) or 2 MiB on the control
+  stream, or with something waiting and nothing written for 20 seconds,
+  the client is dropped, and told it fell too far behind (the close
+  reason #52 shows): first in a last message on its control stream
+  (`ServerMessage::Dropped`, which the client's network end keeps and
+  the game never sees; protocol 5), since the close itself can be lost
+  among the chunks in flight and the client then hears only that the
+  server forgot it. The bulk stream is reset first, so what's buffered
+  of it doesn't hold the reason up. Unreliable messages too big for a
+  datagram are dropped, not queued, once the control stream has half
+  its cap waiting.
+- The server's chunk sender reads how far behind a connection is from a
+  gauge its link carries (`net::Backlog`, against a budget the network
+  sets). A world message counts from the moment the game sends it
+  (`Link::send` adds its `Weigh::weight`, a rough size: what its blocks,
+  fluid and light hold before deflating, which errs high), so what waits
+  in the link for the network thread is counted too; the network moves
+  it to its real bytes as it queues it (`Backlog::carried`) and the
+  writer takes those off once written. So the budget is a real bound,
+  overshot by at most the one chunk sent while there was room for less.
+  With no room, new chunks in range wait (`Connection::waiting`, never
+  those the client has), nearest first, and go as room comes back; the
+  client isn't told it's settled until they've gone. A link in memory
+  has no budget, and its other end's `receive` takes the weight off, so
+  single player never holds anything back or drops anyone.
+- Changes to chunks the client has count towards the budget but are
+  never held back: a client whose chunks change at or above what its
+  connection carries (a big machine or fluid flow in view, on a slow
+  link) gets no new chunks, and isn't settled, until the changes ease,
+  and is dropped if they fill the bulk cap or stall it for 20 seconds.
+  Reserving a share of the budget for new chunks wouldn't help there,
+  since the changes alone outrun the link; merging a chunk's changes
+  that are still waiting into one would.
+- What arrives waits in a bounded channel (256 messages on the server,
+  4096 on the client), but the network thread drains it into the game's
+  link every millisecond, and that link is unbounded: so QUIC's flow
+  control only slows a sender when the network thread itself falls
+  behind, not when the game does. What a client can make a server hold
+  is bounded by how fast the server's game drains its link (every
+  frame) and what a client sends per frame (small frames, at most
+  64 KiB each). A client's own control stream has the same writer and
+  caps: a server that stops taking its messages closes the connection,
+  saying so.
+- Left as it was: quinn's own send buffers (its default windows) sit
+  under these queues uncounted, so a client can hold a megabyte or so
+  more there; the budget isn't tuned to the connection's speed; and the
+  game's links are unbounded in the client-to-server direction.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

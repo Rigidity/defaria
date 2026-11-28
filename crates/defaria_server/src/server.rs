@@ -132,6 +132,9 @@ pub struct Connection {
     settled: Option<bool>,
     /// The chunk the player's range was last worked out around.
     center: Option<IVec3>,
+    /// Chunks in range held back while the network is behind with the
+    /// client's chunks (its link's `Backlog`), nearest first.
+    waiting: Vec<IVec3>,
     /// Whether the player is paused.
     paused: bool,
     /// The uses the client sent that haven't been acted on yet, oldest
@@ -154,6 +157,7 @@ impl Connection {
             machine: None,
             settled: None,
             center: None,
+            waiting: Vec::new(),
             paused: false,
             uses: default(),
             edits: Vec::new(),
@@ -168,6 +172,16 @@ impl Connection {
     /// What the client sent this frame, oldest first.
     pub fn inbox(&self) -> &[ClientMessage] {
         &self.inbox
+    }
+
+    /// How many chunks the client has.
+    pub fn chunks_sent(&self) -> usize {
+        self.sent.len()
+    }
+
+    /// How many chunks in range are held back while the network is behind.
+    pub fn held_back(&self) -> usize {
+        self.waiting.len()
     }
 }
 
@@ -496,6 +510,11 @@ fn open_machine_screens(
 /// their light), and which ones it should drop. Only what changed is
 /// looked at: chunks that loaded, unloaded or changed this frame, and the
 /// whole range only when the player crosses into another chunk.
+///
+/// While the network is behind with a client's chunks (its link's
+/// `Backlog` has no room: over a slow connection), new chunks are held
+/// back, nearest first, and go once it catches up, so a slow client still
+/// gets its world, just slower. Changes to chunks it has always go.
 fn send_chunks(
     settings: Res<StreamingSettings>,
     map: Res<ChunkMap>,
@@ -540,20 +559,39 @@ fn send_chunks(
                 send(connection, ServerMessage::Unload(ChunkCoord(coord)));
             }
         }
-        // New in range: the whole range when it's moved, else what loaded.
+        // New in range: the whole range when it's moved, else what was
+        // held back and what loaded.
         let mut fresh = HashSet::new();
-        let candidates: Vec<IVec3> = if moved {
+        // What the link has room for: each chunk sent counts at once.
+        let backlog = connection.link.backlog().clone();
+        let mut candidates: Vec<IVec3> = if moved {
+            connection.waiting.clear();
             settings.window(center).collect()
         } else {
+            std::mem::take(&mut connection.waiting)
+        };
+        candidates.extend(
             added
                 .iter()
                 .copied()
-                .filter(|&coord| settings.reaches(coord - center, 0))
-                .collect()
-        };
-        for coord in candidates {
+                .filter(|&coord| !moved && settings.reaches(coord - center, 0)),
+        );
+        // Held back, the nearest go first.
+        if backlog.room() != usize::MAX && moved {
+            candidates.sort_by_key(|&coord| (coord - center).length_squared());
+        }
+        let mut candidates = candidates.into_iter();
+        while let Some(coord) = candidates.next() {
             if connection.sent.contains(&coord) {
                 continue;
+            }
+            if backlog.room() == 0 {
+                // Behind: the rest it doesn't have wait (any gone by then
+                // are skipped).
+                connection.waiting.push(coord);
+                let sent = &connection.sent;
+                (connection.waiting).extend(candidates.filter(|coord| !sent.contains(coord)));
+                break;
             }
             let Some((chunk, light)) = map
                 .get(ChunkCoord(coord))
@@ -689,12 +727,15 @@ fn send_machine_contents(
 
 /// Tells each client whether everything around its player is loaded,
 /// when that changes. Whatever's loaded in its range has been sent by now
-/// (see [`send_chunks`]).
+/// (see [`send_chunks`]), unless some is held back while the network is
+/// behind.
 fn send_status(status: Res<StreamingStatus>, mut connections: Query<&mut Connection>) {
     for mut connection in &mut connections {
-        if connection.settled != Some(status.settled) {
-            connection.settled = Some(status.settled);
-            connection.send(ServerMessage::Settled(status.settled));
+        // Not while chunks are held back for it.
+        let settled = status.settled && connection.waiting.is_empty();
+        if connection.settled != Some(settled) {
+            connection.settled = Some(settled);
+            connection.send(ServerMessage::Settled(settled));
         }
     }
 }
@@ -772,6 +813,78 @@ mod tests {
             .query_filtered::<Entity, With<Connection>>()
             .single(app.world())
             .unwrap()
+    }
+
+    /// The chunks among `messages`.
+    fn chunks_in(messages: &[ServerMessage]) -> Vec<IVec3> {
+        (messages.iter())
+            .filter_map(|message| match message {
+                ServerMessage::Chunk { coord, .. } => Some(coord.0),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// While the network is behind with a client's chunks, new ones are
+    /// held back, and it isn't told it's settled; with room for a chunk at
+    /// a time, one goes each frame; once it catches up, the rest go, the
+    /// same chunks as with no budget, and then it's settled.
+    #[test]
+    fn chunks_wait_while_the_network_is_behind() {
+        let (_, _, unlimited) = server();
+        let mut expected = chunks_in(&unlimited);
+        expected.sort_by_key(|c| (c.x, c.y, c.z));
+
+        let mut app = world_app(base().clone())
+            .plugins((
+                ServerNetPlugin,
+                BlockEntityPlugin,
+                InventoryPlugin,
+                HotbarPlugin,
+                GameModePlugin,
+                MiningPlugin,
+                UseActionPlugin,
+            ))
+            .build();
+        let (mut client, server) = link();
+        // A budget of a byte, all of it taken: no room.
+        client.backlog().set_budget(1);
+        client.backlog().carried(0, 1);
+        app.world_mut().resource_mut::<Incoming>().0.push(Joining {
+            id: PlayerId([1; 32]),
+            name: "Tester".into(),
+            link: server,
+            in_process: false,
+        });
+        let mut sent = Vec::new();
+        for _ in 0..30 {
+            app.update();
+            crate::streaming::finish_loads(app.world_mut());
+            sent.extend(client.receive());
+        }
+        assert!(chunks_in(&sent).is_empty(), "sent chunks while behind");
+        // The rest goes meanwhile.
+        assert!((sent.iter()).any(|message| matches!(message, ServerMessage::PlayerState(_))));
+        assert!(!sent.contains(&ServerMessage::Settled(true)));
+
+        // Room for one: one a frame.
+        client.backlog().written(1);
+        for _ in 0..5 {
+            app.update();
+            let now = client.receive();
+            assert_eq!(chunks_in(&now).len(), 1);
+            assert!(!now.contains(&ServerMessage::Settled(true)));
+            sent.extend(now);
+        }
+
+        // Caught up: the rest.
+        client.backlog().set_budget(0);
+        sent.extend(until(&mut app, &mut client, |message| {
+            matches!(message, ServerMessage::Settled(true))
+        }));
+        let mut got = chunks_in(&sent);
+        got.sort_by_key(|c| (c.x, c.y, c.z));
+        assert_eq!(got, expected);
     }
 
     /// A client that joins is a player, and is sent every chunk in its
@@ -900,6 +1013,52 @@ mod tests {
         );
         let home = ChunkCoord::split(START_POSITION.floor().as_ivec3()).0;
         assert!(sent.contains(&ServerMessage::Unload(home)));
+    }
+
+    /// A player who moves while the network is behind holds back only the
+    /// chunks new to its range, never those it has, and gets them once
+    /// there's room.
+    #[test]
+    fn moving_while_behind_holds_back_only_new_chunks() {
+        let (mut app, mut client, _) = server();
+        client.backlog().set_budget(1);
+        client.backlog().carried(0, 1);
+        let feet = DVec3::new(64.5 + 16.0, 56.0 - EYE_HEIGHT, 92.5);
+        let motion = Motion {
+            feet,
+            velocity: DVec3::ZERO,
+            on_ground: false,
+            flying: true,
+            sneaking: false,
+            sprinting: false,
+            eye_height: EYE_HEIGHT,
+        };
+        client.send(ClientMessage::Inputs {
+            inputs: vec![input(1, Controls::default(), Some(motion))],
+            made_after: 0,
+        });
+        let mut sent = Vec::new();
+        for _ in 0..30 {
+            app.update();
+            crate::streaming::finish_loads(app.world_mut());
+            sent.extend(client.receive());
+        }
+        assert!(chunks_in(&sent).is_empty());
+        let connection = app
+            .world_mut()
+            .query::<&Connection>()
+            .single(app.world())
+            .unwrap();
+        assert!(connection.held_back() > 0);
+        assert!(
+            (connection.waiting.iter()).all(|coord| !connection.sent.contains(coord)),
+            "held back chunks it has"
+        );
+
+        client.backlog().set_budget(0);
+        until(&mut app, &mut client, |message| {
+            matches!(message, ServerMessage::Settled(true))
+        });
     }
 
     /// Each input is a step of the player, applied once however often it's

@@ -126,6 +126,70 @@ fn a_client_plays_over_the_network() {
     assert_eq!(voxel(&mut game.clients[0], placed), Some(block("stone")));
 }
 
+/// A client whose server lets only a few chunks wait for it at a time
+/// (as for a slow connection) still gets its whole world, held back and
+/// sent as the network takes it: it settles, with as many chunks as the
+/// server has in its range.
+#[test]
+fn a_held_back_client_still_gets_its_world() {
+    use std::{net::SocketAddr, time::Duration};
+
+    let mut game = test_multiplayer(0);
+    let content = game
+        .server
+        .world()
+        .resource::<defaria_core::content::Content>();
+    let offer = crate::mod_transfer::Offer::new(content).unwrap();
+    let library = crate::mod_transfer::Library::new(content, None);
+    let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let limits = crate::quic::Limits {
+        bulk_budget: 16 << 10,
+        ..default()
+    };
+    let identity = crate::identity::Identity::generate();
+    let listener = crate::quic::listen_with(local, offer, &identity, limits).unwrap();
+    let address = listener.address.to_string();
+    crate::dedicated::take_clients_from(&mut game.server, listener);
+    let me = crate::identity::Identity::generate();
+    let link = crate::quic::connect(&address, library, &me, "Tester", None)
+        .unwrap()
+        .link;
+    let mut client = crate::headless::test_client();
+    client.insert_resource(defaria_client::net::ServerConnection(link));
+    game.clients.push(client);
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let mut held_back = false;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never settled over the network"
+        );
+        game.update();
+        std::thread::sleep(Duration::from_millis(1));
+        let world = game.server.world_mut();
+        let mut connections = world.query::<&defaria_server::server::Connection>();
+        held_back |= (connections.iter(world)).any(|c| c.held_back() > 0);
+        if game.clients[0]
+            .world()
+            .resource::<defaria_core::streaming::StreamingStatus>()
+            .settled
+        {
+            break;
+        }
+    }
+    assert!(held_back, "no chunks were held back");
+    let world = game.server.world_mut();
+    let mut connections = world.query::<&defaria_server::server::Connection>();
+    let connection = connections.single(world).unwrap();
+    assert_eq!(connection.held_back(), 0);
+    let loaded = game.clients[0]
+        .world()
+        .resource::<defaria_core::world::ChunkMap>()
+        .len();
+    assert_eq!(loaded, connection.chunks_sent());
+    assert!(loaded > 100, "{loaded} chunks");
+}
+
 /// Where client `watcher` draws the one other player.
 fn other_player(game: &mut crate::headless::Multiplayer, watcher: usize) -> Vec3 {
     let world = game.clients[watcher].world_mut();

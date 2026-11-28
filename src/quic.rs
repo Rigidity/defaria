@@ -42,13 +42,27 @@
 //! isn't timed out; a server takes only small frames from clients, and a
 //! tiny hello within a few seconds; and either end finishes writing before
 //! it closes. A stopping server closes every connection.
+//!
+//! Each stream has a writer of its own ([`Outbox`]), so control messages
+//! never wait on chunks, and what waits for a writer is bounded
+//! ([`Limits`]): past a budget of chunks waiting the server holds back new
+//! ones (the link's `Backlog`), and a client that falls too far behind
+//! (more waiting than a stream takes, or nothing written for a while) is
+//! dropped, and told why (in a last control message, `Dropped`, then in
+//! closing). Unreliable messages that find their queue full are dropped.
+//! What arrives waits in a bounded queue for the network thread to hand
+//! the game (see the note on #225 in `docs/decisions.md`).
 
 use std::{
     io,
     net::{SocketAddr, ToSocketAddrs},
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use smol::future::FutureExt as _;
@@ -56,7 +70,10 @@ use smol::future::FutureExt as _;
 use bevy::prelude::*;
 use defaria_core::{
     identity::{PlayerId, clean_name},
-    net::{ClientLink, ClientMessage, ServerLink, ServerMessage, decode, encode, link},
+    net::{
+        Backlog, ClientLink, ClientMessage, ServerLink, ServerMessage, Weigh as _, decode, encode,
+        link,
+    },
 };
 use defaria_server::server::Joining;
 use quinn::{
@@ -82,9 +99,9 @@ pub use defaria_core::server_list::DEFAULT_PORT;
 
 /// The protocol's version: a client and server of different ones refuse
 /// each other.
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 
-const ALPN: &[u8] = b"defaria/3";
+const ALPN: &[u8] = b"defaria/5";
 /// Frames bigger than this are deflated.
 const COMPRESS_OVER: usize = 512;
 /// The biggest frame a client accepts from its server, so a bad length
@@ -120,6 +137,51 @@ const MAX_HANDSHAKES_PER_ADDRESS: usize = 4;
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 /// How often the background thread looks for messages the game sent.
 const POLL: Duration = Duration::from_millis(1);
+/// The most messages from a client that wait for the network thread to
+/// hand the server's game, and from a server the client's: past them, the
+/// stream isn't read until it does (datagrams are dropped).
+const SERVER_INBOX: usize = 256;
+const CLIENT_INBOX: usize = 4096;
+/// How long a closing connection's writers have to write what's waiting.
+const FLUSH: Duration = Duration::from_secs(2);
+/// Why a server drops a client that fell too far behind, as its player is
+/// told.
+pub const FELL_BEHIND: &str =
+    "this game fell too far behind the server (its connection may be too slow)";
+/// Why a client closes a connection whose server stopped taking its
+/// messages, as its player is told.
+pub const SERVER_STUCK: &str = "the server stopped taking this game's messages";
+
+/// How much may wait for a connection's writers, and for how long, before
+/// the server holds back or the connection is dropped.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Bytes of chunks waiting to be written past which the server holds
+    /// back new ones (`net::Backlog`).
+    pub bulk_budget: usize,
+    /// Bytes waiting on the bulk stream (chunks, their changes) past which
+    /// the client is dropped: changes still go while new chunks are held
+    /// back.
+    pub bulk_cap: usize,
+    /// Bytes waiting on the control stream past which the connection is
+    /// dropped. Unreliable messages too big for a datagram are dropped
+    /// instead of taking its second half.
+    pub control_cap: usize,
+    /// How long a stream may have something waiting and write none of it
+    /// before the connection is dropped.
+    pub stall: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            bulk_budget: 2 << 20,
+            bulk_cap: 32 << 20,
+            control_cap: 2 << 20,
+            stall: Duration::from_secs(20),
+        }
+    }
+}
 
 /// What a client and server say first, on the control stream, in this
 /// order (see the module's docs).
@@ -148,15 +210,7 @@ pub enum Handshake {
 
 /// Whether a server message goes on the bulk stream.
 fn bulk(message: &ServerMessage) -> bool {
-    matches!(
-        message,
-        ServerMessage::Chunk { .. }
-            | ServerMessage::ChunkChanged { .. }
-            | ServerMessage::LightChanged { .. }
-            | ServerMessage::Unload(_)
-            | ServerMessage::Settled(_)
-            | ServerMessage::EditDone(_)
-    )
+    message.bulk()
 }
 
 /// A server listening for clients: each that connects, takes its mods and
@@ -185,6 +239,16 @@ impl Listener {
 /// Listens on `address` (port 0 for any free one) for clients, offering
 /// them the mods in `offer`, as the server whose key is `identity`.
 pub fn listen(address: SocketAddr, offer: Offer, identity: &Identity) -> io::Result<Listener> {
+    listen_with(address, offer, identity, Limits::default())
+}
+
+/// [`listen`], holding its clients to `limits`.
+pub fn listen_with(
+    address: SocketAddr,
+    offer: Offer,
+    identity: &Identity,
+    limits: Limits,
+) -> io::Result<Listener> {
     // Encoded and deflated once, here, not on the network's executor for
     // each client.
     let offer = Arc::new(Encoded::new(offer));
@@ -210,7 +274,7 @@ pub fn listen(address: SocketAddr, offer: Offer, identity: &Identity) -> io::Res
                                     connection.close(1u32.into(), b"the server is busy");
                                     return;
                                 };
-                                serve(connection, &offer, slot, send).await
+                                serve(connection, &offer, slot, send, limits).await
                             }
                             Err(error) => warn!("a client couldn't connect: {error}"),
                         }
@@ -680,6 +744,7 @@ async fn serve(
     offer: &Encoded,
     slot: HandshakeSlot,
     accepted: mpsc::Sender<Joining>,
+    limits: Limits,
 ) {
     // Checked in the handshake: a client without a certificate can't get
     // this far.
@@ -763,7 +828,7 @@ async fn serve(
     {
         return;
     }
-    carry_for_server(connection, (send, receive), bulk_stream, net_end).await;
+    carry_for_server(connection, (send, receive), bulk_stream, net_end, limits).await;
 }
 
 /// The server's side of its mods: lists them, sends those the client
@@ -824,28 +889,35 @@ async fn answer(receive: &mut RecvStream) -> Result<Vec<u8>, String> {
 }
 
 /// Carries a server's messages to its client and the client's back, until
-/// either goes.
+/// either goes, or the client falls too far behind (see [`Limits`]).
 async fn carry_for_server(
     connection: Connection,
-    (mut control, mut from_client): (SendStream, RecvStream),
-    mut bulk_stream: SendStream,
+    (control, mut from_client): (SendStream, RecvStream),
+    bulk_stream: SendStream,
     mut game: ClientLink,
+    limits: Limits,
 ) {
-    let incoming = {
+    // Control first, where both have something to send.
+    let _ = control.set_priority(1);
+    let control = Outbox::new(control, None);
+    let backlog = game.backlog().clone();
+    let bulk_out = Outbox::new(bulk_stream, Some(backlog.clone()));
+    game.backlog().set_budget(limits.bulk_budget);
+    let (to_game, from_net) = smol::channel::bounded::<ClientMessage>(SERVER_INBOX);
+    let _datagrams = {
         let connection = connection.clone();
-        let (to_game, from_net) = mpsc::channel::<ClientMessage>();
-        let datagrams = {
-            let connection = connection.clone();
-            let to_game = to_game.clone();
-            smol::spawn(async move {
-                while let Ok(bytes) = connection.read_datagram().await {
-                    if let Ok(message) = decode::<ClientMessage>(&bytes) {
-                        let _ = to_game.send(message);
-                    }
+        let to_game = to_game.clone();
+        smol::spawn(async move {
+            while let Ok(bytes) = connection.read_datagram().await {
+                if let Ok(message) = decode::<ClientMessage>(&bytes) {
+                    let _ = to_game.try_send(message);
                 }
-            })
-        };
-        let stream = smol::spawn(async move {
+            }
+        })
+    };
+    let _stream = {
+        let connection = connection.clone();
+        smol::spawn(async move {
             loop {
                 let frame = match read_frame(&mut from_client, MAX_CLIENT_FRAME).await {
                     Ok(frame) => frame,
@@ -859,7 +931,7 @@ async fn carry_for_server(
                 };
                 match decode::<ClientMessage>(&frame) {
                     Ok(message) => {
-                        if to_game.send(message).is_err() {
+                        if to_game.send(message).await.is_err() {
                             break;
                         }
                     }
@@ -870,53 +942,95 @@ async fn carry_for_server(
                     }
                 }
             }
-        });
-        (from_net, datagrams, stream)
+        })
     };
-    let (from_net, _datagrams, _stream) = incoming;
-    loop {
-        for message in from_net.try_iter() {
+    let why = loop {
+        while let Ok(message) = from_net.try_recv() {
             game.send(message);
         }
-        for message in game.receive() {
+        let mut why = None;
+        // Still counted in the backlog until each is carried.
+        for message in game.receive_counted() {
+            let weight = message.weight();
             let bytes = encode(&message);
-            if !message.reliable() && fits(&connection, &bytes) {
-                let _ = connection.send_datagram(bytes.into());
-                continue;
+            if !message.reliable() {
+                if fits(&connection, &bytes) {
+                    let _ = connection.send_datagram(bytes.into());
+                    continue;
+                }
+                if control.queued() > limits.control_cap / 2 {
+                    continue;
+                }
             }
-            let stream = if bulk(&message) {
-                &mut bulk_stream
+            let (outbox, cap, what) = if bulk(&message) {
+                (&bulk_out, limits.bulk_cap, "too many chunks waiting")
             } else {
-                &mut control
+                (&control, limits.control_cap, "too many messages waiting")
             };
-            if write_frame(stream, &bytes).await.is_err() {
-                return;
+            let frame = frame(&bytes);
+            let length = frame.len();
+            if !outbox.push(frame, cap) {
+                why = Some(what);
+                break;
+            }
+            if weight > 0 {
+                backlog.carried(weight, length);
             }
         }
-        if game.is_closed() || connection.close_reason().is_some() {
-            goodbye(&connection, [&mut control, &mut bulk_stream]).await;
+        if let Some(why) = why {
+            break why;
+        }
+        if control.stalled(limits.stall) || bulk_out.stalled(limits.stall) {
+            break "it took nothing for too long";
+        }
+        if connection.close_reason().is_some() {
+            return;
+        }
+        if control.broken() || bulk_out.broken() {
+            connection.close(1u32.into(), b"a stream broke");
+            return;
+        }
+        if game.is_closed() {
+            smol::future::zip(control.close(), bulk_out.close()).await;
+            connection.close(0u32.into(), b"bye");
             return;
         }
         smol::Timer::after(POLL).await;
-    }
+    };
+    // Too far behind: told why on the control stream, which goes on being
+    // read (unless it's what's stuck), then in closing, which may be lost
+    // among the chunks in flight.
+    warn!(
+        "dropped the client at {}: {why}",
+        connection.remote_address()
+    );
+    // What waits for it, and what quinn holds of it, is let go at once,
+    // so it doesn't hold up the reason.
+    bulk_out.reset();
+    let dropped = ServerMessage::Dropped(FELL_BEHIND.to_string());
+    control.push(frame(&encode(&dropped)), usize::MAX);
+    control.close().await;
+    connection.close(2u32.into(), FELL_BEHIND.as_bytes());
 }
 
 /// Carries a client's messages to its server and the server's back, until
-/// either goes.
+/// either goes, or the server stops taking them.
 async fn play(
     connection: Connection,
-    (mut control, mut from_server): (SendStream, RecvStream),
+    (control, mut from_server): (SendStream, RecvStream),
     mut game: ServerLink,
     closed: CloseReason,
 ) {
-    let (to_game, from_net) = mpsc::channel::<ServerMessage>();
+    let limits = Limits::default();
+    let control = Outbox::new(control, None);
+    let (to_game, from_net) = smol::channel::bounded::<ServerMessage>(CLIENT_INBOX);
     let _datagrams = {
         let connection = connection.clone();
         let to_game = to_game.clone();
         smol::spawn(async move {
             while let Ok(bytes) = connection.read_datagram().await {
                 if let Ok(message) = decode::<ServerMessage>(&bytes) {
-                    let _ = to_game.send(message);
+                    let _ = to_game.try_send(message);
                 }
             }
         })
@@ -928,7 +1042,7 @@ async fn play(
                 let Ok(message) = decode::<ServerMessage>(&frame) else {
                     break;
                 };
-                if to_game.send(message).is_err() {
+                if to_game.send(message).await.is_err() {
                     break;
                 }
             }
@@ -944,35 +1058,212 @@ async fn play(
                 let Ok(message) = decode::<ServerMessage>(&frame) else {
                     break;
                 };
-                if to_game.send(message).is_err() {
+                if to_game.send(message).await.is_err() {
                     break;
                 }
             }
         })
     };
+    let stuck = || {
+        warn!("{SERVER_STUCK}");
+        connection.close(2u32.into(), b"stuck");
+        closed.set(SERVER_STUCK.to_string());
+    };
     loop {
-        for message in from_net.try_iter() {
+        while let Ok(message) = from_net.try_recv() {
+            if let ServerMessage::Dropped(why) = message {
+                closed.set(why);
+                continue;
+            }
             game.send(message);
         }
         for message in game.receive() {
             let bytes = encode(&message);
-            if !message.reliable() && fits(&connection, &bytes) {
-                let _ = connection.send_datagram(bytes.into());
-            } else if write_frame(&mut control, &bytes).await.is_err() {
+            if !message.reliable() {
+                if fits(&connection, &bytes) {
+                    let _ = connection.send_datagram(bytes.into());
+                    continue;
+                }
+                if control.queued() > limits.control_cap / 2 {
+                    continue;
+                }
+            }
+            if !control.push(frame(&bytes), limits.control_cap) {
+                stuck();
                 return;
             }
         }
         if let Some(why) = connection.close_reason() {
-            if let Some(reason) = why_closed(&why) {
+            // Unless the server said why first.
+            if let Some(reason) = why_closed(&why)
+                && closed.get().is_none()
+            {
                 closed.set(reason);
             }
             return;
         }
+        if control.stalled(limits.stall) {
+            stuck();
+            return;
+        }
+        if control.broken() {
+            connection.close(1u32.into(), b"a stream broke");
+            closed.set("the connection broke".to_string());
+            return;
+        }
         if game.is_closed() {
-            goodbye(&connection, [&mut control]).await;
+            control.close().await;
+            connection.close(0u32.into(), b"bye");
             return;
         }
         smol::Timer::after(POLL).await;
+    }
+}
+
+/// What waits to be written on a stream, written by a task of its own, so
+/// one stream never waits on another: frames, and how many bytes of them
+/// wait.
+struct Outbox {
+    frames: smol::channel::Sender<Vec<u8>>,
+    flow: Arc<Flow>,
+    writer: smol::Task<()>,
+    /// Tells the writer to reset its stream.
+    reset: smol::channel::Sender<()>,
+}
+
+/// How an [`Outbox`]'s writer is getting on.
+struct Flow {
+    /// Bytes waiting (or being written).
+    queued: AtomicUsize,
+    /// When it last wrote a frame, or something began waiting.
+    moved: std::sync::Mutex<Instant>,
+}
+
+impl Flow {
+    fn moved_now(&self) {
+        *self.moved.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    }
+}
+
+impl Outbox {
+    /// The outbox of `stream`; a world stream's also says what it's
+    /// written to its link's `backlog`.
+    fn new(mut stream: SendStream, backlog: Option<Arc<Backlog>>) -> Self {
+        let (frames, waiting) = smol::channel::unbounded::<Vec<u8>>();
+        let (reset, told) = smol::channel::bounded::<()>(1);
+        let flow = Arc::new(Flow {
+            queued: AtomicUsize::new(0),
+            moved: std::sync::Mutex::new(Instant::now()),
+        });
+        let writer = {
+            let flow = flow.clone();
+            smol::spawn(async move {
+                // Done once it's told to reset; never if it can't be.
+                let reset_asked = || {
+                    let told = told.clone();
+                    async move {
+                        if told.recv().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                };
+                loop {
+                    let next = async { Some(waiting.recv().await) }
+                        .or(async {
+                            reset_asked().await;
+                            None
+                        })
+                        .await;
+                    let frame = match next {
+                        Some(Ok(frame)) => frame,
+                        // Closed, with everything written: finished.
+                        Some(Err(_)) => {
+                            let _ = stream.finish();
+                            within(FLUSH, stream.stopped()).await;
+                            return;
+                        }
+                        None => break,
+                    };
+                    let wrote = async { Some(stream.write_all(&frame).await) }
+                        .or(async {
+                            reset_asked().await;
+                            None
+                        })
+                        .await;
+                    match wrote {
+                        Some(Ok(())) => {
+                            flow.moved_now();
+                            flow.queued.fetch_sub(frame.len(), Ordering::SeqCst);
+                            if let Some(backlog) = &backlog {
+                                backlog.written(frame.len());
+                            }
+                        }
+                        Some(Err(_)) => return,
+                        None => break,
+                    }
+                }
+                // Told to reset: what's unsent, here and in quinn, goes.
+                let _ = stream.reset(2u32.into());
+            })
+        };
+        Self {
+            frames,
+            flow,
+            writer,
+            reset,
+        }
+    }
+
+    /// Bytes waiting to be written.
+    fn queued(&self) -> usize {
+        self.flow.queued.load(Ordering::SeqCst)
+    }
+
+    /// Puts a frame in line, unless it would make more than `cap` bytes
+    /// wait (a frame alone always goes): then it's `false`, and the
+    /// connection is too far behind.
+    fn push(&self, frame: Vec<u8>, cap: usize) -> bool {
+        let queued = self.queued();
+        if queued > 0 && queued + frame.len() > cap {
+            return false;
+        }
+        if self.flow.queued.fetch_add(frame.len(), Ordering::SeqCst) == 0 {
+            self.flow.moved_now();
+        }
+        let _ = self.frames.try_send(frame);
+        true
+    }
+
+    /// Whether something has waited `limit` with nothing written.
+    fn stalled(&self, limit: Duration) -> bool {
+        self.queued() > 0
+            && (self.flow.moved.lock().unwrap_or_else(|e| e.into_inner())).elapsed() > limit
+    }
+
+    /// Whether its writer stopped: a write failed.
+    fn broken(&self) -> bool {
+        self.writer.is_finished()
+    }
+
+    /// Writes what's waiting and finishes the stream, for [`FLUSH`] at
+    /// most: closing the connection then drops anything still unsent.
+    async fn close(self) {
+        let Self {
+            frames,
+            writer,
+            reset,
+            ..
+        } = self;
+        drop(frames);
+        within(FLUSH, writer).await;
+        drop(reset);
+    }
+
+    /// Resets the stream: nothing more of it is sent, what was waiting
+    /// included.
+    fn reset(self) {
+        let _ = self.reset.try_send(());
+        self.writer.detach();
     }
 }
 
@@ -1009,18 +1300,6 @@ async fn within<T>(limit: Duration, future: impl Future<Output = T>) -> Option<T
             None
         })
         .await
-}
-
-/// Ends a connection, once what's been written on its streams has gone (or
-/// a moment has passed): closing drops anything still unsent.
-async fn goodbye<const N: usize>(connection: &Connection, streams: [&mut SendStream; N]) {
-    if connection.close_reason().is_none() {
-        for stream in streams {
-            let _ = stream.finish();
-            within(Duration::from_secs(1), stream.stopped()).await;
-        }
-    }
-    connection.close(0u32.into(), b"bye");
 }
 
 /// Writes a frame ([`frame`]).
@@ -1361,6 +1640,207 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         panic!("the server never saw the client go");
+    }
+
+    /// A chunk of every voxel a different block, more or less: deflating
+    /// it saves little.
+    fn noisy_chunk(seed: u32) -> ServerMessage {
+        let mut chunk = Chunk::default();
+        let mut x = seed.wrapping_mul(2654435761) | 1;
+        for i in 0..16 {
+            for j in 0..16 {
+                for k in 0..16 {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    chunk.set(
+                        i,
+                        j,
+                        k,
+                        defaria_core::content::BlockState((x as u16 & 0x3fff) | 1),
+                    );
+                }
+            }
+        }
+        ServerMessage::Chunk {
+            coord: ChunkCoord(IVec3::new(seed as i32, 0, 0)),
+            chunk,
+            light: ChunkLight::default(),
+        }
+    }
+
+    /// A client that never reads its chunks: it takes the server's mods
+    /// as any does, then reads only its control stream, handing what
+    /// arrives to the receiver. The connection and the stream it would
+    /// write on are kept, or the server would see it go.
+    fn slow_client(listener: &Listener) -> (Connection, SendStream, mpsc::Receiver<ServerMessage>) {
+        let config = client_config(&Identity::generate(), None, Default::default()).unwrap();
+        let address = listener.address;
+        let (connection, (send, mut receive)) = smol::block_on(async move {
+            let (connection, mut control, mods) = open(address, "Slow", config).await.unwrap();
+            let options = ConnectOptions::default();
+            take_mods(&mut control, mods, &mut Library::empty(None), &options)
+                .await
+                .unwrap();
+            (connection, control)
+        });
+        let (arrived, messages) = mpsc::channel();
+        thread::spawn(move || {
+            smol::block_on(async move {
+                while let Ok(frame) = read_frame(&mut receive, MAX_FRAME).await {
+                    let Ok(message) = decode::<ServerMessage>(&frame) else {
+                        break;
+                    };
+                    if arrived.send(message).is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+        (connection, send, messages)
+    }
+
+    /// Waits up to a minute for `done`, polling.
+    fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "never {what}");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// What the server told a slow client of why it dropped it, once
+    /// it's closed, from what arrived on its control stream (`told`, or
+    /// still to come in `messages`).
+    fn told_why(
+        connection: &Connection,
+        messages: &mpsc::Receiver<ServerMessage>,
+        mut told: Option<String>,
+    ) -> Option<String> {
+        eventually("dropped", || connection.close_reason().is_some());
+        for message in messages.try_iter() {
+            if let ServerMessage::Dropped(why) = message {
+                told = Some(why);
+            }
+        }
+        told
+    }
+
+    /// A client that stops taking its chunks: the server, holding back
+    /// new ones as its backlog says (as `send_chunks` does), keeps what
+    /// waits for it within the budget, its control messages still arrive
+    /// while the chunks are stuck, and once nothing's been written for
+    /// the limit's time it's dropped, and told why.
+    #[test]
+    fn a_client_that_stops_reading_is_dropped_in_time() {
+        let limits = Limits {
+            bulk_budget: 256 << 10,
+            bulk_cap: 4 << 20,
+            control_cap: 64 << 10,
+            stall: Duration::from_secs(2),
+        };
+        let listener = listen_with(local(), offer(), &Identity::generate(), limits).unwrap();
+        let (connection, _send, messages) = slow_client(&listener);
+        let mut server = wait_for(|| listener.accept(), 1).pop().unwrap().link;
+
+        let (mut seed, mut most, mut while_stuck, mut told) = (0, 0, 0, None);
+        let started = std::time::Instant::now();
+        while !server.is_closed() {
+            assert!(started.elapsed() < Duration::from_secs(60), "never dropped");
+            let stuck = server.backlog().room() == 0;
+            if !stuck {
+                server.send(noisy_chunk(seed));
+                seed += 1;
+            }
+            server.send(ServerMessage::CloseScreen);
+            server.receive();
+            let mut arrived = 0;
+            for message in messages.try_iter() {
+                arrived += 1;
+                if let ServerMessage::Dropped(why) = message {
+                    told = Some(why);
+                }
+            }
+            if stuck {
+                while_stuck += arrived;
+            }
+            most = most.max(server.backlog().waiting());
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            while_stuck > 10,
+            "only {while_stuck} control messages arrived while the chunks were stuck"
+        );
+        assert!(started.elapsed() >= limits.stall);
+        // Within the budget, but for the chunk sent while there was room
+        // for less than it.
+        assert!(
+            most <= limits.bulk_budget + noisy_chunk(0).weight(),
+            "{most} bytes waited"
+        );
+        let told = told_why(&connection, &messages, told);
+        assert_eq!(told.as_deref(), Some(FELL_BEHIND));
+    }
+
+    /// A server that sends a client that stops taking its chunks more
+    /// than its stream takes, regardless, drops it at once rather than
+    /// keep more waiting.
+    #[test]
+    fn a_client_too_far_behind_is_dropped_at_the_cap() {
+        let limits = Limits {
+            bulk_budget: 256 << 10,
+            bulk_cap: 1 << 20,
+            control_cap: 64 << 10,
+            stall: Duration::from_secs(600),
+        };
+        let listener = listen_with(local(), offer(), &Identity::generate(), limits).unwrap();
+        let (connection, _send, messages) = slow_client(&listener);
+        let mut server = wait_for(|| listener.accept(), 1).pop().unwrap().link;
+        let (mut seed, mut most) = (0, 0);
+        let started = std::time::Instant::now();
+        while !server.is_closed() {
+            assert!(started.elapsed() < Duration::from_secs(60), "never dropped");
+            for _ in 0..8 {
+                server.send(noisy_chunk(seed));
+                seed += 1;
+            }
+            server.receive();
+            most = most.max(server.backlog().queued());
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(most <= limits.bulk_cap, "{most} bytes waited");
+        let told = told_why(&connection, &messages, None);
+        assert_eq!(told.as_deref(), Some(FELL_BEHIND));
+    }
+
+    /// A client the server drops is told why, and its link closes with
+    /// the reason the player is shown; the game never sees the message
+    /// that said it.
+    #[test]
+    fn a_dropped_client_is_told_why() {
+        let limits = Limits {
+            bulk_cap: 1,
+            ..default()
+        };
+        let listener = listen_with(local(), offer(), &Identity::generate(), limits).unwrap();
+        let connected =
+            connect_to(&listener.address.to_string(), &Identity::generate(), None).unwrap();
+        let mut client = connected.link;
+        let mut server = wait_for(|| listener.accept(), 1).pop().unwrap().link;
+        // More than a byte waits: it's too far behind.
+        for seed in 0..200 {
+            server.send(noisy_chunk(seed));
+        }
+        let mut got = Vec::new();
+        eventually("closed", || {
+            got.extend(client.receive());
+            client.is_closed()
+        });
+        assert_eq!(connected.closed.get().as_deref(), Some(FELL_BEHIND));
+        assert!(
+            !got.iter().any(|m| matches!(m, ServerMessage::Dropped(_))),
+            "the game saw the message"
+        );
     }
 
     /// A client that builds other content from the server's mods (another
