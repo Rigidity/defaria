@@ -65,6 +65,16 @@ fn fluid_faces(
     chunk: IVec3,
     voxel: &impl Fn(IVec3) -> Option<(&'static str, u16, u16)>,
 ) -> Vec<Face> {
+    fluid_sides(chunk, voxel, false)
+}
+
+/// The fluid faces of the meshes of the chunk at `chunk`, fronts or their
+/// backs.
+fn fluid_sides(
+    chunk: IVec3,
+    voxel: &impl Fn(IVec3) -> Option<(&'static str, u16, u16)>,
+    backs: bool,
+) -> Vec<Face> {
     let meshes = neighborhood(chunk, voxel).meshes(base());
     let fluid_textures: Vec<u32> = ["water", "lava"]
         .iter()
@@ -89,10 +99,12 @@ fn fluid_faces(
         else {
             continue;
         };
-        // A face a quad; fronts only.
+        // A face a quad.
         for first in (0..positions.len()).step_by(4) {
             let layer = layers[first][0];
-            if layer & BACK_FACE != 0 || !fluid_textures.contains(&(layer & TEXTURE_BITS)) {
+            if (layer & BACK_FACE != 0) != backs
+                || !fluid_textures.contains(&(layer & TEXTURE_BITS))
+            {
                 continue;
             }
             let quad = first..first + 4;
@@ -405,4 +417,40 @@ fn flow_runs_on_through_waterlogged_blocks() {
     assert_seamless(&flowing);
     // Level: the slab's half full is as high as full water beside it.
     assert!(still(&row([FULL_FLUID, room, FULL_FLUID])));
+}
+
+/// A fluid face's back flows as its front does, corner by corner: seen
+/// from under the water, the surface moves the same way.
+#[test]
+fn backs_flow_as_their_fronts() {
+    // A slope down toward +X and along Z, so the flow differs from corner
+    // to corner.
+    let voxel = |pos: IVec3| {
+        if pos.y == FLOOR && (0..8).contains(&pos.x) && (0..8).contains(&pos.z) {
+            return Some(("stone", FLUID_STEPS, FULL_FLUID));
+        }
+        let water = pos.y == FLOOR + 1 && (1..7).contains(&pos.x) && (1..7).contains(&pos.z);
+        water.then(|| {
+            let amount = (FULL_FLUID as i32 - pos.x * 80 - pos.z * 15) as u16;
+            ("water", fluid_step(amount), amount)
+        })
+    };
+    let fronts = fluid_sides(IVec3::ZERO, &voxel, false);
+    let backs = fluid_sides(IVec3::ZERO, &voxel, true);
+    assert_eq!(backs.len(), fronts.len(), "water is double-sided");
+    let mut flowing = 0;
+    for back in &backs {
+        let front = fronts
+            .iter()
+            .find(|f| {
+                f.normal == -back.normal && back.positions.iter().all(|p| f.positions.contains(p))
+            })
+            .expect("each back has its front");
+        for (pos, flow) in back.positions.iter().zip(&back.flows) {
+            let at = front.positions.iter().position(|p| p == pos).unwrap();
+            assert_eq!(*flow, front.flows[at], "at {pos}");
+        }
+        flowing += back.flowing() as usize;
+    }
+    assert!(flowing > 0, "something flows");
 }
