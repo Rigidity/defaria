@@ -120,7 +120,11 @@ impl Prediction {
     /// The server applied the inputs up to `tick`.
     fn applied(&mut self, tick: u32) {
         self.acked = Some(tick);
-        if self.teleport.as_ref().is_some_and(|input| input.tick <= tick) {
+        if self
+            .teleport
+            .as_ref()
+            .is_some_and(|input| input.tick <= tick)
+        {
             self.teleport = None;
         }
     }

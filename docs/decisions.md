@@ -542,6 +542,21 @@ bandwidth for light or chunks shows up in the `net` report.
   (nobody's there to read it) and frames spent connecting don't count
   towards the start's settle timeout. Scenarios gain `joined` (wait for
   joining to finish, and print how) and `connect-timeout`.
+- Joining puts the `ServerConnection` in place (in `Update`) while the
+  client is still in `Menu`; it enters `Playing` at the next frame's
+  state transition, after that frame's `PreUpdate`. So for that one
+  `PreUpdate` the client is at the menu with a live connection. The
+  client's receive systems don't run in `Menu` (#239): what the server
+  sent stays queued in the link, and is applied the frame after, when
+  the world and the local player exist. Read then, it was lost: the
+  player's first state (inventory, hotbar, game mode) found no player
+  and the server doesn't send it again unless it changes, and chunks
+  spawned at the menu. Waiting that frame loses nothing: nothing else
+  reads the link in `PreUpdate`, and what the client sends (its inputs
+  and intents, in `FixedUpdate` and `PostUpdate`) comes from the local
+  player, which doesn't exist yet, so it sends nothing that frame. A
+  client that leaves for the menu drops the connection as it goes, so
+  the menu never holds one for longer.
 - A server that goes while the player's there returns to the menu saying
   why: the client's network thread keeps the connection's close reason
   (the server's own words, such as "the server stopped", or a time-out),
