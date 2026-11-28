@@ -99,9 +99,9 @@ pub use defaria_core::server_list::DEFAULT_PORT;
 
 /// The protocol's version: a client and server of different ones refuse
 /// each other.
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
-const ALPN: &[u8] = b"defaria/6";
+const ALPN: &[u8] = b"defaria/7";
 /// Frames bigger than this are deflated.
 const COMPRESS_OVER: usize = 512;
 /// The biggest frame a client accepts from its server, so a bad length
@@ -1607,13 +1607,13 @@ mod tests {
             light: ChunkLight::default(),
         };
         assert!(encode(&big).len() > COMPRESS_OVER);
-        server.send(ServerMessage::Settled(false));
+        server.send(ServerMessage::Settled(None));
         server.send(big.clone());
         server.send(ServerMessage::CloseScreen);
         let got = wait_for(|| client.receive(), 3);
         // Each stream in order; the two streams in either.
         let bulk: Vec<_> = got.iter().filter(|m| bulk(m)).cloned().collect();
-        assert_eq!(bulk, [ServerMessage::Settled(false), big]);
+        assert_eq!(bulk, [ServerMessage::Settled(None), big]);
         assert!(got.contains(&ServerMessage::CloseScreen));
 
         client.send(ClientMessage::Inputs {

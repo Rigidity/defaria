@@ -4,6 +4,10 @@
 //! renders every frame into an offscreen image instead of a window, feeds the
 //! game the input the script describes, and exits when the script ends. Time
 //! advances a fixed 1/60 s per frame, so runs are deterministic.
+//! Frames run back to back, except playing on a server over the network
+//! (`--connect`): that server steps the player in real time, so there
+//! each frame also takes at least 1/60 s of wall-clock time (inputs made
+//! faster would pile up there and be dropped, a `camera` jump with them).
 //!
 //! Frames are 1280×720 unless `--size <width>x<height>` says otherwise
 //! (blending costs per pixel, so a full-screen window can cost more).

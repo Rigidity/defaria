@@ -92,6 +92,7 @@ impl Plugin for HeadlessPlugin {
                     record_system_times,
                     observe,
                     exit_when_done,
+                    keep_pace_with_the_server,
                 )
                     .chain()
                     .after(defaria_core::world::ChunkCompaction),
@@ -517,4 +518,28 @@ fn exit_when_done(
     } else {
         exit.write(AppExit::Success);
     }
+}
+
+/// Playing on a server over the network (`--connect`), frames take at
+/// least [`FRAME_TIME`] of wall-clock time. That server steps players in
+/// real time, at most as fast as time passes, so a client running its
+/// frames back to back makes inputs faster than they're stepped; they
+/// pile up there, and those past what it keeps waiting are dropped,
+/// among them a `camera` teleport. A server in the game's own process
+/// steps with the client, so runs that play one go as fast as they can.
+pub(super) fn keep_pace_with_the_server(
+    remote: Option<Res<crate::connecting::RemoteServer>>,
+    mut last: Local<Option<std::time::Instant>>,
+) {
+    if remote.is_none() {
+        *last = None;
+        return;
+    }
+    if let Some(last) = *last {
+        let elapsed = last.elapsed();
+        if elapsed < FRAME_TIME {
+            std::thread::sleep(FRAME_TIME - elapsed);
+        }
+    }
+    *last = Some(std::time::Instant::now());
 }

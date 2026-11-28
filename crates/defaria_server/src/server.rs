@@ -19,7 +19,7 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::{
     block_entity::BlockEntities,
-    streaming::{ChunkLoader, ChunkUnloaded, loader_chunk},
+    streaming::{ChunkLoader, ChunkUnloaded, Chunks, loader_chunk},
 };
 use defaria_core::{
     content::{BlockState, Content},
@@ -128,8 +128,9 @@ pub struct Connection {
     /// The machine whose screen the client has open, and what it was last
     /// sent of it.
     machine: Option<(IVec3, MachineContents)>,
-    /// Whether the client was last told everything is loaded.
-    settled: Option<bool>,
+    /// What the client was last told of whether everything around it is
+    /// loaded (see [`ServerMessage::Settled`]).
+    settled: Option<Option<IVec3>>,
     /// The chunk the player's range was last worked out around.
     center: Option<IVec3>,
     /// Chunks in range held back while the network is behind with the
@@ -726,16 +727,25 @@ fn send_machine_contents(
 }
 
 /// Tells each client whether everything around its player is loaded,
-/// when that changes. Whatever's loaded in its range has been sent by now
-/// (see [`send_chunks`]), unless some is held back while the network is
-/// behind.
-fn send_status(status: Res<StreamingStatus>, mut connections: Query<&mut Connection>) {
+/// and around which chunk, when that changes. Whatever's loaded in its
+/// range has been sent by now (see [`send_chunks`]), unless some is held
+/// back while the network is behind: then it isn't settled. Nor is it
+/// until streaming has planned around where the player is now: on the
+/// frame a player joins or moves to another chunk, the status is still
+/// the one worked out before.
+fn send_status(
+    status: Res<StreamingStatus>,
+    chunks: Res<Chunks>,
+    mut connections: Query<&mut Connection>,
+) {
     for mut connection in &mut connections {
-        // Not while chunks are held back for it.
-        let settled = status.settled && connection.waiting.is_empty();
-        if connection.settled != Some(settled) {
-            connection.settled = Some(settled);
-            connection.send(ServerMessage::Settled(settled));
+        let held_back = !connection.waiting.is_empty();
+        let around = connection
+            .center
+            .filter(|&center| status.settled && !held_back && chunks.plans_around(center));
+        if connection.settled != Some(around) {
+            connection.settled = Some(around);
+            connection.send(ServerMessage::Settled(around));
         }
     }
 }
@@ -781,7 +791,7 @@ mod tests {
             in_process: false,
         });
         let sent = until(&mut app, &mut client, |message| {
-            matches!(message, ServerMessage::Settled(true))
+            matches!(message, ServerMessage::Settled(Some(_)))
         });
         (app, client, sent)
     }
@@ -865,7 +875,7 @@ mod tests {
         assert!(chunks_in(&sent).is_empty(), "sent chunks while behind");
         // The rest goes meanwhile.
         assert!((sent.iter()).any(|message| matches!(message, ServerMessage::PlayerState(_))));
-        assert!(!sent.contains(&ServerMessage::Settled(true)));
+        assert!(!(sent.iter()).any(|message| matches!(message, ServerMessage::Settled(Some(_)))));
 
         // Room for one: one a frame.
         client.backlog().written(1);
@@ -873,14 +883,16 @@ mod tests {
             app.update();
             let now = client.receive();
             assert_eq!(chunks_in(&now).len(), 1);
-            assert!(!now.contains(&ServerMessage::Settled(true)));
+            assert!(
+                !(now.iter()).any(|message| matches!(message, ServerMessage::Settled(Some(_))))
+            );
             sent.extend(now);
         }
 
         // Caught up: the rest.
         client.backlog().set_budget(0);
         sent.extend(until(&mut app, &mut client, |message| {
-            matches!(message, ServerMessage::Settled(true))
+            matches!(message, ServerMessage::Settled(Some(_)))
         }));
         let mut got = chunks_in(&sent);
         got.sort_by_key(|c| (c.x, c.y, c.z));
@@ -997,15 +1009,21 @@ mod tests {
             inputs: vec![input(1, Controls::default(), Some(motion))],
             made_after: 0,
         });
+        let far = ChunkCoord::split(IVec3::new(4064, 56, 92)).0;
+        // Settled around where it went, not where it was.
         let sent = until(&mut app, &mut client, |message| {
-            matches!(message, ServerMessage::Settled(true))
+            *message == ServerMessage::Settled(Some(far.0))
         });
         assert_eq!(app.world().get::<Body>(player).unwrap().position, feet);
+        for message in &sent {
+            if let ServerMessage::Settled(Some(around)) = message {
+                assert_eq!(*around, far.0, "settled around where it was");
+            }
+        }
         assert!(sent.iter().any(|message| matches!(
             message,
             ServerMessage::Moved { tick: 1, motion } if motion.feet == feet
         )));
-        let far = ChunkCoord::split(IVec3::new(4064, 56, 92)).0;
         assert!(
             sent.iter().any(
                 |message| matches!(message, ServerMessage::Chunk { coord, .. } if *coord == far)
@@ -1057,7 +1075,7 @@ mod tests {
 
         client.backlog().set_budget(0);
         until(&mut app, &mut client, |message| {
-            matches!(message, ServerMessage::Settled(true))
+            matches!(message, ServerMessage::Settled(Some(_)))
         });
     }
 

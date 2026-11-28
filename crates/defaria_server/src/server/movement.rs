@@ -40,7 +40,9 @@ const BURST: f64 = 20.0;
 /// whose clock runs a little fast, or whose inputs come in bunches, isn't
 /// held back.
 const SLACK: f64 = 1.05;
-/// The most inputs kept waiting; later ones are dropped (and sent again).
+/// The most inputs kept waiting; later ones are dropped (and sent again),
+/// except one that puts the player somewhere, which takes the place of
+/// the newest that doesn't (see [`PlayerInputs::wait`]).
 const MAX_WAITING: usize = 128;
 
 /// The longest inputs are held past the earliest any arrived lately, in
@@ -236,6 +238,34 @@ impl PlayerInputs {
         self.in_process || self.playout.due(tick, now)
     }
 
+    /// Keeps `input` waiting to be stepped, if it's new; returns whether
+    /// it did. Past [`MAX_WAITING`], a plain input is dropped (its client
+    /// sends it again), but a teleport isn't: its client may not have it
+    /// to send again for long, and without it the player would stay where
+    /// it was. It takes the place of the newest plain input waiting.
+    fn wait(&mut self, input: &Input) -> bool {
+        if input.tick <= self.applied || self.waiting.contains_key(&input.tick) {
+            return false;
+        }
+        if self.waiting.len() >= MAX_WAITING {
+            if input.teleport.is_none() {
+                return false;
+            }
+            let plain = self
+                .waiting
+                .iter()
+                .rev()
+                .find(|(_, waiting)| waiting.teleport.is_none())
+                .map(|(&tick, _)| tick);
+            let Some(plain) = plain else {
+                return false;
+            };
+            self.waiting.remove(&plain);
+        }
+        self.waiting.insert(input.tick, input.clone());
+        true
+    }
+
     /// The last input applied.
     pub fn applied(&self) -> u32 {
         self.applied
@@ -269,12 +299,8 @@ pub(super) fn take_inputs(time: Res<Time>, mut players: Query<(&Connection, &mut
             };
             let mut new = Vec::new();
             for input in sent {
-                if input.tick > inputs.applied
-                    && inputs.waiting.len() < MAX_WAITING
-                    && !inputs.waiting.contains_key(&input.tick)
-                {
+                if inputs.wait(input) {
                     new.push(input.tick);
-                    inputs.waiting.insert(input.tick, input.clone());
                 }
             }
             let newest = sent.iter().map(|input| input.tick).max().unwrap_or(0);
@@ -637,5 +663,43 @@ mod tests {
         assert!(!held.due(4, 1.0));
         held.in_process = true;
         assert!(held.due(4, 1.0));
+    }
+
+    /// Past the most inputs kept waiting, plain ones are dropped, but a
+    /// teleport takes the place of the newest plain one: it's never lost
+    /// for being one too many.
+    #[test]
+    fn a_teleport_waits_however_many_are_waiting() {
+        let plain = |tick| Input {
+            tick,
+            controls: player::Controls::default(),
+            look: Look::default(),
+            teleport: None,
+        };
+        let mut inputs = PlayerInputs::new(false);
+        for tick in 1..=MAX_WAITING as u32 {
+            assert!(inputs.wait(&plain(tick)));
+        }
+        let over = MAX_WAITING as u32 + 1;
+        assert!(!inputs.wait(&plain(over)), "one too many");
+        let teleport = Input {
+            teleport: Some(Motion {
+                feet: bevy::math::DVec3::new(600.0, 80.0, 600.0),
+                velocity: bevy::math::DVec3::ZERO,
+                on_ground: false,
+                flying: true,
+                sneaking: false,
+                sprinting: false,
+                eye_height: player::EYE_HEIGHT,
+            }),
+            ..plain(over + 5)
+        };
+        assert!(inputs.wait(&teleport));
+        assert_eq!(inputs.waiting.len(), MAX_WAITING);
+        assert!(inputs.waiting[&(over + 5)].teleport.is_some());
+        assert!(!inputs.waiting.contains_key(&(MAX_WAITING as u32)));
+        // Sent again, it's not taken twice.
+        assert!(!inputs.wait(&teleport));
+        assert_eq!(inputs.waiting.len(), MAX_WAITING);
     }
 }

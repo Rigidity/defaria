@@ -159,8 +159,13 @@ pub enum ServerMessage {
         target: Option<(IVec3, BlockState)>,
         progress: f32,
     },
-    /// Whether everything in the client's range is loaded and sent.
-    Settled(bool),
+    /// Whether everything in the client's range is loaded and sent: the
+    /// chunk (its player's eyes') the range was around, or `None` while
+    /// it's still loading. The client is settled only once that's where
+    /// its player is, so a server that hasn't yet heard where the player
+    /// went (a teleport, or a player that has just joined) can't settle it
+    /// early.
+    Settled(Option<IVec3>),
     /// The server has acted on the use that carried this edit and the
     /// ones before it, and the chunks it changed were sent before this:
     /// the client's world is the server's there now. Sent with the chunks,
@@ -584,8 +589,11 @@ mod tests {
             vec![ClientMessage::Mining(true), ClientMessage::ToggleGameMode]
         );
         assert!(server.receive().is_empty());
-        server.send(ServerMessage::Settled(true));
-        assert_eq!(client.receive(), vec![ServerMessage::Settled(true)]);
+        server.send(ServerMessage::Settled(Some(IVec3::ONE)));
+        assert_eq!(
+            client.receive(),
+            vec![ServerMessage::Settled(Some(IVec3::ONE))]
+        );
     }
 
     #[test]
@@ -730,7 +738,7 @@ mod tests {
                 target: Some((IVec3::new(1, 2, 3), block("stone"))),
                 progress: 0.5,
             },
-            ServerMessage::Settled(true),
+            ServerMessage::Settled(Some(IVec3::new(1, -2, 3))),
             ServerMessage::OpenScreen {
                 pos: IVec3::new(9, 8, 7),
                 state: block("stone"),

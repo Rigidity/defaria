@@ -542,6 +542,21 @@ bandwidth for light or chunks shows up in the `net` report.
   (nobody's there to read it) and frames spent connecting don't count
   towards the start's settle timeout. Scenarios gain `joined` (wait for
   joining to finish, and print how) and `connect-timeout`.
+- Joining puts the `ServerConnection` in place (in `Update`) while the
+  client is still in `Menu`; it enters `Playing` at the next frame's
+  state transition, after that frame's `PreUpdate`. So for that one
+  `PreUpdate` the client is at the menu with a live connection. The
+  client's receive systems don't run in `Menu` (#239): what the server
+  sent stays queued in the link, and is applied the frame after, when
+  the world and the local player exist. Read then, it was lost: the
+  player's first state (inventory, hotbar, game mode) found no player
+  and the server doesn't send it again unless it changes, and chunks
+  spawned at the menu. Waiting that frame loses nothing: nothing else
+  reads the link in `PreUpdate`, and what the client sends (its inputs
+  and intents, in `FixedUpdate` and `PostUpdate`) comes from the local
+  player, which doesn't exist yet, so it sends nothing that frame. A
+  client that leaves for the menu drops the connection as it goes, so
+  the menu never holds one for longer.
 - A server that goes while the player's there returns to the menu saying
   why: the client's network thread keeps the connection's close reason
   (the server's own words, such as "the server stopped", or a time-out),
@@ -754,6 +769,29 @@ bandwidth for light or chunks shows up in the `net` report.
   now that permissions exist, the server could take them only from
   those allowed to run commands, once scenarios against a dedicated
   server don't need them.
+
+*As built in #239*, joining a server that draws the world:
+
+- What the server sends while the client is still at the menu waits
+  for the world (see #52's notes above), so the player's first state
+  isn't lost.
+- `ServerMessage::Settled` says which chunk it's settled around
+  (`Settled(Option<IVec3>)`; protocol 7, `defaria/7`). The server says
+  so only once streaming has planned around the player's current chunk
+  and nothing in its range is held back, and the client counts as
+  settled only while that's the chunk its own player's eyes are in. A
+  server's status alone could be about where the player was before a
+  `camera` jump reached it, or before it joined, and `settle` ended
+  with nothing loaded around the player.
+- A client keeps sending its newest teleport the server hasn't applied,
+  however many inputs came after it, and the server keeps a waiting
+  teleport past its limit of waiting inputs, dropping the newest plain
+  one instead. Otherwise a client ahead of the server lost the teleport
+  for good.
+- A headless run on a server over the network keeps its frames to at
+  least 1/60 s of wall-clock time: the server steps players in real
+  time, and a run's frames back to back made inputs several times
+  faster, which piled up there and were corrected away.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 
