@@ -152,11 +152,24 @@ fn a_client_that_joins_from_the_menu_plays_there() {
 }
 
 /// A server on the network that runs on its own thread in real time, as
-/// a dedicated server does, until the returned flag is set.
-fn real_time_server() -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
+/// a dedicated server does, until `stop` is set; it stalls for a moment
+/// (as a busy server can) whenever `stall` is set.
+struct RealTimeServer {
+    address: String,
+    stop: Arc<AtomicBool>,
+    stall: Arc<AtomicBool>,
+    thread: thread::JoinHandle<()>,
+}
+
+/// How long a [`RealTimeServer`] stalls.
+const STALL: Duration = Duration::from_millis(1500);
+
+fn real_time_server() -> RealTimeServer {
     let (address_tx, address_rx) = std::sync::mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
+    let stall = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
+    let stalling = stall.clone();
     let thread = thread::spawn(move || {
         let mut server = test_server_with(None, None);
         let content = server.world().resource::<Content>().clone();
@@ -166,6 +179,9 @@ fn real_time_server() -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
         address_tx.send(listener.address.to_string()).unwrap();
         take_clients_from(&mut server, listener);
         while !stopping.load(Ordering::Relaxed) {
+            if stalling.swap(false, Ordering::Relaxed) {
+                thread::sleep(STALL);
+            }
             let start = Instant::now();
             server.update();
             if let Some(rest) = FRAME_TIME.checked_sub(start.elapsed()) {
@@ -173,7 +189,12 @@ fn real_time_server() -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
             }
         }
     });
-    (address_rx.recv().unwrap(), stop, thread)
+    RealTimeServer {
+        address: address_rx.recv().unwrap(),
+        stop,
+        stall,
+        thread,
+    }
 }
 
 /// The original failure, end to end: a headless run on a server over the
@@ -181,16 +202,17 @@ fn real_time_server() -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
 /// settles there, with the player where it jumped to and the world around
 /// it loaded, not around where it started. The client runs its frames as
 /// a headless run does, back to back, while the server steps in real
-/// time; and the server, not the client, says when the world has loaded
-/// around the player.
+/// time. The server stalls just as the player jumps, so for a while all
+/// it has said is that the world is loaded around where the player was:
+/// the client mustn't take that for settled.
 #[test]
 fn a_camera_jump_on_a_server_settles_where_it_went() {
-    let (address, stop, server) = real_time_server();
+    let server = real_time_server();
     let script = Script::parse("camera 600 80 600 0 -30\nsettle\n").unwrap();
     let mut client = App::new();
     client
         .insert_resource(ConnectOnStart {
-            address,
+            address: server.address.clone(),
             exit_on_failure: true,
         })
         .insert_resource(StartAtMenu)
@@ -210,23 +232,25 @@ fn a_camera_jump_on_a_server_settles_where_it_went() {
     client.finish();
     client.cleanup();
     let started = Instant::now();
+    let mut jumped = false;
     let exit = loop {
         client.update();
         if let Some(exit) = client.should_exit() {
             break exit;
         }
+        if !jumped && local_feet(&mut client).x > 500.0 {
+            jumped = true;
+            server.stall.store(true, Ordering::Relaxed);
+        }
         assert!(started.elapsed() < Duration::from_secs(120), "never ended");
     };
-    stop.store(true, Ordering::Relaxed);
-    server.join().unwrap();
+    server.stop.store(true, Ordering::Relaxed);
+    server.thread.join().unwrap();
+    assert!(jumped);
     assert_eq!(exit, AppExit::Success);
 
+    let feet = local_feet(&mut client);
     let world = client.world_mut();
-    let feet = world
-        .query_filtered::<&Body, With<LocalPlayer>>()
-        .single(world)
-        .unwrap()
-        .position;
     let jumped = DVec3::new(600.0, 80.0 - EYE_HEIGHT, 600.0);
     assert!(feet.distance(jumped) < 1.0, "the player is at {feet}");
     let there = ChunkCoord::split(IVec3::new(600, 80, 600)).0.0;
@@ -238,4 +262,13 @@ fn a_camera_jump_on_a_server_settles_where_it_went() {
     assert_eq!(missing, 0, "chunks around where it went still missing");
     let start = ChunkCoord::split(START_POSITION.floor().as_ivec3()).0;
     assert!(map.get(start).is_none(), "still has where it started");
+}
+
+/// Where the local player's feet are, or the origin before there's one.
+fn local_feet(client: &mut App) -> DVec3 {
+    let world = client.world_mut();
+    world
+        .query_filtered::<&Body, With<LocalPlayer>>()
+        .single(world)
+        .map_or(DVec3::ZERO, |body| body.position)
 }
