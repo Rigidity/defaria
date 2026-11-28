@@ -158,14 +158,21 @@ player), until it's fixed.
 (in the file's order, new ones last), each with its name (only shown;
 the list shows the address of one without), its address, and once the
 game has connected to it, its key's fingerprint (the SHA-256 hash of its
-public key, as for players). Addresses are kept as `host:port`, with the
-default port (25575) added to one given without a port and brackets
-around a bare IPv6 address, and no two servers share one: the address is
-what a server is known by. A server's certificate is self-signed, so the
+public key, as for players). Addresses are kept as `host:port`, the host
+in lowercase (letters, digits, `-`, `_` and `.`, or an IPv6 address in
+brackets), with the default port (25575) added to one given without a
+port and brackets around a bare IPv6 address, and no two servers share
+one: the address is what a server is known by. Addresses are normalized
+as the file is read too, so one written by hand as `Example.org` is
+`example.org:25575`. A server's certificate is self-signed, so the
 first connection to an address trusts its key and remembers it here;
 after that, a server at that address with another key is refused, with
-an error saying so, until its key is forgotten (as SSH's `known_hosts`):
-**Trust new key** on the error screen, or removing the `fingerprint`.
+an error saying so and showing the new key's fingerprint (as SSH's
+`known_hosts`). **Trust new key** on the error screen connects expecting
+exactly that key, and saves it in place of the old one once the server
+has proved it holds it (and only if the old one is still the one saved);
+a retry that fails or is called off keeps the old key. Removing the
+`fingerprint` by hand trusts whichever key answers next.
 Giving a server another address on the edit screen forgets its key too,
 and removing it forgets the server. Connecting to an address that isn't
 on the list (`--connect`) adds it, unnamed. The file is read again just
@@ -187,6 +194,10 @@ fingerprints alone) reads as a list of unnamed servers, and is written as
 format 2 at the next change. A file of a newer format, or one that can't
 be read, is an error: the game won't connect anywhere rather than trust a
 server it can't check, and the list can't be changed until it's fixed.
+So is one that can't be trusted to say which key a server has: a
+`fingerprint` that isn't 64 hex digits, an address that isn't one, or two
+entries for the same address. A first visit whose key can't be saved
+fails to connect, since every visit would otherwise be a first.
 
 A dedicated server's key is `server.pem` in the world's folder, the same
 kind of file as `identity.pem`, made the first time, so the server keeps

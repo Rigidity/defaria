@@ -312,9 +312,17 @@ pub struct ConnectOptions {
     /// Calls it off when its sender goes (or sends), before play starts:
     /// the connection is closed, and connecting fails.
     pub cancel: Option<smol::channel::Receiver<()>>,
+    /// Set when it's called off: checked between steps that can't be
+    /// interrupted (building content), and by whoever acts on the result.
+    pub cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ConnectOptions {
+    /// Whether it's been called off.
+    pub fn is_cancelled(&self) -> bool {
+        (self.cancelled.as_ref()).is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
     fn report(&self, step: ConnectStep) {
         if let Some(shared) = &self.step {
             *shared.lock().unwrap_or_else(|e| e.into_inner()) = step;
@@ -558,6 +566,11 @@ async fn take_mods(
     }
     options.report(ConnectStep::Loading);
     let content = library.content(&mods)?;
+    // Building can't be interrupted: called off meanwhile, it stops here,
+    // before the server lets the player in.
+    if options.is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
     options.report(ConnectStep::Joining);
     let ready = Handshake::Ready {
         content: content.fingerprint(),

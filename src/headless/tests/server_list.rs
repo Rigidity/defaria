@@ -3,22 +3,29 @@
 //! leaving back to it; a failed join and a server that goes saying why;
 //! and a changed key trusted again.
 
-use std::{net::SocketAddr, path::Path, thread, time::Duration};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    sync::{Arc, atomic::AtomicBool},
+    thread,
+    time::Duration,
+};
 
 use bevy::prelude::*;
 use defaria_client::{
-    connecting::ConnectStatus,
+    connecting::{Connect, ConnectStatus, ServerTarget},
     menu::{
         MenuError, MenuPage,
-        multiplayer::{AddressField, ConnectErrorText, ServerNameField},
+        multiplayer::{AddressField, ConnectErrorText, NewKeyText, ServerNameField},
     },
     session::GameState,
     ui::TextField,
 };
 use defaria_core::{
     content::Content,
+    identity::parse_hex,
     save::DataFolder,
-    server_list::{SavedServer, ServerList},
+    server_list::{Fingerprint, SavedServer, ServerList},
     streaming::StreamingStatus,
     testing::temp_folder,
 };
@@ -28,9 +35,10 @@ use crate::{
     connecting::{ConnectOnStart, ConnectSettings},
     dedicated::{Network, take_clients_from},
     headless::{Script, run_more, settle, test_game, test_server},
-    identity::Identity,
-    mod_transfer::Offer,
-    quic,
+    identity::{Identity, LocalIdentity},
+    integrated::connect_remembering_with,
+    mod_transfer::{Library, Offer},
+    quic::{self, ConnectOptions},
 };
 
 /// A game playing alone, with a data folder of its own, gone to the
@@ -181,10 +189,7 @@ fn a_failed_join_says_why() {
     assert!(error.contains("didn't answer"), "{error}");
     assert!(matches!(
         status(&app),
-        ConnectStatus::Failed {
-            changed_key: false,
-            ..
-        }
+        ConnectStatus::Failed { new_key: None, .. }
     ));
     click(&mut app, "Back");
     assert_eq!(page(&mut app), Some(MenuPage::Servers));
@@ -292,30 +297,93 @@ fn joining_from_the_screen_plays_there() {
     assert!(matches!(status(&app), ConnectStatus::Lost { .. }));
     drop(server);
 
-    // Another server where it was, with another key: refused, saying so.
+    // Another server where it was, with another key: refused, saying so,
+    // and showing the key it has.
+    let saved = || {
+        ServerList::load(Some(&data))
+            .unwrap()
+            .fingerprint(&address.to_string())
+    };
+    let failed = |app: &mut App| matches!(status(app), ConnectStatus::Failed { .. });
     let mut impostor = serve(address);
     click(&mut app, "Try again");
-    until(&mut app, Some(&mut impostor), |app| {
-        matches!(status(app), ConnectStatus::Failed { .. })
-    });
-    assert!(
-        matches!(
-            status(&app),
-            ConnectStatus::Failed {
-                changed_key: true,
-                ..
-            }
-        ),
-        "{:?}",
-        status(&app)
-    );
+    until(&mut app, Some(&mut impostor), failed);
+    let ConnectStatus::Failed {
+        new_key: Some(first_key),
+        ..
+    } = status(&app)
+    else {
+        panic!("{:?}", status(&app));
+    };
+    run_more(&mut app, "wait 2");
     let why = texts::<ConnectErrorText>(&mut app).concat();
-    assert!(why.contains("key changed"), "{why}");
-    // Trusted: it joins, and its key is the one remembered now.
+    assert!(why.contains("isn't the one saved"), "{why}");
+    let shown = texts::<NewKeyText>(&mut app).concat();
+    assert!(shown.contains(&first_key[..4]), "{shown}");
+    assert!(shown.contains("replaces the key saved"), "{shown}");
+
+    // That server goes before the player trusts it: the retry fails, and
+    // the old key stays saved.
+    impostor
+        .world_mut()
+        .remove_resource::<Network>()
+        .unwrap()
+        .close();
+    drop(impostor);
+    app.insert_resource(ConnectSettings {
+        timeout: Duration::from_millis(300),
+    });
+    click(&mut app, "Trust new key");
+    until(&mut app, None, |app| {
+        matches!(status(app), ConnectStatus::Failed { new_key: None, .. })
+    });
+    assert_eq!(saved(), remembered);
+
+    // Another again: trusting the key shown before isn't trusting this one.
+    let mut impostor = serve(address);
+    app.insert_resource(ConnectSettings::default());
+    app.world_mut().write_message(Connect {
+        server: ServerTarget {
+            name: "Local".into(),
+            address: address.to_string(),
+        },
+        trust_key: Some(first_key.clone()),
+    });
+    until(
+        &mut app,
+        Some(&mut impostor),
+        |app| matches!(&status(app), ConnectStatus::Failed { new_key: Some(key), .. } if *key != first_key),
+    );
+    assert_eq!(saved(), remembered);
+
+    // Called off once connected, before the key is saved: nothing changes.
+    let ConnectStatus::Failed {
+        new_key: Some(second_key),
+        ..
+    } = status(&app)
+    else {
+        unreachable!()
+    };
+    let second = Fingerprint(parse_hex(&second_key).unwrap());
+    let content = app.world().resource::<Content>();
+    let called_off = connect_remembering_with(
+        &address.to_string(),
+        Library::new(content, Some(&data)),
+        &LocalIdentity::load(Some(&data)),
+        Some(&data),
+        Some(second),
+        ConnectOptions {
+            cancelled: Some(Arc::new(AtomicBool::new(true))),
+            ..default()
+        },
+    );
+    assert!(called_off.is_err());
+    assert_eq!(saved(), remembered);
+    // (The screen follows the status a frame later.)
+    run_more(&mut app, "wait 2");
+
+    // Trusted: it joins, and its key replaces the old.
     click(&mut app, "Trust new key");
     until(&mut app, Some(&mut impostor), joined);
-    let now = ServerList::load(Some(&data))
-        .unwrap()
-        .fingerprint(&address.to_string());
-    assert!(now.is_some() && now != remembered);
+    assert_eq!(saved(), Some(second));
 }

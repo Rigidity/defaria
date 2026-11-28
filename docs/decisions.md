@@ -506,7 +506,11 @@ bandwidth for light or chunks shows up in the `net` report.
   still what a server is known by, so no two entries share one; a
   server given another address forgets its key, and removing one
   forgets it. A format 1 file reads as unnamed servers with no code for
-  it, since the fields are a subset. It's core's
+  it, since the fields are a subset. Addresses are normalized (host in
+  lowercase, default port) as the file is read, and a fingerprint that
+  isn't 64 hex digits or an address listed twice makes the file
+  unreadable, as a corrupt one is: each would otherwise make a server
+  count as never seen, trusting any key. It's core's
   (`defaria_core::server_list`), as the world list is, since the
   client's menu reads and writes it; `DataFolder` moved to core's `save`
   with it. Every change rereads the file and writes it through a
@@ -525,7 +529,12 @@ bandwidth for light or chunks shows up in the `net` report.
   the attempt, and with it the sender of a channel that the network's
   side races against the handshake and the mod transfer: the connection
   is closed at once, and whatever it made is dropped. Resolving a host
-  name can't be interrupted; its answer is dropped with the rest.
+  name and building content can't be interrupted, so a cancelled flag is
+  checked after building (before the server lets the player in) and
+  before the key is saved: a cancelled attempt never joins or remembers
+  anything. A panic on the connecting thread comes back as an error
+  (and a thread that ends without an outcome, as one too), so the screen
+  never waits for ever. A first visit whose key can't be saved fails.
 - `--connect` takes the same path: the game starts at the menu
   (`ConnectOnStart`), headless too, where a failure exits with an error
   (nobody's there to read it) and frames spent connecting don't count
@@ -536,14 +545,19 @@ bandwidth for light or chunks shows up in the `net` report.
   (the server's own words, such as "the server stopped", or a time-out),
   read as the client leaves. Leaving on purpose (the pause menu says
   **Disconnect** on a server) returns to the Multiplayer screen.
-- A changed key is refused as before, and the error screen offers
-  **Trust new key**, which forgets the remembered one and connects,
-  trusting whichever the server shows. There's no way to see a key's
-  fingerprint on screen to check it with the server's owner first.
+- A changed key is refused as before, and the error screen shows the new
+  key's fingerprint (its first 16 hex digits) and offers **Trust new
+  key**: that reconnects expecting exactly the key shown, and replaces
+  the saved key only once the server has shown it holds it, and only if
+  the saved key is still the old one (`ServerList::replace_key`). A
+  retry that fails, times out or is called off keeps the old key;
+  forgetting the old key first would have trusted whatever answered
+  next.
 - What's left: the list can't be reordered on screen (only by editing
   the file), servers aren't pinged for whether they're up, their player
-  count or their message of the day, and there's no direct connect
-  without saving a server first.
+  count or their message of the day, there's no direct connect without
+  saving a server first, and a saved key's fingerprint isn't shown until
+  it changes.
 
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 

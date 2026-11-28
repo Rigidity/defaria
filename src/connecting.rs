@@ -8,7 +8,9 @@
 //! swapped in, the link to the server put in place, and play starts
 //! ([`RemoteServer`]: no server starts in the game's own process). A
 //! [`CancelConnect`] (or another server asked for) calls it off: the
-//! connection is closed and whatever it made is dropped.
+//! connection is closed and whatever it made is dropped; a flag it checks
+//! between steps that can't be interrupted (building content, saving the
+//! server's key) keeps it from joining or remembering anything after.
 //!
 //! A failure says why in the status (and `--connect` in a headless run
 //! exits with it). Leaving the server returns to the Multiplayer screen;
@@ -16,18 +18,29 @@
 //! ([`ConnectStatus::Lost`]).
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use bevy::{ecs::message::MessageCursor, prelude::*};
 use defaria_client::{
-    connecting::{CancelConnect, Connect, ConnectStatus, ConnectStep, ServerTarget},
+    connecting::{
+        CancelConnect, Connect, ConnectRequestSystems, ConnectStatus, ConnectStep, ServerTarget,
+        short_fingerprint,
+    },
     content_swap::swap_content,
     net::ServerConnection,
     session::GameState,
 };
-use defaria_core::{content::Content, save::DataFolder, server_list::normalize_address};
+use defaria_core::{
+    content::Content,
+    identity::parse_hex,
+    save::DataFolder,
+    server_list::{Fingerprint, normalize_address},
+};
 
 use crate::{
     identity::local_identity,
@@ -36,12 +49,12 @@ use crate::{
     quic::{CANCELLED, CloseReason, ConnectError, ConnectOptions, Connected, HANDSHAKE_TIMEOUT},
 };
 
-pub struct ConnectingPlugin;
+pub struct BackgroundConnectPlugin;
 
-impl Plugin for ConnectingPlugin {
+impl Plugin for BackgroundConnectPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ConnectSettings>()
-            .add_systems(Update, drive_connecting);
+            .add_systems(Update, drive_connecting.after(ConnectRequestSystems));
     }
 }
 
@@ -89,13 +102,28 @@ struct Attempt {
     exit_on_failure: bool,
     /// Calls it off when it goes.
     _cancel: smol::channel::Sender<()>,
+    /// Set when it's called off (dropped).
+    cancelled: Arc<AtomicBool>,
+    /// The thread, to tell one that ended without saying how.
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Attempt {
     /// Starts joining `server` from `world`'s client: as its player, with
     /// its own mods where they're the server's, and its data folder's
     /// saved servers and cache.
-    fn start(world: &mut World, server: ServerTarget, exit_on_failure: bool) -> Self {
+    fn start(
+        world: &mut World,
+        server: ServerTarget,
+        trust_key: Option<Fingerprint>,
+        exit_on_failure: bool,
+    ) -> Self {
         let local = local_identity(world);
         let folder = world.get_resource::<DataFolder>().map(|f| f.0.clone());
         let own = world
@@ -106,10 +134,12 @@ impl Attempt {
         let step = Arc::new(Mutex::new(ConnectStep::Connecting));
         let result = Arc::new(Mutex::new(None));
         let (cancel_send, cancel) = smol::channel::bounded(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
         let options = ConnectOptions {
             timeout: Some(world.resource::<ConnectSettings>().timeout),
             step: Some(step.clone()),
             cancel: Some(cancel),
+            cancelled: Some(cancelled.clone()),
         };
         info!("connecting to {}", server.address);
         let address = server.address.clone();
@@ -117,21 +147,35 @@ impl Attempt {
         let spawned = std::thread::Builder::new()
             .name("connecting".into())
             .spawn(move || {
-                let outcome =
-                    connect_remembering_with(&address, library, &local, folder.as_deref(), options);
+                let outcome = guarded(|| {
+                    connect_remembering_with(
+                        &address,
+                        library,
+                        &local,
+                        folder.as_deref(),
+                        trust_key,
+                        options,
+                    )
+                });
                 *done.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
             });
-        if let Err(error) = spawned {
-            *result.lock().unwrap_or_else(|e| e.into_inner()) = Some(Err(ConnectError::Failed(
-                format!("can't start connecting: {error}"),
-            )));
-        }
+        let thread = match spawned {
+            Ok(thread) => Some(thread),
+            Err(error) => {
+                *result.lock().unwrap_or_else(|e| e.into_inner()) = Some(Err(
+                    ConnectError::Failed(format!("can't start connecting: {error}")),
+                ));
+                None
+            }
+        };
         Self {
             server,
             step,
             result,
             exit_on_failure,
             _cancel: cancel_send,
+            cancelled,
+            thread,
         }
     }
 
@@ -139,10 +183,37 @@ impl Attempt {
         *self.step.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// What it came to, once it's done.
+    /// What it came to, once it's done (a thread that ended without
+    /// saying, an error).
     fn take(&self) -> Option<Result<Connected, ConnectError>> {
-        self.result.lock().unwrap_or_else(|e| e.into_inner()).take()
+        let ended = self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| thread.is_finished());
+        let outcome = self.result.lock().unwrap_or_else(|e| e.into_inner()).take();
+        match outcome {
+            None if ended => Some(Err(ConnectError::Failed(
+                "connecting stopped without saying why".into(),
+            ))),
+            outcome => outcome,
+        }
     }
+}
+
+/// What `work` comes to, or, if it panics, an error saying so: a
+/// connection that fails that way must still end, not leave the screen
+/// connecting for ever.
+fn guarded(
+    work: impl FnOnce() -> Result<Connected, ConnectError>,
+) -> Result<Connected, ConnectError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|panic| {
+        let what = (panic.downcast_ref::<&str>().map(|s| s.to_string()))
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no message".to_string());
+        Err(ConnectError::Failed(format!(
+            "connecting failed unexpectedly (a bug: {what})"
+        )))
+    })
 }
 
 /// What the menus asked for since last frame: the last server to join, and
@@ -173,19 +244,24 @@ fn drive_connecting(world: &mut World, mut asked: Local<Asked>) {
                 name: start.address.clone(),
                 address: start.address,
             };
-            (server, start.exit_on_failure)
+            (server, None, start.exit_on_failure)
         })
-        .or(wanted.map(|Connect(server)| (server, false)));
-    if let Some((mut server, exit_on_failure)) = start {
-        match normalize_address(&server.address) {
-            Ok(address) => {
+        .or(wanted.map(|connect| (connect.server, connect.trust_key, false)));
+    if let Some((mut server, trust_key, exit_on_failure)) = start {
+        let trust_key = match trust_key.map(|key| parse_hex(&key).map(Fingerprint)) {
+            Some(None) => Err("that key isn't a fingerprint".to_string()),
+            Some(key) => Ok(key),
+            None => Ok(None),
+        };
+        match trust_key.and_then(|key| Ok((normalize_address(&server.address)?, key))) {
+            Ok((address, trust_key)) => {
                 if server.name == server.address {
                     server.name.clone_from(&address);
                 }
                 server.address = address;
                 // Another under way is called off.
                 world.remove_resource::<Attempt>();
-                let attempt = Attempt::start(world, server.clone(), exit_on_failure);
+                let attempt = Attempt::start(world, server.clone(), trust_key, exit_on_failure);
                 set_status(
                     world,
                     ConnectStatus::Connecting {
@@ -213,8 +289,13 @@ fn drive_connecting(world: &mut World, mut asked: Local<Asked>) {
     };
     let attempt = world.remove_resource::<Attempt>().expect("it's there");
     match outcome {
-        Ok(connected) => play_there(world, attempt.server, connected),
-        Err(error) => fail(world, attempt.server, error, attempt.exit_on_failure),
+        Ok(connected) => play_there(world, attempt.server.clone(), connected),
+        Err(error) => fail(
+            world,
+            attempt.server.clone(),
+            error,
+            attempt.exit_on_failure,
+        ),
     }
 }
 
@@ -256,9 +337,18 @@ fn fail(world: &mut World, server: ServerTarget, error: ConnectError, exit: bool
     if exit {
         world.write_message(AppExit::error());
     }
-    let changed_key = matches!(error, ConnectError::ChangedKey { .. });
+    let new_key = match &error {
+        ConnectError::ChangedKey { found, .. } => Some(found.to_string()),
+        ConnectError::Failed(_) => None,
+    };
     let error = match error {
         ConnectError::Failed(reason) if reason == CANCELLED => return,
+        // The log has both fingerprints whole; the screen, what to do.
+        ConnectError::ChangedKey { expected, .. } => format!(
+            "its key isn't the one saved for it ({}), so it may be someone else's server. \
+             If its owner says they changed its key, trust the new one",
+            short_fingerprint(&expected.to_string())
+        ),
         error => error.to_string(),
     };
     set_status(
@@ -266,7 +356,7 @@ fn fail(world: &mut World, server: ServerTarget, error: ConnectError, exit: bool
         ConnectStatus::Failed {
             server,
             error,
-            changed_key,
+            new_key,
         },
     );
 }
@@ -293,5 +383,21 @@ pub(crate) fn leave_the_server(world: &mut World) {
                 reason,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connecting thread that panics comes to an error, which the
+    /// screen shows, rather than never finishing.
+    #[test]
+    fn a_panic_while_connecting_is_an_error() {
+        let outcome = guarded(|| panic!("injected"));
+        let Err(error) = outcome else {
+            panic!("it connected");
+        };
+        assert!(error.to_string().contains("injected"), "{error}");
     }
 }

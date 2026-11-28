@@ -6,7 +6,10 @@
 //! Joining asks the game to connect ([`Connect`]) and shows how that's
 //! going ([`ConnectStatus`]) until play starts: **Cancel** or Escape calls
 //! it off. A failure says why, with **Try again**, and for a server whose
-//! key changed, **Trust new key**, which forgets the old one and connects.
+//! key changed, the new key's fingerprint and **Trust new key**, which
+//! connects expecting exactly that key and, once the server has shown it
+//! holds it, saves it in place of the old one (a retry that fails or is
+//! called off keeps the old).
 //! A server that goes while the player's there says why the same way.
 
 use std::path::Path;
@@ -19,7 +22,10 @@ use defaria_core::{
 
 use super::{MenuClick, MenuError, MenuPage, back_to_main, open_page};
 use crate::{
-    connecting::{CancelConnect, Connect, ConnectStatus, ServerTarget},
+    connecting::{
+        CancelConnect, Connect, ConnectRequestSystems, ConnectStatus, ServerTarget,
+        short_fingerprint,
+    },
     session::GameState,
     ui::{UiTheme, button, scroll_panel, text_field_holding, typing},
 };
@@ -30,7 +36,12 @@ impl Plugin for MultiplayerMenuPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (follow_connect_status, cancel_on_escape.run_if(not(typing)))
+            (
+                follow_connect_status,
+                cancel_on_escape
+                    .run_if(not(typing))
+                    .in_set(ConnectRequestSystems),
+            )
                 .run_if(in_state(GameState::Menu)),
         );
     }
@@ -67,6 +78,14 @@ pub struct ConnectStepText;
 /// The error screen's text: why connecting failed, or the server went.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ConnectErrorText;
+
+/// The error screen's line showing a server's new key.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct NewKeyText;
+
+/// The key **Trust new key** trusts: its fingerprint, in hex.
+#[derive(Component, Debug, Clone)]
+pub struct TrustKey(pub String);
 
 /// The server the connecting or error screen is about.
 #[derive(Component, Debug, Clone)]
@@ -425,7 +444,7 @@ fn join_server(
         return;
     }
     if let Ok(ServerEntry(server)) = entries.get(click.entity) {
-        connect.write(Connect(ServerTarget {
+        connect.write(Connect::to(ServerTarget {
             name: server.shown_name().to_string(),
             address: server.address.clone(),
         }));
@@ -465,7 +484,7 @@ pub(super) fn status_page(
         ConnectStatus::Failed {
             server,
             error,
-            changed_key,
+            new_key,
         } => error_page(
             commands,
             theme,
@@ -473,17 +492,11 @@ pub(super) fn status_page(
             "Can't connect",
             server,
             error,
-            *changed_key,
+            new_key.as_deref(),
         ),
-        ConnectStatus::Lost { server, reason } => error_page(
-            commands,
-            theme,
-            pages,
-            "Disconnected",
-            server,
-            reason,
-            false,
-        ),
+        ConnectStatus::Lost { server, reason } => {
+            error_page(commands, theme, pages, "Disconnected", server, reason, None)
+        }
         ConnectStatus::Idle | ConnectStatus::Playing { .. } => {}
     }
 }
@@ -496,7 +509,7 @@ fn error_page(
     title: &str,
     server: &ServerTarget,
     why: &str,
-    changed_key: bool,
+    new_key: Option<&str>,
 ) {
     let root = open_page(
         commands,
@@ -511,9 +524,24 @@ fn error_page(
                 TextColor(theme.text),
             ));
             panel.spawn((ConnectErrorText, wrapped(theme, capitalized(why))));
-            if changed_key {
+            if let Some(key) = new_key {
+                panel.spawn((
+                    NewKeyText,
+                    wrapped(
+                        theme,
+                        format!(
+                            "Its new key is {} Trusting it replaces the key saved for {}.",
+                            short_fingerprint(key),
+                            server.address
+                        ),
+                    ),
+                ));
                 panel
-                    .spawn((Name::new("Trust new key"), button(theme, "Trust new key")))
+                    .spawn((
+                        Name::new("Trust new key"),
+                        TrustKey(key.to_string()),
+                        button(theme, "Trust new key"),
+                    ))
                     .observe(trust_new_key);
             }
             panel
@@ -608,38 +636,30 @@ fn try_again(
         return;
     }
     if let Some(StatusServer(server)) = servers.iter().next() {
-        connect.write(Connect(server.clone()));
+        connect.write(Connect::to(server.clone()));
     }
 }
 
-/// **Trust new key**, for a server whose key changed: forgets the one
-/// remembered, and connects, trusting the one it shows.
+/// **Trust new key**, for a server whose key changed: connects expecting
+/// the key it showed (the one on the screen, not whichever answers next),
+/// which replaces the saved one once the server has proved it holds it.
 fn trust_new_key(
     click: On<PointerClick>,
     menu: MenuClick,
-    folder: Option<Res<DataFolder>>,
     servers: Query<&StatusServer>,
-    mut texts: Query<&mut Text, With<ConnectErrorText>>,
+    keys: Query<&TrustKey>,
     mut connect: MessageWriter<Connect>,
 ) {
     if !menu.counts(&click) {
         return;
     }
-    let Some(StatusServer(server)) = servers.iter().next() else {
+    let (Some(StatusServer(server)), Ok(TrustKey(key))) =
+        (servers.iter().next(), keys.get(click.entity))
+    else {
         return;
     };
-    let forgot = ServerList::load(data_folder(&folder))
-        .and_then(|mut list| list.forget_key(&server.address));
-    match forgot {
-        Ok(()) => {
-            info!("forgot the key of {}, to trust its new one", server.address);
-            connect.write(Connect(server.clone()));
-        }
-        Err(error) => {
-            error!("{error}");
-            for mut text in &mut texts {
-                text.0 = format!("Can't forget its key: {error}");
-            }
-        }
-    }
+    connect.write(Connect {
+        server: server.clone(),
+        trust_key: Some(key.clone()),
+    });
 }

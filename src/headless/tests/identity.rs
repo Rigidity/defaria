@@ -223,3 +223,22 @@ fn a_damaged_key_joins_no_server() {
     );
     assert!(!data.join(defaria_core::server_list::SERVERS_FILE).exists());
 }
+
+/// A first visit whose key can't be saved doesn't join: otherwise every
+/// visit would be a first, trusting any key.
+#[cfg(unix)]
+#[test]
+fn a_key_that_cant_be_saved_joins_no_server() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = temp_folder("identity-unsaved-key");
+    // The install's own files first, then a folder nothing can be written to.
+    LocalIdentity::load(Some(&data));
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let (mut game, listener) = start(None, "127.0.0.1:0".parse().unwrap());
+    let address = listener.address.to_string();
+    take_clients_from(&mut game.server, listener);
+    let error = join(&mut game, &address, &data);
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let error = error.unwrap_err();
+    assert!(error.to_string().contains("couldn't save"), "{error}");
+}

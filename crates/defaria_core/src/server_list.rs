@@ -7,12 +7,16 @@
 //! is also what it's known by) and, once the game has connected to it,
 //! its key's [`Fingerprint`]: trusted the first time, and checked every
 //! time after, as SSH does, so a server at that address with another key
-//! is refused until its key is forgotten ([`ServerList::forget_key`]).
+//! is refused until the player trusts its new key, which then replaces
+//! the old ([`ServerList::replace_key`]).
 //! Connecting to an address not on the list (`--connect`) adds it.
 //!
 //! Every change reads the file again first and writes it whole through a
 //! temporary file of its own, so what another copy of the game changed
-//! meanwhile is kept. The format is in `docs/world-format.md`.
+//! meanwhile is kept. A file that can't be trusted to say which key a
+//! server has (a fingerprint that isn't one, two entries for one address)
+//! is unreadable, as a file that doesn't parse is: connecting then refuses
+//! rather than trusting any key. The format is in `docs/world-format.md`.
 
 use std::{
     io,
@@ -186,15 +190,29 @@ impl ServerList {
         })
     }
 
-    /// Forgets the key of the server at `address`, so the next connection
-    /// trusts whichever it's shown (its owner changed it, say).
-    pub fn forget_key(&mut self, address: &str) -> Result<(), String> {
+    /// Replaces the key remembered for the server at `address`, `old`,
+    /// with `new` (the player trusted the new one, its owner having changed
+    /// it, say), once a connection has shown it holds `new`. If the key
+    /// saved isn't `old` any more (another copy of the game changed it),
+    /// nothing changes and this is an error.
+    pub fn replace_key(
+        &mut self,
+        address: &str,
+        old: Fingerprint,
+        new: Fingerprint,
+    ) -> Result<(), String> {
         self.change(|servers| {
             let server = servers
                 .iter_mut()
                 .find(|s| s.address == address)
                 .ok_or_else(|| not_listed(address))?;
-            server.fingerprint = None;
+            let saved = server.fingerprint.as_deref().and_then(parse_hex);
+            if saved != Some(old.0) {
+                return Err(format!(
+                    "the key saved for {address} changed while connecting, so it wasn't replaced"
+                ));
+            }
+            server.fingerprint = Some(new.to_string());
             Ok(())
         })
     }
@@ -302,11 +320,37 @@ fn read_servers(path: &Path) -> Result<ServersFile, String> {
                     file.format
                 ));
             }
-            Ok(file)
+            checked(file).map_err(|error| format!("{}: {error}", path.display()))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ServersFile::default()),
         Err(error) => Err(format!("can't read {}: {error}", path.display())),
     }
+}
+
+/// `file` as it's used: every address normalized, and none twice, and
+/// every fingerprint 64 hex digits. Anything else is an error, not
+/// skipped: a server whose key can't be read, or that two entries
+/// disagree about, would otherwise be trusted with any key.
+fn checked(mut file: ServersFile) -> Result<ServersFile, String> {
+    let mut seen = std::collections::HashSet::new();
+    for server in &mut file.servers {
+        let address = normalize_address(&server.address)
+            .map_err(|error| format!("`{}` isn't an address: {error}", server.address))?;
+        if !seen.insert(address.clone()) {
+            return Err(format!(
+                "{address} is on the list twice; take one off so it's clear which key it has"
+            ));
+        }
+        if let Some(print) = &server.fingerprint
+            && parse_hex(print).is_none()
+        {
+            return Err(format!(
+                "the fingerprint saved for {address} isn't 64 hex digits"
+            ));
+        }
+        server.address = address;
+    }
+    Ok(file)
 }
 
 /// A server's name as it's kept: trimmed, without control or format
@@ -321,9 +365,11 @@ pub fn clean_server_name(name: &str) -> String {
     kept.trim_end().to_string()
 }
 
-/// An address as it's kept and connected to: trimmed, with the
-/// [`DEFAULT_PORT`] if it has no port (`example.org` is
-/// `example.org:25575`; a bare IPv6 address goes in brackets).
+/// An address as it's kept and connected to: trimmed, its host in
+/// lowercase, with the [`DEFAULT_PORT`] if it has no port (`Example.org`
+/// is `example.org:25575`; a bare IPv6 address goes in brackets). A host
+/// is a name or IPv4 address (ASCII letters, digits, `-`, `_` and `.`) or
+/// an IPv6 address in brackets (hex digits, `:` and `.`).
 pub fn normalize_address(text: &str) -> Result<String, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -366,6 +412,21 @@ pub fn normalize_address(text: &str) -> Result<String, String> {
     if host.is_empty() || host == "[]" {
         return Err("the address has no host before its port".into());
     }
+    let host = host.to_ascii_lowercase();
+    let allowed = match host.strip_prefix('[') {
+        Some(inside) => inside
+            .trim_end_matches(']')
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.'),
+        None => host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
+    };
+    if !allowed {
+        return Err(format!(
+            "`{host}` isn't a host: a name (letters, digits, `-` and `.`) or an IP address"
+        ));
+    }
     let port = match port {
         None => DEFAULT_PORT,
         Some(port) => match port.parse::<u16>() {
@@ -390,6 +451,8 @@ mod tests {
         assert_eq!(ok("::1"), "[::1]:25575");
         assert_eq!(ok("[::1]"), "[::1]:25575");
         assert_eq!(ok("[::1]:9"), "[::1]:9");
+        assert_eq!(ok("Example.ORG"), "example.org:25575");
+        assert_eq!(ok("[::ABCD]:2"), "[::abcd]:2");
         for bad in [
             "",
             "  ",
@@ -400,6 +463,10 @@ mod tests {
             "a b",
             "[::1",
             "[::1]9",
+            "a/b",
+            "a@b:1",
+            "[::g]",
+            "héllo",
         ] {
             assert!(normalize_address(bad).is_err(), "{bad:?}");
         }
@@ -446,9 +513,16 @@ mod tests {
         let error = list.edit("localhost:2", "House", "10.0.0.1:1").unwrap_err();
         assert!(error.contains("already on the list"), "{error}");
 
+        // A new key replaces the old only while the old is the one saved.
         list.remember("localhost:2", print).unwrap();
-        list.forget_key("localhost:2").unwrap();
-        assert_eq!(list.fingerprint("localhost:2"), None);
+        let new = Fingerprint([8; 32]);
+        let error = list
+            .replace_key("localhost:2", Fingerprint([9; 32]), new)
+            .unwrap_err();
+        assert!(error.contains("changed while connecting"), "{error}");
+        assert_eq!(list.fingerprint("localhost:2"), Some(print));
+        list.replace_key("localhost:2", print, new).unwrap();
+        assert_eq!(list.fingerprint("localhost:2"), Some(new));
         list.remove("example.org:7000").unwrap();
         assert!(list.remove("example.org:7000").is_err());
 
@@ -459,7 +533,7 @@ mod tests {
                 SavedServer {
                     name: "House".into(),
                     address: "localhost:2".into(),
-                    fingerprint: None,
+                    fingerprint: Some(new.to_string()),
                 },
                 SavedServer {
                     name: "Third".into(),
@@ -471,7 +545,7 @@ mod tests {
         let text = std::fs::read_to_string(folder.join(SERVERS_FILE)).unwrap();
         assert!(text.contains("format: 2"), "{text}");
         assert!(
-            text.contains(r#"    { name: "House", address: "localhost:2" },"#),
+            text.contains(r#"    { name: "Third", address: "10.0.0.1:1" },"#),
             "a server a line: {text}"
         );
     }
@@ -540,6 +614,45 @@ mod tests {
         assert_eq!(after.fingerprint("b:2"), Some(Fingerprint([2; 32])));
         let files: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().collect();
         assert_eq!(files.len(), 1, "no temporary files left: {files:?}");
+    }
+
+    /// What the file says is checked as it's read: addresses normalized
+    /// (so a key saved by hand for `Example.org` is the one for
+    /// `example.org:25575`), and a fingerprint that isn't one or an
+    /// address listed twice makes it unreadable, not a server with no key.
+    #[test]
+    fn a_file_that_cant_be_trusted_is_unreadable() {
+        let folder = temp_folder("server-list-checked");
+        let path = folder.join(SERVERS_FILE);
+        let print = "07".repeat(32);
+        std::fs::write(
+            &path,
+            format!(
+                "{{ format: 2, servers: [ {{ address: 'Example.org', fingerprint: '{print}' }} ] }}"
+            ),
+        )
+        .unwrap();
+        let list = ServerList::load(Some(&folder)).unwrap();
+        assert_eq!(
+            list.fingerprint("example.org:25575"),
+            Some(Fingerprint([7; 32]))
+        );
+        for (servers, why) in [
+            (
+                "{ address: 'a:1', fingerprint: 'beef' }",
+                "isn't 64 hex digits",
+            ),
+            ("{ address: 'a:1', fingerprint: '' }", "isn't 64 hex digits"),
+            (
+                "{ address: 'a' }, { address: 'A:25575' }",
+                "on the list twice",
+            ),
+            ("{ address: 'a/b' }", "isn't an address"),
+        ] {
+            std::fs::write(&path, format!("{{ format: 2, servers: [ {servers} ] }}")).unwrap();
+            let error = ServerList::load(Some(&folder)).unwrap_err();
+            assert!(error.contains(why), "{servers}: {error}");
+        }
     }
 
     /// Without a folder the list is kept in memory.

@@ -34,7 +34,7 @@ impl Plugin for GamePlugin {
         app.add_plugins((
             ClientPlugin,
             IntegratedServerPlugin,
-            connecting::ConnectingPlugin,
+            crate::connecting::BackgroundConnectPlugin,
         ));
     }
 }
@@ -82,7 +82,7 @@ impl Plugin for ClientPlugin {
             edit_prediction::EditPredictionPlugin,
             prediction::PredictionPlugin,
             defaria_client::script::ClientScriptPlugin,
-            connecting::ConnectingPlugin,
+            defaria_client::connecting::ConnectStatusPlugin,
         ));
     }
 }

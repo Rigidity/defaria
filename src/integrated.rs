@@ -36,8 +36,12 @@ use defaria_client::{
     content_swap::swap_content, net::ServerConnection, pause::Paused, session::GameState,
 };
 use defaria_core::{
-    content::Content, net::link, save::WorldFolder, script::ScriptSettings,
-    server_list::ServerList, streaming::StreamingSettings,
+    content::Content,
+    net::link,
+    save::WorldFolder,
+    script::ScriptSettings,
+    server_list::{Fingerprint, ServerList, normalize_address},
+    streaming::StreamingSettings,
 };
 use defaria_server::{
     fluid::FluidSettings,
@@ -114,30 +118,46 @@ fn start_server(world: &mut World) {
     world.insert_non_send(IntegratedServer { app });
 }
 
-/// Connects to the server at `address` as `local`, taking its mods from
-/// `library` where it has them, checking the server's key against the
-/// one the saved servers in `folder` remember for it, and remembering it
-/// if there's none yet (the file read again just before it's written, so
-/// what another copy of the game added meanwhile is kept). An install
-/// whose key couldn't be read doesn't connect: on a server its stand-in
-/// would be a stray player, not them.
+/// Connects to the server at `address` (normalized, as the server list
+/// keeps addresses) as `local`, taking its mods from `library` where it
+/// has them, checking the server's key against the one the saved servers
+/// in `folder` remember for it, and remembering it if there's none yet
+/// (the file read again just before it's written, so what another copy of
+/// the game added meanwhile is kept). A key that can't be saved fails the
+/// connection: otherwise every connection would be a first visit, trusting
+/// any key. An install whose key couldn't be read doesn't connect: on a
+/// server its stand-in would be a stray player, not them.
 pub fn connect_remembering(
     address: &str,
     library: Library,
     local: &LocalIdentity,
     folder: Option<&std::path::Path>,
 ) -> Result<Connected, ConnectError> {
-    connect_remembering_with(address, library, local, folder, ConnectOptions::default())
+    connect_remembering_with(
+        address,
+        library,
+        local,
+        folder,
+        None,
+        ConnectOptions::default(),
+    )
 }
 
-/// [`connect_remembering`], as `options` say (`quic::connect_with`).
+/// [`connect_remembering`], as `options` say (`quic::connect_with`). With
+/// `trust_key`, the server's key must be that one rather than the one
+/// remembered (the player chose to trust it, seeing it), and replaces the
+/// remembered one once the connection shows the server holds it, if the
+/// remembered one is still what it was. Called off (`options`), it never
+/// remembers anything.
 pub fn connect_remembering_with(
     address: &str,
     library: Library,
     local: &LocalIdentity,
     folder: Option<&std::path::Path>,
+    trust_key: Option<Fingerprint>,
     options: ConnectOptions,
 ) -> Result<Connected, ConnectError> {
+    let address = &normalize_address(address)?;
     if let Some(error) = &local.damaged {
         return Err(ConnectError::Failed(format!(
             "not joining {address}: this game's key couldn't be read ({error}), so the \
@@ -145,7 +165,9 @@ pub fn connect_remembering_with(
         )));
     }
     let mut known = ServerList::load(folder)?;
-    let expected = known.fingerprint(address);
+    let remembered = known.fingerprint(address);
+    let expected = trust_key.or(remembered);
+    let cancelled = options.cancelled.clone();
     let connected = crate::quic::connect_with(
         address,
         library,
@@ -154,14 +176,28 @@ pub fn connect_remembering_with(
         expected,
         options,
     )?;
-    if expected.is_none() {
-        info!(
-            "trusting {address}, the first time, as the server with fingerprint {}",
-            connected.fingerprint
-        );
-        if let Err(error) = known.remember(address, connected.fingerprint) {
-            error!("{error}; it won't be remembered");
+    if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
+        return Err(ConnectError::Failed(crate::quic::CANCELLED.to_string()));
+    }
+    let saved = match (remembered, trust_key) {
+        (None, _) => {
+            info!(
+                "trusting {address}, the first time, as the server with fingerprint {}",
+                connected.fingerprint
+            );
+            known.remember(address, connected.fingerprint)
         }
+        (Some(old), Some(new)) if old != new => {
+            info!("trusting {address}'s new key {new}, in place of {old}");
+            known.replace_key(address, old, new)
+        }
+        _ => Ok(()),
+    };
+    if let Err(error) = saved {
+        return Err(ConnectError::Failed(format!(
+            "connected, but couldn't save the server's key, so it couldn't be checked next \
+             time; not joining ({error})"
+        )));
     }
     Ok(connected)
 }

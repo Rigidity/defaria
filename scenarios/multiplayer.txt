@@ -82,3 +82,4 @@ joined                             # it doesn't answer
 wait 3
 screenshot target/scenarios/multiplayer/5-cant-connect.png
 inspect MenuPage
+inspect ConnectStatus
