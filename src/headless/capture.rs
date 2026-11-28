@@ -16,12 +16,7 @@ use bevy::{
     },
 };
 
-use super::{
-    RESOLUTION, memory,
-    runner::ScriptRunner,
-    system_timing,
-    world_commands::{FluidRegion, fluid_report, network_report},
-};
+use super::{RESOLUTION, memory, runner::ScriptRunner, system_timing};
 
 /// The offscreen image the camera renders into.
 #[derive(Resource)]
@@ -123,18 +118,10 @@ pub(super) fn observe(world: &mut World) {
     let frame = world.resource::<bevy::diagnostic::FrameCount>().0;
     {
         let mut runner = world.resource_mut::<ScriptRunner>();
-        if runner.timing {
+        // Once the fills sent have been answered, so they're counted.
+        if runner.timing && runner.awaiting.is_empty() {
             report_timing(&mut runner, frame);
         }
-    }
-    for region in std::mem::take(&mut world.resource_mut::<ScriptRunner>().fluid_reports) {
-        let region = match region {
-            Some((min, max)) => FluidRegion::Box { min, max },
-            None => FluidRegion::Window,
-        };
-        let report = crate::integrated::with_server(world, |server| fluid_report(server, region))
-            .unwrap_or_else(|| fluid_report(world, region));
-        println!("[frame {frame}] {report}");
     }
     if std::mem::take(&mut world.resource_mut::<ScriptRunner>().memory_report) {
         println!("[frame {frame}] {}", memory::ChunkMemory::measure(world));
@@ -143,11 +130,6 @@ pub(super) fn observe(world: &mut World) {
         for line in system_timing::report(world, count) {
             println!("[frame {frame}] {line}");
         }
-    }
-    for pos in std::mem::take(&mut world.resource_mut::<ScriptRunner>().network_reports) {
-        let report = crate::integrated::with_server(world, |server| network_report(server, pos))
-            .unwrap_or_else(|| network_report(world, pos));
-        println!("[frame {frame}] {report}");
     }
     for name in inspections {
         // The client's first; what only the server has (block entities,

@@ -11,6 +11,7 @@
 
 pub mod block_edit;
 pub mod block_entity;
+pub mod chat;
 pub mod content;
 pub mod fluid;
 pub mod fluid_container;

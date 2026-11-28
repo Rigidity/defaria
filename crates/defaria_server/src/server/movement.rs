@@ -241,6 +241,12 @@ impl PlayerInputs {
         self.applied
     }
 
+    /// The player was put somewhere (a command's `tp`): its client is
+    /// told where it is next, and puts it right there.
+    pub fn moved_now(&mut self) {
+        self.moved = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn set_applied(&mut self, tick: u32) {
         self.applied = tick;
@@ -312,7 +318,10 @@ pub(super) fn move_by_inputs(
             }
             let input = inputs.waiting.remove(&next).unwrap();
             inputs.budget -= 1.0;
-            if let Some(teleport) = input.teleport {
+            // A teleport out of the world (or of NaNs) would break
+            // streaming and terrain generation: it's ignored, and the
+            // client is put right.
+            if let Some(teleport) = input.teleport.filter(Motion::is_sane) {
                 teleport.put(&mut body, &mut player);
             }
             look.set_if_neq(input.look);

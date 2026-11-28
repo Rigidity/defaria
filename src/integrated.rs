@@ -20,6 +20,9 @@
 //! its own again (single player's, [`SinglePlayerContent`]) once it
 //! leaves.
 //!
+//! The player hosting may run server commands ([`Host`]); `/stop` saves
+//! the world and goes back to the menu, as leaving does.
+//!
 //! Either way the player is this install's ([`local_identity`]): the
 //! server in the game's own process takes its id as it is (there's no
 //! handshake in memory), so a world played alone and then hosted keeps
@@ -44,6 +47,7 @@ use defaria_core::{
     streaming::StreamingSettings,
 };
 use defaria_server::{
+    command::Host,
     fluid::FluidSettings,
     script::{hooks::HookSettings, random_tick::RandomTicks},
     server::{Incoming, Joining, PauseWithPlayers},
@@ -106,8 +110,10 @@ fn start_server(world: &mut World) {
     forward::<FluidSettings>(world, &mut app);
     crate::server::build_server(&mut app);
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
-    // In single player, pausing pauses the game.
-    app.insert_resource(PauseWithPlayers(true));
+    // In single player, pausing pauses the game, and the player may run
+    // commands.
+    app.insert_resource(PauseWithPlayers(true))
+        .insert_resource(Host(local.identity.id));
     let (client, server) = link();
     app.world_mut().resource_mut::<Incoming>().0.push(Joining {
         id: local.identity.id,
@@ -222,7 +228,14 @@ fn step_server(world: &mut World) {
         .app
         .insert_resource(TimeUpdateStrategy::ManualDuration(delta));
     server.app.update();
+    let stopped = server.app.should_exit().is_some();
     world.insert_non_send(server);
+    // Stopped (the host's `/stop`): back to the menu, which saves the
+    // world as leaving does.
+    if stopped && let Some(mut next) = world.get_resource_mut::<NextState<GameState>>() {
+        info!("the server stopped");
+        next.set(GameState::Menu);
+    }
 }
 
 /// When the client exits, so does the server, saving the world. (A test

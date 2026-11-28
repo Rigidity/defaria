@@ -319,6 +319,13 @@ impl Multiplayer {
         }
     }
 
+    /// Client `index` goes: its app and its link to the server, which
+    /// sees the connection close.
+    pub fn disconnect(&mut self, index: usize) {
+        drop(self.clients.remove(index));
+        self.relays.remove(index);
+    }
+
     /// One frame: each client's, then the server's.
     pub fn update(&mut self) {
         for client in &mut self.clients {

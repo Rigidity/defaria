@@ -4,7 +4,13 @@
 //! plays the world in `--world`, or the `server-world` folder in the
 //! game's data folder, and saves it as the game does: as chunks unload,
 //! every so often, and when it stops, its players with it (each as they
-//! leave, too). Typing `stop` (and Enter), or Ctrl-C, stops it.
+//! leave, too). Ctrl-C stops it.
+//!
+//! Its standard input is a console: each line is a server command
+//! (`defaria_server::command`; a `/` before it is fine), run as the
+//! console, which may run any, and what it answers is printed. `stop`
+//! saves the world and stops it; `say` talks to the players; `op` lets a
+//! player run commands too (the world's `ops.json5`).
 //!
 //! Its key is the world's `server.pem`, made the first time, so clients
 //! that remember it know it's the same server after a restart.
@@ -25,7 +31,10 @@ use std::{
 
 use bevy::{app::TerminalCtrlCHandlerPlugin, log::LogPlugin, prelude::*};
 use defaria_core::{content::Content, save::WorldFolder, streaming::StreamingSettings};
-use defaria_server::server::{Incoming, ReceiveSystems};
+use defaria_server::{
+    command,
+    server::{Incoming, ReceiveSystems},
+};
 
 use crate::{
     identity::{Identity, SERVER_KEY_FILE},
@@ -96,7 +105,8 @@ pub fn run(settings: DedicatedSettings) -> AppExit {
     };
     take_clients_from(&mut app, listener);
     app.insert_resource(Console(Mutex::new(console())))
-        .add_systems(PreUpdate, read_console);
+        .add_systems(PreUpdate, read_console)
+        .add_systems(Last, print_console_replies);
     let exit = app.run();
     // The world's saved; tell the players.
     if let Some(network) = app.world_mut().remove_resource::<Network>() {
@@ -165,17 +175,27 @@ fn accept_clients(network: Res<Network>, mut incoming: ResMut<Incoming>) {
     incoming.0.extend(listener.accept());
 }
 
-/// `stop` stops the server, saving the world.
-fn read_console(console: Res<Console>, mut exit: MessageWriter<AppExit>) {
+/// Hands the lines typed at the console to the server's commands, which
+/// run them this frame.
+fn read_console(console: Res<Console>, mut commands: ResMut<command::Console>) {
     let lines = console.0.lock().unwrap_or_else(|e| e.into_inner());
     for line in lines.try_iter() {
-        match line.trim() {
-            "stop" => {
-                info!("stopping");
-                exit.write(AppExit::Success);
-            }
-            "" => {}
-            other => info!("unknown command: {other} (stop stops the server)"),
+        if !line.trim().is_empty() {
+            commands.lines.push(line);
+        }
+    }
+}
+
+/// Prints what the console's commands answered.
+fn print_console_replies(mut commands: ResMut<command::Console>) {
+    for reply in commands.replies.drain(..) {
+        if reply.text.is_empty() {
+            continue;
+        }
+        if reply.ok {
+            println!("{}", reply.text);
+        } else {
+            eprintln!("{}", reply.text);
         }
     }
 }

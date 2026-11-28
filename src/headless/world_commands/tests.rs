@@ -4,8 +4,20 @@ use crate::headless::{
     test_app::{camera, light_at, play, run_game, run_more},
 };
 use defaria_core::{
+    content::{BlockState, Content},
+    hotbar::{ActiveSlot, Hotbar},
+    machine::{Slots, Tanks},
     streaming::StreamingStatus,
-    world::{ChunkCoord, ChunkMap},
+    world::{Chunk, ChunkCoord, ChunkMap, Voxels},
+};
+use defaria_server::{
+    block_entity::BlockEntities,
+    command::{
+        ServerCommand,
+        report::{FluidRegion, fluid_report, network_report},
+        scene::{fill_state, item_state},
+    },
+    fluid::FluidStats,
 };
 
 /// End to end: `fill` builds a sealed room through the game's own edit
@@ -178,13 +190,25 @@ fn every_scenario_parses_and_fills_with_real_blocks() {
         let text = std::fs::read_to_string(&path).unwrap();
         let script = Script::parse(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         for command in script.commands {
-            if let Command::Fill { block, .. } = &command
-                && block != defaria_core::content::AIR
-            {
-                fill_state(content, block).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-            }
-            if let Command::Hotbar { item, .. } = &command {
-                item_state(content, item).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            let Command::Server { command, .. } = command else {
+                continue;
+            };
+            let check = |result: Result<_, String>| {
+                result.unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            };
+            match command {
+                ServerCommand::Fill { block, .. } if block != defaria_core::content::AIR => {
+                    check(fill_state(content, &block).map(drop))
+                }
+                ServerCommand::Pour { fluid, .. } => check(fill_state(content, &fluid).map(drop)),
+                ServerCommand::Hotbar { item, .. } => check(item_state(content, &item).map(drop)),
+                ServerCommand::Give { item, fluid, .. } => {
+                    check(item_state(content, &item).map(drop));
+                    if let Some((fluid, _)) = fluid {
+                        check(fill_state(content, &fluid).map(drop));
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -199,9 +223,12 @@ fn hotbar_puts_an_item_in_hand() {
         Script::parse("hotbar 3 wrench[head=defaria:copper]")
             .unwrap()
             .commands,
-        [Command::Hotbar {
-            slot: 2,
-            item: "wrench[head=defaria:copper]".into()
+        [Command::Server {
+            line: "hotbar 3 wrench[head=defaria:copper]".into(),
+            command: ServerCommand::Hotbar {
+                slot: 2,
+                item: "wrench[head=defaria:copper]".into()
+            }
         }]
     );
     let (mut app, exit) = run_game("wait 2\nhotbar 3 wrench[head=defaria:copper]\nwait 1\n");
@@ -441,7 +468,7 @@ fn the_fluids_report_counts_what_was_poured() {
          wait 1\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window(None));
     // At radius 4: 49 chunks a layer, 25 layers.
     assert!(
         report.starts_with("fluids in the camera's window (1225 chunks, 0 not loaded): "),
@@ -512,7 +539,7 @@ fn the_fluids_window_compares_across_a_trip() {
     };
     let margin = fluid_report(crate::headless::server(&mut app), sea);
     assert!(margin.contains("defaria:water"), "{margin}");
-    let before = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
+    let before = fluid_report(crate::headless::server(&mut app), FluidRegion::Window(None));
     let loaded_before = app.world().resource::<StreamingStatus>().loaded_chunks;
     run_more(
         &mut app,
@@ -523,7 +550,7 @@ fn the_fluids_window_compares_across_a_trip() {
          settle\n\
          wait 5\n",
     );
-    let after = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
+    let after = fluid_report(crate::headless::server(&mut app), FluidRegion::Window(None));
     let loaded_after = app.world().resource::<StreamingStatus>().loaded_chunks;
     assert!(
         loaded_before > loaded_after,
@@ -551,7 +578,7 @@ fn the_fluids_report_counts_what_reacted() {
          wait 120\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window(None));
     let (fluids, lost) = report.split_once("; lost: reacted ").expect(&report);
     let reacted: u64 = lost.parse().expect(&report);
     let water: u64 = fluids
@@ -577,7 +604,7 @@ fn the_fluids_report_counts_what_evaporated() {
          wait 180\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window(None));
     assert!(report.ends_with("; lost: evaporated 2"), "{report}");
     assert!(!report.contains("defaria:water"), "all gone: {report}");
 }
@@ -599,7 +626,7 @@ fn the_fluids_report_counts_tanks_and_pipes() {
          wait 180\n",
     );
     assert_eq!(exit, AppExit::Success);
-    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window);
+    let report = fluid_report(crate::headless::server(&mut app), FluidRegion::Window(None));
     assert!(
         report.ends_with(" active, defaria:water 1000 (world 0, pipes 0, machines 1000)"),
         "{report}"

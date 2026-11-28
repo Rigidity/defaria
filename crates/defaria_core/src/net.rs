@@ -23,6 +23,7 @@ use bevy::prelude::*;
 
 use crate::{
     block_entity::Value,
+    chat::{ChatLine, CommandReply},
     content::BlockState,
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
@@ -75,6 +76,12 @@ pub enum ClientMessage {
     /// A mod's client script sent its server's scripts a message
     /// (`net.send`, see `script::channel`).
     Script(ScriptMessage),
+    /// The player said this to everyone (see `chat`).
+    Chat(String),
+    /// The player ran a server command: the line, without its `/` (see
+    /// `defaria_server::command`), and an id the client picks. The server
+    /// answers each with a [`ServerMessage::CommandReply`] of that id.
+    Command { id: u32, line: String },
 }
 
 impl ClientMessage {
@@ -191,6 +198,10 @@ pub enum ServerMessage {
     /// lost. `quic`'s own: the client's network end takes it, and the game
     /// never sees it.
     Dropped(String),
+    /// A line of chat for the player: what someone said, or a notice.
+    Chat(ChatLine),
+    /// What a command the client sent answered (one each, by its id).
+    CommandReply(CommandReply),
 }
 
 impl ServerMessage {
@@ -739,8 +750,27 @@ mod tests {
             ServerMessage::Despawn(42),
             ServerMessage::Script(script_message()),
             ServerMessage::Dropped("why".into()),
+            ServerMessage::Chat(crate::chat::ChatLine {
+                kind: crate::chat::ChatKind::Said,
+                from: Some("Ada".into()),
+                text: "hello".into(),
+            }),
+            ServerMessage::CommandReply(CommandReply {
+                id: 7,
+                ok: true,
+                text: "filled 8 voxels".into(),
+                filled: Some((8, 1200)),
+            }),
         ];
         for message in server {
+            // Chat and command replies must arrive, and go with the
+            // control messages, not behind the chunks.
+            if matches!(
+                message,
+                ServerMessage::Chat(_) | ServerMessage::CommandReply(_)
+            ) {
+                assert!(message.reliable() && !message.bulk(), "{message:?}");
+            }
             let back: ServerMessage = decode(&encode(&message)).unwrap();
             assert_eq!(back, message);
         }
@@ -766,6 +796,11 @@ mod tests {
                 ..script_message()
             }),
             ClientMessage::CloseScreen(IVec3::new(1, -2, 3)),
+            ClientMessage::Chat("hello there".into()),
+            ClientMessage::Command {
+                id: 7,
+                line: "fill 1 2 3 4 5 6 stone".into(),
+            },
             ClientMessage::Transfer(Transfer::Catalog {
                 kind: ItemStack::new(stone, 1),
                 count: 10,

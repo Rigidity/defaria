@@ -312,6 +312,33 @@ pub struct Motion {
     pub eye_height: f64,
 }
 
+/// How far from the origin, on any axis, a player may be put (a
+/// command's `tp`, a client's teleport): ten million blocks, far inside
+/// where chunk coordinates, the chunks loaded around a player and
+/// terrain generation's `i32` maths overflow.
+pub const WORLD_LIMIT: f64 = 10_000_000.0;
+/// The fastest a teleport may leave a player moving, in blocks a second.
+const MAX_TELEPORT_SPEED: f64 = 1000.0;
+
+/// Whether `pos` is a place a player may be put: finite and within
+/// [`WORLD_LIMIT`] on every axis.
+pub fn within_world(pos: DVec3) -> bool {
+    pos.is_finite() && pos.abs().max_element() <= WORLD_LIMIT
+}
+
+impl Motion {
+    /// Whether a client's teleport to this is one the server may take:
+    /// within the world, moving no faster than [`MAX_TELEPORT_SPEED`],
+    /// with an eye height a player has.
+    pub fn is_sane(&self) -> bool {
+        within_world(self.feet)
+            && self.velocity.is_finite()
+            && self.velocity.length() <= MAX_TELEPORT_SPEED
+            && self.eye_height.is_finite()
+            && (0.0..=2.0 * EYE_HEIGHT).contains(&self.eye_height)
+    }
+}
+
 /// How far apart two [`Motion`]s may be and still count as the same: far
 /// below what anyone sees, far above the rounding of the same steps.
 const MOTION_TOLERANCE: f64 = 1e-4;

@@ -31,11 +31,19 @@ use super::{
     },
     input::{key_for, logical_key, pointer_target},
     pipelines::{PipelineStatus, share_pipeline_status},
-    script::{Button, Command, Script},
+    script::{Button, Command, Script, ServerCommand},
     world_commands::apply_world_commands,
 };
-use defaria_client::{connecting::ConnectStatus, fog::ChunkFog};
-use defaria_core::streaming::StreamingStatus;
+use defaria_client::{
+    chat::CommandIds,
+    connecting::ConnectStatus,
+    fog::ChunkFog,
+    net::{FromServer, ServerConnection, ToServer},
+};
+use defaria_core::{
+    net::{ClientMessage, ServerMessage},
+    streaming::StreamingStatus,
+};
 
 pub struct HeadlessPlugin {
     pub script: Script,
@@ -60,9 +68,18 @@ impl Plugin for HeadlessPlugin {
                 is_mouse_enabled: false,
                 ..default()
             })
+            // What server commands are sent as and answered with (the
+            // client's net adds them too, in the game).
+            .add_message::<ToServer>()
+            .add_message::<FromServer>()
+            .init_resource::<CommandIds>()
             .add_systems(
                 PreUpdate,
-                (run_script, apply_world_commands)
+                (
+                    take_replies,
+                    run_script,
+                    (send_server_commands, apply_world_commands),
+                )
                     .chain()
                     .after(defaria_client::prediction::ReconcileSystems)
                     .before(InputSystems)
@@ -120,12 +137,14 @@ pub(super) struct ScriptRunner {
     pub(super) captures: Vec<Capture>,
     /// `inspect` commands to handle at the end of this frame.
     pub(super) inspections: Vec<String>,
-    /// `fill` and `camera` commands to apply this frame, after input.
+    /// `camera` and `lookups` commands to apply this frame, after input.
     pub(super) world_commands: Vec<Command>,
+    /// Server commands to send this frame, by their lines.
+    pub(super) to_send: Vec<(String, ServerCommand)>,
+    /// Server commands sent and not answered yet, oldest first.
+    pub(super) awaiting: VecDeque<(u32, ServerCommand)>,
     /// Whether a `timing` report is due at the end of this frame.
     pub(super) timing: bool,
-    /// Whether a `fluids` report is due at the end of this frame.
-    pub(super) fluid_reports: Vec<Option<(IVec3, IVec3)>>,
     /// Whether a `memory` report is due at the end of this frame.
     pub(super) memory_report: bool,
     /// Waiting for joining a server to finish, since when.
@@ -135,8 +154,6 @@ pub(super) struct ScriptRunner {
     /// Voxels `fill` has changed since the last `timing`, and how long the
     /// fills took.
     pub(super) filled: (usize, Duration),
-    /// `network` reports due at the end of this frame.
-    pub(super) network_reports: Vec<IVec3>,
     /// `systems` reports due at the end of this frame, by how many systems.
     pub(super) system_reports: Vec<usize>,
     /// Wall-clock frame times since the last `timing`.
@@ -163,10 +180,10 @@ impl ScriptRunner {
             && self.captures.is_empty()
             && self.inspections.is_empty()
             && self.world_commands.is_empty()
+            && self.to_send.is_empty()
+            && self.awaiting.is_empty()
             && !self.timing
-            && self.fluid_reports.is_empty()
             && !self.memory_report
-            && self.network_reports.is_empty()
             && self.system_reports.is_empty()
     }
 }
@@ -363,18 +380,9 @@ fn run_script(
             Command::Screenshot(path) => runner.captures.push(Capture::Save(path)),
             Command::Grain => runner.captures.push(Capture::Grain),
             Command::Inspect(name) => runner.inspections.push(name),
-            Command::Fill { .. }
-            | Command::Pour { .. }
-            | Command::Put { .. }
-            | Command::Camera { .. }
-            | Command::Hotbar { .. }
-            | Command::Give { .. }
-            | Command::RandomTicks(_)
-            | Command::Evaporation(_)
-            | Command::Lookups { .. } => runner.world_commands.push(command),
-            Command::Fluids(region) => runner.fluid_reports.push(region),
+            Command::Camera { .. } | Command::Lookups { .. } => runner.world_commands.push(command),
+            Command::Server { line, command } => runner.to_send.push((line, command)),
             Command::Memory => runner.memory_report = true,
-            Command::Network(pos) => runner.network_reports.push(pos),
             Command::Type(text) => {
                 for character in text.chars() {
                     let key_code = key_for(character);
@@ -411,6 +419,70 @@ fn run_script(
                     settings.timeout = Duration::from_secs_f32(seconds);
                 }
             }
+        }
+    }
+}
+
+/// Sends this frame's server commands, as a player typing them would.
+/// Without a server to send them to, the run fails.
+fn send_server_commands(
+    mut runner: ResMut<ScriptRunner>,
+    connection: Option<Res<ServerConnection>>,
+    mut to_server: MessageWriter<ToServer>,
+    mut exit: MessageWriter<AppExit>,
+    mut ids: ResMut<CommandIds>,
+) {
+    let runner = &mut *runner;
+    for (line, command) in runner.to_send.drain(..) {
+        if connection.is_none() {
+            error!("`{line}`: there's no server to send it to");
+            exit.write(AppExit::error());
+            continue;
+        }
+        // Not the chat line's: its answer stays out of the chat.
+        let id = ids.quiet();
+        to_server.write(ToServer(ClientMessage::Command { id, line }));
+        runner.awaiting.push_back((id, command));
+    }
+}
+
+/// Takes what the server answered the commands sent: one that failed
+/// fails the run; the reports (`fluids`, `network`, `list`, `help`) are
+/// printed; `fill`s count towards `timing`.
+fn take_replies(
+    mut runner: ResMut<ScriptRunner>,
+    mut messages: MessageReader<FromServer>,
+    mut exit: MessageWriter<AppExit>,
+    frame: Option<Res<bevy::diagnostic::FrameCount>>,
+) {
+    let frame = frame.map_or(0, |frame| frame.0);
+    for FromServer(message) in messages.read() {
+        let ServerMessage::CommandReply(reply) = message else {
+            continue;
+        };
+        // Only the scenario's own: the chat line's go to the chat.
+        let Some(at) = (runner.awaiting.iter()).position(|(id, _)| *id == reply.id) else {
+            continue;
+        };
+        let (_, command) = runner.awaiting.remove(at).unwrap();
+        if !reply.ok {
+            error!("{}", reply.text);
+            exit.write(AppExit::error());
+            continue;
+        }
+        if let Some((voxels, nanos)) = reply.filled {
+            runner.filled.0 += voxels as usize;
+            runner.filled.1 += Duration::from_nanos(nanos);
+        }
+        let reports = matches!(
+            command,
+            ServerCommand::Fluids(_)
+                | ServerCommand::Network(_)
+                | ServerCommand::List
+                | ServerCommand::Help
+        );
+        if reports {
+            println!("[frame {frame}] {}", reply.text);
         }
     }
 }

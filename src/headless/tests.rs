@@ -1,6 +1,7 @@
 //! End-to-end tests: whole scripts run in the game with no GPU. Tests
 //! of a feature that need the whole game are in a module for it here.
 
+mod chat;
 mod cracks;
 mod editing;
 mod fluid_container;

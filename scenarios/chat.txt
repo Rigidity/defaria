@@ -1,0 +1,39 @@
+# Chat (T): say something, run a command and see its answer, get one
+# wrong, and watch the lines fade over the game. What's typed reaches the
+# field at the end of its frame, so each Enter waits a frame after it.
+# Run: cargo headless scenarios/chat.txt
+camera 64 56 92 0 -20              # the start's view, flying
+wait 5
+
+hold KeyT 1                        # open the chat line
+type hello, anyone out there?
+wait 1
+hold Enter 1                       # say it
+hold KeyT 1
+type /fill 62 52 84 66 54 84 stone
+wait 1
+hold Enter 1                       # a command: the host may run them
+hold KeyT 1
+type /fill 62 55 84 66 55 84 nonsense
+wait 1
+hold Enter 1                       # a mistake: the server says why
+hold KeyT 1
+type /list
+wait 1
+hold Enter 1
+wait 5
+screenshot target/scenarios/chat/0-over-the-game.png
+wait 1
+
+hold KeyT 1                        # open again: every line, the field typed into
+type /help
+wait 2
+screenshot target/scenarios/chat/1-open.png
+inspect ChatScreen
+wait 1
+
+hold Escape 1                      # close without sending
+wait 2
+inspect ChatScreen
+wait 600                           # ten seconds: the lines fade out
+screenshot target/scenarios/chat/2-faded.png
