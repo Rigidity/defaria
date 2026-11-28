@@ -562,21 +562,33 @@ bandwidth for light or chunks shows up in the `net` report.
 
 *As built in #232*, an input buffer on the server:
 
-- The server no longer steps a player for each input as it arrives: it
-  steps input `tick` once the server's clock reaches `tick * STEP +
-  offset` (`server::movement::Playout`), so inputs come out a physics
-  step apart, as they were made, however they arrived. An input's
-  offset is when it first arrived less when it was made; the playout's
-  is the biggest of the last 3 seconds, so it holds inputs just long
-  enough for the latest of them lately. With even arrival (single
-  player, where inputs arrive the frame they're made, or a clean
-  connection) that's no hold at all; with uneven frames, no longer than
-  the frames are uneven. An input later than the playout's offset is
+- The server no longer steps a remote player for each input as it
+  arrives: it steps input `tick` once the server's clock reaches `tick *
+  STEP + offset` (`server::movement::Playout`), so inputs come out a
+  physics step apart, as they were made, however they arrived. An
+  input's offset is when it first arrived less when it was made, less
+  the wait for the rest of the client's frame; the playout's is the
+  biggest of the last 3 seconds, so it holds inputs just long enough for
+  the latest of them lately. An input later than the playout's offset is
   stepped as it arrives and raises the offset, so a run of losses stops
   the player once, the first time it's that long. Once the late ones
   are out of the window the offset comes down 4% of the time passing
   (catching up within the budget's 5% slack, never two steps in a frame
   more than once in 25).
+- A client's own frames aren't network jitter: one at 20 fps makes three
+  inputs a frame and sends them together, and a hitch sends all it made
+  at once. So `ClientMessage::Inputs` now says the newest input the
+  client sent before (`made_after`; protocol 4), and the inputs after it
+  count as made with the message's newest; older ones (their message
+  lost) count their wait less this frame's. A remote client on a steady
+  connection isn't held at any frame rate, through hitches too, but for
+  up to a step when its frames are uneven (its newest input is made up
+  to a step before it's sent).
+- The integrated server's own client (single player, `Joining::in_process`)
+  has no playout: its inputs are stepped as they arrive, as before.
+  They arrive the frame they're made and nobody else watches the
+  player, so holding them would only delay its uses, mining and
+  `Moved`.
 - The hold is capped at 0.1 s (six steps) past the earliest arrival
   lately: inputs later than that are stepped at once (as many as the
   budget allows), so a long stall still ends in a burst. A client whose
@@ -590,12 +602,18 @@ bandwidth for light or chunks shows up in the `net` report.
 - `Moved` names the last input stepped, as before, so prediction only
   sees its answers later, never different: the prediction tests still
   see no corrections. A use waits for its input to be stepped, so it's
-  held as long as the inputs are: not at all on a good connection, up to
-  the cap on a bad one.
+  held as long as the inputs are: not at all on a good connection or in
+  single player, up to the cap on a bad one.
+- The hold delays the server's answers too, so the client's 32 inputs
+  resent (`MAX_SENT`) cover losses up to a round trip of about 430 ms
+  rather than 530. It stays 32: an input is about 32 bytes, and 32 (about
+  1,030 bytes) still fit a QUIC datagram (about 1,200), where 48 would
+  go on the reliable stream instead. Sending fewer bytes an input (they
+  repeat from step to step) would let it cover more.
 - Measured in `another_player_moves_smoothly` (a tenth of a second each
   way, a quarter of datagrams lost), over 40 runs with different losses:
   the walker's server step was off its mean by more than 5% in 26 to 53
-  frames of 80 before, and 0 to 2 after. What the other player sees is
+  frames of 80 before, and 0 to 2 after (the test allows 4). What the other player sees is
   now even except where snapshots run out: drawn frames that aren't
   holding were up to 112% off the mean before and 31% after. The test
   reseeds the losses once the world has settled, so it doesn't depend

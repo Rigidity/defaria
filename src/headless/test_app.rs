@@ -287,6 +287,7 @@ pub fn test_multiplayer_over(clients: usize, conditions: Conditions) -> Multipla
                     id: test_player_id(index),
                     name: format!("Player {}", index + 1),
                     link: at_server,
+                    in_process: false,
                 });
             let relay = Relay {
                 client: client_side,

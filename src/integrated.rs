@@ -113,6 +113,7 @@ fn start_server(world: &mut World) {
         id: local.identity.id,
         name: local.name,
         link: server,
+        in_process: true,
     });
     world.insert_resource(ServerConnection(client));
     world.insert_non_send(IntegratedServer { app });

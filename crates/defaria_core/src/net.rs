@@ -41,8 +41,10 @@ pub enum ClientMessage {
     /// The player's inputs for the physics steps the server hasn't said
     /// it's applied yet, oldest first. Each is sent until the server says
     /// it's applied it ([`ServerMessage::Moved`]), so losing some of these
-    /// loses nothing.
-    Inputs(Vec<Input>),
+    /// loses nothing. `made_after` is the newest input the client sent
+    /// before: those after it were made in the frame it sent these, and
+    /// came out together because of its frame, not the network.
+    Inputs { inputs: Vec<Input>, made_after: u32 },
     /// The player used something (right click), as `use_action` acts on,
     /// after its input `tick` (the server waits until it's stepped the
     /// player that far, so it acts on the use where the client did).
@@ -78,7 +80,7 @@ impl ClientMessage {
     /// Whether it must arrive: all but [`ClientMessage::Inputs`], which are
     /// sent again until they're applied.
     pub fn reliable(&self) -> bool {
-        !matches!(self, ClientMessage::Inputs(_))
+        !matches!(self, ClientMessage::Inputs { .. })
     }
 }
 
@@ -550,16 +552,19 @@ mod tests {
             assert_eq!(back, message);
         }
         let client = [
-            ClientMessage::Inputs(vec![Input {
-                tick: 3,
-                controls: Controls {
-                    forward: 1.0,
-                    jump: true,
-                    ..Default::default()
-                },
-                look: pose.look,
-                teleport: Some(motion),
-            }]),
+            ClientMessage::Inputs {
+                inputs: vec![Input {
+                    tick: 3,
+                    controls: Controls {
+                        forward: 1.0,
+                        jump: true,
+                        ..Default::default()
+                    },
+                    look: pose.look,
+                    teleport: Some(motion),
+                }],
+                made_after: 2,
+            },
             ClientMessage::Mining(true),
             ClientMessage::ToggleGameMode,
             ClientMessage::Paused(true),

@@ -30,7 +30,12 @@ use crate::{
 };
 
 /// The most inputs sent at once: those the server hasn't applied yet, up
-/// to this many of the newest.
+/// to this many of the newest. So losses are covered while the round trip
+/// and the server's hold on inputs (up to a tenth of a second, see
+/// `defaria_server`'s `movement`) come to less than 32 steps, about 530
+/// ms: a round trip up to about 430 ms. Inputs are about 32 bytes, so 32
+/// of them (about 1,030 bytes) still fit a QUIC datagram (about 1,200);
+/// more would go on the reliable stream instead.
 const MAX_SENT: usize = 32;
 /// The most steps kept to step again, should the server not answer.
 const MAX_KEPT: usize = 256;
@@ -264,6 +269,7 @@ fn send_inputs(mut prediction: ResMut<Prediction>, connection: Option<ResMut<Ser
     if prediction.tick == prediction.sent {
         return;
     }
+    let made_after = prediction.sent;
     prediction.sent = prediction.tick;
     let skip = prediction.steps.len().saturating_sub(MAX_SENT);
     let inputs: Vec<Input> = prediction
@@ -272,5 +278,7 @@ fn send_inputs(mut prediction: ResMut<Prediction>, connection: Option<ResMut<Ser
         .skip(skip)
         .map(|(input, _)| input.clone())
         .collect();
-    connection.0.send(ClientMessage::Inputs(inputs));
+    connection
+        .0
+        .send(ClientMessage::Inputs { inputs, made_after });
 }

@@ -107,6 +107,10 @@ pub struct Joining {
     /// Only shown.
     pub name: String,
     pub link: ServerLink,
+    /// Whether it's the integrated server's own client, in the same
+    /// process, whose inputs arrive the frame they're made: they're
+    /// stepped as they arrive, not held (see `movement`).
+    pub in_process: bool,
 }
 
 /// A player's connection to its client, and what the client has been sent.
@@ -191,7 +195,13 @@ fn accept(
         }
         joining.push(join);
     }
-    for Joining { id, name, link } in joining {
+    for Joining {
+        id,
+        name,
+        link,
+        in_process,
+    } in joining
+    {
         for (entity, _) in playing.iter().filter(|(_, playing)| **playing == id) {
             info!("{name} ({id}) joined again; the old connection goes");
             commands.entity(entity).despawn();
@@ -204,7 +214,7 @@ fn accept(
             id,
             player(feet, Look::from_rotation(eyes.rotation)),
             MovedByInputs,
-            PlayerInputs::default(),
+            PlayerInputs::new(in_process),
             Replicated(Kind::Player),
             replication::Interest::default(),
             Connection::new(link),
@@ -727,6 +737,7 @@ mod tests {
             id: PlayerId([1; 32]),
             name: "Tester".into(),
             link: server,
+            in_process: false,
         });
         let sent = until(&mut app, &mut client, |message| {
             matches!(message, ServerMessage::Settled(true))
@@ -801,6 +812,7 @@ mod tests {
             id: PlayerId([1; 32]),
             name: "Tester".into(),
             link,
+            in_process: false,
         });
         app.update();
         let world = app.world_mut();
@@ -823,6 +835,7 @@ mod tests {
                 id,
                 name: "Twice".into(),
                 link,
+                in_process: false,
             });
         }
         app.update();
@@ -867,11 +880,10 @@ mod tests {
             sprinting: false,
             eye_height: EYE_HEIGHT,
         };
-        client.send(ClientMessage::Inputs(vec![input(
-            1,
-            Controls::default(),
-            Some(motion),
-        )]));
+        client.send(ClientMessage::Inputs {
+            inputs: vec![input(1, Controls::default(), Some(motion))],
+            made_after: 0,
+        });
         let sent = until(&mut app, &mut client, |message| {
             matches!(message, ServerMessage::Settled(true))
         });
@@ -913,7 +925,10 @@ mod tests {
             let unconfirmed = (tick.max(3) - 2..=tick)
                 .map(|tick| input(tick, forward, None))
                 .collect();
-            client.send(ClientMessage::Inputs(unconfirmed));
+            client.send(ClientMessage::Inputs {
+                inputs: unconfirmed,
+                made_after: tick - 1,
+            });
             app.update();
             moves.extend(
                 client
@@ -946,7 +961,10 @@ mod tests {
         let flood = (1..=600)
             .map(|tick| input(tick, Controls::default(), None))
             .collect();
-        client.send(ClientMessage::Inputs(flood));
+        client.send(ClientMessage::Inputs {
+            inputs: flood,
+            made_after: 0,
+        });
         app.update();
         let applied = app.world().get::<PlayerInputs>(player).unwrap().applied();
         assert!((1..=21).contains(&applied), "{applied} steps at once");

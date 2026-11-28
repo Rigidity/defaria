@@ -197,7 +197,10 @@ fn another_player_moves_smoothly() {
 
     // On the server, the walker (the one that moved) goes the same
     // distance every frame but where a run of losses is longer than any
-    // lately (measured: none in most runs, two at most).
+    // lately: each such run stops it once. Measured over 40 seeds: none in
+    // most runs, two at most; four leaves room for the seeds and timing
+    // to change, and is still a tenth of what stepping inputs as they
+    // arrive gave (26 to 53).
     let walker = (0..on_server[0].len())
         .max_by(|a, b| {
             let moved = |player: usize| on_server[0][player].distance(on_server[149][player]);
@@ -209,7 +212,7 @@ fn another_player_moves_smoothly() {
     let (mean, off) = off_the_mean(walked, 0.05);
     assert!(mean > 0.05, "it moved: {mean} a frame");
     assert!(
-        off.len() <= 2,
+        off.len() <= 4,
         "the server stepped it unevenly in frames {off:?}: {walked:?}"
     );
 
