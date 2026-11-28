@@ -351,28 +351,106 @@ mod tests {
         assert_eq!(reaches(&when(r#"{ north: ["true", "false"] }"#)), None);
     }
 
+    /// In every way a pipe or tube can be joined, its middle cube has one
+    /// face on each side it isn't joined on and none on a side it is,
+    /// each showing how the arms passing that side run: none (its end),
+    /// one or two in a line (the band), two at a bend, three or four.
+    #[test]
+    fn every_pipe_shape_closes_its_middle() {
+        let content = crate::content::base();
+        for id in ["defaria:pipe", "defaria:tube"] {
+            let block = content.block(id).unwrap();
+            for mask in 0..64u32 {
+                let values: Vec<(&str, &str)> = Direction::ALL
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| (d.name(), if mask >> i & 1 == 1 { "true" } else { "false" }))
+                    .collect();
+                let state = content.state(block.state(&values).unwrap());
+                let joined = |d: Direction| mask >> d as u32 & 1 == 1;
+                let mut faced = Vec::new();
+                for part in state
+                    .parts
+                    .iter()
+                    .filter(|p| p.model.starts_with("defaria:pipe_cap"))
+                {
+                    let [face] = &state.faces[part.faces.clone()] else {
+                        panic!("{id} {mask:06b}: {} has one face", part.model);
+                    };
+                    let side = Direction::from_normal(face.normal.round().as_ivec3()).unwrap();
+                    let passing: Vec<_> = Direction::ALL
+                        .into_iter()
+                        .filter(|d| *d != side && *d != side.opposite() && joined(*d))
+                        .collect();
+                    let kind = match passing.as_slice() {
+                        [] => "pipe_cap_end",
+                        [_] => "pipe_cap",
+                        [a, b] if *b == a.opposite() => "pipe_cap",
+                        [_, _] => "pipe_cap_bend",
+                        [_, _, _] => "pipe_cap_tee",
+                        _ => "pipe_cap_cross",
+                    };
+                    assert_eq!(
+                        part.model,
+                        format!("defaria:{kind}"),
+                        "{id} {mask:06b} {side:?}"
+                    );
+                    faced.push(side);
+                }
+                faced.sort_by_key(|d| *d as usize);
+                let open: Vec<_> = Direction::ALL.into_iter().filter(|d| !joined(*d)).collect();
+                assert_eq!(faced, open, "{id} {mask:06b}");
+            }
+        }
+    }
+
+    /// A pipe is its middle cube's box, with a face of it on each side
+    /// it isn't joined on (the band where an arm passes, its end where
+    /// none does), and an arm to each side it is.
     #[test]
     fn the_base_pipe_has_an_arm_for_each_side_it_says() {
         let content = crate::content::base();
         let pipe = content.block("defaria:pipe").unwrap();
-        let core = content.state(pipe.default_state());
-        let models: Vec<&str> = core.parts.iter().map(|p| p.model.as_str()).collect();
-        assert_eq!(models, ["defaria:pipe_core"]);
-        assert!(Direction::ALL.iter().all(|&d| !core.occludes(d)));
+        fn models(state: &State) -> Vec<&str> {
+            let mut models: Vec<&str> = state.parts.iter().map(|p| p.model.as_str()).collect();
+            models.sort();
+            models
+        }
+        let alone = content.state(pipe.default_state());
+        assert_eq!(
+            models(alone),
+            ["defaria:pipe_cap_end"; 6]
+                .into_iter()
+                .chain(["defaria:pipe_core"])
+                .collect::<Vec<_>>()
+        );
+        assert!(Direction::ALL.iter().all(|&d| !alone.occludes(d)));
 
         for side in Direction::ALL {
             let state = pipe.state(&[(side.name(), "true")]).unwrap();
             let state = content.state(state);
-            assert_eq!(state.parts.len(), 2, "{side:?}");
-            let arm = &state.parts[1];
-            assert_eq!(arm.model, "defaria:pipe_arm");
+            // The four faces the arm passes show the band, the one
+            // opposite it the pipe's end.
+            let mut want = vec![
+                "defaria:pipe_arm",
+                "defaria:pipe_cap_end",
+                "defaria:pipe_core",
+            ];
+            want.extend(["defaria:pipe_cap"; 4]);
+            want.sort();
+            assert_eq!(models(state), want, "{side:?}");
+            let arm = state
+                .parts
+                .iter()
+                .find(|p| p.model == "defaria:pipe_arm")
+                .unwrap();
             // The arm's end is on that side, and hidden by what covers it.
             let ends: Vec<_> = state.faces[arm.faces.clone()]
                 .iter()
                 .filter_map(|f| f.cull)
                 .collect();
             assert_eq!(ends, [side], "{side:?}");
-            // Its box reaches that side of the block from the core.
+            // Its box reaches that side of the block from the middle.
             let reach = state.collision[arm.collision.clone()][0];
             let n = side.normal().as_vec3();
             let far = if n.max_element() > 0.0 {
@@ -381,8 +459,16 @@ mod tests {
                 reach.min
             };
             assert_eq!((far - Vec3::splat(0.5)).dot(n), 0.5, "{side:?}");
+            // Aimed at, it's that side's; the middle is no side's.
+            assert_eq!(state.target.len(), state.target_reaches.len());
+            for (b, reach) in state.target.iter().zip(&state.target_reaches) {
+                let middle = b.min == Vec3::splat(0.3125) && b.max == Vec3::splat(0.6875);
+                assert_eq!(*reach, (!middle).then_some(side), "{side:?}: {b:?}");
+            }
         }
 
+        // Joined all round: the middle and six arms, no faces of the
+        // middle (they'd show inside a tube's glass).
         let all: Vec<(&str, &str)> = Direction::ALL.iter().map(|d| (d.name(), "true")).collect();
         let all = content.state(pipe.state(&all).unwrap());
         assert_eq!(all.parts.len(), 7);

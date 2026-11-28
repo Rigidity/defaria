@@ -1,6 +1,0 @@
-// A pipe's junction box, where its arms meet.
-{
-  layers: [
-    { image: "pipe_core", material: "$metal" },
-  ],
-}

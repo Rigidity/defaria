@@ -1,0 +1,20 @@
+// The north face of a pipe's middle cube at a cross: `cross`, at its
+// own position, the band running to every edge.
+// Its box is `pipe_core`'s.
+// Written by scripts/pipe-models.py; change it there.
+{
+  slots: { cross: null },
+  occludes: [],
+  collision: [],
+  faces: [
+    {
+      texture: "cross",
+      vertices: [
+        { pos: [0.3125, 0.6875, 0.3125], uv: [0.6875, 0.3125] },
+        { pos: [0.6875, 0.6875, 0.3125], uv: [0.3125, 0.3125] },
+        { pos: [0.6875, 0.3125, 0.3125], uv: [0.3125, 0.6875] },
+        { pos: [0.3125, 0.3125, 0.3125], uv: [0.6875, 0.6875] },
+      ],
+    },
+  ],
+}

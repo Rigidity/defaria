@@ -59,16 +59,16 @@ fn side_of(state: BlockState, from: Vec3, to: Vec3) -> Option<Direction> {
 fn the_side_is_the_arm_aimed_at_or_the_face() {
     let state = joined_pipe(&[E, W]);
     // Down onto the east arm, near its end.
-    let arm = Vec3::new(0.9, 0.75, 0.5);
+    let arm = Vec3::new(0.9, 0.6875, 0.5);
     assert_eq!(side_of(state, arm + Vec3::Y, arm), Some(E));
     // From the north, at the side of the west arm.
-    let arm = Vec3::new(0.1, 0.5, 0.25);
+    let arm = Vec3::new(0.1, 0.5, 0.3125);
     assert_eq!(side_of(state, arm - Vec3::Z, arm), Some(W));
     // Down onto the core: its top.
-    let core = Vec3::new(0.5, 0.8125, 0.5);
+    let core = Vec3::new(0.5, 0.6875, 0.5);
     assert_eq!(side_of(state, core + Vec3::Y, core), Some(Direction::Up));
     // From the north onto the core: its north face, not joined yet.
-    let core = Vec3::new(0.5, 0.5, 0.1875);
+    let core = Vec3::new(0.5, 0.5, 0.3125);
     assert_eq!(side_of(state, core - Vec3::Z, core), Some(Direction::North));
 }
 

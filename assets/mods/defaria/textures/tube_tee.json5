@@ -1,0 +1,4 @@
+// The face of a tube's middle cube where it meets three arms: the band top to bottom with a branch to the right.
+{
+  layers: [{ image: "tube_tee", material: "glass" }],
+}

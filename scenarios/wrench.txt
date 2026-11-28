@@ -40,7 +40,7 @@ camera 26.5 48 33 0 -35                                   # close up on the gaps
 wait 2
 screenshot target/scenarios/wrench/2-close.png
 wait 1
-camera 28.5 49.5 30.5 90 -60.64                           # west, at the east face of 26 46 30's core
+camera 28.5 49.5 30.5 90 -58.86                           # west, at the east face of 26 46 30's core
 wait 2
 hold MouseRight 1                                         # open it
 wait 1

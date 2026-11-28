@@ -7,7 +7,7 @@ same casing (a two-pixel riveted frame, lit from the top left, around a
 recessed flat panel) with its feature drawn into the panel, so the set reads
 as one family. Arms (wire, pipe_side, tube_side) run left to right in a band
 across the middle and tile horizontally; partial boxes sample the tile at
-their own position, so the band sits where an 8-pixel (pipe, tube) or
+their own position, so the band sits where a 6-pixel (pipe, tube) or
 4-pixel (wire) arm box samples it. Transparent around them.
 
 The wrench item is split from a Retro Diffusion sprite (WRENCH_RAW, in
@@ -419,7 +419,7 @@ def crate_side():
     return stamp(g, 6, 6, "5554\n5002\n5002\n4221")  # the port
 
 
-# --- wires, pipes, tubes ----------------------------------------------
+# --- wires, pipes, tubes ------------------------------------------------
 
 
 def wire():
@@ -450,85 +450,102 @@ def wire_core():
     return g
 
 
+# Pipes and tubes are 6 pixels across: the band is rows 5-10, and an end
+# fits in the middle 6x6. Their faces show the band turned different ways,
+# so it's shaded the same from either edge: lit along the middle, darker
+# toward both edges, as a round rod.
+
+
+# Across the band, edge to edge (rows 5-10 of a side tile).
+PIPE_ACROSS = [3, 4, 6, 6, 4, 3]
+# The tube's glass, (level, alpha): solid rims, a glint, a clear middle.
+TUBE_ACROSS = [(4, 255), (7, 150), (5, 40), (5, 40), (6, 110), (4, 255)]
+
+
 def pipe_side():
     g = blank()
-    rows = [3, 5, 6, 5, 4, 4, 3, 1]
-    for i, base in enumerate(rows):
+    for i, base in enumerate(PIPE_ACROSS):
         for x in range(N):
-            g[4 + i][x] = max(1, base - 1) if x in (0, N - 1) else base
+            g[5 + i][x] = max(1, base - 1) if x in (0, N - 1) else base
     return g
 
 
 def pipe_end():
+    """A pipe end-on, filling the middle 6x6 square: the wall, lit from
+    the top left, around a 2x2 hollow."""
     g = blank()
-    cx = cy = 7.5
-    for y in range(N):
-        for x in range(N):
-            dx, dy = x - cx, y - cy
-            d = math.hypot(dx, dy)
+    for y in range(5, 11):
+        for x in range(5, 11):
+            dx, dy = x - 7.5, y - 7.5
             side = dx + dy
-            if d > 4.3:
-                continue
-            if d > 2.3:  # the flange and wall, lit from the top left
-                level = 5 if side < -1 else 2 if side > 1.5 else 4
-                if d > 3.6 and level > 2:
-                    level -= 1
-                g[y][x] = level
-            else:  # the hollow; its far wall catches a little light
-                g[y][x] = 1 if side > 1 else 0
+            if max(abs(dx), abs(dy)) < 1:
+                g[y][x] = 0
+            else:
+                g[y][x] = 5 if side < -1 else 2 if side > 1 else 4
     return g
 
 
-def pipe_core():
+def joint(across, arms):
+    """The middle 6x6 of a face where the band turns: a bend (`arms` the
+    top and right edges), a tee (top, bottom and right) or a cross (all
+    four). Each pixel is in the triangle of the edge nearest it; an edge
+    with an arm shows that arm's band, running out to it, and an edge
+    without one the band running along it, so a bend is mitred on its
+    diagonal. `across` is the band's shading from edge to edge, the same
+    from either edge, so it doesn't matter which way it runs."""
     g = blank()
-    stamp(
-        g,
-        3,
-        3,
-        """
-        5555555554
-        5644444462
-        5444444442
-        5444554442
-        5445334442
-        5445314442
-        5443114442
-        5444444442
-        5644444462
-        4222222221
-        """,
-    )
+    for r in range(6):
+        for c in range(6):
+            # The nearest edge; ties go to the top or bottom.
+            dist = {"top": r, "bottom": 5 - r, "left": c, "right": 5 - c}
+            edge = min(dist, key=lambda e: (dist[e], e not in ("top", "bottom")))
+            if edge in arms:
+                vertical = edge in ("top", "bottom")
+            else:
+                vertical = edge in ("left", "right")
+            g[5 + r][5 + c] = across[c] if vertical else across[r]
     return g
+
+
+BEND = ("top", "right")
+TEE = ("top", "bottom", "right")
+CROSS = ("top", "bottom", "left", "right")
 
 
 def tube_side():
     g = blank()
-    # (level, alpha) per row: solid rims, a clear middle with a glint.
-    rows = [(5, 255), (7, 150), (6, 80), (5, 40), (5, 40), (5, 40), (4, 70), (3, 255)]
-    for i, (level, alpha) in enumerate(rows):
+    for i, (level, alpha) in enumerate(TUBE_ACROSS):
         for x in range(N):
-            if x in (0, N - 1):  # a collar where it meets the next tube
-                g[4 + i][x] = (4 if 0 < i < 7 else level, 255)
-            elif i == 1 and x % 8 in (5, 6):
-                g[4 + i][x] = (5, 60)  # breaks in the glint
+            if i == 1 and x % 8 in (5, 6):
+                g[5 + i][x] = (5, 60)  # breaks in the glint
             else:
-                g[4 + i][x] = (level, alpha)
+                g[5 + i][x] = (level, alpha)
+    return g
+
+
+def tube_collar():
+    """The frame's metal collar where a tube meets the next block: the
+    tile's left and right columns, over the glass."""
+    g = blank()
+    rows = [3, 4, 5, 5, 4, 3]
+    for i, level in enumerate(rows):
+        for x in (0, N - 1):
+            g[5 + i][x] = level
     return g
 
 
 def tube_end():
+    """A tube end-on, filling the middle 6x6 square: a solid glass rim,
+    lit from the top left, a glint inside it, a nearly clear middle."""
     g = blank()
-    cx = cy = 7.5
-    for y in range(N):
-        for x in range(N):
-            dx, dy = x - cx, y - cy
-            d = math.hypot(dx, dy)
+    for y in range(5, 11):
+        for x in range(5, 11):
+            dx, dy = x - 7.5, y - 7.5
             side = dx + dy
-            if d > 4.3:
-                continue
-            if d > 3.0:  # the glass rim
-                g[y][x] = (6 if side < -1 else 3 if side > 1.5 else 5, 255)
-            elif d > 2.2 and side < -1:
+            m = max(abs(dx), abs(dy))
+            if m > 2:  # the rim
+                g[y][x] = (6 if side < -1 else 3 if side > 1 else 5, 255)
+            elif m > 1 and side < -1:
                 g[y][x] = (7, 140)  # a glint inside the rim
             else:
                 g[y][x] = (5, 40)
@@ -568,9 +585,15 @@ def main():
         "wire_core": wire_core(),
         "pipe_side": pipe_side(),
         "pipe_end": pipe_end(),
-        "pipe_core": pipe_core(),
         "tube_side": tube_side(),
         "tube_end": tube_end(),
+        "tube_collar": tube_collar(),
+        "pipe_bend": joint(PIPE_ACROSS, BEND),
+        "pipe_tee": joint(PIPE_ACROSS, TEE),
+        "pipe_cross": joint(PIPE_ACROSS, CROSS),
+        "tube_bend": joint(TUBE_ACROSS, BEND),
+        "tube_tee": joint(TUBE_ACROSS, TEE),
+        "tube_cross": joint(TUBE_ACROSS, CROSS),
         "machine_side": machine_side(),
         "machine_top": machine_top(),
         "furnace_front": furnace_front(False),

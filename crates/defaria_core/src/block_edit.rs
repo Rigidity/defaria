@@ -292,8 +292,24 @@ pub fn placing_for(
     mut bodies: impl Iterator<Item = Aabb>,
 ) -> Option<Placing> {
     let hit = using.target?;
-    let block = hotbar.block(active, content)?;
-    let placing = placing(content, voxels, hit, block, &using.eyes)?;
+    let item_block = hotbar.block(active, content)?;
+    let mut placing = placing(content, voxels, hit, item_block, &using.eyes)?;
+    let rests = |pos: IVec3, block: BlockState| {
+        content.support_side(block).is_none_or(|side| {
+            voxels
+                .get(pos + side.normal())
+                .is_some_and(|on| content.supports(block, on))
+        })
+    };
+    // Into a plant, from its side: as though placed on what it stands on,
+    // if it can't rest on the side the plant's face gave it.
+    if placing.pos == hit.block && !rests(placing.pos, placing.block) {
+        let on_top = content.placed(item_block, Direction::Up, *using.eyes.forward());
+        if rests(placing.pos, on_top) {
+            placing.block = on_top;
+            placing.added = on_top;
+        }
+    }
     let Placing {
         pos, block, added, ..
     } = placing;
@@ -304,10 +320,7 @@ pub fn placing_for(
         .map(|b| Aabb::of_block(pos, b))
         .collect();
     let overlaps = bodies.any(|body| boxes.iter().any(|b| body.intersects(b)));
-    let supported = !content.needs_support(block)
-        || voxels
-            .get(pos - IVec3::Y)
-            .is_some_and(|below| content.supports(block, below));
+    let supported = rests(pos, block);
     let fluid_in_survival = !mode.is_creative() && content.state(block).is_fluid();
     let into_eyes = pos == using.eyes.translation.floor().as_ivec3();
     (!into_eyes && !overlaps && supported && !fluid_in_survival).then_some(placing)

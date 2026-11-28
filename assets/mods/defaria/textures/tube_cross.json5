@@ -1,0 +1,4 @@
+// The face of a tube's middle cube where it meets four arms: the band out to every edge.
+{
+  layers: [{ image: "tube_cross", material: "glass" }],
+}

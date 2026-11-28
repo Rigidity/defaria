@@ -1,66 +1,10 @@
-// The middle of a pipe: a 10-pixel box in the centre of the block, from
-// 3/16 to 13/16 on every axis, with the `all` texture on every face, each
-// face showing the part of its texture at its own position. It's inside
-// the block, so nothing hides it, and it covers no side. Arms
-// (`pipe_arm`) run from its faces to the block's.
+// The middle of a pipe or tube: nothing drawn, the box of the 6-pixel
+// cube in the middle of the block, to bump into and aim at. Its faces
+// are `pipe_cap`'s, on the sides it isn't joined on.
+// Written by scripts/pipe-models.py; change it there.
 {
-  slots: { all: null },
+  slots: {},
   occludes: [],
-  collision: [{ from: [0.1875, 0.1875, 0.1875], to: [0.8125, 0.8125, 0.8125] }],
-  faces: [
-    {
-      texture: "all",
-      vertices: [
-        { pos: [0.8125, 0.1875, 0.8125], uv: [0.1875, 0.8125] },
-        { pos: [0.8125, 0.1875, 0.1875], uv: [0.8125, 0.8125] },
-        { pos: [0.8125, 0.8125, 0.1875], uv: [0.8125, 0.1875] },
-        { pos: [0.8125, 0.8125, 0.8125], uv: [0.1875, 0.1875] },
-      ],
-    },
-    {
-      texture: "all",
-      vertices: [
-        { pos: [0.1875, 0.1875, 0.1875], uv: [0.1875, 0.8125] },
-        { pos: [0.1875, 0.1875, 0.8125], uv: [0.8125, 0.8125] },
-        { pos: [0.1875, 0.8125, 0.8125], uv: [0.8125, 0.1875] },
-        { pos: [0.1875, 0.8125, 0.1875], uv: [0.1875, 0.1875] },
-      ],
-    },
-    {
-      texture: "all",
-      vertices: [
-        { pos: [0.1875, 0.8125, 0.8125], uv: [0.1875, 0.8125] },
-        { pos: [0.8125, 0.8125, 0.8125], uv: [0.8125, 0.8125] },
-        { pos: [0.8125, 0.8125, 0.1875], uv: [0.8125, 0.1875] },
-        { pos: [0.1875, 0.8125, 0.1875], uv: [0.1875, 0.1875] },
-      ],
-    },
-    {
-      texture: "all",
-      vertices: [
-        { pos: [0.1875, 0.1875, 0.1875], uv: [0.1875, 0.8125] },
-        { pos: [0.8125, 0.1875, 0.1875], uv: [0.8125, 0.8125] },
-        { pos: [0.8125, 0.1875, 0.8125], uv: [0.8125, 0.1875] },
-        { pos: [0.1875, 0.1875, 0.8125], uv: [0.1875, 0.1875] },
-      ],
-    },
-    {
-      texture: "all",
-      vertices: [
-        { pos: [0.1875, 0.1875, 0.8125], uv: [0.1875, 0.8125] },
-        { pos: [0.8125, 0.1875, 0.8125], uv: [0.8125, 0.8125] },
-        { pos: [0.8125, 0.8125, 0.8125], uv: [0.8125, 0.1875] },
-        { pos: [0.1875, 0.8125, 0.8125], uv: [0.1875, 0.1875] },
-      ],
-    },
-    {
-      texture: "all",
-      vertices: [
-        { pos: [0.8125, 0.1875, 0.1875], uv: [0.1875, 0.8125] },
-        { pos: [0.1875, 0.1875, 0.1875], uv: [0.8125, 0.8125] },
-        { pos: [0.1875, 0.8125, 0.1875], uv: [0.8125, 0.1875] },
-        { pos: [0.8125, 0.8125, 0.1875], uv: [0.1875, 0.1875] },
-      ],
-    },
-  ],
+  collision: [{ from: [0.3125, 0.3125, 0.3125], to: [0.6875, 0.6875, 0.6875] }],
+  faces: [],
 }

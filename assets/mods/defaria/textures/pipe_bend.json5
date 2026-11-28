@@ -1,0 +1,6 @@
+// The face of a pipe's middle cube where it bends: the band turning from the top edge to the right.
+{
+  layers: [
+    { image: "pipe_bend", material: "$metal" },
+  ],
+}

@@ -82,15 +82,26 @@ samples it.
   strand twist every 4 pixels. The wire's arm ends show its middle too.
 - `wire_core.png`: the knot where wire arms meet, face-on: a small shaded
   ball (6 pixels across, 5–10) with a dark wrap across it.
-- `pipe_side.png`: an 8-pixel pipe (rows 4–11), shaded round, one level
-  darker in the first and last column so joints show between blocks.
-- `pipe_end.png`: a pipe end-on, 8 pixels across: a lit flange ring around
-  a dark hollow.
-- `pipe_core.png`: the junction box face, 10 pixels (3–12): a bevelled
-  plate with four bolts and a round cap; transparent around it.
+- `pipe_side.png`: a 6-pixel pipe (rows 5–10), shaded round and the same
+  from either edge (the pipe's faces show it turned different ways), one
+  level darker in the first and last column so joints show between
+  blocks (redrawn 2026-11-28; it was 8 pixels).
+- `pipe_end.png`: a pipe end-on, filling the middle 6×6 square (the pipe
+  is square): the wall, lit from the top left, around a 2×2 hollow.
+- `pipe_bend.png`, `pipe_tee.png`, `pipe_cross.png` (and the glass
+  `tube_bend.png`, `tube_tee.png`, `tube_cross.png`): the face of the
+  pipe's middle cube where it bends, tees or crosses, in the middle 6×6:
+  the band turning to its top and right edges, running top to bottom
+  with a branch to the right, or out to every edge. Each pixel takes the
+  band of its nearest edge, so a bend is mitred on its diagonal
+  (2026-11-28).
 - `tube_side.png`, `tube_end.png`: the glass item tube, the same layout as
-  the pipe: solid rims and collars, a nearly clear middle (alpha 40) and a
-  broken highlight streak. Partly transparent, for a translucent block.
+  the pipe (its end square, too): solid rims, a nearly clear middle
+  (alpha 40) and a broken highlight streak. Partly transparent, for a translucent block.
+- `tube_collar.png`: the tube's collar where it meets the next block, the
+  first and last column of the band, drawn over `tube_side.png` in the
+  tube's frame metal (2026-11-28; the frame metal used to show on a
+  junction box, `pipe_core.png`, which is gone).
 
 Every machine face is the same casing, a two-pixel frame lit from the top
 left with a rivet in each corner around a recessed flat panel, with its

@@ -1,20 +1,21 @@
 //! Blocks that need support: plants stand on what their block's `support`
-//! lists (see `docs/modding.md`), and break when it goes.
+//! lists, and blocks hung on a side rest on what's there (see
+//! `docs/modding.md`); they break when it goes.
 //!
-//! - Placing one is refused where the block under it doesn't support it
-//!   (in `block_edit`), so nothing is used up.
+//! - Placing one is refused where the block on the side it rests on
+//!   doesn't support it (in `block_edit`), so nothing is used up.
 //! - After every edit ([`VoxelChanged`], from the player, scripts, fluids,
-//!   a scenario's `fill`), the edited voxel and the one above it are
-//!   checked, and above every block whose state was updated in place
-//!   ([`PropertiesUpdated`]: a script's `set_state`, a machine turning
-//!   on): a block there that needs support and doesn't have it is
-//!   broken, and so is anything resting on it in turn. That's the same
+//!   a scenario's `fill`), the edited voxel and the six around it are
+//!   checked, and every block whose state was updated in place and the
+//!   six around it ([`PropertiesUpdated`]: a script's `set_state`, a machine
+//!   turning on): a block there that needs support and doesn't have it
+//!   is broken, and so is anything resting on it in turn. That's the same
 //!   frame for edits made in `Update`, and across chunk borders, as long
 //!   as both chunks are loaded. A block whose support is in a chunk that
 //!   isn't loaded is left alone.
 //! - Broken this way, it gives nothing, except that a player mining the
-//!   block under it in survival gets its item too (in `mining`, through
-//!   [`unsupported`]).
+//!   block it rests on in survival gets its item too (in `mining`,
+//!   through [`unsupported`]).
 //!
 //! The terrain only grows plants where they're supported, so loading
 //! chunks checks nothing.
@@ -23,7 +24,7 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 use crate::{block_edit::BlockEditSystems, connections::ConnectionSystems};
 use defaria_core::{
-    content::{BlockState, Content},
+    content::{BlockState, Content, Direction},
     mining::MiningSystems,
     world::{PropertiesUpdated, RemeshChunks, VoxelChanged, Voxels},
 };
@@ -55,9 +56,17 @@ pub struct SupportSystems;
 #[derive(Resource, Debug, Default)]
 struct Unchecked(HashSet<IVec3>);
 
-/// Each edited voxel (a plant placed where it can't stand) and the one
-/// above it (standing on what changed), and the one above each voxel whose
-/// state changed in place (grass turned to sand by a script's `set`).
+/// The six voxels around `pos`.
+pub fn around(pos: IVec3) -> impl Iterator<Item = IVec3> {
+    Direction::ALL
+        .into_iter()
+        .map(move |side| pos + side.normal())
+}
+
+/// Each edited voxel (a plant placed where it can't stand) and the six
+/// around it (resting on what changed), and each voxel whose state changed
+/// in place (grass turned to sand by a script's `set`, or a block turned
+/// to rest on another side) and the six around it.
 fn note_edits(
     mut changes: MessageReader<VoxelChanged>,
     mut updates: MessageReader<PropertiesUpdated>,
@@ -65,22 +74,22 @@ fn note_edits(
 ) {
     for change in changes.read() {
         unchecked.0.insert(change.pos);
-        unchecked.0.insert(change.pos + IVec3::Y);
+        unchecked.0.extend(around(change.pos));
     }
     for update in updates.read() {
-        unchecked.0.insert(update.pos + IVec3::Y);
+        // Itself too: the side it rests on can come from its own state.
+        unchecked.0.insert(update.pos);
+        unchecked.0.extend(around(update.pos));
     }
 }
 
-/// The block at `pos`, if it needs support and the block under it doesn't
-/// give it. `None` while either isn't loaded.
+/// The block at `pos`, if it needs support and the block on the side it
+/// rests on doesn't give it. `None` while either isn't loaded.
 pub fn unsupported(content: &Content, voxels: &Voxels, pos: IVec3) -> Option<BlockState> {
     let block = voxels.get(pos)?;
-    if !content.needs_support(block) {
-        return None;
-    }
-    let below = voxels.get(pos - IVec3::Y)?;
-    (!content.supports(block, below)).then_some(block)
+    let side = content.support_side(block)?;
+    let on = voxels.get(pos + side.normal())?;
+    (!content.supports(block, on)).then_some(block)
 }
 
 /// Breaks every noted block that lost its support, and what stood on it.
@@ -94,7 +103,7 @@ fn break_unsupported(mut unchecked: ResMut<Unchecked>, content: Res<Content>, mu
     while let Some(pos) = queue.pop() {
         if unsupported(&content, &voxels, pos).is_some() {
             voxels.set(pos, BlockState::AIR);
-            queue.push(pos + IVec3::Y);
+            queue.extend(around(pos));
         }
     }
 }
@@ -167,6 +176,102 @@ mod tests {
         // Sand doesn't.
         edit(&mut app, &[(ground, sand())]);
         assert_eq!(at(&mut app, tuft), BlockState::AIR);
+    }
+
+    /// A block resting on a side breaks when what holds it there goes,
+    /// whatever goes on its other sides.
+    #[test]
+    fn blocks_rest_on_their_side() {
+        let content = test_mod(&[
+            (
+                "blocks/wall.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/sign.json5",
+                r#"{ model: "quad", textures: { all: "a" },
+                     support: { side: "north", blocks: [{ block: "wall" }] } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let wall = content.default_state("test:wall").unwrap();
+        let sign = content.default_state("test:sign").unwrap();
+        let mut app = app();
+        app.insert_resource(content);
+        let pos = IVec3::new(3, 4, 3);
+        let north = pos - IVec3::Z;
+        edit(&mut app, &[(north, wall), (pos, sign)]);
+        edit(&mut app, &[(pos - IVec3::Y, wall)]);
+        edit(&mut app, &[(pos - IVec3::Y, BlockState::AIR)]);
+        assert_eq!(at(&mut app, pos), sign);
+        edit(&mut app, &[(north, BlockState::AIR)]);
+        assert_eq!(at(&mut app, pos), BlockState::AIR);
+        // Put where nothing holds it: it breaks at once.
+        edit(&mut app, &[(pos, sign)]);
+        assert_eq!(at(&mut app, pos), BlockState::AIR);
+    }
+
+    /// What rests sideways on a block that breaks breaks with it, on the
+    /// same frame: a row of signs, each on the one north of it.
+    #[test]
+    fn blocks_resting_sideways_break_together() {
+        let content = test_mod(&[
+            (
+                "blocks/wall.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/sign.json5",
+                r#"{ model: "quad", textures: { all: "a" },
+                     support: { side: "north", blocks: [{ block: "wall" }, { block: "sign" }] } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let wall = content.default_state("test:wall").unwrap();
+        let sign = content.default_state("test:sign").unwrap();
+        let mut app = app();
+        app.insert_resource(content);
+        let pos = IVec3::new(3, 4, 3);
+        let row: Vec<_> = (1..4).map(|z| (pos + IVec3::Z * z, sign)).collect();
+        edit(&mut app, &[&[(pos, wall)][..], &row[..]].concat());
+        assert_eq!(at(&mut app, pos + IVec3::Z * 3), sign);
+        edit(&mut app, &[(pos, BlockState::AIR)]);
+        for (at_pos, _) in row {
+            assert_eq!(at(&mut app, at_pos), BlockState::AIR, "{at_pos}");
+        }
+    }
+
+    /// A block turned in place to rest on another side is checked there:
+    /// turned to hang from nothing, it breaks.
+    #[test]
+    fn a_block_turned_in_place_is_checked() {
+        let content = test_mod(&[
+            (
+                "models/solid.json5",
+                r#"{ faces: [], occludes: ["up", "down", "north", "south", "east", "west"] }"#,
+            ),
+            ("blocks/wall.json5", r#"{ model: "solid" }"#),
+            (
+                "blocks/lamp.json5",
+                r#"{ model: "quad", textures: { all: "a" },
+                     properties: { on: ["down", "up"] },
+                     support: { side: "{on}", solid: true } }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let wall = content.default_state("test:wall").unwrap();
+        let lamp = |on: &str| content.block_state("test:lamp", &[("on", on)]).unwrap();
+        let (down, up) = (lamp("down"), lamp("up"));
+        let mut app = app();
+        app.insert_resource(content);
+        let pos = IVec3::new(3, 4, 3);
+        edit(&mut app, &[(pos - IVec3::Y, wall), (pos, down)]);
+        assert_eq!(at(&mut app, pos), down);
+        app.world_mut()
+            .run_system_once(move |mut voxels: Voxels| voxels.update(pos, up))
+            .unwrap();
+        app.update();
+        assert_eq!(at(&mut app, pos), BlockState::AIR);
     }
 
     /// A support changed in place (a script's `set_state`, or `set` to

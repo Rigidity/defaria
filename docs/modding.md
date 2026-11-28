@@ -679,7 +679,7 @@ a model for each of the 64 ways its arms can go:
 {
   properties: { connect: { connections: true } },
   conduit: { network: "fluid", capacity: 0.5, throughput: 1 },
-  textures: { all: "pipe_core", side: "pipe_side", end: "pipe_end" },
+  textures: { side: "pipe_side", end: "pipe_end" },
   parts: [
     { model: "pipe_core" },                          // no `when`: always
     { when: { north: "true" }, model: "pipe_arm" },
@@ -688,6 +688,9 @@ a model for each of the 64 ways its arms can go:
     { when: { east: "true" }, model: "pipe_arm", rotate: [0, 270, 0] },
     { when: { up: "true" }, model: "pipe_arm", rotate: [90, 0, 0] },
     { when: { down: "true" }, model: "pipe_arm", rotate: [270, 0, 0] },
+    // ...and the middle cube's faces on the sides it isn't joined on,
+    // `pipe_cap`, each part's `when` naming several properties; the
+    // base game's blocks/pipe.json5 has them all.
   ],
 }
 ```
@@ -708,7 +711,7 @@ a model for each of the 64 ways its arms can go:
   Each part's faces cull against the neighbours as they would on their
   own; parts in the same block don't hide each other's faces, so leave
   out faces one part covers inside another (the pipe's arm has no face
-  against the core). The crosshair outlines the union of the
+  against the middle cube). The crosshair outlines the union of the
   target boxes as one shape, so a shape built of several boxes shows no
   seams between them.
 - A part whose `when` needs exactly one of the block's
@@ -1073,15 +1076,35 @@ support: [
 ],
 ```
 
-- A player can place it only on top of one of these; anywhere else the
-  click does nothing, and uses nothing up.
-- When the block under it stops being one (it's broken, or replaced, by
-  anyone: a player, a script, flowing fluid), it breaks, on the same
-  frame, and so does anything standing on it in turn. A player who mines
-  the block under it in survival gets its item too, if it fits; broken
-  any other way, it gives nothing. A block a script or a scenario's
-  `fill` puts where it can't stand breaks the same way.
-- It isn't checked while the block under it is in a chunk that isn't
+A rule rests a block on another side, or on anything solid there:
+
+```json5
+// A block hung on the face it was placed against (its `on`, set from
+// the face clicked), on any block whose face toward it is solid.
+support: { side: "{on}", solid: true },
+```
+
+- **`side`**: the side it rests on: `"down"` (the default, and what a
+  list means), another direction, or `"{property}"` for a property
+  whose values are all directions.
+- **`blocks`**: the blocks that hold it there, as in a list, or
+  **`solid: true`** for any block that covers its face toward it
+  (stone, planks, a slab's full side; not air, a plant, a wire or a
+  pipe). Give one or the other.
+
+For a list or a rule:
+
+- A player can place it only against what holds it; anywhere else the
+  click does nothing, and uses nothing up. Placed into a plant from the
+  plant's side, where the side that face gives it holds nothing, it's
+  placed as though on top of what the plant stands on.
+- When the block on the side it rests on stops holding it (it's broken,
+  or replaced, by anyone: a player, a script, flowing fluid), it breaks,
+  on the same frame, and so does anything resting on it in turn. A
+  player who mines that block in survival gets its item too, if it
+  fits; broken any other way, it gives nothing. A block a script or a
+  scenario's `fill` puts where it can't rest breaks the same way.
+- It isn't checked while the block it rests on is in a chunk that isn't
   loaded, nor when chunks load: terrain only grows plants where they
   stand.
 

@@ -35,9 +35,7 @@ pub fn front(content: &Content, state: BlockState) -> Option<Direction> {
         .values
         .iter()
         .find(|(name, _)| name == "facing")?;
-    Direction::ALL
-        .into_iter()
-        .find(|side| side.name() == value.as_str())
+    Direction::from_name(value)
 }
 
 /// Draws up to `want` of fluid from the world into `tank`: from the voxel

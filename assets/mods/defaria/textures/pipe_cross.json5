@@ -1,0 +1,6 @@
+// The face of a pipe's middle cube where it meets four arms: the band out to every edge.
+{
+  layers: [
+    { image: "pipe_cross", material: "$metal" },
+  ],
+}

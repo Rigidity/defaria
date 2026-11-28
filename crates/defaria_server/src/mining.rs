@@ -8,7 +8,10 @@ use bevy::prelude::*;
 
 use defaria_core::mining::{BREAK_DELAY, Mining, MiningSystems, break_time};
 
-use crate::{block_edit::BlockEditSystems, support::unsupported};
+use crate::{
+    block_edit::BlockEditSystems,
+    support::{around, unsupported},
+};
 use defaria_core::{
     block_edit::crosshair_target,
     content::{BlockState, Content},
@@ -123,15 +126,16 @@ fn mine_one(
         }
         // The other half stays.
         voxels.set(hit.block, content.without(whole, target.1));
-        // What stood on it and needed it (a flower on grass) breaks with
-        // it, into the same inventory if it fits. (Otherwise `support`
-        // breaks it, giving nothing.)
-        let above = hit.block + IVec3::Y;
-        if let Some(plant) = unsupported(content, voxels, above) {
-            if let Some((inventory, mode)) = &mut carrier {
-                harvest(**mode, inventory, content, plant);
+        // What rested on it and needed it (a flower on grass, a wire on
+        // a wall) breaks with it, into the same inventory if it fits.
+        // (Otherwise `support` breaks it, giving nothing.)
+        for pos in around(hit.block) {
+            if let Some(resting) = unsupported(content, voxels, pos) {
+                if let Some((inventory, mode)) = &mut carrier {
+                    harvest(**mode, inventory, content, resting);
+                }
+                voxels.set(pos, BlockState::AIR);
             }
-            voxels.set(above, BlockState::AIR);
         }
         **mining = Mining {
             holding: true,

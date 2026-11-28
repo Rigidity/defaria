@@ -64,6 +64,7 @@ pub use reaction::Reaction;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};
 pub use schema::{Direction, ItemAction, ModSide, PlaceFrom, PortRole, Render, Solver};
 pub use state_name::StateName;
+pub use support::{Support, SupportBy, SupportSide};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -180,6 +181,11 @@ impl Direction {
             Direction::East | Direction::West => "x",
             Direction::North | Direction::South => "z",
         }
+    }
+
+    /// The side named `name` (as [`Direction::name`] writes it), if any.
+    pub fn from_name(name: &str) -> Option<Direction> {
+        Direction::ALL.into_iter().find(|side| side.name() == name)
     }
 
     /// The name it's written with in mod files.
@@ -418,9 +424,9 @@ pub struct Block {
     pub block_entity: Option<schema::BlockEntityDef>,
     /// The id of the script whose hooks run for it.
     pub script: Option<String>,
-    /// The states it can stand on, sorted, if it needs support (see
+    /// What it must rest on, and on which side, if it needs support (see
     /// [`Content::supports`]).
-    pub support: Option<Vec<BlockState>>,
+    pub support: Option<Support>,
     /// The rules of its parts drawn by their neighbours (those with a
     /// `next`), in part order (see [`NextPart::rule`]).
     pub next: Vec<NextRule>,
@@ -529,6 +535,9 @@ pub struct State {
     /// Whether placing a block replaces it: air's (which may hold
     /// fluid) and a plant's, from its `replaceable`.
     pub replaceable: bool,
+    /// The side it rests on, if its block has a `support` (see
+    /// [`Content::support_side`]).
+    pub rests_on: Option<Direction>,
     /// Whether its faces show from behind too: from inside a glass block
     /// or under water.
     pub double_sided: bool,

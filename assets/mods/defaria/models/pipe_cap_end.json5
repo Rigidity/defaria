@@ -1,0 +1,20 @@
+// The north face of a pipe's middle cube, where no arm passes it:
+// the pipe's end (`end`), at its own position.
+// Its box is `pipe_core`'s.
+// Written by scripts/pipe-models.py; change it there.
+{
+  slots: { end: null },
+  occludes: [],
+  collision: [],
+  faces: [
+    {
+      texture: "end",
+      vertices: [
+        { pos: [0.3125, 0.6875, 0.3125], uv: [0.6875, 0.3125] },
+        { pos: [0.6875, 0.6875, 0.3125], uv: [0.3125, 0.3125] },
+        { pos: [0.6875, 0.3125, 0.3125], uv: [0.3125, 0.6875] },
+        { pos: [0.3125, 0.3125, 0.3125], uv: [0.6875, 0.6875] },
+      ],
+    },
+  ],
+}
