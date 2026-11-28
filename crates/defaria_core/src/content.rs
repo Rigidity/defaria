@@ -64,6 +64,7 @@ pub use reaction::Reaction;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};
 pub use schema::{Direction, ItemAction, ModSide, PlaceFrom, PortRole, Render, Solver};
 pub use state_name::StateName;
+pub use support::{Support, SupportBy, SupportSide};
 
 /// The mods folder, relative to `assets/`.
 pub const MODS_DIR: &str = "mods";
@@ -418,9 +419,9 @@ pub struct Block {
     pub block_entity: Option<schema::BlockEntityDef>,
     /// The id of the script whose hooks run for it.
     pub script: Option<String>,
-    /// The states it can stand on, sorted, if it needs support (see
+    /// What it must rest on, and on which side, if it needs support (see
     /// [`Content::supports`]).
-    pub support: Option<Vec<BlockState>>,
+    pub support: Option<Support>,
     /// The rules of its parts drawn by their neighbours (those with a
     /// `next`), in part order (see [`NextPart::rule`]).
     pub next: Vec<NextRule>,

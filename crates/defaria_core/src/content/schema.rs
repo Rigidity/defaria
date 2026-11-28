@@ -429,10 +429,36 @@ pub struct BlockDef {
     /// `"name"` for this mod's `scripts/name.luau`. See `docs/scripting.md`.
     #[serde(default)]
     pub script: Option<String>,
-    /// What it must stand on, for a plant: it can only be placed on one of
-    /// these, and it breaks when the block under it stops being one.
+    /// What it must rest on: a plant on the blocks listed, under it, or a
+    /// block hung on a wall on any solid face on the side it's hung on. It
+    /// can only be placed where that holds, and it breaks when it stops
+    /// holding.
     #[serde(default)]
-    pub support: Option<Vec<SupportDef>>,
+    pub support: Option<SupportsDef>,
+}
+
+/// A block's `support`: the blocks it can stand on (under it), or a rule
+/// with a side and what holds it there.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum SupportsDef {
+    Blocks(Vec<SupportDef>),
+    Rule(SupportRuleDef),
+}
+
+/// A `support` rule: the side the block rests on (`"down"` if left out,
+/// a direction, or `"{property}"` for a property whose values are
+/// directions), and what holds it there: the `blocks` listed, or, with
+/// `solid`, any block whose face toward it is solid (covers that side).
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SupportRuleDef {
+    #[serde(default)]
+    pub side: Option<String>,
+    #[serde(default)]
+    pub blocks: Vec<SupportDef>,
+    #[serde(default)]
+    pub solid: bool,
 }
 
 /// One kind of block a block can stand on (see [`BlockDef::support`]), or

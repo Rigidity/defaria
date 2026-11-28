@@ -304,10 +304,11 @@ pub fn placing_for(
         .map(|b| Aabb::of_block(pos, b))
         .collect();
     let overlaps = bodies.any(|body| boxes.iter().any(|b| body.intersects(b)));
-    let supported = !content.needs_support(block)
-        || voxels
-            .get(pos - IVec3::Y)
-            .is_some_and(|below| content.supports(block, below));
+    let supported = content.support_side(block).is_none_or(|side| {
+        voxels
+            .get(pos + side.normal())
+            .is_some_and(|on| content.supports(block, on))
+    });
     let fluid_in_survival = !mode.is_creative() && content.state(block).is_fluid();
     let into_eyes = pos == using.eyes.translation.floor().as_ivec3();
     (!into_eyes && !overlaps && supported && !fluid_in_survival).then_some(placing)
