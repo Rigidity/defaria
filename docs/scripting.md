@@ -53,10 +53,12 @@ The hooks themselves and what they're passed are below, for
 The game always runs as a server and a client, even in single player
 (see "Multiplayer" in `docs/decisions.md`): the server decides the
 world, and a client draws its copy of it and sends what its player
-does. Every mod's scripts load on both, the same way, with the same
-sandbox and limits, so a module one side uses the other can too. The
-`side` global says which a script is running on: `"server"` or
-`"client"`.
+does. A `both` mod's scripts (the default) load on both, the same way,
+with the same sandbox and limits, so a module one side uses the other
+can too; a `server` mod's load only on the server, and a `client` mod's
+only on the client (see `side` in `docs/modding.md`). A server sends its
+`both` mods, scripts included, to the clients that join it. The `side`
+global says which a script is running on: `"server"` or `"client"`.
 
 Each hook belongs to a side. The gameplay hooks, the
 [block, item](#block-and-item-hooks) and [machine](#machines) hooks,
@@ -458,8 +460,10 @@ rendering or the UI.
   a pool of their own; those that don't fit wait for the next network
   tick, oldest first (and past 65,536 waiting, new ones are dropped).
 - **Memory.** Each mod's scripts may use 32 MiB between them by default
-  (`ScriptSettings::memory_limit`). An allocation past that fails with an
-  error.
+  (`ScriptSettings::memory_limit`), on the server and on each client
+  alike, so a mod a server sent can't take a client's memory either. An
+  allocation past that (`string.rep("x", 2^30)`) fails with an error,
+  and the call that made it is a script error.
 - **Time.** Steps don't measure the time library functions take inside
   one step: a `table.sort` of a big table, or `string.rep` with a huge
   count, is one step. So each call may also run for only 20 ms of wall

@@ -73,6 +73,7 @@ pub(super) fn parse_file(
         file: String,
         text: &str,
     ) -> Result<Def<T>, String> {
+        crate::content::load::check_nesting(text)?;
         let def = json5::from_str(text).map_err(|error| error.to_string())?;
         Ok(Def {
             id,

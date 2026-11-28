@@ -15,6 +15,7 @@ mod devtools;
 pub mod headless;
 pub mod identity;
 pub mod integrated;
+pub mod mod_transfer;
 pub mod quic;
 pub mod server;
 

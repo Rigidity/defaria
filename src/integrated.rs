@@ -13,7 +13,11 @@
 //! play ends (back to the main menu), the server saves the world and goes.
 //!
 //! With a [`RemoteServer`] (`--connect`), play is on that server instead,
-//! over the network (`quic`), and no server starts here.
+//! over the network (`quic`), and no server starts here. The client plays
+//! there with the content built from that server's mods
+//! (`mod_transfer`), fetched into the data folder's cache as needed, and
+//! its own again (single player's, [`SinglePlayerContent`]) once it
+//! leaves.
 //!
 //! Either way the player is this install's ([`local_identity`]): the
 //! server in the game's own process takes its id as it is (there's no
@@ -27,7 +31,9 @@ use std::time::Duration;
 use bevy::{
     app::MainScheduleOrder, ecs::schedule::ScheduleLabel, prelude::*, time::TimeUpdateStrategy,
 };
-use defaria_client::{net::ServerConnection, pause::Paused, session::GameState};
+use defaria_client::{
+    content_swap::swap_content, net::ServerConnection, pause::Paused, session::GameState,
+};
 use defaria_core::{
     content::Content, net::link, save::WorldFolder, script::ScriptSettings,
     streaming::StreamingSettings,
@@ -41,7 +47,8 @@ use defaria_server::{
 
 use crate::{
     identity::{DataFolder, KnownServers, LocalIdentity, local_identity},
-    quic::ConnectError,
+    mod_transfer::Library,
+    quic::{ConnectError, Connected},
 };
 
 pub struct IntegratedServerPlugin;
@@ -75,17 +82,35 @@ pub struct IntegratedServer {
 #[derive(Resource, Debug, Clone, PartialEq, Eq)]
 pub struct RemoteServer(pub String);
 
+/// The client's own content, while it plays with a server's: put back
+/// when it leaves.
+#[derive(Resource)]
+pub struct SinglePlayerContent(pub Content);
+
 /// Builds the server, connects to it, and lets its first frame run; or,
-/// with a [`RemoteServer`], connects to that.
+/// with a [`RemoteServer`], connects to that, and plays with its mods.
 fn start_server(world: &mut World) {
     let local = local_identity(world);
     if let Some(RemoteServer(address)) = world.get_resource::<RemoteServer>().cloned() {
-        let content = world.resource::<Content>().fingerprint();
         let folder = world.get_resource::<DataFolder>().map(|f| f.0.clone());
-        match connect_remembering(&address, content, &local, folder.as_deref()) {
-            Ok(link) => {
-                info!("playing on {address}");
-                world.insert_resource(ServerConnection(link));
+        let own = world
+            .get_resource::<SinglePlayerContent>()
+            .map(|own| &own.0)
+            .unwrap_or_else(|| world.resource::<Content>());
+        let library = Library::new(own, folder.as_deref());
+        match connect_remembering(&address, library, &local, folder.as_deref()) {
+            Ok(connected) => {
+                info!(
+                    "playing on {address}, with its {} mods ({} fetched)",
+                    connected.content.mods.len(),
+                    connected.fetched.len()
+                );
+                if let Some(own) = swap_content(world, connected.content)
+                    && !world.contains_resource::<SinglePlayerContent>()
+                {
+                    world.insert_resource(SinglePlayerContent(own));
+                }
+                world.insert_resource(ServerConnection(connected.link));
             }
             Err(error) => {
                 error!("{error}");
@@ -119,18 +144,19 @@ fn start_server(world: &mut World) {
     world.insert_non_send(IntegratedServer { app });
 }
 
-/// Connects to the server at `address` as `local`, checking its key
-/// against the one the known servers in `folder` remember for it, and
-/// remembering it if there's none yet (the file read again just before
-/// it's written, so what another copy of the game added meanwhile is
-/// kept). An install whose key couldn't be read doesn't connect: on a
-/// server its stand-in would be a stray player, not them.
+/// Connects to the server at `address` as `local`, taking its mods from
+/// `library` where it has them, checking the server's key against the
+/// one the known servers in `folder` remember for it, and remembering it
+/// if there's none yet (the file read again just before it's written, so
+/// what another copy of the game added meanwhile is kept). An install
+/// whose key couldn't be read doesn't connect: on a server its stand-in
+/// would be a stray player, not them.
 pub fn connect_remembering(
     address: &str,
-    content: u64,
+    library: Library,
     local: &LocalIdentity,
     folder: Option<&std::path::Path>,
-) -> Result<defaria_core::net::ClientLink, ConnectError> {
+) -> Result<Connected, ConnectError> {
     if let Some(error) = &local.damaged {
         return Err(ConnectError::Failed(format!(
             "not joining {address}: this game's key couldn't be read ({error}), so the \
@@ -139,7 +165,7 @@ pub fn connect_remembering(
     }
     let mut known = KnownServers::load(folder)?;
     let expected = known.fingerprint(address);
-    let connected = crate::quic::connect(address, content, &local.identity, &local.name, expected)?;
+    let connected = crate::quic::connect(address, library, &local.identity, &local.name, expected)?;
     if expected.is_none() {
         info!(
             "trusting {address}, the first time, as the server with fingerprint {}",
@@ -149,7 +175,7 @@ pub fn connect_remembering(
             error!("{error}; it won't be remembered");
         }
     }
-    Ok(connected.link)
+    Ok(connected)
 }
 
 /// Copies the client's `R`, if it has one, to the server app.
@@ -202,6 +228,10 @@ fn stop_server(world: &mut World) {
     }
     world.remove_resource::<ServerConnection>();
     world.remove_resource::<WorldFolder>();
+    // Off a server: single player's content again.
+    if let Some(SinglePlayerContent(own)) = world.remove_resource::<SinglePlayerContent>() {
+        swap_content(world, own);
+    }
     if let Some(mut time) = world.get_resource_mut::<Time<Virtual>>() {
         time.unpause();
     }

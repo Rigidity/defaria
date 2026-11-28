@@ -30,7 +30,7 @@ world/
 The code is in `crates/defaria_core/src/save.rs` (folders and `world.json5`),
 `crates/defaria_server/src/save.rs` (the store), `crates/defaria_server/src/save/region.rs`,
 `crates/defaria_server/src/save/chunk.rs` and `crates/defaria_server/src/save/player.rs`; the
-data folder's files in `src/identity.rs`. Every format here has a version
+data folder's files in `src/identity.rs` and `src/mod_transfer.rs`. Every format here has a version
 number. When a format changes, bump its version and keep reading the old one. A build that finds a
 version newer than it knows leaves the file alone: a newer `world.json5` means
 the world is played without saving; a newer region file or chunk means that
@@ -124,6 +124,7 @@ Format 3 moved the file from the world's `player.json5` to
   identity.pem         this install's key pair
   profile.json5        the player's name
   servers.json5        the servers it has played on, and their keys
+  mod-cache/           mods fetched from servers, by hash (see below)
   worlds/              the saved worlds
   server-world/        a dedicated server's world, unless given --world
 ```
@@ -179,6 +180,28 @@ A dedicated server's key is `server.pem` in the world's folder, the same
 kind of file as `identity.pem`, made the first time, so the server keeps
 its fingerprint across restarts (and when its world is moved). A server
 with its world in memory makes a new key each start.
+
+`mod-cache/` holds the mods servers sent (`src/mod_transfer.rs`; see
+"Multiplayer" in `docs/modding.md`), so they aren't fetched again:
+
+```text
+mod-cache/
+  5b0e…7d/             a mod, named by the SHA-256 hash of its files
+    mod.json5
+    blocks/…           its definitions, images and scripts, as sent
+```
+
+The hash covers every file's path and bytes (each with its length first,
+in path order). A mod is written into a hidden folder beside its own and
+renamed into place once it's whole, and checked against its name each
+time it's used: one whose files no longer hash to it, or that holds
+anything a mod doesn't send, is removed and fetched again. Each use
+sets the folder's modified time; once the cache holds more than 256 MiB
+(after a mod is added), the folders used longest ago are removed until
+it doesn't, never the ones being played with. Half-written folders
+(`.<hash>.<process>.<n>.partial`) more than a day old go too. Deleting
+the folder is safe. The cache has no format version: a folder's name is
+all there is to it.
 
 ## Chunks and regions
 

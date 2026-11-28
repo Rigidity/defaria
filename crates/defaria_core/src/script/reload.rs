@@ -2,8 +2,9 @@
 //! through the asset server, which watches it, and when one changes the
 //! scripts reload with its new text, as images do.
 //!
-//! Only files that existed at startup are watched; a new script needs a
-//! restart.
+//! Only files that existed at startup, in mod folders on disk, are
+//! watched; a new script needs a restart, and a mod a server sent never
+//! changes.
 
 use bevy::{
     asset::{AssetLoader, LoadContext, io::Reader},
@@ -70,7 +71,7 @@ fn watch_scripts(
     runtime: Res<ScriptRuntime>,
     mut watched: ResMut<WatchedScripts>,
 ) {
-    for source in runtime.sources().sources.values() {
+    for source in runtime.sources().sources.values().filter(|s| s.on_disk) {
         watched.watch(server.load(source.file.clone()), source.file.clone());
     }
 }

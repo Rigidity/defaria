@@ -16,7 +16,7 @@
 
 use bevy::{
     asset::{AssetLoadFailedEvent, RenderAssetUsages},
-    image::ImageLoaderSettings,
+    image::{CompressedImageFormats, ImageLoaderSettings, ImageSampler, ImageType},
     mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef},
     pbr::{MaterialPipeline, MaterialPipelineKey},
     platform::collections::{HashMap, HashSet},
@@ -180,24 +180,78 @@ pub struct BlockMaterial {
     pub layers: HashMap<String, Handle<Image>>,
 }
 
+/// Loads every layer image the content's textures use: through the asset
+/// server (so they hot reload), or, for a mod a server sent, from the
+/// bytes in memory, once their header says they're no bigger than a
+/// layer may be (`check_png`). One whose bytes aren't such an image is
+/// left out, so its textures show the placeholder.
+fn load_layers(world: &mut World) -> HashMap<String, Handle<Image>> {
+    let content = world.resource::<Content>();
+    let mut on_disk = Vec::new();
+    let mut in_memory = Vec::new();
+    for path in content.image_paths() {
+        match content.image_bytes(&path) {
+            Some(bytes) => in_memory.push((path, bytes.clone())),
+            None => on_disk.push(path),
+        }
+    }
+    let server = world.resource::<AssetServer>();
+    let mut layers: HashMap<String, Handle<Image>> = on_disk
+        .into_iter()
+        .map(|path| {
+            // The GPU only needs the built texture, so keep the layers
+            // on the CPU. Hot reloads reapply these settings.
+            let handle = server
+                .load_builder()
+                .with_settings(|settings: &mut ImageLoaderSettings| {
+                    settings.asset_usage = RenderAssetUsages::MAIN_WORLD;
+                })
+                .load(path.clone());
+            (path, handle)
+        })
+        .collect();
+    let mut images = world.resource_mut::<Assets<Image>>();
+    for (path, bytes) in in_memory {
+        // The header first: a mod a server sent is untrusted, and a small
+        // file can claim a huge image, which decoding would allocate.
+        if let Err(error) = defaria_core::content::load::check_png(&bytes) {
+            error!("{path}: {error}; showing a placeholder");
+            continue;
+        }
+        // As the asset server's loader would (its default settings).
+        let image = Image::from_buffer(
+            &bytes,
+            ImageType::Extension("png"),
+            CompressedImageFormats::NONE,
+            true,
+            ImageSampler::Default,
+            RenderAssetUsages::MAIN_WORLD,
+        );
+        match image {
+            Ok(image) => {
+                layers.insert(path, images.add(image));
+            }
+            Err(error) => error!("{path} isn't an image ({error}); showing a placeholder"),
+        }
+    }
+    layers
+}
+
+/// Loads the layer images of the [`Content`] now in `world` (which
+/// replaced the one before: a server's mods, or single player's again),
+/// so the block texture is built again from them. The materials stay the
+/// same.
+pub fn reload_layers(world: &mut World) {
+    if !world.contains_resource::<BlockMaterial>() {
+        return;
+    }
+    let layers = load_layers(world);
+    world.resource_mut::<BlockMaterial>().layers = layers;
+}
+
 impl FromWorld for BlockMaterial {
     fn from_world(world: &mut World) -> Self {
-        let paths = world.resource::<Content>().image_paths();
-        let server = world.resource::<AssetServer>();
-        let layers = paths
-            .into_iter()
-            .map(|path| {
-                // The GPU only needs the built texture, so keep the layers
-                // on the CPU. Hot reloads reapply these settings.
-                let handle = server
-                    .load_builder()
-                    .with_settings(|settings: &mut ImageLoaderSettings| {
-                        settings.asset_usage = RenderAssetUsages::MAIN_WORLD;
-                    })
-                    .load(path.clone());
-                (path, handle)
-            })
-            .collect();
+        let layers = load_layers(world);
         // A handle with no image behind it yet: chunks don't draw until the
         // layers have loaded and the real texture replaces it.
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
@@ -239,7 +293,8 @@ impl BlockMaterial {
 }
 
 /// Rebuilds the block texture once every layer image has loaded, and again
-/// whenever one changes.
+/// whenever one changes, or the layers do (other content: see
+/// [`reload_layers`]).
 ///
 /// Reacts to `Added` (first load) and `Modified` (hot reload, or a change
 /// through `get_mut`). Not `LoadedWithDependencies`: a hot reload sends it
@@ -277,7 +332,9 @@ fn build_block_texture(
     mut materials: ResMut<Assets<VoxelMaterial>>,
     mut tiles: ResMut<BlockTiles>,
 ) {
-    let mut changed = false;
+    // New layers: those already loaded have been seen, and the rest will
+    // be.
+    let mut changed = block.is_changed();
     // Read every event, not just up to the first match: unread events stay
     // queued and would trigger another build next frame.
     for event in events.read() {
@@ -509,6 +566,84 @@ mod tests {
                 .filter(|event| event.is_modified(material))
                 .count()
         }
+    }
+
+    /// Other content in place (a server's mods, whose images are in
+    /// memory rather than on disk): the texture is built again from its
+    /// images, with the materials it had, and comes out the same as from
+    /// the files.
+    #[test]
+    fn other_content_builds_from_images_in_memory() {
+        use defaria_core::content::load::read_mods;
+        let mut app = app();
+        let old = built_texture(&mut app);
+        let from_disk = app.world().resource::<BlockTiles>().0.clone();
+        let material = app.world().resource::<BlockMaterial>().material.clone();
+
+        let (mut mods, errors) = read_mods(&defaria_core::content::mods_dir(), "mods");
+        assert!(errors.is_empty(), "{errors:?}");
+        for files in &mut mods {
+            let folder = files.folder.take().unwrap();
+            for path in &files.images {
+                let bytes = std::fs::read(folder.join(path)).unwrap();
+                files.image_bytes.insert(path.clone(), bytes.into());
+            }
+            files.dir = files.dir.replace("mods/", "received/");
+        }
+        let received = Content::from_mods(mods);
+        assert!(received.errors.is_empty(), "{:#?}", received.errors);
+        app.world_mut().insert_resource(received);
+        reload_layers(app.world_mut());
+
+        let block = app.world().resource::<BlockMaterial>();
+        assert_eq!(block.material, material, "the materials stay");
+        let stone = &block.layers["received/defaria/images/stone.png"];
+        assert!(stone.path().is_none(), "not loaded from a file");
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_ne!(material_texture(&app), old, "built again");
+        assert_eq!(app.world().resource::<BlockTiles>().0, from_disk);
+    }
+
+    /// An image in memory whose header claims more than a layer may be
+    /// (16 wide, at most 64 frames tall) is never decoded: its textures
+    /// show the placeholder, and the rest build.
+    #[test]
+    fn an_oversized_image_in_memory_is_not_decoded() {
+        use defaria_core::content::load::read_mods;
+        let mut app = app();
+        let old = built_texture(&mut app);
+        let (mut mods, _) = read_mods(&defaria_core::content::mods_dir(), "mods");
+        for files in &mut mods {
+            let folder = files.folder.take().unwrap();
+            for path in &files.images {
+                let mut bytes = std::fs::read(folder.join(path)).unwrap();
+                if path == "images/stone.png" {
+                    // The header's height: 16 × 2^20, a gigabyte decoded.
+                    bytes[20..24].copy_from_slice(&(16u32 << 20).to_be_bytes());
+                }
+                files.image_bytes.insert(path.clone(), bytes.into());
+            }
+            files.dir = files.dir.replace("mods/", "received/");
+        }
+        app.world_mut().insert_resource(Content::from_mods(mods));
+        reload_layers(app.world_mut());
+        let block = app.world().resource::<BlockMaterial>();
+        assert!(
+            !block
+                .layers
+                .contains_key("received/defaria/images/stone.png")
+        );
+        assert!(
+            block
+                .layers
+                .contains_key("received/defaria/images/dirt.png")
+        );
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_ne!(material_texture(&app), old, "the rest built");
     }
 
     #[test]

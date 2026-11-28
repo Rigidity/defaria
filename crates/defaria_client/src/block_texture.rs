@@ -35,7 +35,7 @@ pub const TILE_SIZE: u32 = 16;
 const MAX_ANISOTROPY: u16 = 16;
 
 /// The most frames one texture can step through.
-pub const MAX_FRAMES: usize = 64;
+pub const MAX_FRAMES: usize = defaria_core::content::load::MAX_IMAGE_FRAMES as usize;
 
 /// The block texture as [`build`] makes it.
 pub struct Built {

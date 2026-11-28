@@ -7,10 +7,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use super::schema::Manifest;
+use super::schema::{Manifest, ModSide};
 
 /// The manifest's file name, at the root of every mod folder.
 pub const MANIFEST: &str = "mod.json5";
@@ -29,9 +30,15 @@ pub struct ModFiles {
     pub files: BTreeMap<String, String>,
     /// Every `.png` file's path in the folder.
     pub images: BTreeSet<String>,
+    /// The bytes of the images that are in memory rather than on disk (a
+    /// mod a server sent, or one made in memory), by path in the folder.
+    /// The others load from [`ModFiles::folder`] through the asset server.
+    pub image_bytes: BTreeMap<String, Arc<[u8]>>,
     /// Every `.luau` file, by its path in the folder, with its text. They're
     /// mod scripts (`src/script.rs`, `docs/scripting.md`).
     pub scripts: BTreeMap<String, String>,
+    /// The folder on disk it was read from, if it was.
+    pub folder: Option<PathBuf>,
 }
 
 impl ModFiles {
@@ -47,6 +54,9 @@ impl ModFiles {
         for &(path, text) in files {
             if path.ends_with(".png") {
                 mod_files.images.insert(path.into());
+                mod_files
+                    .image_bytes
+                    .insert(path.into(), Arc::from(text.as_bytes()));
             } else if path.ends_with(".luau") {
                 mod_files.scripts.insert(path.into(), text.into());
             } else {
@@ -93,6 +103,7 @@ fn read_mod(folder: &Path, dir: String) -> Result<ModFiles, String> {
     let mut mod_files = ModFiles {
         dir,
         manifest,
+        folder: Some(folder.to_path_buf()),
         ..Default::default()
     };
     walk(folder, "", &mut mod_files)?;
@@ -133,12 +144,15 @@ pub struct LoadedMod {
 
 /// Parses the manifests and puts the mods in load order: each after its
 /// dependencies, otherwise by id. Mods with a bad manifest, a clashing id,
-/// or a dependency that's missing, skipped or circular are reported and
-/// left out.
+/// a dependency that's missing, skipped, circular or for another side, or
+/// that break their side's rules ([`check_side`]), are reported and left
+/// out.
 pub fn order(mods: Vec<ModFiles>, errors: &mut Vec<String>) -> Vec<LoadedMod> {
     let mut by_id: BTreeMap<String, LoadedMod> = BTreeMap::new();
     for files in mods {
-        let manifest: Manifest = match json5::from_str(&files.manifest) {
+        let parsed = check_nesting(&files.manifest)
+            .and_then(|()| json5::from_str(&files.manifest).map_err(|e| e.to_string()));
+        let manifest: Manifest = match parsed {
             Ok(manifest) => manifest,
             Err(error) => {
                 errors.push(format!("{}/{MANIFEST}: {error}", files.dir));
@@ -149,6 +163,10 @@ pub fn order(mods: Vec<ModFiles>, errors: &mut Vec<String>) -> Vec<LoadedMod> {
             errors.push(format!("{}/{MANIFEST}: id {error}", files.dir));
             continue;
         }
+        if let Err(error) = check_side(&manifest, &files) {
+            errors.push(format!("{}: not loaded: {error}", files.dir));
+            continue;
+        }
         if let Some(other) = by_id.get(&manifest.id) {
             errors.push(format!(
                 "{}: the id `{}` is already taken by {}",
@@ -157,6 +175,31 @@ pub fn order(mods: Vec<ModFiles>, errors: &mut Vec<String>) -> Vec<LoadedMod> {
             continue;
         }
         by_id.insert(manifest.id.clone(), LoadedMod { manifest, files });
+    }
+
+    // A mod that depends on one for another side would load where its
+    // dependency doesn't: a `both` mod on a client without the server's
+    // `server` mods, say.
+    let crossed: Vec<(String, String)> = by_id
+        .values()
+        .filter_map(|m| {
+            let side = m.manifest.side;
+            let dep = m.manifest.dependencies.iter().find(|dep| {
+                by_id
+                    .get(*dep)
+                    .is_some_and(|d| !side.may_depend_on(d.manifest.side))
+            })?;
+            Some((m.manifest.id.clone(), dep.clone()))
+        })
+        .collect();
+    for (id, dep) in crossed {
+        let Some(m) = by_id.remove(&id) else { continue };
+        let theirs = by_id.get(&dep).map_or("other", |d| d.manifest.side.name());
+        errors.push(format!(
+            "{}: not loaded: a `{}` mod can't depend on `{dep}`, a `{theirs}` mod",
+            m.files.dir,
+            m.manifest.side.name(),
+        ));
     }
 
     // Repeatedly take, in id order, the mods whose dependencies have all
@@ -195,6 +238,111 @@ pub fn order(mods: Vec<ModFiles>, errors: &mut Vec<String>) -> Vec<LoadedMod> {
         ));
     }
     ordered
+}
+
+/// The deepest a JSON5 file's arrays and objects may nest. Parsing
+/// recurses once a level, so a file nested far deeper (from a server, say)
+/// would overflow the stack; nothing a mod defines needs more than a few.
+pub const MAX_NESTING: usize = 64;
+
+/// Checks `text` (JSON5) nests its arrays and objects at most
+/// [`MAX_NESTING`] deep, before it's parsed. Brackets in strings and
+/// comments don't count; anything it can't make sense of is left to the
+/// parser, which then never nests deeper than this either.
+pub fn check_nesting(text: &str) -> Result<(), String> {
+    let mut depth = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                // To the closing quote, skipping what's escaped.
+                while let Some(next) = chars.next() {
+                    match next {
+                        '\\' => {
+                            chars.next();
+                        }
+                        _ if next == c => break,
+                        _ => {}
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut star = false;
+                for next in chars.by_ref() {
+                    if star && next == '/' {
+                        break;
+                    }
+                    star = next == '*';
+                }
+            }
+            '[' | '{' => {
+                depth += 1;
+                if depth > MAX_NESTING {
+                    return Err(format!(
+                        "it nests arrays and objects more than {MAX_NESTING} deep"
+                    ));
+                }
+            }
+            ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The most frames an image may hold: a strip of 16×16 frames at most
+/// this long (`block_texture::MAX_FRAMES` on the client is the same).
+pub const MAX_IMAGE_FRAMES: u32 = 64;
+/// An image's width, and its frames' height.
+pub const IMAGE_SIZE: u32 = 16;
+
+/// Checks a PNG's header says it's an image a mod may have: 16 pixels
+/// wide, and 16 to 16 × [`MAX_IMAGE_FRAMES`] tall. Done before it's
+/// decoded, so a small file claiming a huge image is never decoded.
+/// Returns its width and height.
+pub fn check_png(bytes: &[u8]) -> Result<(u32, u32), String> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return Err("it isn't a PNG".into());
+    }
+    let read = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    let (width, height) = (read(16), read(20));
+    if width != IMAGE_SIZE || !(IMAGE_SIZE..=IMAGE_SIZE * MAX_IMAGE_FRAMES).contains(&height) {
+        return Err(format!(
+            "it's {width}×{height}: images are {IMAGE_SIZE} wide and {IMAGE_SIZE} to {} tall",
+            IMAGE_SIZE * MAX_IMAGE_FRAMES
+        ));
+    }
+    Ok((width, height))
+}
+
+/// Checks a mod keeps to its side's rules. A `server` or `client` mod
+/// holds only scripts: a definition (or an image, which only definitions
+/// use) would change what the two sides know, and a client never has a
+/// server's `server` mods, nor a server its clients' `client` ones. What
+/// the mods define is the `both` mods' alone, so both sides number every
+/// block and item state the same.
+pub fn check_side(manifest: &Manifest, files: &ModFiles) -> Result<(), String> {
+    if manifest.side == ModSide::Both {
+        return Ok(());
+    }
+    let defined = files.files.keys().chain(&files.images).next();
+    match defined {
+        Some(path) => Err(format!(
+            "a `{}` mod holds only scripts, but it has {path}: what a mod defines must \
+             be the same on the server and its clients, so it belongs in a `both` mod",
+            manifest.side.name()
+        )),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +419,126 @@ mod tests {
             all.contains("mods/five/mod.json5") && all.contains("nmae"),
             "{all}"
         );
+    }
+
+    /// A `server` or `client` mod with a definition or an image isn't
+    /// loaded; one with only scripts is.
+    #[test]
+    fn server_and_client_mods_hold_only_scripts() {
+        let mods = vec![
+            ModFiles::new(
+                "mods/admin",
+                r#"{ id: "admin", name: "x", side: "server" }"#,
+                &[("scripts/kick.luau", "")],
+            ),
+            ModFiles::new(
+                "mods/ore",
+                r#"{ id: "ore", name: "x", side: "server" }"#,
+                &[("blocks/ore.json5", "{}")],
+            ),
+            ModFiles::new(
+                "mods/look",
+                r#"{ id: "look", name: "x", side: "client" }"#,
+                &[("images/a.png", "")],
+            ),
+            ModFiles::new(
+                "mods/hud",
+                r#"{ id: "hud", name: "x", side: "client" }"#,
+                &[("scripts/hud.luau", "")],
+            ),
+            ModFiles::new("mods/odd", r#"{ id: "odd", name: "x", side: "left" }"#, &[]),
+        ];
+        let mut errors = Vec::new();
+        let ordered = order(mods, &mut errors);
+        assert_eq!(ids(&ordered), ["admin", "hud"]);
+        assert_eq!(ordered[0].manifest.side, ModSide::Server);
+        let all = errors.join("\n");
+        assert!(
+            all.contains("mods/ore") && all.contains("blocks/ore.json5"),
+            "{all}"
+        );
+        assert!(
+            all.contains("mods/look") && all.contains("images/a.png"),
+            "{all}"
+        );
+        assert!(all.contains("mods/odd/mod.json5"), "{all}");
+    }
+
+    /// A `both` mod can't depend on a `server` or `client` mod (it would
+    /// load where they don't), nor a `client` mod on a `server` one; any
+    /// may depend on a `both` mod, and a side's mods on each other.
+    #[test]
+    fn mods_depend_only_on_mods_loaded_where_they_are() {
+        let mod_on = |id: &str, side: &str, deps: &str| {
+            ModFiles::new(
+                &format!("mods/{id}"),
+                &format!(r#"{{ id: "{id}", name: "x", side: "{side}", dependencies: [{deps}] }}"#),
+                &[],
+            )
+        };
+        let mods = vec![
+            mod_on("base", "both", ""),
+            mod_on("admin", "server", r#""base""#),
+            mod_on("more_admin", "server", r#""admin""#),
+            mod_on("hud", "client", r#""base""#),
+            mod_on("needs_admin", "both", r#""admin""#),
+            mod_on("needs_hud", "both", r#""hud""#),
+            mod_on("crossed", "client", r#""admin""#),
+        ];
+        let mut errors = Vec::new();
+        let ordered = order(mods, &mut errors);
+        assert_eq!(ids(&ordered), ["base", "admin", "hud", "more_admin"]);
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        let all = errors.join("\n");
+        assert!(
+            all.contains("mods/needs_admin") && all.contains("`admin`, a `server` mod"),
+            "{all}"
+        );
+        assert!(all.contains("mods/needs_hud"), "{all}");
+        assert!(all.contains("mods/crossed"), "{all}");
+    }
+
+    /// Nesting past the limit is refused before parsing; brackets in
+    /// strings and comments don't count.
+    #[test]
+    fn deep_nesting_is_refused() {
+        let deep = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert_eq!(check_nesting(&deep(MAX_NESTING)), Ok(()));
+        assert!(check_nesting(&deep(MAX_NESTING + 1)).is_err());
+        assert!(check_nesting(&"[".repeat(100_000)).is_err());
+        let quoted = format!(
+            "{{ a: \"{0}\", b: '{0}\\'{0}', // {0}\n /* {0} */ c: [1] }}",
+            "[".repeat(200)
+        );
+        assert_eq!(check_nesting(&quoted), Ok(()));
+        // A manifest nested that deep is reported, not parsed.
+        let mut errors = Vec::new();
+        let manifest = format!("{{ id: \"x\", name: \"x\", d: {} }}", deep(100_000));
+        let ordered = order(vec![ModFiles::new("mods/x", &manifest, &[])], &mut errors);
+        assert!(ordered.is_empty());
+        assert!(errors[0].contains("deep"), "{errors:?}");
+    }
+
+    /// Only a PNG 16 wide and at most 64 frames tall passes, by its
+    /// header alone.
+    #[test]
+    fn png_headers_are_checked() {
+        let png = |width: u32, height: u32| {
+            let mut bytes = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+            bytes.extend_from_slice(&13u32.to_be_bytes());
+            bytes.extend_from_slice(b"IHDR");
+            bytes.extend_from_slice(&width.to_be_bytes());
+            bytes.extend_from_slice(&height.to_be_bytes());
+            bytes
+        };
+        assert_eq!(check_png(&png(16, 16)), Ok((16, 16)));
+        assert_eq!(check_png(&png(16, 1024)), Ok((16, 1024)));
+        assert!(check_png(&png(16, 1040)).is_err());
+        assert!(check_png(&png(16, 1 << 30)).is_err());
+        assert!(check_png(&png(32, 16)).is_err());
+        assert!(check_png(b"not a png at all, nope").is_err());
+        let stone = std::fs::read(crate::content::mods_dir().join("defaria/images/stone.png"));
+        assert_eq!(check_png(&stone.unwrap()), Ok((16, 16)));
     }
 
     /// The disk reader finds the base game's manifest, definition files

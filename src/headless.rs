@@ -129,7 +129,7 @@ pub use script::Script;
 #[cfg(test)]
 pub use test_app::{
     Conditions, Multiplayer, run_more, server, server_world, settle, test_client, test_game,
-    test_multiplayer, test_multiplayer_over, test_player_id, test_server,
+    test_multiplayer, test_multiplayer_over, test_player_id, test_server, test_server_with,
 };
 
 /// Fixed time step for every headless frame.

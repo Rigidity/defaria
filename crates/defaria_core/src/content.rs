@@ -42,6 +42,7 @@ use std::{
     collections::BTreeMap,
     ops::Range,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use bevy::{asset::io::file::FileAssetReader, platform::collections::HashMap, prelude::*};
@@ -57,7 +58,7 @@ use palette::Palette;
 pub use place::Placement;
 pub use reaction::Reaction;
 pub use recipe::{Recipe, RecipeInput, RecipeOutput, share};
-pub use schema::{Direction, ItemAction, PlaceFrom, PortRole, Render, Solver};
+pub use schema::{Direction, ItemAction, ModSide, PlaceFrom, PortRole, Render, Solver};
 pub use state_name::StateName;
 
 /// The mods folder, relative to `assets/`.
@@ -198,8 +199,10 @@ pub struct ModInfo {
     pub version: Option<String>,
     pub description: Option<String>,
     pub authors: Vec<String>,
-    /// The mod folder's asset path, such as `mods/defaria`.
+    /// The mod folder's asset path, such as `mods/defaria`, or where a
+    /// mod a server sent says it's from (`received/<id>`).
     pub dir: String,
+    pub side: ModSide,
 }
 
 /// A tile: grayscale images colored by palettes and stacked, bottom first.
@@ -790,6 +793,13 @@ pub struct Category {
 pub struct Content {
     /// In load order.
     pub mods: Vec<ModInfo>,
+    /// The mods' files it was baked from, in load order: what a server
+    /// sends its clients, and where each side's scripts come from.
+    pub sources: Arc<[load::LoadedMod]>,
+    /// The images whose bytes are in memory rather than on disk (a mod a
+    /// server sent), by asset path; the others load through the asset
+    /// server.
+    image_bytes: HashMap<String, Arc<[u8]>>,
     pub materials: BTreeMap<String, Material>,
     /// In block texture array order: texture `i` is layer `i`.
     pub textures: Vec<Texture>,
@@ -1047,6 +1057,20 @@ impl Content {
             item.state(&parsed.pairs())
                 .unwrap_or_else(|| item.default_state()),
         )
+    }
+
+    /// The bytes of the image at asset path `path`, if they're in memory
+    /// (a mod a server sent) rather than on disk.
+    pub fn image_bytes(&self, path: &str) -> Option<&Arc<[u8]>> {
+        self.image_bytes.get(path)
+    }
+
+    /// The mods' files whose scripts load on `side`, in load order.
+    pub fn sources_on(&self, side: crate::script::Side) -> Vec<load::LoadedMod> {
+        (self.sources.iter())
+            .filter(|m| m.manifest.side.runs_on(side))
+            .cloned()
+            .collect()
     }
 
     /// Every image some texture uses, as asset paths, each once.

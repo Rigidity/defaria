@@ -121,6 +121,10 @@ pub fn remesh_changed_chunks(
     content: Res<Content>,
     mut shared: Local<Option<Arc<Content>>>,
 ) {
+    // Other content (a server's mods): background meshing takes it anew.
+    if content.is_changed() {
+        *shared = None;
+    }
     let mut dirty = HashSet::new();
     // Chunks to mesh in the background even though they've been meshed.
     let mut background = HashSet::new();

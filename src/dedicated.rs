@@ -9,6 +9,10 @@
 //! Its key is the world's `server.pem`, made the first time, so clients
 //! that remember it know it's the same server after a restart.
 //!
+//! It sends its `both` mods to the clients that join (`mod_transfer`); a
+//! mod that can't be sent (a file too big, or named oddly) stops it from
+//! starting.
+//!
 //! It never pauses: unlike the server in the game's own process, it
 //! doesn't pause with its players (`server::PauseWithPlayers`).
 
@@ -25,6 +29,7 @@ use defaria_server::server::{Incoming, ReceiveSystems};
 
 use crate::{
     identity::{Identity, SERVER_KEY_FILE},
+    mod_transfer::Offer,
     quic::{self, DEFAULT_PORT, Listener},
 };
 
@@ -71,9 +76,18 @@ pub fn run(settings: DedicatedSettings) -> AppExit {
         });
     }
     crate::server::build_server(&mut app);
-    let content = app.world().resource::<Content>().fingerprint();
+    // What clients are sent: every `both` mod. One that can't be sent
+    // (too big, a file with an odd name) stops the server, rather than
+    // turn every client away.
+    let offer = match Offer::new(app.world().resource::<Content>()) {
+        Ok(offer) => offer,
+        Err(error) => {
+            error!("{error}");
+            return AppExit::error();
+        }
+    };
     let address = SocketAddr::from(([0, 0, 0, 0], settings.port.unwrap_or(DEFAULT_PORT)));
-    let listener = match quic::listen(address, content, &identity) {
+    let listener = match quic::listen(address, offer, &identity) {
         Ok(listener) => listener,
         Err(error) => {
             error!("can't listen on {address}: {error}");
