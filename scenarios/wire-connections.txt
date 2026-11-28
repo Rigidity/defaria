@@ -1,0 +1,45 @@
+# Every way two wires meet, on a stone platform built in the air, with a
+# wall along the back. Front row, on the floor, west to east: a lone
+# wire, a straight run, a corner, a tee and a cross. Back row, against
+# the wall: a floor run that climbs the wall into a tee on it; a wall
+# wire beside a floor wire (the wall wire comes down the wall and along
+# the floor to it); a wall wire with a floor wire in front of it (it
+# comes down to the floor at its foot); a floor wire beside wires under
+# a ledge (they drop through the middle of their voxels to the floor);
+# and a run under a roof dropping to a floor wire.
+# Run: cargo headless scenarios/wire-connections.txt
+wait 5
+fill 18 45 18 42 45 34 stone                              # the platform
+fill 18 46 23 42 49 23 stone                              # the back wall, facing south
+fill 21 46 30 21 46 30 wire                               # lone
+fill 23 46 30 25 46 30 wire                               # straight
+fill 27 46 30 28 46 30 wire                               # corner
+fill 27 46 29 27 46 29 wire
+fill 30 46 30 32 46 30 wire                               # tee
+fill 31 46 31 31 46 31 wire
+fill 34 46 30 36 46 30 wire                               # cross
+fill 35 46 29 35 46 31 wire
+fill 21 46 26 21 46 24 wire                               # a floor run climbing the wall
+fill 21 47 24 21 48 24 wire[on=north]
+fill 20 48 24 22 48 24 wire[on=north]                     # a tee on the wall
+fill 25 46 24 25 47 24 wire[on=north]                     # a wall wire
+fill 26 46 24 27 46 24 wire                               #   with a floor wire beside it
+fill 30 46 24 30 47 24 wire[on=north]                     # a wall wire
+fill 30 46 25 30 46 26 wire                               #   with a floor wire in front
+fill 33 46 25 33 46 25 wire                               # a floor wire
+fill 34 47 25 35 47 25 stone                              #   beside a ledge
+fill 34 46 25 35 46 25 wire[on=up]                        #   with wires under it
+fill 38 48 24 39 48 26 stone                              # a roof
+fill 38 47 25 39 47 25 wire[on=up]                        # a run under it
+fill 38 46 25 38 46 26 wire                               #   dropping to the floor
+camera 30 51 37 0 -32                                     # south of it all, looking down
+wait 2
+screenshot target/scenarios/wire-connections/0-all.png
+wait 1
+camera 36 46.9 29 0 -3                                    # low, at the ledge and roof
+wait 2
+screenshot target/scenarios/wire-connections/1-low.png
+wait 1
+camera 27.5 47.6 26.5 30 -35                              # the wall wire beside a floor wire
+wait 2
+screenshot target/scenarios/wire-connections/2-corner.png

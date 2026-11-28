@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Draw the network and machine layer images: wires, pipes, tubes, casings.
+"""Draw the network and machine layer images: pipes, tubes, casings.
 
 Writes 16x16 layer images (8-level grayscale with alpha, as
 crates/defaria_client/src/block_texture/layer.rs checks) into OUT_DIR. Every machine face is the
 same casing (a two-pixel riveted frame, lit from the top left, around a
 recessed flat panel) with its feature drawn into the panel, so the set reads
-as one family. Arms (wire, pipe_side, tube_side) run left to right in a band
+as one family. Arms (pipe_side, tube_side) run left to right in a band
 across the middle and tile horizontally; partial boxes sample the tile at
-their own position, so the band sits where a 6-pixel (pipe, tube) or
-4-pixel (wire) arm box samples it. Transparent around them.
+their own position, so the band sits where a 6-pixel (pipe, tube) arm
+box samples it. Transparent around them.
 
 The wrench item is split from a Retro Diffusion sprite (WRENCH_RAW, in
 color) by hue: the red grip becomes wrench_handle, the gray metal
@@ -419,35 +419,7 @@ def crate_side():
     return stamp(g, 6, 6, "5554\n5002\n5002\n4221")  # the port
 
 
-# --- wires, pipes, tubes ------------------------------------------------
-
-
-def wire():
-    g = blank()
-    rows = {6: 4, 7: 6, 8: 4, 9: 2}
-    for y, base in rows.items():
-        for x in range(N):
-            level = base
-            if (x - y) % 4 == 0:  # the strands' twist
-                level = max(1, base - (2 if y == 7 else 1))
-            g[y][x] = level
-    return g
-
-
-def wire_core():
-    g = blank()
-    cx = cy = 7.5
-    for y in range(N):
-        for x in range(N):
-            dx, dy = x - cx, y - cy
-            if math.hypot(dx, dy) > 3.3:
-                continue
-            light = -(dx + dy) / 2  # higher toward the top left
-            level = 4 + round(light / 1.5)
-            if abs(dx - dy) < 1:  # a wrap of the cable across the knot
-                level -= 2
-            g[y][x] = max(1, min(6, level))
-    return g
+# --- pipes, tubes ------------------------------------------------------
 
 
 # Pipes and tubes are 6 pixels across: the band is rows 5-10, and an end
@@ -581,8 +553,6 @@ def main():
     out, raw = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
     layers = {
-        "wire": wire(),
-        "wire_core": wire_core(),
         "pipe_side": pipe_side(),
         "pipe_end": pipe_end(),
         "tube_side": tube_side(),

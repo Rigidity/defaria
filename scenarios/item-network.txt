@@ -33,7 +33,7 @@ fill 24 46 36 36 52 44 air
 fill 30 50 40 30 50 40 crate                              # the ore, giving out of its bottom
 fill 30 49 40 30 49 40 tube                               # into the furnace's top
 fill 30 48 40 30 48 40 electric_furnace[facing=south]
-fill 30 48 39 30 48 39 wire                               # its back, to the generator's side
+fill 30 48 39 30 48 39 wire[on=south]                     # on its back, to the generator's side
 fill 31 48 39 31 48 39 creative_generator[facing=south]
 fill 30 47 40 32 47 40 tube                               # from its bottom over to the crate's top
 fill 32 46 40 32 46 40 crate

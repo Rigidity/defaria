@@ -104,6 +104,42 @@ fn a_box_works_on_the_side_its_part_reaches() {
     assert_eq!(wrench_side(&arm, from_above, hit(&arm)), Some(E));
 }
 
+/// A wire lying on the floor: its arms are the sides they reach along the
+/// floor, its riser the top, its core the face aimed at.
+#[test]
+fn a_wire_on_the_floor_is_aimed_at_by_its_arms() {
+    let values = [("on", "down"), ("east", "true"), ("up", "true")];
+    let state = base().block_state("defaria:wire", &values).unwrap();
+    // Down onto the east arm.
+    let arm = Vec3::new(0.85, 0.0625, 0.5);
+    assert_eq!(side_of(state, arm + Vec3::Y, arm), Some(E));
+    // From the south onto the riser.
+    let riser = Vec3::new(0.5, 0.6, 0.5);
+    assert_eq!(side_of(state, riser + Vec3::Z, riser), Some(Direction::Up));
+    // From the north onto the core: its north face, not joined.
+    let core = Vec3::new(0.5, 0.0625, 0.4);
+    assert_eq!(side_of(state, core - Vec3::Z, core), Some(Direction::North));
+}
+
+/// A wire on a wall beside a floor wire comes down the wall and along the
+/// floor to it: aimed at any of that bend, the wrench works on the side
+/// toward the floor wire.
+#[test]
+fn a_wire_is_aimed_at_by_its_bends() {
+    let values = [("on", "north"), ("east", "true")];
+    let state = base().block_state("defaria:wire", &values).unwrap();
+    let floor = base()
+        .block_state("defaria:wire", &[("on", "down"), ("west", "true")])
+        .unwrap();
+    let beside = |side| if side == E { floor } else { BlockState::AIR };
+    // Down onto the bend's run along the floor, in the middle.
+    let run = Vec3::new(0.5, 0.0625, 0.3);
+    assert_eq!(side_beside(state, beside, run + Vec3::Y, run), Some(E));
+    // From the south onto where it comes down the wall.
+    let down = Vec3::new(0.5, 0.25, 0.0625);
+    assert_eq!(side_beside(state, beside, down + Vec3::Z, down), Some(E));
+}
+
 /// The blocked faces round trip through their saved form, and a mask
 /// with bits past the six faces isn't read.
 #[test]

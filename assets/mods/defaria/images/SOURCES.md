@@ -67,7 +67,13 @@ script to redraw them.
 
 ## Networks and machines
 
-The wire, pipe, tube and machine layers were drawn procedurally by
+- `wire.png`: dull metal, drawn by `wire()` in `scripts/draw-layers.py`
+  (no Retro Diffusion; 2026-11-28): soft blotches of levels 2 to 4,
+  mostly 3, with no direction to them, since the wire's faces show the
+  tile turned different ways. Replaced a twisted-strand layer that
+  looked busy and twisted differently on different faces.
+
+The pipe, tube and machine layers were drawn procedurally by
 `scripts/draw-machines.py` (2026-11-26). Re-run it to redraw them:
 `python3 scripts/draw-machines.py <out-dir> scripts/draw-machines-wrench.png`.
 It draws the whole set; each layer is added here as the content that
@@ -78,10 +84,6 @@ horizontally, transparent above and below; a partial box samples the tile
 at its own position, so the band is where an arm box of that height
 samples it.
 
-- `wire.png`: a 4-pixel cable (rows 6–9), shaded round, with a diagonal
-  strand twist every 4 pixels. The wire's arm ends show its middle too.
-- `wire_core.png`: the knot where wire arms meet, face-on: a small shaded
-  ball (6 pixels across, 5–10) with a dark wrap across it.
 - `pipe_side.png`: a 6-pixel pipe (rows 5–10), shaded round and the same
   from either edge (the pipe's faces show it turned different ways), one
   level darker in the first and last column so joints show between

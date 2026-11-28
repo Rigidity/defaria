@@ -377,7 +377,8 @@ fn the_screen_shows_progress_and_status() {
     let mut app = game();
     run_more(
         &mut app,
-        "fill 64 70 88 64 70 88 wire\n\
+        "fill 64 69 88 64 69 88 stone\n\
+         fill 64 70 88 64 70 88 wire\n\
          fill 64 70 87 64 70 87 creative_generator\n\
          put 64 70 89 input 2 stone[ore=defaria:iron]\n\
          wait 30",

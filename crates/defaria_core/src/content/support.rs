@@ -266,6 +266,41 @@ mod tests {
         assert_eq!(content.support_side(floor), None);
     }
 
+    /// A wire rests on any solid face on the side its `on` says, and only
+    /// there.
+    #[test]
+    fn wires_rest_on_solid_faces_on_their_side() {
+        let content = base();
+        let wire = |on: &str| content.block_state("defaria:wire", &[("on", on)]).unwrap();
+        let stone = block("stone");
+        let air = crate::content::BlockState::AIR;
+        assert_eq!(
+            content.support_side(wire("down")),
+            Some(crate::content::Direction::Down)
+        );
+        assert_eq!(
+            content.support_side(wire("north")),
+            Some(crate::content::Direction::North)
+        );
+        assert!(content.needs_support(wire("north")));
+        assert!(content.supports(wire("north"), stone));
+        assert!(content.supports(wire("down"), block("soil")), "soil");
+        assert!(content.supports(wire("up"), block("planks")));
+        assert!(!content.supports(wire("north"), air));
+        assert!(!content.supports(wire("down"), wire("up")));
+        assert!(!content.supports(wire("down"), content.default_state("defaria:pipe").unwrap()));
+        // A slab holds a wire on its full bottom face, not on its top.
+        let slab = block("stone_slab");
+        assert!(content.supports(wire("up"), slab));
+        assert!(!content.supports(wire("down"), slab));
+        // Plants still stand on the blocks they list, under them.
+        assert_eq!(
+            content.support_side(block("tuft")),
+            Some(crate::content::Direction::Down)
+        );
+        assert_eq!(content.support_side(stone), None);
+    }
+
     #[test]
     fn bad_support_is_reported() {
         for (support, error) in [

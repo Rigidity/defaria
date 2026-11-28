@@ -806,6 +806,32 @@ fn plants_are_placed_only_where_they_stand() {
     assert_eq!(inventory.count(daisy), 0);
 }
 
+/// A wire is placed against a solid face, lying on it, and not against
+/// another wire, which has none: nothing is placed and none used up.
+#[test]
+fn wires_are_placed_only_against_solid_faces() {
+    let (mut app, left, _) = app();
+    let owner = survival_with(&mut app, &["defaria:wire"]);
+    let item = base().default_item("defaria:wire").unwrap();
+    app.world_mut()
+        .get_mut::<Inventory>(owner)
+        .unwrap()
+        .add(base(), defaria_core::inventory::ItemStack::new(item, 1));
+    let wire = base()
+        .block_state("defaria:wire", &[("on", "down")])
+        .unwrap();
+    // Down onto the dirt at (14, 1, 5), from high enough that the player
+    // doesn't stand in the wire's voxel: on it.
+    look_at(&mut app, Vec3::new(14.5, 5.5, 5.5), Vec3::NEG_Y);
+    click(&mut app, MouseButton::Right);
+    assert_eq!(voxel(&app, left, 14, 2, 5), wire);
+    assert_eq!(count(&app, owner, "defaria:wire"), 1);
+    // Down onto that wire: nothing.
+    click(&mut app, MouseButton::Right);
+    assert_eq!(voxel(&app, left, 14, 3, 5), BlockState::AIR);
+    assert_eq!(count(&app, owner, "defaria:wire"), 1);
+}
+
 /// The player in survival, with `items` in the inventory and on the
 /// hotbar from its first slot, the first in hand. The player's entity.
 fn survival_with(app: &mut App, items: &[&str]) -> Entity {

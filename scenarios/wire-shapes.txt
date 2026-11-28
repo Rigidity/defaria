@@ -1,0 +1,50 @@
+# Wires lying on floors, walls and ceilings, on a stone platform built in
+# the air. Along the front, west to east, on the floor: a straight run, a
+# corner, a tee and a cross. Then a run along the floor to a stone wall,
+# climbing it (wires resting on the wall) and running along it. Behind,
+# a stone roof, one block above the floor, with a run along its underside
+# that drops straight to a floor wire below, and a stone pillar with
+# wires up its east face, joined to a floor run beside it (the wall wire
+# comes down to the floor to meet it) and to the floor wire at its foot
+# (which climbs the pillar's face). scenarios/wire-connections.txt has
+# every way two wires meet side by side.
+# Run: cargo headless scenarios/wire-shapes.txt
+wait 5
+fill 20 45 20 44 45 44 stone                              # the platform
+fill 22 46 30 24 46 30 wire                               # a straight run
+fill 27 46 30 28 46 30 wire                               # a corner
+fill 27 46 29 27 46 29 wire
+fill 30 46 30 32 46 30 wire                               # a tee
+fill 31 46 31 31 46 31 wire
+fill 34 46 30 36 46 30 wire                               # a cross
+fill 35 46 29 35 46 31 wire
+fill 41 46 26 41 50 34 stone                              # a wall facing west
+fill 38 46 30 40 46 30 wire                               # to the wall
+fill 40 47 30 40 48 30 wire[on=east]                      # up it
+fill 40 48 28 40 48 32 wire[on=east]                      # along it
+fill 21 48 23 27 48 27 stone                              # a roof
+fill 22 47 25 26 47 25 wire[on=up]                        # under it
+fill 22 46 25 22 46 25 wire                               # down to the floor
+fill 30 46 23 30 48 23 stone                              # a pillar
+fill 31 46 23 31 48 23 wire[on=west]                      # up its east face
+fill 31 46 24 31 46 26 wire                               # a floor run beside it
+fill 32 46 23 33 46 23 wire                               # and one to its foot
+camera 30 50.5 36.5 0 -35                                 # south of it, looking down
+wait 2
+screenshot target/scenarios/wire-shapes/0-overview.png
+wait 1
+camera 29 47.6 32.5 0 -35                                 # close up on the corner and tee
+wait 2
+screenshot target/scenarios/wire-shapes/1-close.png
+wait 1
+camera 36 49 33 -40 -25                                   # the cross and the wall
+wait 2
+screenshot target/scenarios/wire-shapes/2-wall.png
+wait 1
+camera 25 47.2 29 20 5                                    # under the roof
+wait 2
+screenshot target/scenarios/wire-shapes/3-ceiling.png
+wait 1
+camera 34.5 48.5 27.5 40 -30                              # the pillar
+wait 2
+screenshot target/scenarios/wire-shapes/4-pillar.png
