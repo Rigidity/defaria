@@ -145,6 +145,13 @@ fn rule(
 }
 
 impl Content {
+    /// Whether `state` has parts drawn by their neighbours, so what's
+    /// around it matters: without, [`Around::AIR`] gives the same as the
+    /// real neighbours, without reading them.
+    pub fn reads_around(&self, state: BlockState) -> bool {
+        !self.state(state).next_parts.is_empty()
+    }
+
     /// The parts of `state` drawn by their neighbours whose rules match
     /// the blocks `around` it.
     fn next_parts_matching<'a>(

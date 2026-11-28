@@ -447,7 +447,11 @@ impl Neighborhood {
             // Its own faces, then those of its parts drawn by the blocks
             // next to it, numbered after its own in the face table.
             let own = state.faces.iter().enumerate();
-            let around = Around::read(|side| self.block(pos + side.normal()));
+            let around = if content.reads_around(voxel) {
+                Around::read(|side| self.block(pos + side.normal()))
+            } else {
+                Around::AIR
+            };
             let by_next = content
                 .next_faces(voxel, &around)
                 .map(|(index, face)| (state.faces.len() + index, face));

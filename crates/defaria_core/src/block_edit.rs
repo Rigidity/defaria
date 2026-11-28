@@ -197,6 +197,9 @@ pub fn around(voxels: &Voxels, pos: IVec3) -> Around {
 /// with the voxels around it.
 pub fn target_at<'c>(content: &'c Content, voxels: &Voxels, pos: IVec3) -> Target<'c> {
     let state = voxels.get(pos).unwrap_or(BlockState::AIR);
+    if !content.reads_around(state) {
+        return content.target(state, &Around::AIR);
+    }
     content.target(state, &around(voxels, pos))
 }
 
@@ -442,62 +445,8 @@ fn placing(
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
-    /// The crosshair picks a block's parts drawn by the blocks really next
-    /// to it, and the whole block where none is there.
-    #[test]
-    fn the_crosshair_reads_the_neighbours() {
-        use crate::{
-            content::test_mod,
-            testing::{chunk_app, insert_chunk},
-            world::Chunk,
-        };
-        use bevy::ecs::system::RunSystemOnce;
-        // A peg, the lower half of the middle of a block, drawn where a
-        // post is north of it, reaching up.
-        let content = test_mod(&[
-            (
-                "models/peg.json5",
-                r#"{ faces: [], collision: [{ from: [0.25, 0, 0.25], to: [0.75, 0.5, 0.75] }] }"#,
-            ),
-            (
-                "blocks/post.json5",
-                r#"{ model: "quad", textures: { all: "a" } }"#,
-            ),
-            (
-                "blocks/peg.json5",
-                r#"{ properties: { up: ["false", "true"] }, model: "quad", textures: { all: "a" },
-                     parts: [{ when: { up: "true" }, model: "peg", next: { north: { block: "post" } } }] }"#,
-            ),
-        ]);
-        assert!(content.errors.is_empty(), "{:?}", content.errors);
-        let peg = content.block_state("test:peg", &[("up", "true")]).unwrap();
-        let post = content.default_state("test:post").unwrap();
-        let mut app = chunk_app(content, std::time::Duration::from_millis(10));
-        let mut chunk = Chunk::default();
-        chunk.set(1, 1, 1, peg);
-        insert_chunk(&mut app, IVec3::ZERO, chunk);
-        let aimed = |app: &mut App| {
-            app.world_mut()
-                .run_system_once(|content: Res<Content>, voxels: Voxels| {
-                    let target = target_at(&content, &voxels, IVec3::new(1, 1, 1));
-                    (target.boxes.into_owned(), target.reaches.into_owned())
-                })
-                .unwrap()
-        };
-        assert_eq!(aimed(&mut app), (vec![BlockBox::FULL], vec![None]));
-        let mut chunks = app.world_mut().query::<&mut Chunk>();
-        chunks
-            .single_mut(app.world_mut())
-            .unwrap()
-            .set(1, 1, 0, post);
-        let (boxes, reaches) = aimed(&mut app);
-        assert_eq!(boxes.len(), 1);
-        assert_eq!(boxes[0].max, Vec3::new(0.75, 0.5, 0.75));
-        assert_eq!(reaches, [Some(Direction::Up)]);
-    }
     use crate::content::{base, block, test_mod};
 
     fn solid_at(blocks: &[IVec3]) -> impl Fn(IVec3) -> &'static [BlockBox] + '_ {
@@ -685,5 +634,58 @@ mod tests {
         // Over its top, and past its side, the stone behind.
         assert_eq!(hit(Vec3::new(0.5, 0.95, 0.5)).block, IVec3::new(4, 0, 0));
         assert_eq!(hit(Vec3::new(0.5, 0.5, 0.05)).block, IVec3::new(4, 0, 0));
+    }
+
+    /// The crosshair picks a block's parts drawn by the blocks really next
+    /// to it, and the whole block where none is there.
+    #[test]
+    fn the_crosshair_reads_the_neighbours() {
+        use crate::{
+            testing::{chunk_app, insert_chunk},
+            world::Chunk,
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        // A peg, the lower half of the middle of a block, drawn where a
+        // post is north of it, reaching up.
+        let content = test_mod(&[
+            (
+                "models/peg.json5",
+                r#"{ faces: [], collision: [{ from: [0.25, 0, 0.25], to: [0.75, 0.5, 0.75] }] }"#,
+            ),
+            (
+                "blocks/post.json5",
+                r#"{ model: "quad", textures: { all: "a" } }"#,
+            ),
+            (
+                "blocks/peg.json5",
+                r#"{ properties: { up: ["false", "true"] }, model: "quad", textures: { all: "a" },
+                     parts: [{ when: { up: "true" }, model: "peg", next: { north: { block: "post" } } }] }"#,
+            ),
+        ]);
+        assert!(content.errors.is_empty(), "{:?}", content.errors);
+        let peg = content.block_state("test:peg", &[("up", "true")]).unwrap();
+        let post = content.default_state("test:post").unwrap();
+        let mut app = chunk_app(content, std::time::Duration::from_millis(10));
+        let mut chunk = Chunk::default();
+        chunk.set(1, 1, 1, peg);
+        insert_chunk(&mut app, IVec3::ZERO, chunk);
+        let aimed = |app: &mut App| {
+            app.world_mut()
+                .run_system_once(|content: Res<Content>, voxels: Voxels| {
+                    let target = target_at(&content, &voxels, IVec3::new(1, 1, 1));
+                    (target.boxes.into_owned(), target.reaches.into_owned())
+                })
+                .unwrap()
+        };
+        assert_eq!(aimed(&mut app), (vec![BlockBox::FULL], vec![None]));
+        let mut chunks = app.world_mut().query::<&mut Chunk>();
+        chunks
+            .single_mut(app.world_mut())
+            .unwrap()
+            .set(1, 1, 0, post);
+        let (boxes, reaches) = aimed(&mut app);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].max, Vec3::new(0.75, 0.5, 0.75));
+        assert_eq!(reaches, [Some(Direction::Up)]);
     }
 }

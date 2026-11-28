@@ -252,6 +252,9 @@ impl Shapes for WorldShapes<'_, '_> {
     /// air).
     fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>> {
         let state = self.state(block)?;
+        if !self.content.reads_around(state) {
+            return Some(self.content.collision(state, &Around::AIR));
+        }
         let around =
             Around::read(|side| self.state(block + side.normal()).unwrap_or(BlockState::AIR));
         Some(self.content.collision(state, &around))

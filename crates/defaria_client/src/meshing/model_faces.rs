@@ -192,9 +192,6 @@ mod tests {
     use super::*;
     use defaria_core::content::{base, block};
 
-    /// Every face of every state has an entry holding what it baked to,
-    /// and states sharing a model and texture share entries: the base
-    /// game's fit with plenty of room.
     /// The faces of parts drawn by their neighbours are numbered after
     /// the state's own, and each has its entry.
     #[test]
@@ -212,6 +209,9 @@ mod tests {
         }
     }
 
+    /// Every face of every state has an entry holding what it baked to,
+    /// and states sharing a model and texture share entries: the base
+    /// game's fit with plenty of room.
     #[test]
     fn every_face_has_its_entry() {
         let content = base();

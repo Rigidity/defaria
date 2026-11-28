@@ -395,6 +395,37 @@ mod tests {
         )
     }
 
+    /// While a block is mined, the overlay follows the parts its
+    /// neighbours draw: a tall post put east of a vine adds that part's
+    /// faces, and taking it away takes them off.
+    #[test]
+    fn the_overlay_follows_the_neighbours() {
+        let content = defaria_core::content::vines();
+        let vine = content.default_state("test:vine").unwrap();
+        let post = content.default_state("test:post").unwrap();
+        let tall = content
+            .block_state("test:post", &[("tall", "yes")])
+            .unwrap();
+        let mut app = app();
+        app.insert_resource(content);
+        let pos = IVec3::new(2, 2, 2);
+        let set = |app: &mut App, pos: IVec3, state| {
+            let mut chunks = app.world_mut().query::<&mut Chunk>();
+            let mut chunk = chunks.single_mut(app.world_mut()).unwrap();
+            chunk.set(pos.x as usize, pos.y as usize, pos.z as usize, state);
+        };
+        set(&mut app, pos, vine);
+        set(&mut app, pos - IVec3::X, post);
+        mine(&mut app, Some((pos, vine)), 0.5);
+        assert_eq!(overlay(&mut app).3.len(), 4);
+        set(&mut app, pos + IVec3::X, tall);
+        mine(&mut app, Some((pos, vine)), 0.6);
+        assert_eq!(overlay(&mut app).3.len(), 3 * 4);
+        set(&mut app, pos + IVec3::X, BlockState::AIR);
+        mine(&mut app, Some((pos, vine)), 0.7);
+        assert_eq!(overlay(&mut app).3.len(), 4);
+    }
+
     #[test]
     fn the_overlay_follows_the_block_being_mined() {
         let mut app = app();
