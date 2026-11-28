@@ -1,12 +1,15 @@
 //! What only the server app runs: generating terrain, streaming chunks in
 //! and out and saving them, light propagation, fluid flow, networks and
 //! their solvers, machines and recipes, mod scripts and their hooks,
-//! mining, placing and what breaks with it, and each client's connection
-//! ([`server`]). The types both sides share are `defaria_core`; a module
-//! here named as one there has that one's systems.
+//! mining, placing and what breaks with it, each client's connection
+//! ([`server`]), chat ([`chat`]) and server commands ([`command`]). The
+//! types both sides share are `defaria_core`; a module here named as one
+//! there has that one's systems.
 
 pub mod block_edit;
 pub mod block_entity;
+pub mod chat;
+pub mod command;
 pub mod connections;
 pub mod fluid;
 pub mod fluid_container;

@@ -23,6 +23,7 @@ use bevy::prelude::*;
 
 use crate::{
     block_entity::Value,
+    chat::{ChatLine, CommandReply},
     content::BlockState,
     game_mode::GameMode,
     hotbar::{ActiveSlot, Hotbar},
@@ -75,6 +76,12 @@ pub enum ClientMessage {
     /// A mod's client script sent its server's scripts a message
     /// (`net.send`, see `script::channel`).
     Script(ScriptMessage),
+    /// The player said this to everyone (see `chat`).
+    Chat(String),
+    /// The player ran a server command: the line, without its `/` (see
+    /// `defaria_server::command`). The server answers each with a
+    /// [`ServerMessage::CommandReply`], in order.
+    Command(String),
 }
 
 impl ClientMessage {
@@ -191,6 +198,11 @@ pub enum ServerMessage {
     /// lost. `quic`'s own: the client's network end takes it, and the game
     /// never sees it.
     Dropped(String),
+    /// A line of chat for the player: what someone said, or a notice.
+    Chat(ChatLine),
+    /// What the command the client sent next answered (one each, in the
+    /// order they were sent).
+    CommandReply(CommandReply),
 }
 
 impl ServerMessage {
@@ -739,6 +751,16 @@ mod tests {
             ServerMessage::Despawn(42),
             ServerMessage::Script(script_message()),
             ServerMessage::Dropped("why".into()),
+            ServerMessage::Chat(crate::chat::ChatLine {
+                kind: crate::chat::ChatKind::Said,
+                from: Some("Ada".into()),
+                text: "hello".into(),
+            }),
+            ServerMessage::CommandReply(CommandReply {
+                ok: true,
+                text: "filled 8 voxels".into(),
+                filled: Some((8, 1200)),
+            }),
         ];
         for message in server {
             let back: ServerMessage = decode(&encode(&message)).unwrap();
@@ -766,6 +788,8 @@ mod tests {
                 ..script_message()
             }),
             ClientMessage::CloseScreen(IVec3::new(1, -2, 3)),
+            ClientMessage::Chat("hello there".into()),
+            ClientMessage::Command("fill 1 2 3 4 5 6 stone".into()),
             ClientMessage::Transfer(Transfer::Catalog {
                 kind: ItemStack::new(stone, 1),
                 count: 10,

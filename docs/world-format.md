@@ -19,6 +19,7 @@ run, unless they're given `--data`.
 world/
   world.json5          the world's seed and format version
   server.pem           a dedicated server's key (see "Identity" below)
+  ops.json5            the players allowed to run server commands
   players/
     3f9a…c2.json5      each player's things and where they were, by id
   regions/
@@ -58,6 +59,31 @@ for good, whatever seed the game would otherwise use.
 Worlds are folders in the game's `worlds` folder, named after the world: the
 name given on the new world screen, with characters folder names can't have
 left out, and a number after it if one of that name is there already.
+
+## `ops.json5`
+
+The players allowed to run server commands (`fill`, `give`, `save`,
+`stop`, ...; see `crates/defaria_server/src/command.rs`) on a dedicated
+server, by id (64 hex digits, as `list` shows them). There's no file
+until someone's listed; then nobody but the console may run commands
+(anyone may run `list` and `help`). The player hosting a world in the
+game's own process (single player) always may, listed or not.
+
+```json5
+{
+  format: 1,          // this file's format
+  operators: [        // players' ids
+    "3f9a…c2",
+  ],
+}
+```
+
+The console's `op <name or id>` and `deop <name or id>` add and remove
+ids and write the file (through `ops.json5.tmp`, renamed over it). The
+server reads it as it starts, and again whenever a player not listed
+runs a command, so an edit by hand counts without a restart. A file it
+can't read, or of a newer format, allows nobody until it's fixed. The
+code is in `crates/defaria_server/src/command/ops.rs`.
 
 ## `players/<id>.json5`
 

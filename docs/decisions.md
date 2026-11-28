@@ -680,6 +680,63 @@ bandwidth for light or chunks shows up in the `net` report.
   more there; the budget isn't tuned to the connection's speed; and the
   game's links are unbounded in the client-to-server direction.
 
+*As built in #218*, chat and server commands:
+
+- T opens the chat line, a text field at the bottom left that's a
+  screen (so the cursor's free and keys type), only while playing with
+  no other screen and no field typing. Enter sends it: a line starting
+  with `/` as `ClientMessage::Command`, anything else as
+  `ClientMessage::Chat`; Escape closes it. The client keeps the last 100
+  lines it's sent (`ServerMessage::Chat`, and each command's
+  `ServerMessage::CommandReply`), shows the newest ten over the game for
+  ten seconds, fading over the last, and the last twenty while the line
+  is open. Joining and leaving are announced. There's no scrolling back
+  through more, no recalling what was sent with the arrow keys and no
+  `/` key opening the line with a `/` typed: each is for when someone
+  wants it.
+- The server checks what clients send, as it does everything: control
+  and Unicode format characters go (as from names), lines over 256
+  characters are refused with a reason, and each player may send eight
+  at once, then one a second (`defaria_core::chat::Allowance`, in real
+  time, so a paused game doesn't stop it refilling). Commands from a
+  player who may run them aren't limited (they can stop the server
+  anyway); a player who may not is held to the same rate, refused or not.
+- The commands that build a scene are now server commands
+  (`defaria_server::command`), parsed in one place (`command::parse`)
+  for chat, the console and scenarios: `fill`, `pour`, `put`, `hotbar`,
+  `give`, `random-ticks`, `evaporation`, the `fluids` and `network`
+  reports, and new ones: `tp`, `save`, `stop`, `list`, `help`, `say`,
+  `op` and `deop`. The headless runner's parser hands any line starting
+  with one of their names to that parser, and the runner sends the line
+  over the protocol as the player, as typing it would, and waits for
+  its reply: a refusal or error fails the run, `fill`'s reply carries
+  how many voxels it set and how long that took (for `timing`), and a
+  report prints when it arrives, a frame later than before. `hotbar`,
+  `give` and `fluids` without a box act on whoever ran them, rather than
+  the one player there was. Every scenario runs unchanged.
+- `camera` and `lookups` stay the runner's. `camera` puts the client's
+  own player (with its look, eye height and sway), which the next input
+  tells the server (`Input::teleport`), at once, as scenarios rely on;
+  the server's `tp` puts a player on the server and lets the client
+  follow, as a correction. `lookups` times this process's reads.
+- Who may run commands: the console always; the player whose game
+  hosts the server (`command::Host`, the install's id, set by
+  `integrated`); and on any server the ids in the world's `ops.json5`
+  (`command::Operators`), read at start and again when someone not
+  listed tries, so an edit counts without a restart; the console's `op`
+  and `deop` write it. Nobody else, except for `list` and `help`. A
+  refusal says why and where the list is. Permissions are all or
+  nothing, not per command: levels are for when there are commands an
+  operator shouldn't have.
+- `defaria server`'s standard input is the console: each line runs as
+  a command (with or without `/`), and what it answers is printed. The
+  host's `/stop` in single player stops the server in the game's own
+  process, which goes back to the menu, saving, as leaving does.
+- What's still open: teleports a client sends (`camera`'s
+  `Input::teleport`) are still taken from anyone; now that permissions
+  exist, the server could take them only from those allowed to run
+  commands, once scenarios against a dedicated server don't need them.
+
 ## Two halves in a voxel are a combined state, baked per pair at load (2026-11-27)
 
 **Context.** Placing a slab on a slab made two slabs in two voxels, and

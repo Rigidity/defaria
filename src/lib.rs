@@ -83,6 +83,7 @@ impl Plugin for ClientPlugin {
             prediction::PredictionPlugin,
             defaria_client::script::ClientScriptPlugin,
             defaria_client::connecting::ConnectStatusPlugin,
+            defaria_client::chat::ChatPlugin,
         ));
     }
 }
@@ -126,6 +127,8 @@ impl Plugin for ServerPlugin {
                 support::SupportPlugin,
                 use_action::UseActionPlugin,
                 defaria_server::server::ServerNetPlugin,
+                defaria_server::chat::ChatPlugin,
+                defaria_server::command::CommandPlugin,
             ));
     }
 }

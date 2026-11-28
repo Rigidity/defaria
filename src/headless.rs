@@ -13,11 +13,19 @@
 //! every scenario with both (`--no-render --radius 4`).
 //!
 //! The game is a client and a server (see `crate::integrated`); the script
-//! drives the client. Commands that set up the world (`fill`, `pour`,
-//! `put`, `hotbar`, `give`, `random-ticks`, `evaporation`, `lookups`) and
-//! the `fluids` and `network` reports act on the server's world; `camera`
-//! moves the client's player, as the mouse and keys do; `inspect` looks in
-//! the client's world, then the server's. A run starts playing a world in
+//! drives the client. The commands that set up the world (`fill`, `pour`,
+//! `put`, `hotbar`, `give`, `random-ticks`, `evaporation`) and the
+//! `fluids` and `network` reports are server commands
+//! (`defaria_server::command`, the same a player types after `/` in chat
+//! and a dedicated server's console takes): the runner sends each line to
+//! the server as the player, which runs it at the end of the frame, and
+//! its answer arrives the next. One that fails (a block that doesn't
+//! exist, a player not allowed to run commands on the server joined)
+//! fails the run; a report is printed when it arrives. The player hosting
+//! the server in the game's own process may run any command. `camera`
+//! moves the client's player, as the mouse and keys do; `lookups` times
+//! the server's voxels in this process; `inspect` looks in the client's
+//! world, then the server's. A run starts playing a world in
 //! memory; its pause menu's **Main menu** leads to a world list in a
 //! temporary folder of the run's own (never the player's saved worlds).
 //!
@@ -53,6 +61,8 @@
 //! | `joined` | Wait until joining a server (clicking one on the Multiplayer screen, or `--connect`) is done, one way or the other, and print how: joined, or why not. Joining happens in the background, in real time, so frames go by meanwhile; the run fails if it takes more than a minute. |
 //! | `connect-timeout <seconds>` | Give servers being joined that long to answer (10 seconds by default), so a scenario showing a server that doesn't answer needn't wait long. |
 //! | `memory` | Print what the loaded chunks hold, counted from their data rather than the process's memory, so it's the same every run: how many chunks, how many are air or one other block throughout and how many have one light level throughout, the bytes of block states, light and partial fluid, how much of that (in KiB) is in chunks that are one value throughout but still kept a value per voxel, and how many such chunks there are (0 once compaction has caught up), and the chunk meshes and the bytes of vertices and indices they keep in the main world. |
+//! | `tp <x> <y> <z>` | Put the player's eyes at a position, on the server, flying; the client follows. (`camera` is quicker for setting up a view: it's at once, and turns the player too.) |
+//! | `save`, `stop`, `list`, `help`, `say <text>`, `op <player>`, `deop <player>` | The rest of the server commands (see `defaria_server::command`): save the world, stop the server (back to the menu, for the server in the game's own process), print who's playing or the commands, say something to everyone, let a player run commands or stop letting them. |
 //! | `lookups <x0> <y0> <z0> <x1> <y1> <z1>` | Read every voxel in the box between the two corners twice, timing each: once by world position as most systems do ([`Voxels::get`](defaria_core::world::Voxels::get), a hash and a query per voxel), then a chunk at a time, and print both. A box of more than 16,777,216 voxels (256 a side) fails the run. |
 //!
 //! The mouse commands (`cursor`, mouse buttons, `scroll`) also drive
@@ -80,7 +90,12 @@
 //! view) without steering there with input. Edits go through the same path
 //! as the player's: they're made on the server at the end of their frame,
 //! and the client draws them from the next (so a `screenshot` on the same
-//! frame as a `fill` doesn't show it yet).
+//! frame as a `fill` doesn't show it yet). A `timing` waits for the fills
+//! sent before it to be answered, so it counts them.
+//!
+//! Typing goes into a text field at the end of its frame, so a script
+//! that types into the chat line (T) waits a frame before pressing Enter
+//! (see `scenarios/chat.txt`).
 //! `timing` is for comparing performance between runs on the same machine;
 //! put a `timing` just before the stretch to measure, to leave startup out.
 //!

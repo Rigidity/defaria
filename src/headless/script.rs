@@ -7,6 +7,7 @@ use bevy::{
     prelude::*,
     reflect::enums::{DynamicEnum, DynamicVariant},
 };
+pub use defaria_server::command::ServerCommand;
 
 /// A parsed script. See the module docs for the format.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -25,43 +26,11 @@ pub enum Command {
     Screenshot(PathBuf),
     Grain,
     Inspect(String),
-    Fill {
-        min: IVec3,
-        max: IVec3,
-        block: String,
-    },
-    Pour {
-        pos: IVec3,
-        fluid: String,
-        /// In blocks.
-        amount: f32,
-    },
-    /// Count the fluid in a box, by its corners (min, max), or the camera's
-    /// window.
-    Fluids(Option<(IVec3, IVec3)>),
-    Hotbar {
-        /// From 0.
-        slot: usize,
-        item: String,
-    },
-    /// Put items in the player's inventory.
-    Give {
-        item: String,
-        count: u32,
-        /// For a fluid container, the fluid each holds and how many
-        /// blocks of it.
-        fluid: Option<(String, f32)>,
-    },
-    Network(IVec3),
-    /// Put items in a machine's slot group, or fluid in its tank.
-    Put {
-        pos: IVec3,
-        /// The slot group or tank.
-        name: String,
-        /// Items, or blocks of fluid.
-        amount: f32,
-        /// The item or fluid, named as for `fill`.
-        what: String,
+    /// A server command (`fill`, `give`, `fluids`, ...; see
+    /// `defaria_server::command`), sent to the server as the line it was.
+    Server {
+        line: String,
+        command: ServerCommand,
     },
     Camera {
         position: Vec3,
@@ -85,10 +54,6 @@ pub enum Command {
     },
     /// Type this text, a key press and release per character.
     Type(String),
-    /// Voxels picked for random ticks in each chunk each tick.
-    RandomTicks(u32),
-    /// How many times faster than their rate films evaporate.
-    Evaporation(f32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,6 +93,14 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
             Err(format!("`{}` takes {count} argument(s): {line}", words[0]))
         }
     };
+    if defaria_server::command::NAMES.contains(&words[0]) {
+        let command = defaria_server::command::parse(line)?;
+        commands.push(Command::Server {
+            line: line.to_string(),
+            command,
+        });
+        return Ok(());
+    }
     match words[0] {
         "type" => {
             let text = line.trim_start()["type".len()..].trim();
@@ -186,95 +159,6 @@ fn parse_line(line: &str, commands: &mut Vec<Command>) -> Result<(), String> {
         "inspect" => {
             expect(1)?;
             commands.push(Command::Inspect(args[0].to_string()));
-        }
-        "fill" => {
-            expect(7)?;
-            let (min, max) = parse_box(&args[..6])?;
-            commands.push(Command::Fill {
-                min,
-                max,
-                block: args[6].to_string(),
-            });
-        }
-        "pour" => {
-            expect(5)?;
-            commands.push(Command::Pour {
-                pos: IVec3::new(
-                    parse_number(args[0])?,
-                    parse_number(args[1])?,
-                    parse_number(args[2])?,
-                ),
-                fluid: args[3].to_string(),
-                amount: parse_number(args[4])?,
-            });
-        }
-        "put" => {
-            expect(6)?;
-            commands.push(Command::Put {
-                pos: IVec3::new(
-                    parse_number(args[0])?,
-                    parse_number(args[1])?,
-                    parse_number(args[2])?,
-                ),
-                name: args[3].to_string(),
-                amount: parse_number(args[4])?,
-                what: args[5].to_string(),
-            });
-        }
-        "fluids" => {
-            let region = match args.len() {
-                0 => None,
-                6 => Some(parse_box(args)?),
-                _ => return Err(format!("`fluids` takes no arguments or 6: {line}")),
-            };
-            commands.push(Command::Fluids(region));
-        }
-        "hotbar" => {
-            expect(2)?;
-            let slot: usize = parse_number(args[0])?;
-            if !(1..=defaria_core::hotbar::HOTBAR_SLOTS).contains(&slot) {
-                return Err(format!("`hotbar` slots are 1 to 9: {line}"));
-            }
-            commands.push(Command::Hotbar {
-                slot: slot - 1,
-                item: args[1].to_string(),
-            });
-        }
-        "give" => {
-            if args.len() != 2 && args.len() != 4 {
-                return Err(format!(
-                    "`give` takes an item and a count, and maybe a fluid and an amount: {line}"
-                ));
-            }
-            let fluid = match args.get(2..4) {
-                Some([fluid, amount]) => Some((fluid.to_string(), parse_number(amount)?)),
-                _ => None,
-            };
-            commands.push(Command::Give {
-                item: args[0].to_string(),
-                count: parse_number(args[1])?,
-                fluid,
-            });
-        }
-        "random-ticks" => {
-            expect(1)?;
-            commands.push(Command::RandomTicks(parse_number(args[0])?));
-        }
-        "evaporation" => {
-            expect(1)?;
-            let speed: f32 = parse_number(args[0])?;
-            if !(speed.is_finite() && speed >= 0.0) {
-                return Err(format!("`{}` isn't a speed", args[0]));
-            }
-            commands.push(Command::Evaporation(speed));
-        }
-        "network" => {
-            expect(3)?;
-            commands.push(Command::Network(IVec3::new(
-                parse_number(args[0])?,
-                parse_number(args[1])?,
-                parse_number(args[2])?,
-            )));
         }
         "camera" => {
             expect(5)?;
@@ -369,6 +253,14 @@ pub(super) fn parse_button(name: &str) -> Result<Button, String> {
 mod tests {
     use super::*;
 
+    /// A server command, as the script parser hands it on.
+    fn server(line: &str) -> Command {
+        Command::Server {
+            line: line.into(),
+            command: defaria_server::command::parse(line).unwrap(),
+        }
+    }
+
     #[test]
     fn parses_every_command() {
         let script = Script::parse(
@@ -421,11 +313,7 @@ mod tests {
                 Command::Screenshot(PathBuf::from("target/a.png")),
                 Command::Grain,
                 Command::Inspect("Transform".into()),
-                Command::Fill {
-                    min: IVec3::new(1, 4, -2),
-                    max: IVec3::new(3, 9, 5),
-                    block: "red_lamp".into(),
-                },
+                server("fill 3 9 -2 1 4 5 red_lamp"),
                 Command::Camera {
                     position: Vec3::new(1.0, 2.5, 3.0),
                     yaw: 90.0,
@@ -437,38 +325,21 @@ mod tests {
                 Command::Settle,
                 Command::Joined,
                 Command::ConnectTimeout(0.5),
-                Command::Pour {
-                    pos: IVec3::new(4, -5, 6),
-                    fluid: "water".into(),
-                    amount: 0.25,
-                },
-                Command::Fluids(None),
-                Command::Fluids(Some((IVec3::new(1, -5, 3), IVec3::new(4, 2, 6)))),
-                Command::Network(IVec3::new(1, -2, 3)),
-                Command::Put {
-                    pos: IVec3::new(1, 2, 3),
-                    name: "input".into(),
-                    amount: 4.0,
-                    what: "stone[ore=defaria:iron]".into(),
-                },
+                server("pour 4 -5 6 water 0.25"),
+                server("fluids"),
+                server("fluids 4 -5 6 1 2 3"),
+                server("network 1 -2 3"),
+                server("put 1 2 3 input 4 stone[ore=defaria:iron]"),
                 Command::Type("Iron ore 2".into()),
-                Command::RandomTicks(64),
-                Command::Evaporation(20.0),
+                server("random-ticks 64"),
+                server("evaporation 20"),
                 Command::Memory,
                 Command::Lookups {
                     min: IVec3::new(1, 0, -1),
                     max: IVec3::new(5, 2, 3),
                 },
-                Command::Give {
-                    item: "bucket".into(),
-                    count: 2,
-                    fluid: None,
-                },
-                Command::Give {
-                    item: "bucket".into(),
-                    count: 1,
-                    fluid: Some(("water".into(), 0.5)),
-                },
+                server("give bucket 2"),
+                server("give bucket 1 water 0.5"),
             ]
         );
     }

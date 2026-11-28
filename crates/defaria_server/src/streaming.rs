@@ -79,6 +79,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<Chunks>()
             .init_resource::<StreamingStatus>()
             .init_resource::<ChunksSaving>()
+            .init_resource::<SaveNow>()
             .add_message::<BlockEntityChanged>()
             .add_message::<ChunkUnloaded>()
             .add_observer(load_around_the_player)
@@ -121,6 +122,14 @@ impl Plugin for StreamingPlugin {
 /// frame (it's the frame's end: the app stops after it).
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SaveOnExit;
+
+/// Save now rather than at the next autosave (the `save` command): the
+/// loaded chunks, and the players. Each is cleared once it's done.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct SaveNow {
+    pub chunks: bool,
+    pub players: bool,
+}
 
 /// Which chunks are saved this frame, worked out before they are, for the
 /// systems in [`BeforeChunkSave`].
@@ -374,6 +383,7 @@ fn plan_saves(
     settings: Res<StreamingSettings>,
     mut chunks: ResMut<Chunks>,
     mut saving: ResMut<ChunksSaving>,
+    mut save_now: ResMut<SaveNow>,
 ) {
     let mut unloading: Vec<IVec3> = chunks
         .loaded
@@ -395,9 +405,11 @@ fn plan_saves(
     unloading.truncate(unloads);
     unloading.sort_by_key(|c| c.to_array());
     chunks.since_save += time.delta_secs();
-    let autosave = chunks.since_save >= settings.autosave_seconds && chunks.flush.is_none();
+    let autosave = (chunks.since_save >= settings.autosave_seconds || save_now.chunks)
+        && chunks.flush.is_none();
     if autosave {
         chunks.since_save = 0.0;
+        save_now.chunks = false;
     }
     *saving = ChunksSaving {
         unloading,

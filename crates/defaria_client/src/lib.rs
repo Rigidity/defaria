@@ -4,6 +4,7 @@
 //! `defaria_core`.
 
 pub mod block_texture;
+pub mod chat;
 pub mod connecting;
 pub mod content_swap;
 pub mod cracks;

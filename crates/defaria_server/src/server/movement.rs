@@ -241,6 +241,12 @@ impl PlayerInputs {
         self.applied
     }
 
+    /// The player was put somewhere (a command's `tp`): its client is
+    /// told where it is next, and puts it right there.
+    pub fn moved_now(&mut self) {
+        self.moved = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn set_applied(&mut self, tick: u32) {
         self.applied = tick;

@@ -274,11 +274,13 @@ fn save_players(
     content: Res<Content>,
     players: Query<Saved, Without<KeepSavedPlayer>>,
     mut since_save: Local<f32>,
+    save_now: Option<ResMut<crate::streaming::SaveNow>>,
 ) {
     let exiting = exits.read().count() > 0;
     *since_save += time.delta_secs();
     let due = settings.is_some_and(|settings| *since_save >= settings.autosave_seconds);
-    if !exiting && !due {
+    let asked = save_now.is_some_and(|mut save_now| std::mem::take(&mut save_now.players));
+    if !exiting && !due && !asked {
         return;
     }
     *since_save = 0.0;

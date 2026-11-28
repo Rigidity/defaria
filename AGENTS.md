@@ -147,8 +147,13 @@ changes.
    voxels a chunk for random ticks, so scripted blocks grow or spread
    quickly enough to watch) and `joined` (wait until joining a server is
    done, and print how it went) and `connect-timeout` (how long a server
-   being joined has to answer). The full format is documented at the top of
-   `src/headless.rs`. The world loads around the camera in the background;
+   being joined has to answer). `fill`, `pour`, `put`, `hotbar`, `give`,
+   `random-ticks`, `evaporation`, `fluids` and `network` (and `tp`,
+   `save`, `list`, ...) are server commands
+   (`defaria_server::command`): the runner sends each to the server as
+   a player typing `/fill ...` would, a failure fails the run, and a
+   report prints when its answer arrives, the next frame. The full
+   format is documented at the top of `src/headless.rs`. The world loads around the camera in the background;
    the script starts once the first view has loaded. Headless runs play a
    world kept in memory, so every run starts the same; add `--world <folder>`
    to play and save one on disk (put it in your scratch directory). Commands between two
@@ -327,8 +332,9 @@ The code is a Cargo workspace of four crates:
 - **`defaria_server`** (`crates/defaria_server/`): what only the server
   app runs. Terrain, streaming and saving, light propagation, fluid
   flow, networks and their solvers, machines' and recipes' logic,
-  the gameplay script hooks and what scripts change, mining, placing, support, the wrench, and
-  every player's connection (`server`). A module named as one in core
+  the gameplay script hooks and what scripts change, mining, placing, support, the wrench,
+  every player's connection (`server`), chat (`chat`) and server
+  commands (`command`). A module named as one in core
   (`light`, `streaming`, `save`, `fluid`, `machine`, `recipe`,
   `mining`, `block_edit`, `block_entity`, `game_mode`, `inventory`,
   `fluid_container`) has that one's systems; the types stay in core,
@@ -367,7 +373,8 @@ frame; the messages between them are `defaria_core::net`. So:
   the end of the frame, the client sees the result at the start of the
   next.
 - Multiplayer: `cargo server` runs a dedicated server (`src/dedicated.rs`;
-  type `stop` to save and stop it), and `--connect <host:port>` plays on
+  its standard input takes server commands, such as `stop` to save and
+  stop it), and `--connect <host:port>` plays on
   one instead of starting a server (windowed or headless:
   `cargo headless <script> --connect 127.0.0.1:25575`), as joining from
   the Multiplayer screen does: in the background, from the menu
@@ -470,6 +477,20 @@ relative path.
   `crates/defaria_client/src/net.rs`: the client's side: the chunks
   spawned, changed and dropped, the player's state applied, and its
   uses, mining and hotbar sent.
+- Chat and commands: T opens the chat line
+  (`crates/defaria_client/src/chat.rs`), which sends what's typed as
+  `ClientMessage::Chat`, or a line starting with `/` as
+  `ClientMessage::Command`, and shows the `ServerMessage::Chat` lines and
+  `CommandReply`s that come back. `crates/defaria_server/src/chat.rs`
+  passes chat on to everyone, limited and cleaned
+  (`defaria_core::chat`); `crates/defaria_server/src/command.rs` (and
+  `command/`) parses and runs server commands, from players, the
+  console (`command::Console`, which `dedicated` feeds from standard
+  input) and headless scenarios alike: `parse.rs` the one parser,
+  `scene.rs` the scene-building ones (`fill`, `give`, `tp`, ...),
+  `report.rs` `fluids` and `network`, `ops.rs` who may (`Host`, the
+  world's `ops.json5` as `Operators`). A new command goes there, not
+  in the headless runner.
 - `crates/<crate>/src/<feature>.rs` (or a folder): one plugin per
   gameplay feature, with its components, systems and tests, in the crate
   it belongs to (what both sides need in core, what only the server runs
@@ -482,8 +503,9 @@ relative path.
   is `HeadlessPlugin`, which steps through them a frame at a time and
   exits when they end; `input.rs` the keys, characters and pointer
   target that simulated input uses; `world_commands.rs` the commands
-  that set up a scene (`fill`, `pour`, `put`, `hotbar`, `camera`, ...)
-  and the `fluids` and `network` reports; `capture.rs` the offscreen
+  that act on this process directly (`camera`, `lookups`), while the
+  runner sends server commands (`fill`, `give`, `fluids`, ...) to the
+  server and takes their replies; `capture.rs` the offscreen
   image, screenshots, `grain`, `timing` and `inspect`; `pipelines.rs`
   failing the run on a broken shader; `memory.rs` the `memory` and
   `lookups` commands; `test_app.rs` the test helpers (`test_game`,
