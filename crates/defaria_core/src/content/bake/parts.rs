@@ -351,6 +351,59 @@ mod tests {
         assert_eq!(reaches(&when(r#"{ north: ["true", "false"] }"#)), None);
     }
 
+    /// In every way a pipe or tube can be joined, its middle cube has one
+    /// face on each side it isn't joined on and none on a side it is,
+    /// each showing how the arms passing that side run: none (its end),
+    /// one or two in a line (the band), two at a bend, three or four.
+    #[test]
+    fn every_pipe_shape_closes_its_middle() {
+        let content = crate::content::base();
+        for id in ["defaria:pipe", "defaria:tube"] {
+            let block = content.block(id).unwrap();
+            for mask in 0..64u32 {
+                let values: Vec<(&str, &str)> = Direction::ALL
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| (d.name(), if mask >> i & 1 == 1 { "true" } else { "false" }))
+                    .collect();
+                let state = content.state(block.state(&values).unwrap());
+                let joined = |d: Direction| mask >> d as u32 & 1 == 1;
+                let mut faced = Vec::new();
+                for part in state
+                    .parts
+                    .iter()
+                    .filter(|p| p.model.starts_with("defaria:pipe_cap"))
+                {
+                    let [face] = &state.faces[part.faces.clone()] else {
+                        panic!("{id} {mask:06b}: {} has one face", part.model);
+                    };
+                    let side = Direction::from_normal(face.normal.round().as_ivec3()).unwrap();
+                    let passing: Vec<_> = Direction::ALL
+                        .into_iter()
+                        .filter(|d| *d != side && *d != side.opposite() && joined(*d))
+                        .collect();
+                    let kind = match passing.as_slice() {
+                        [] => "pipe_cap_end",
+                        [_] => "pipe_cap",
+                        [a, b] if *b == a.opposite() => "pipe_cap",
+                        [_, _] => "pipe_cap_bend",
+                        [_, _, _] => "pipe_cap_tee",
+                        _ => "pipe_cap_cross",
+                    };
+                    assert_eq!(
+                        part.model,
+                        format!("defaria:{kind}"),
+                        "{id} {mask:06b} {side:?}"
+                    );
+                    faced.push(side);
+                }
+                faced.sort_by_key(|d| *d as usize);
+                let open: Vec<_> = Direction::ALL.into_iter().filter(|d| !joined(*d)).collect();
+                assert_eq!(faced, open, "{id} {mask:06b}");
+            }
+        }
+    }
+
     /// A pipe is its middle cube's box, with a face of it on each side
     /// it isn't joined on (the band where an arm passes, its end where
     /// none does), and an arm to each side it is.

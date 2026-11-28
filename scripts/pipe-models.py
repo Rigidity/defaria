@@ -29,60 +29,25 @@ where it meets the next block) and v across it, the higher side first.
 Turning a model keeps its uvs, so that holds on every side.
 
 Usage:
-    python3 scripts/pipe-models.py      # writes the models, prints the parts
+    python3 scripts/pipe-models.py          # writes the models, and the parts into
+                                            # blocks/pipe.json5 and blocks/tube.json5
+    python3 scripts/pipe-models.py --check  # fails if any of them is out of date
 
-Writes into assets/mods/defaria/models/. Standard library only.
+Writes into assets/mods/defaria/. Standard library only; the helpers it
+shares with wire-models.py are in conduit_models.py.
 """
 
-import itertools
-import os
 import sys
+
+sys.dont_write_bytecode = True  # no __pycache__ beside the scripts
+
+from conduit_models import OPPOSITE, X, Y, Z, block_uv, face, part, turn_to, write
+from conduit_models import model as write_model
 
 SIZE = 6  # across the rod, in pixels
 LO, HI = 8 - SIZE // 2, 8 + SIZE // 2
 
-SIDES = {
-    "up": (0, 1, 0),
-    "down": (0, -1, 0),
-    "north": (0, 0, -1),
-    "south": (0, 0, 1),
-    "east": (1, 0, 0),
-    "west": (-1, 0, 0),
-}
-OPPOSITE = {"up": "down", "down": "up", "north": "south", "south": "north", "east": "west", "west": "east"}
 ORDER = ["north", "south", "east", "west", "up", "down"]
-
-
-def px(v):
-    s = f"{v / 16:.4f}".rstrip("0").rstrip(".")
-    return s if s not in ("", "-0") else "0"
-
-
-def face(side, lo, hi, texture, uv, cull=None):
-    """The face of the box from `lo` to `hi` (pixels) on `side`, its
-    vertices counter-clockwise seen from the front, each with `uv(p)`."""
-    n = SIDES[side]
-    axis = next(i for i in range(3) if n[i])
-    at = hi[axis] if n[axis] > 0 else lo[axis]
-    a, b = [i for i in range(3) if i != axis]
-    corners = []
-    for ca, cb in [(0, 0), (1, 0), (1, 1), (0, 1)]:
-        p = [0, 0, 0]
-        p[axis] = at
-        p[a] = (lo[a], hi[a])[ca]
-        p[b] = (lo[b], hi[b])[cb]
-        corners.append(p)
-    e1 = [corners[1][i] - corners[0][i] for i in range(3)]
-    e2 = [corners[2][i] - corners[0][i] for i in range(3)]
-    cross = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]]
-    if sum(cross[i] * n[i] for i in range(3)) < 0:
-        corners.reverse()
-    head = f'texture: "{texture}"' + (f', cull: "{cull}"' if cull else "")
-    verts = ",\n".join(
-        f"        {{ pos: [{', '.join(px(c) for c in p)}], uv: [{', '.join(px(t * 16) for t in uv(p))}] }}"
-        for p in corners
-    )
-    return f"    {{\n      {head},\n      vertices: [\n{verts},\n      ],\n    }}"
 
 
 def along(axis, face_axis):
@@ -92,44 +57,8 @@ def along(axis, face_axis):
     return lambda p: [p[axis] / 16, 1 - p[across] / 16]
 
 
-def end_uv(side):
-    """`end`'s uv on a face looking `side`: the tile at its own position,
-    as a full block's face would show it (models/cube.json5)."""
-    ua, uf, va, vf = {
-        "up": (0, False, 2, False),
-        "down": (0, False, 2, True),
-        "north": (0, True, 1, True),
-        "south": (0, False, 1, True),
-        "east": (2, True, 1, True),
-        "west": (2, False, 1, True),
-    }[side]
-
-    def uv(p):
-        u, v = p[ua] / 16, p[va] / 16
-        return [1 - u if uf else u, 1 - v if vf else v]
-
-    return uv
-
-
-def box(lo, hi):
-    return f"{{ from: [{', '.join(px(c) for c in lo)}], to: [{', '.join(px(c) for c in hi)}] }}"
-
-
 def model(comment, slots, faces, collision=None):
-    lines = [f"// {line}" if line else "//" for line in comment]
-    out = "\n".join(lines) + "\n// Written by scripts/pipe-models.py; change it there.\n{\n"
-    out += "  slots: { " + ", ".join(f"{s}: null" for s in slots) + " },\n" if slots else "  slots: {},\n"
-    out += "  occludes: [],\n"
-    if collision is not None:
-        out += f"  collision: [{', '.join(box(*b) for b in collision)}],\n"
-    if faces:
-        out += "  faces: [\n" + "".join(f + ",\n" for f in faces) + "  ],\n"
-    else:
-        out += "  faces: [],\n"
-    return out + "}\n"
-
-
-X, Y, Z = 0, 1, 2
+    return write_model("pipe-models.py", comment, slots, faces, collision)
 
 
 def core():
@@ -160,7 +89,7 @@ def cap(kind):
             "it reads as one rod.",
         ]
     else:
-        f = face("north", lo, hi, kind, end_uv("north"))
+        f = face("north", lo, hi, kind, block_uv("north"))
         comment = {
             "end": ["The north face of a pipe's middle cube, where no arm passes it:", "the pipe's end (`end`), at its own position."],
             "bend": ["The north face of a pipe's middle cube where it bends: `bend`, at", "its own position, the band turning from its top edge (up) to its", "right (west)."],
@@ -174,7 +103,7 @@ def cap(kind):
 def arm():
     lo, hi = (LO, LO, 0), (HI, HI, LO)
     faces = [face(s, lo, hi, "side", along(Z, X if s in ("east", "west") else Y)) for s in ("east", "west", "up", "down")]
-    faces.append(face("north", lo, hi, "end", end_uv("north"), cull="north"))
+    faces.append(face("north", lo, hi, "end", block_uv("north"), cull="north"))
     return model(
         [
             f"A pipe's arm to the north side of its block: {SIZE} pixels across, from",
@@ -186,48 +115,6 @@ def arm():
         ["side", "end"],
         faces,
     )
-
-
-# Quarter turns, as `content::bake::model::rotation`: about X, then Y, then Z.
-def rotation(deg):
-    def rx(v):
-        return (v[0], -v[2], v[1])
-
-    def ry(v):
-        return (v[2], v[1], -v[0])
-
-    def rz(v):
-        return (-v[1], v[0], v[2])
-
-    def apply(v):
-        for turn, d in zip((rx, ry, rz), deg):
-            for _ in range(d // 90):
-                v = turn(v)
-        return v
-
-    return apply
-
-
-ROTATIONS = sorted(
-    itertools.product((0, 90, 180, 270), repeat=3),
-    key=lambda d: (sum(1 for x in d if x), sum(d), d),
-)
-
-
-def turn_to(want):
-    """The simplest rotation taking each direction in `want` to its target."""
-    for deg in ROTATIONS:
-        r = rotation(deg)
-        if all(r(SIDES[a]) == SIDES[b] for a, b in want.items()):
-            return list(deg)
-    raise ValueError(want)
-
-
-def part(when, name, turn):
-    rot = "" if turn == [0, 0, 0] else f", rotate: {turn}"
-    pairs = ", ".join(f'{k}: "{v}"' for k, v in when.items())
-    w = f"when: {{ {pairs} }}, " if when else ""
-    return f"    {{ {w}model: \"{name}\"{rot} }},"
 
 
 def cap_part(side, passing, arms):
@@ -266,20 +153,17 @@ def parts():
 
 
 def main():
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-    out = os.path.join(root, "assets", "mods", "defaria", "models")
-    for name, text in [
-        ("pipe_core", core()),
-        ("pipe_cap", cap("side")),
-        ("pipe_cap_end", cap("end")),
-        ("pipe_cap_bend", cap("bend")),
-        ("pipe_cap_tee", cap("tee")),
-        ("pipe_cap_cross", cap("cross")),
-        ("pipe_arm", arm()),
-    ]:
-        with open(os.path.join(out, f"{name}.json5"), "w") as f:
-            f.write(text)
-    sys.stdout.write(parts() + "\n")
+    models = {
+        "pipe_core": core(),
+        "pipe_cap": cap("side"),
+        "pipe_cap_end": cap("end"),
+        "pipe_cap_bend": cap("bend"),
+        "pipe_cap_tee": cap("tee"),
+        "pipe_cap_cross": cap("cross"),
+        "pipe_arm": arm(),
+    }
+    lines = parts()
+    write(models, {"pipe": lines, "tube": lines}, "--check" in sys.argv[1:])
 
 
 if __name__ == "__main__":
