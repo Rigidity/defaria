@@ -553,8 +553,9 @@ relative path.
   keys and mouse as its intents: `movement` (WASD, jump, sneak, sprint,
   double-tap to fly, into `Controls`), `using` (right click into a
   `UseAction`), `mining` (left click into `Mining::holding`) and
-  `game_mode` (C). `input/tests/` drives editing with the mouse end to
-  end.
+  `game_mode` (C), and `focus`, which holds the keys again after a
+  moment without the window's focus. `input/tests/` drives editing with
+  the mouse end to end.
 - `crates/defaria_core/src/use_action.rs`: right click as a `UseAction` on the player (a
   `Use`: the eyes, the crosshair's block, Shift), set by `input::using` and
   acted on in order of precedence by the steps of `UseStep` (the wrench,

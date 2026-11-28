@@ -3,6 +3,28 @@
 Choices made deliberately simple for now, with what's wrong with them and
 what should replace them. Newest first.
 
+## Keys come back after a brief loss of focus, guessed from before it (2026-11-28)
+
+**Decision.** When the window loses keyboard focus, Bevy lets go of
+every key, and gets no key-down for those still held when focus comes
+back. So a moment without focus (a notification, another app activating
+itself) stopped the player until the keys were pressed again. If focus
+is back within half a second (`input::focus::FOCUS_GRACE`), the keys
+held when it went are held again, without being just pressed, unless
+they went up or down since (`crates/defaria_client/src/input/focus.rs`).
+It's the same on every platform: nothing asks the OS which keys are
+down.
+
+**What's wrong with it.** A key let go of during that moment, its
+key-up sent to whatever had focus, is held again and stays held (the
+player keeps walking) until it's pressed and let go once more. Half a
+second makes that rare; a longer loss (switching apps) lets go of
+everything, as before.
+
+**Revisit** if a key is ever seen stuck down after a blip, or if Bevy or
+winit learn to report the keys held when focus returns: then take those
+instead of guessing.
+
 ## Multiplayer: a server app and client apps, even in single player (2026-11-27)
 
 **Context.** The game is one app: the world, streaming, saving, the
