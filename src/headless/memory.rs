@@ -10,6 +10,7 @@ use std::{
 
 use bevy::prelude::*;
 
+use defaria_client::meshing::{MeshSize, ModelFaces};
 use defaria_core::{
     content::{BlockState, FULL_FLUID},
     light::ChunkLight,
@@ -56,6 +57,13 @@ pub struct ChunkMemory {
     /// Bytes of their vertices and indices kept in the main world (a
     /// copy of what's on the GPU), for the meshes that still have it.
     pub mesh_bytes: usize,
+    /// Chunks with any mesh.
+    pub meshed_chunks: usize,
+    /// What the meshes sent the GPU: vertices, and bytes of vertices and
+    /// of indices.
+    pub gpu: MeshSize,
+    /// Bytes of the model face table the meshes' vertices name faces in.
+    pub face_table: usize,
 }
 
 impl ChunkMemory {
@@ -67,17 +75,31 @@ impl ChunkMemory {
             chunk_entities.insert(entity);
             memory.add_chunk(chunk, light);
         }
-        let mut meshes = world.query::<(Entity, &Mesh3d, Option<&ChildOf>)>();
+        let mut meshes = world.query::<(Entity, &Mesh3d, Option<&MeshSize>, Option<&ChildOf>)>();
         let assets = world.resource::<Assets<Mesh>>();
-        for (entity, mesh, parent) in meshes.iter(world) {
-            let on_chunk = chunk_entities.contains(&entity)
-                || parent.is_some_and(|parent| chunk_entities.contains(&parent.parent()));
-            if !on_chunk {
-                continue;
-            }
+        let mut meshed = HashSet::new();
+        for (entity, mesh, size, parent) in meshes.iter(world) {
+            let chunk = if chunk_entities.contains(&entity) {
+                entity
+            } else {
+                match parent.map(ChildOf::parent) {
+                    Some(parent) if chunk_entities.contains(&parent) => parent,
+                    _ => continue,
+                }
+            };
+            meshed.insert(chunk);
             memory.meshes += 1;
             memory.mesh_bytes += assets.get(&mesh.0).map_or(0, mesh_bytes);
+            if let Some(size) = size {
+                memory.gpu.vertices += size.vertices;
+                memory.gpu.vertex_bytes += size.vertex_bytes;
+                memory.gpu.index_bytes += size.index_bytes;
+            }
         }
+        memory.meshed_chunks = meshed.len();
+        memory.face_table = world
+            .get_resource::<ModelFaces>()
+            .map_or(0, ModelFaces::bytes);
         memory
     }
 
@@ -127,7 +149,9 @@ impl fmt::Display for ChunkMemory {
             "memory: {} chunks ({} all air, {} one other block throughout, {} one light \
              throughout); blocks {:.1} MiB, light {:.1} MiB, fluid {:.2} MiB ({} partial \
              voxels): {:.1} MiB of chunk storage, {} KiB of it in {} chunks of one value \
-             kept dense; {} meshes holding {:.1} MiB",
+             kept dense; {} meshes holding {:.1} MiB; on the GPU, {} vertices of {} chunks \
+             in {:.1} MiB ({:.1} MiB of vertices, {:.1} MiB of indices): {:.1} bytes a face \
+             of four vertices, {:.1} KiB a meshed chunk, and a {} KiB model face table",
             self.chunks,
             self.air,
             self.solid,
@@ -141,7 +165,25 @@ impl fmt::Display for ChunkMemory {
             self.uniform_dense_chunks,
             self.meshes,
             mib(self.mesh_bytes),
+            self.gpu.vertices,
+            self.meshed_chunks,
+            mib(self.gpu.vertex_bytes + self.gpu.index_bytes),
+            mib(self.gpu.vertex_bytes),
+            mib(self.gpu.index_bytes),
+            self.gpu_bytes_per_face(),
+            (self.gpu.vertex_bytes + self.gpu.index_bytes) as f64
+                / 1024.0
+                / self.meshed_chunks.max(1) as f64,
+            self.face_table / 1024,
         )
+    }
+}
+
+impl ChunkMemory {
+    /// Bytes on the GPU a face of four vertices takes, on average.
+    pub fn gpu_bytes_per_face(&self) -> f64 {
+        (self.gpu.vertex_bytes + self.gpu.index_bytes) as f64 * 4.0
+            / self.gpu.vertices.max(1) as f64
     }
 }
 
@@ -290,6 +332,33 @@ mod tests {
         assert_eq!(mesh_bytes(&mesh), 0);
     }
 
+    /// What chunk meshes sent the GPU adds up over a chunk's own mesh and
+    /// its parts', and meshes on anything else don't count.
+    #[test]
+    fn memory_counts_what_meshes_sent_the_gpu() {
+        let mut world = world_with(vec![(IVec3::ZERO, Chunk::filled(BlockState(1)))]);
+        let chunk = world
+            .query_filtered::<Entity, With<Chunk>>()
+            .iter(&world)
+            .next()
+            .unwrap();
+        let size = |vertices: usize| MeshSize {
+            vertices,
+            vertex_bytes: vertices * 20,
+            index_bytes: vertices / 4 * 6 * 2,
+        };
+        world
+            .entity_mut(chunk)
+            .insert((Mesh3d(Handle::default()), size(400)));
+        world.spawn((Mesh3d(Handle::default()), size(40), ChildOf(chunk)));
+        world.spawn((Mesh3d(Handle::default()), size(4000)));
+        let memory = ChunkMemory::measure(&mut world);
+        assert_eq!(memory.meshes, 2);
+        assert_eq!(memory.meshed_chunks, 1);
+        assert_eq!(memory.gpu, size(440));
+        assert_eq!(memory.gpu_bytes_per_face(), 4.0 * 20.0 + 6.0 * 2.0);
+    }
+
     #[test]
     fn memory_counts_storage_and_uniform_chunks() {
         let stone = BlockState(1);
@@ -326,6 +395,7 @@ mod tests {
         assert_eq!(memory.uniform_dense_chunks, 1);
         assert_eq!(memory.partial_fluid, 0);
         assert_eq!(memory.meshes, 0);
+        assert_eq!(memory.gpu, MeshSize::default());
         let line = memory.to_string();
         assert!(
             line.starts_with("memory: 4 chunks (2 all air, 1 one other block"),

@@ -215,6 +215,7 @@ mod tests {
                 blocks: Handle::default(),
                 lighting: default(),
                 animations: Handle::default(),
+                faces: Handle::default(),
                 alpha_mode,
             })
         };

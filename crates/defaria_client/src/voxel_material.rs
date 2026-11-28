@@ -13,6 +13,11 @@
 //! [`block_texture::build`] colorizes and stacks them into a mipmapped array
 //! texture, one layer per [`Content`] texture, and the material samples
 //! that.
+//!
+//! Chunk meshes' vertices are packed and name their faces in the model
+//! face table ([`ModelFaces`]), which the material hands the shader as a
+//! storage buffer, uploaded again whenever the table is built again (other
+//! content).
 
 use bevy::{
     asset::{AssetLoadFailedEvent, RenderAssetUsages},
@@ -32,7 +37,7 @@ use bevy::{
 
 use crate::{
     block_texture,
-    meshing::{ATTRIBUTE_CORNER, ATTRIBUTE_FACE, ATTRIBUTE_FLOW, ATTRIBUTE_LIGHT},
+    meshing::{ATTRIBUTE_FLOW, ATTRIBUTE_PACKED, ModelFaces},
 };
 use defaria_core::content::Content;
 
@@ -50,7 +55,14 @@ impl Plugin for VoxelMaterialPlugin {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .init_resource::<BlockMaterial>()
             .init_resource::<BlockTiles>()
-            .add_systems(Update, build_block_texture);
+            .add_systems(
+                Update,
+                (
+                    build_block_texture,
+                    // The table built this frame, before chunks drawn with it.
+                    upload_model_faces.after(crate::meshing::RemeshChunks),
+                ),
+            );
     }
 }
 
@@ -76,6 +88,9 @@ pub struct VoxelMaterial {
     /// ([`block_texture::Animations::words`]).
     #[storage(3, read_only, visibility(fragment))]
     pub animations: Handle<ShaderBuffer>,
+    /// The model face table ([`ModelFaces::words`]).
+    #[storage(4, read_only, visibility(vertex))]
+    pub faces: Handle<ShaderBuffer>,
     /// Opaque, cut out (alpha to coverage, with holes where the texture is
     /// transparent) or blended.
     pub alpha_mode: AlphaMode,
@@ -156,13 +171,8 @@ impl Material for VoxelMaterial {
 
 /// The shader's vertex inputs, at locations 0, 1, 2, ... in this order:
 /// each mesh attribute and how the shader declares it.
-const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 7] = [
-    (Mesh::ATTRIBUTE_POSITION, "position: vec3<f32>"),
-    (Mesh::ATTRIBUTE_NORMAL, "normal: vec3<f32>"),
-    (Mesh::ATTRIBUTE_UV_0, "uv: vec2<f32>"),
-    (ATTRIBUTE_CORNER, "corner: vec2<f32>"),
-    (ATTRIBUTE_LIGHT, "light: vec4<u32>"),
-    (ATTRIBUTE_FACE, "face: vec2<u32>"),
+const VERTEX_INPUTS: [(MeshVertexAttribute, &str); 2] = [
+    (ATTRIBUTE_PACKED, "packed: vec4<u32>"),
     (ATTRIBUTE_FLOW, "flow: vec2<f32>"),
 ];
 
@@ -256,12 +266,15 @@ impl FromWorld for BlockMaterial {
         // layers have loaded and the real texture replaces it.
         let blocks = world.resource::<Assets<Image>>().reserve_handle();
         let animations = world.resource::<Assets<ShaderBuffer>>().reserve_handle();
+        // Until the table's first built.
+        let faces = world.resource::<Assets<ShaderBuffer>>().reserve_handle();
         let mut materials = world.resource_mut::<Assets<VoxelMaterial>>();
         let mut add = |alpha_mode| {
             materials.add(VoxelMaterial {
                 blocks: blocks.clone(),
                 lighting: default(),
                 animations: animations.clone(),
+                faces: faces.clone(),
                 alpha_mode,
             })
         };
@@ -388,6 +401,29 @@ fn build_block_texture(
     }
 }
 
+/// Hands every material the model face table, each time it's built
+/// (once there's any content, and whenever it changes). A new buffer
+/// each time, so it's uploaded whole and the bind groups pick it up.
+fn upload_model_faces(
+    faces: Res<ModelFaces>,
+    block: Res<BlockMaterial>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+    mut materials: ResMut<Assets<VoxelMaterial>>,
+) {
+    if !faces.is_changed() || faces.words.is_empty() {
+        return;
+    }
+    let table = buffers.add(ShaderBuffer::new(
+        faces.words.to_vec(),
+        RenderAssetUsages::RENDER_WORLD,
+    ));
+    for handle in block.all() {
+        if let Some(mut material) = materials.get_mut(handle) {
+            material.faces = table.clone();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,17 +445,67 @@ mod tests {
         assert!(shader.contains("@binding(1) var blocks_sampler: sampler"));
         assert!(shader.contains("@binding(2) var<uniform> lighting: Lighting"));
         assert!(shader.contains("@binding(3) var<storage, read> animations: array<Animation>"));
-        // The flow bits the mesher packs (see `meshing::scroll`).
-        use crate::meshing::scroll;
-        for constant in [
-            format!("const TEXTURE_BITS: u32 = 0x{:08x}u;", scroll::TEXTURE_BITS),
-            format!("const FLOWING: u32 = 0x{:08x}u;", scroll::FLOWING),
-            format!("const WRAPPED: u32 = 0x{:08x}u;", scroll::WRAPPED),
-        ] {
+        assert!(shader.contains("@binding(4) var<storage, read> faces: array<ModelFace>"));
+        // The packed vertex's fields, where the mesher puts them.
+        use crate::meshing::{model_faces, packed};
+        let constants = packed::FIELDS.iter().map(|(name, field)| {
+            format!(
+                "const {name}: vec3<u32> = vec3<u32>({}u, {}u, {}u);",
+                field.word, field.offset, field.bits
+            )
+        });
+        for constant in constants {
             assert!(
                 shader.contains(&constant),
                 "the shader doesn't declare {constant}"
             );
+        }
+        // The fluid's height, in steps of a block.
+        assert!(shader.contains(&format!(
+            "const HEIGHT_STEPS: f32 = {}.0;",
+            packed::HEIGHT_STEPS
+        )));
+        assert!(shader.contains("f32(field(words, HEIGHT)) / HEIGHT_STEPS"));
+        // The model face table's entries, as `ModelFace::words` writes
+        // them: four corners' position and u, their v, the normal and
+        // the layer.
+        let start = shader.find("struct ModelFace {").unwrap();
+        let body = &shader[start..start + shader[start..].find("};").unwrap()];
+        let fields: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with(','))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "corners: array<vec4<f32>, 4>,",
+                "v: vec4<f32>,",
+                "normal: vec3<f32>,",
+                "texture: u32,",
+            ]
+        );
+        assert_eq!(model_faces::FACE_WORDS, 4 * 4 + 4 + 3 + 1);
+        // What the shader works out as the mesh tests' decoder does
+        // (`meshing::build::decoded`): the bilinear blend as
+        // `packed::untwist`, corners as `packed::corner_position`, a
+        // fluid's texture coordinates as `scroll::uv_at`, a back's normal,
+        // and light and its twist in the same levels.
+        for line in [
+            "return interpolated - min(corner.x, corner.y) * (1.0 - max(corner.x, corner.y)) * twist;",
+            "return vec2<f32>(select(0.0, 1.0, corner == 1u || corner == 2u), select(0.0, 1.0, corner >= 2u));",
+            "return vec3<f32>(-round(normal.z), 0.0, round(normal.x));",
+            "return position.xz;",
+            "return vec2<f32>(dot(position, across(normal)), -position.y);",
+            "local.y = local.y * f32(field(words, HEIGHT)) / HEIGHT_STEPS;",
+            "let position = voxel + local;",
+            "out.world_normal = mesh_normal_local_to_world(select(normal, -normal, back), vertex.instance_index);",
+            "out.uv = select(vec2<f32>(model.w, faces[face].v[corner]), uv_at(normal, position), wrapped);",
+            "out.light = unpack4x8unorm(field(words, LIGHT)) * MAX_LIGHT;",
+            ") / 255.0 * MAX_LIGHT;",
+            "let model = faces[face].corners[corner];",
+        ] {
+            assert!(shader.contains(line), "the shader doesn't say {line}");
         }
         // The animation table's entries, word by word as `words` writes
         // them: the struct's fields in order, each 32 bits.
@@ -460,11 +546,6 @@ mod tests {
             "const MAX_DYNAMIC_LIGHTS: u32 = {MAX_DYNAMIC_LIGHTS}u;"
         )));
         assert!(shader.contains("fn vertex("));
-        let back = format!(
-            "const BACK_FACE: u32 = 0x{:08x}u;",
-            crate::meshing::BACK_FACE
-        );
-        assert!(shader.contains(&back), "the shader doesn't declare {back}");
         // The vertex inputs at the locations `specialize` feeds them to.
         for (location, (_, declaration)) in VERTEX_INPUTS.iter().enumerate() {
             let input = format!("@location({location}) {declaration}");
@@ -745,6 +826,58 @@ mod tests {
         let tiles = &app.world().resource::<BlockTiles>().0;
         let water_palette = base().materials["defaria:water"].palette;
         assert_eq!(tiles[water][..4], water_palette.color(2).to_u8_array());
+    }
+
+    /// The model face table reaches every material once it's built, and
+    /// a new one when other content comes in (a server's mods).
+    #[test]
+    fn the_model_face_table_is_uploaded_and_replaced_with_the_content() {
+        use crate::meshing::model_faces::update_model_faces;
+        let mut app = app();
+        app.init_resource::<ModelFaces>()
+            .add_systems(Update, (update_model_faces, upload_model_faces).chain());
+        app.update();
+        let uploaded = |app: &App| -> Vec<Handle<ShaderBuffer>> {
+            let block = app.world().resource::<BlockMaterial>();
+            let materials = app.world().resource::<Assets<VoxelMaterial>>();
+            block
+                .all()
+                .map(|h| materials.get(h).unwrap().faces.clone())
+                .to_vec()
+        };
+        let words = |app: &App, handle: &Handle<ShaderBuffer>| -> Vec<u32> {
+            let buffers = app.world().resource::<Assets<ShaderBuffer>>();
+            buffers.get(handle).unwrap().cast_slice().unwrap().to_vec()
+        };
+        let first = uploaded(&app);
+        assert!(first.iter().all(|h| *h == first[0]));
+        assert_eq!(
+            words(&app, &first[0]),
+            *ModelFaces::new(base()).words,
+            "the base game's table"
+        );
+        app.update();
+        assert_eq!(uploaded(&app), first, "nothing changed, nothing uploaded");
+
+        // A mod with a model of its own: a face no base block has.
+        let other = defaria_core::content::test_mod(&[
+            (
+                "models/tri.json5",
+                r#"{ slots: { all: null }, faces: [{ texture: "all", vertices: [
+                    { pos: [0, 0.3, 1], uv: [0, 1] }, { pos: [1, 0.3, 1], uv: [1, 1] }, { pos: [1, 0.3, 0], uv: [1, 0] },
+                ] }] }"#,
+            ),
+            (
+                "blocks/tri.json5",
+                r#"{ model: "tri", textures: { all: "a" } }"#,
+            ),
+        ]);
+        app.world_mut().insert_resource(other.clone());
+        app.update();
+        let second = uploaded(&app);
+        assert_ne!(second[0], first[0]);
+        assert!(second.iter().all(|h| *h == second[0]));
+        assert_eq!(words(&app, &second[0]), *ModelFaces::new(&other).words);
     }
 
     /// The three chunk materials blend as their names say: opaque, cut out

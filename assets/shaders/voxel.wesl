@@ -2,12 +2,19 @@
 // mesh and by the dynamic lights.
 //
 // Bindings must match `VoxelMaterial` in crates/defaria_client/src/voxel_material.rs, and the
-// vertex attributes the locations its `specialize` gives them. Every vertex
-// of a face carries all four of the face's corners' light and ambient
-// occlusion, and where it sits on the face (`corner`), so the fragment stage
-// can blend the corners bilinearly. Letting the GPU interpolate per vertex
-// instead would blend across each of the quad's two triangles separately,
-// which shows the diagonal as bands and creases.
+// vertex attributes the locations its `specialize` gives them.
+//
+// Vertices are packed (see crates/defaria_client/src/meshing/packed.rs): four words naming
+// the voxel in the chunk, a corner of a face in the model face table
+// (`faces`, which holds where the corner sits in the voxel, its texture
+// coordinates, the face's normal and texture), the corner's light and
+// ambient occlusion and the face's twist, and a fluid face's height; and a
+// fluid face's flow. The fragment stage blends a face's four corners'
+// light and occlusion bilinearly: the GPU interpolates each vertex's own
+// corner across its triangle, and `untwist` takes off what that differs
+// from the bilinear blend, from the face's twist. Interpolating alone
+// would blend across each of the quad's two triangles separately, which
+// shows the diagonal as bands and creases.
 //
 // Animated textures: a texture's first frame is the array layer of its own
 // index, and its other frames come after every texture's first. The
@@ -68,6 +75,50 @@ struct Animation {
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(3) var<storage, read> animations: array<Animation>;
 
+// One face of a block's model, wherever it's drawn. Must match
+// `ModelFace::words` in crates/defaria_client/src/meshing/model_faces.rs.
+struct ModelFace {
+    // Each corner's position in its voxel, then its texture's u.
+    corners: array<vec4<f32>, 4>,
+    // Each corner's v.
+    v: vec4<f32>,
+    normal: vec3<f32>,
+    // The texture's index.
+    texture: u32,
+};
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(4) var<storage, read> faces: array<ModelFace>;
+
+// The packed vertex's fields: word, lowest bit and width. Must match
+// crates/defaria_client/src/meshing/packed.rs.
+const LIGHT: vec3<u32> = vec3<u32>(0u, 0u, 32u);
+const LIGHT_TWIST_SKY: vec3<u32> = vec3<u32>(1u, 0u, 10u);
+const LIGHT_TWIST_RED: vec3<u32> = vec3<u32>(1u, 10u, 10u);
+const LIGHT_TWIST_GREEN: vec3<u32> = vec3<u32>(1u, 20u, 10u);
+const LIGHT_TWIST_BLUE: vec3<u32> = vec3<u32>(2u, 0u, 10u);
+const AO: vec3<u32> = vec3<u32>(1u, 30u, 2u);
+const AO_TWIST: vec3<u32> = vec3<u32>(2u, 10u, 4u);
+const VOXEL_X: vec3<u32> = vec3<u32>(2u, 14u, 4u);
+const VOXEL_Y: vec3<u32> = vec3<u32>(2u, 18u, 4u);
+const VOXEL_Z: vec3<u32> = vec3<u32>(2u, 22u, 4u);
+const CORNER: vec3<u32> = vec3<u32>(2u, 26u, 2u);
+const BACK: vec3<u32> = vec3<u32>(2u, 28u, 1u);
+const FLOWING: vec3<u32> = vec3<u32>(2u, 29u, 1u);
+const WRAPPED: vec3<u32> = vec3<u32>(2u, 30u, 1u);
+const FACE: vec3<u32> = vec3<u32>(3u, 0u, 16u);
+const HEIGHT: vec3<u32> = vec3<u32>(3u, 16u, 16u);
+// A block's height in HEIGHT's steps.
+const HEIGHT_STEPS: f32 = 49152.0;
+
+fn field(words: vec4<u32>, at: vec3<u32>) -> u32 {
+    return extractBits(words[at.x], at.y, at.z);
+}
+
+// A field holding a signed number.
+fn signed_field(words: vec4<u32>, at: vec3<u32>) -> f32 {
+    return f32(extractBits(bitcast<i32>(words[at.x]), at.y, at.z));
+}
+
 // Light levels run from 0 to this.
 const MAX_LIGHT: f32 = 15.0;
 // Each level down is this much dimmer.
@@ -77,35 +128,24 @@ const AMBIENT: f32 = 0.025;
 // Brightness of a fully occluded corner (ambient occlusion level 0); level 3
 // is open and fully bright.
 const OCCLUDED: f32 = 0.3;
-// Set on the layer of a double-sided block's back face (see BACK_FACE in
-// crates/defaria_client/src/meshing/build.rs). A back is drawn this much farther away, as a share of its
-// distance, so a neighbour's face in the same plane (a slab's side beside
-// water or lava) wins the depth test instead of flickering with it.
-const BACK_FACE: u32 = 0x80000000u;
+// A double-sided block's back face (BACK) is drawn this much farther away,
+// as a share of its distance, so a neighbour's face in the same plane (a
+// slab's side beside water or lava) wins the depth test instead of
+// flickering with it.
 const BACK_DEPTH_BIAS: f32 = 2e-5;
-// The rest of a face's layer (see crates/defaria_client/src/meshing/scroll.rs): the texture's index
-// in the low bits, WRAPPED on a fluid face and FLOWING on one that flows.
-const TEXTURE_BITS: u32 = 0x00ffffffu;
-const FLOWING: u32 = 0x10000000u;
-const WRAPPED: u32 = 0x20000000u;
+// The fragment stage's flags: a fluid face's texture coordinates wrap
+// every block, and a flowing one's move.
+const WRAPS: u32 = 1u;
+const FLOWS: u32 = 2u;
 // Seconds each of the flow map's two phases takes to push its sample along
 // and start again.
 const FLOW_CYCLE: f32 = 1.0;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) uv: vec2<f32>,
-    // (0, 0), (1, 0), (1, 1) or (0, 1): which corner of the face this is.
-    @location(3) corner: vec2<f32>,
-    // Each corner's light: sky, red, green and blue as bytes, 255 = level 15.
-    @location(4) light: vec4<u32>,
-    // The texture layer (with BACK_FACE on a back face), then each corner's
-    // ambient occlusion as bytes, 0-3.
-    @location(5) face: vec2<u32>,
+    @location(0) packed: vec4<u32>,
     // A fluid face's flow here, in its texture coordinates; zero elsewhere.
-    @location(6) flow: vec2<f32>,
+    @location(1) flow: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -113,60 +153,92 @@ struct VertexOutput {
     @location(0) world_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // Where on the face: (0, 0) at its first corner, (1, 0) at the second,
+    // (1, 1) at the third and (0, 1) at the fourth.
     @location(3) corner: vec2<f32>,
-    @location(4) @interpolate(flat) light: vec4<u32>,
-    @location(5) @interpolate(flat) face: vec2<u32>,
-    @location(6) flow: vec2<f32>,
+    // Sky, red, green and blue light levels, 0 to 15, interpolated between
+    // the vertices' own corners, and the face's twist.
+    @location(4) light: vec4<f32>,
+    @location(5) @interpolate(flat) light_twist: vec4<f32>,
+    // Ambient occlusion, 0 (fully occluded) to 3 (open), the same way.
+    @location(6) occlusion: f32,
+    @location(7) @interpolate(flat) occlusion_twist: f32,
+    // The texture, then WRAPS and FLOWS.
+    @location(8) @interpolate(flat) face: vec2<u32>,
+    @location(9) flow: vec2<f32>,
 };
+
+// The horizontal axis along a side facing `normal`, a quarter turn from
+// it. As `across` in crates/defaria_client/src/meshing/scroll.rs.
+fn across(normal: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(-round(normal.z), 0.0, round(normal.x));
+}
+
+// A fluid face's texture coordinates at `position`: where it is along its
+// plane. As `uv_at` in crates/defaria_client/src/meshing/scroll.rs.
+fn uv_at(normal: vec3<f32>, position: vec3<f32>) -> vec2<f32> {
+    if abs(normal.y) > 0.5 {
+        return position.xz;
+    }
+    return vec2<f32>(dot(position, across(normal)), -position.y);
+}
+
+// Where corner `corner` of a face is: see `corner` in VertexOutput. As
+// `corner_position` in crates/defaria_client/src/meshing/packed.rs.
+fn corner_position(corner: u32) -> vec2<f32> {
+    return vec2<f32>(select(0.0, 1.0, corner == 1u || corner == 2u), select(0.0, 1.0, corner >= 2u));
+}
 
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
     var out: VertexOutput;
+    let words = vertex.packed;
+    let face = field(words, FACE);
+    let corner = field(words, CORNER);
+    let model = faces[face].corners[corner];
+    let normal = faces[face].normal;
+    let voxel = vec3<f32>(vec3<u32>(field(words, VOXEL_X), field(words, VOXEL_Y), field(words, VOXEL_Z)));
+    let wrapped = field(words, WRAPPED) != 0u;
+    var local = model.xyz;
+    if wrapped {
+        // A fluid's surface, at the height its neighbours set.
+        local.y = local.y * f32(field(words, HEIGHT)) / HEIGHT_STEPS;
+    }
+    let position = voxel + local;
+    let back = field(words, BACK) != 0u;
+
     let world_from_local = get_world_from_local(vertex.instance_index);
-    let world_position = mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
+    let world_position = mesh_position_local_to_world(world_from_local, vec4<f32>(position, 1.0));
     out.position = position_world_to_clip(world_position.xyz);
-    if (vertex.face.x & BACK_FACE) != 0u {
+    if back {
         // Reversed depth: smaller is farther.
         out.position.z = out.position.z * (1.0 - BACK_DEPTH_BIAS);
     }
     out.world_position = world_position.xyz;
-    out.world_normal = mesh_normal_local_to_world(vertex.normal, vertex.instance_index);
-    out.uv = vertex.uv;
-    out.corner = vertex.corner;
-    out.light = vertex.light;
-    out.face = vertex.face;
+    out.world_normal = mesh_normal_local_to_world(select(normal, -normal, back), vertex.instance_index);
+    out.uv = select(vec2<f32>(model.w, faces[face].v[corner]), uv_at(normal, position), wrapped);
+    out.corner = corner_position(corner);
+    out.light = unpack4x8unorm(field(words, LIGHT)) * MAX_LIGHT;
+    out.light_twist = vec4<f32>(
+        signed_field(words, LIGHT_TWIST_SKY),
+        signed_field(words, LIGHT_TWIST_RED),
+        signed_field(words, LIGHT_TWIST_GREEN),
+        signed_field(words, LIGHT_TWIST_BLUE),
+    ) / 255.0 * MAX_LIGHT;
+    out.occlusion = f32(field(words, AO));
+    out.occlusion_twist = signed_field(words, AO_TWIST);
+    let flags = select(0u, WRAPS, wrapped) | select(0u, FLOWS, field(words, FLOWING) != 0u);
+    out.face = vec2<u32>(faces[face].texture, flags);
     out.flow = vertex.flow;
     return out;
 }
 
-// Blends the four corners' values at `corner` on the face.
-fn bilinear(c: array<vec4<f32>, 4>, corner: vec2<f32>) -> vec4<f32> {
-    let bottom = mix(c[0], c[1], corner.x);
-    let top = mix(c[3], c[2], corner.x);
-    return mix(bottom, top, corner.y);
-}
-
-// Sky, red, green and blue light levels here, 0 to 15.
-fn baked_light(light: vec4<u32>, corner: vec2<f32>) -> vec4<f32> {
-    let corners = array<vec4<f32>, 4>(
-        unpack4x8unorm(light.x),
-        unpack4x8unorm(light.y),
-        unpack4x8unorm(light.z),
-        unpack4x8unorm(light.w),
-    );
-    return bilinear(corners, corner) * MAX_LIGHT;
-}
-
-// Ambient occlusion here, 0 (fully occluded) to 3 (open).
-fn occlusion(packed: u32, corner: vec2<f32>) -> f32 {
-    let levels = unpack4x8unorm(packed) * 255.0;
-    let corners = array<vec4<f32>, 4>(
-        vec4<f32>(levels.x),
-        vec4<f32>(levels.y),
-        vec4<f32>(levels.z),
-        vec4<f32>(levels.w),
-    );
-    return bilinear(corners, corner).x;
+// The bilinear blend of a face's four corners at `corner`, from the value
+// interpolated between the vertices of the triangle it's in and the
+// face's twist (c0 - c1 + c2 - c3). As `untwist` in
+// crates/defaria_client/src/meshing/packed.rs.
+fn untwist(interpolated: vec4<f32>, twist: vec4<f32>, corner: vec2<f32>) -> vec4<f32> {
+    return interpolated - min(corner.x, corner.y) * (1.0 - max(corner.x, corner.y)) * twist;
 }
 
 // How bright a light level looks: 0 at level 0, 1 at level 15, each level
@@ -296,14 +368,14 @@ fn fogged(color: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(blocks));
     let time = bevy_pbr::render::mesh_view_bindings::globals.time;
-    let texture = in.face.x & TEXTURE_BITS;
+    let texture = in.face.x;
     let animation = animations[texture];
     let texels_per_pixel = clamp(fwidth(in.uv * size), vec2<f32>(1e-5), vec2<f32>(1.0));
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
     let frame = animated_frame(texture, animation, time);
     var texel: vec4<f32>;
-    if (in.face.x & FLOWING) != 0u {
+    if (in.face.y & FLOWS) != 0u {
         // The flow map: two samples pushed along the flow, half a cycle
         // apart, each pulled back to the start once a cycle. Each fades out
         // as it nears its reset, while the other is halfway.
@@ -318,18 +390,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         // Still: one sample, where the face is. A fluid face's coordinates
         // run on past its block, so they wrap.
         let snapped = pixel_art_uv(in.uv, size, texels_per_pixel);
-        let wrapped = (in.face.x & WRAPPED) != 0u;
+        let wrapped = (in.face.y & WRAPS) != 0u;
         texel = sample_frame(select(snapped, fract(snapped), wrapped), frame, ddx, ddy);
     }
 
-    let baked = baked_light(in.light, in.corner);
+    let baked = untwist(in.light, in.light_twist, in.corner);
     let normal = normalize(in.world_normal);
     // Block and dynamic light combine like two block lights: the brighter
     // wins, per channel. Then the brighter of that and the sky.
     let block = max(baked.yzw, dynamic_light(in.world_position, normal));
     let sky = lighting.sky.rgb * brightness(vec3<f32>(baked.x));
     let light = max(max(sky, brightness(block)), vec3<f32>(AMBIENT));
-    let ao = mix(OCCLUDED, 1.0, occlusion(in.face.y, in.corner) / 3.0);
+    let occlusion = untwist(vec4<f32>(in.occlusion), vec4<f32>(in.occlusion_twist), in.corner).x;
+    let ao = mix(OCCLUDED, 1.0, occlusion / 3.0);
     let alpha = cut_out(texel.a);
     return vec4<f32>(fogged(texel.rgb * light * ao, in.world_position), alpha);
 }
