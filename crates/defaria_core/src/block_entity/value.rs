@@ -12,6 +12,11 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 use serde::Deserialize;
 
+/// How deep lists and tables can nest in a plain value: a saved one
+/// deeper is an error when it's read, so damaged data can't overflow the
+/// stack, and a script can't keep or send one deeper.
+pub const MAX_DEPTH: usize = 32;
+
 /// A plain value. In mod files it's written as JSON5: `true`, `3`, `0.5`,
 /// `"text"`, `[...]` or `{ key: ... }`.
 #[derive(Reflect, Deserialize, Debug, Clone)]

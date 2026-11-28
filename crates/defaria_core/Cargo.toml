@@ -1,6 +1,6 @@
 [package]
 name = "defaria_core"
-description = "What both sides of the game know: content, the world's storage, physics and the player, and the protocol between them."
+description = "What both sides of the game know: content, the world's storage, physics and the player, the protocol between them, and the script runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 bevy = { workspace = true }
 json5 = { workspace = true }
+mlua = { workspace = true }
 postcard = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }

@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 bevy = { workspace = true }
 defaria_core = { workspace = true }
+# Mods' client scripts, in the runtime core has.
+mlua = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 

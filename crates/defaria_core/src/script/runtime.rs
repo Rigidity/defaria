@@ -11,9 +11,10 @@ use bevy::{
 use mlua::{FromLuaMulti, Function, IntoLuaMulti, Lua, Scope, Value};
 
 use super::{
-    ScriptSettings,
+    ScriptSettings, Side,
+    channel::Outbox,
     error::{self, CallError, ErrorKind, ScriptError},
-    sandbox::{self, LogHistory, LogLine, Meter},
+    sandbox::{self, LogHistory, LogLine, Meter, Shared},
     source::ScriptSources,
 };
 
@@ -25,10 +26,30 @@ pub enum Caller {
     Entity(Entity),
     /// A block with no entity of its own.
     Block(IVec3),
-    /// A kind of item, by its index in [`Content::items`](defaria_core::content::Content::items).
+    /// A kind of item, by its index in [`Content::items`](crate::content::Content::items).
     Item(usize),
+    /// One script's hook called for something other than a block or an
+    /// item (a message, a client's `on_join`), for one player or none:
+    /// see [`Caller::script`].
+    Script {
+        script: u64,
+        player: Option<Entity>,
+    },
     /// Anything else, such as a test.
     Other(u64),
+}
+
+impl Caller {
+    /// Script `id`'s hooks for `player` (or for no one): disabled on their
+    /// own when they fail, so one player's bad message stops that
+    /// script's handling of that player's messages, and nothing else.
+    pub fn script(id: &str, player: Option<Entity>) -> Self {
+        // FNV-1a: the same for the same id, run after run.
+        let script = id.bytes().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3)
+        });
+        Caller::Script { script, player }
+    }
 }
 
 /// One mod's state.
@@ -59,6 +80,7 @@ struct Script {
 /// [`Caller`] is disabled until the scripts reload.
 #[derive(Resource)]
 pub struct ScriptRuntime {
+    side: Side,
     sources: Arc<ScriptSources>,
     settings: ScriptSettings,
     mods: Vec<ModRuntime>,
@@ -66,6 +88,8 @@ pub struct ScriptRuntime {
     load_errors: Vec<ScriptError>,
     disabled: HashSet<Caller>,
     log: Arc<LogHistory>,
+    /// What the scripts sent (`net.send`), until the engine takes it.
+    outbox: Arc<Outbox>,
     generation: u64,
     /// The steps every hook call has used, since the scripts loaded.
     spent: u64,
@@ -75,24 +99,34 @@ impl ScriptRuntime {
     /// Loads every mod's scripts: runs each script's top level, within
     /// the budget, to define its hooks. Scripts that fail are logged and
     /// kept in [`ScriptRuntime::load_errors`].
-    pub fn new(sources: ScriptSources, settings: ScriptSettings) -> Self {
-        Self::build(Arc::new(sources), settings, Arc::default(), 0)
+    ///
+    /// `side` decides what the scripts are given: the `side` global, and
+    /// the `net` functions of that side ([`super::channel`]).
+    pub fn new(side: Side, sources: ScriptSources, settings: ScriptSettings) -> Self {
+        let shared = Shared {
+            side,
+            log: Arc::default(),
+            outbox: Arc::default(),
+        };
+        Self::build(Arc::new(sources), settings, shared, 0)
     }
 
     fn build(
         sources: Arc<ScriptSources>,
         settings: ScriptSettings,
-        log: Arc<LogHistory>,
+        shared: Shared,
         generation: u64,
     ) -> Self {
         let mut runtime = Self {
+            side: shared.side,
             sources: sources.clone(),
             settings,
             mods: Vec::new(),
             scripts: HashMap::default(),
             load_errors: Vec::new(),
             disabled: HashSet::default(),
-            log,
+            log: shared.log.clone(),
+            outbox: shared.outbox.clone(),
             generation,
             spent: 0,
         };
@@ -103,7 +137,7 @@ impl ScriptRuntime {
                 sources.clone(),
                 &runtime.settings,
                 meter.clone(),
-                runtime.log.clone(),
+                &shared,
             ) {
                 Ok(lua) => lua,
                 Err(error) => {
@@ -142,12 +176,37 @@ impl ScriptRuntime {
     /// every disabled caller is enabled, and the generation goes up.
     pub fn reload(&mut self, sources: Option<ScriptSources>) {
         let sources = sources.map_or_else(|| self.sources.clone(), Arc::new);
-        *self = Self::build(
-            sources,
-            self.settings.clone(),
-            self.log.clone(),
-            self.generation + 1,
-        );
+        let shared = Shared {
+            side: self.side,
+            log: self.log.clone(),
+            outbox: self.outbox.clone(),
+        };
+        *self = Self::build(sources, self.settings.clone(), shared, self.generation + 1);
+    }
+
+    /// Which side's runtime it is.
+    pub fn side(&self) -> Side {
+        self.side
+    }
+
+    /// What the scripts sent with `net.send` (and `net.broadcast`), and
+    /// the budget a client's are held to: each side's systems take what's
+    /// waiting once a frame.
+    pub fn outbox(&self) -> &Outbox {
+        &self.outbox
+    }
+
+    /// Mod `mod_id`'s scripts that loaded and define `hook`, in id order.
+    pub fn scripts_with_hook(&self, mod_id: &str, hook: &str) -> Vec<&str> {
+        let Some(m) = self.sources.mods.iter().find(|m| m.id == mod_id) else {
+            return Vec::new();
+        };
+        let mut ids: Vec<&str> = (m.scripts.iter())
+            .filter(|id| self.has_hook(id, hook))
+            .map(String::as_str)
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Changes the settings, reloading if they're different.

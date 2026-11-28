@@ -29,7 +29,6 @@ use bevy::{platform::collections::HashSet, prelude::*};
 use mlua::Lua;
 
 use super::{
-    Caller, ScriptRuntime, ScriptsReloaded,
     api::{PlayerView, ScriptWorld, handle, item_table, player_table},
     random_tick,
 };
@@ -38,6 +37,7 @@ use defaria_core::{
     content::{BlockState, Content, Direction, ItemState},
     game_mode::{GameMode, use_up},
     inventory::Inventory,
+    script::{Caller, ScriptRuntime, ScriptsReloaded},
     world::{Chunk, ChunkCoord, ChunkMap, PropertiesUpdated, VoxelChanged},
 };
 
@@ -596,7 +596,10 @@ fn state_info(lua: &Lua, content: &Content, state: BlockState) -> mlua::Result<m
     let info = content.state(state);
     table.raw_set("id", content.block_of(state).id.as_str())?;
     table.raw_set("name", info.name.as_str())?;
-    table.raw_set("state", super::api::state_table(lua, &info.values)?)?;
+    table.raw_set(
+        "state",
+        defaria_core::script::api::state_table(lua, &info.values)?,
+    )?;
     Ok(table)
 }
 

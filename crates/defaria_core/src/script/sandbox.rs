@@ -15,10 +15,11 @@ use bevy::log::{debug, error, info, warn};
 use mlua::{Lua, LuaOptions, StdLib, Table, Value, Variadic, VmState};
 
 use super::{
-    ScriptSettings,
+    ScriptSettings, Side,
+    channel::{self, Outbox},
     source::{ModScripts, ScriptSources},
 };
-use defaria_core::content;
+use crate::content;
 
 /// The libraries scripts get. Left out: `os` (time and date), `debug`
 /// (reaching into other functions), `io` and `package`, which Luau
@@ -76,6 +77,8 @@ pub(super) struct Meter {
     out_of_time: AtomicBool,
     /// The lines logged since [`Meter::start`].
     logged: AtomicU64,
+    /// The messages sent since [`Meter::start`] (`net.send`).
+    sent: AtomicU64,
 }
 
 impl Meter {
@@ -93,11 +96,18 @@ impl Meter {
         self.overran.store(false, Ordering::Relaxed);
         self.out_of_time.store(false, Ordering::Relaxed);
         self.logged.store(0, Ordering::Relaxed);
+        self.sent.store(0, Ordering::Relaxed);
         *self.started.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     }
 
     pub(super) fn overran(&self) -> bool {
         self.overran.load(Ordering::Relaxed)
+    }
+
+    /// Counts one more message sent in the running call, and returns how
+    /// many it had sent before.
+    pub(super) fn count_sent(&self) -> u64 {
+        self.sent.fetch_add(1, Ordering::Relaxed)
     }
 
     /// The steps used since [`Meter::start`].
@@ -215,21 +225,34 @@ impl LogHistory {
     }
 }
 
+/// What every mod's state on one side shares: the side, where what's
+/// logged goes, and where what's sent waits.
+pub(super) struct Shared {
+    pub side: Side,
+    pub log: Arc<LogHistory>,
+    pub outbox: Arc<Outbox>,
+}
+
 /// A new, sandboxed state for `scripts`' mod.
 pub(super) fn new_state(
     scripts: &ModScripts,
     sources: Arc<ScriptSources>,
     settings: &ScriptSettings,
     meter: Arc<Meter>,
-    log: Arc<LogHistory>,
+    shared: &Shared,
 ) -> mlua::Result<Lua> {
     let lua = Lua::new_with(libraries(), LuaOptions::new())?;
     let globals = lua.globals();
     for name in REMOVED {
         globals.raw_set(name, Value::Nil)?;
     }
-    globals.raw_set("log", log_table(&lua, &scripts.id, log)?)?;
+    globals.raw_set("log", log_table(&lua, &scripts.id, shared.log.clone())?)?;
     globals.raw_set("world", super::api::world_table(&lua)?)?;
+    globals.raw_set("side", shared.side.name())?;
+    globals.raw_set(
+        "net",
+        channel::net_table(&lua, shared.side, &scripts.id, shared.outbox.clone())?,
+    )?;
     let mut allowed = vec![scripts.id.clone()];
     allowed.extend(scripts.dependencies.iter().cloned());
     let mod_id = scripts.id.clone();

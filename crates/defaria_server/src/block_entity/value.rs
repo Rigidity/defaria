@@ -4,13 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use defaria_core::block_entity::Value;
+use defaria_core::block_entity::{MAX_DEPTH, Value};
 
 use crate::save::chunk::{Reader, write_varint};
-
-/// How deep lists and tables can nest in a saved value. Deeper is an error
-/// when reading, so damaged data can't overflow the stack.
-pub const MAX_DEPTH: usize = 32;
 
 const BOOL_FALSE: u8 = 0;
 const BOOL_TRUE: u8 = 1;

@@ -144,8 +144,14 @@ impl Connection {
         }
     }
 
-    fn send(&mut self, message: ServerMessage) {
+    /// Sends the client a message.
+    pub fn send(&mut self, message: ServerMessage) {
         self.link.send(message);
+    }
+
+    /// What the client sent this frame, oldest first.
+    pub fn inbox(&self) -> &[ClientMessage] {
+        &self.inbox
     }
 }
 

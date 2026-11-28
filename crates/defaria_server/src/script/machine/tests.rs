@@ -16,7 +16,7 @@ use crate::{
         energy::{EnergyPlugin, EnergyReport},
     },
     recipe::RecipePlugin,
-    script::{BlockUsed, ScriptPlugin, ScriptSettings, source::ScriptSources},
+    script::{BlockUsed, ScriptPlugin},
 };
 use defaria_core::{
     block_entity::Value,
@@ -27,6 +27,7 @@ use defaria_core::{
     inventory::ItemStack,
     light::{ChunkLight, Light},
     machine::{EnergyBuffer, Slots, Tanks},
+    script::{ScriptSettings, Side, source::ScriptSources},
     testing::{chunk_app, insert_chunk, test_mods, unload_chunk},
     world::{Chunk, ChunkCoord, ChunkMap, Voxels},
 };
@@ -206,7 +207,7 @@ fn content() -> &'static Content {
 fn runtime() -> ScriptRuntime {
     let sources = ScriptSources::from_mods(&order(mods(), &mut Vec::new()));
     assert!(sources.errors.is_empty(), "{:?}", sources.errors);
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let runtime = ScriptRuntime::new(Side::Server, sources, ScriptSettings::untimed());
     assert!(
         runtime.load_errors().is_empty(),
         "{:?}",
@@ -345,7 +346,7 @@ fn the_index_knows_machines_hooks() {
     // With no scripts, no machine ticks, and none are looked through.
     let none = ScriptIndex::new(
         content(),
-        &ScriptRuntime::new(Default::default(), default()),
+        &ScriptRuntime::new(Side::Server, Default::default(), default()),
     );
     assert!(!none.any_tick());
 }

@@ -3,7 +3,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use defaria_core::content::{
+use crate::content::{
     self,
     load::{self, LoadedMod},
 };
@@ -123,7 +123,7 @@ impl ScriptSources {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use defaria_core::content::load::ModFiles;
+    use crate::content::load::ModFiles;
 
     fn sources(mods: Vec<ModFiles>) -> ScriptSources {
         let mut errors = Vec::new();

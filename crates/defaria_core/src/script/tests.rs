@@ -23,7 +23,7 @@ pub(super) fn fixture() -> ScriptSources {
 /// The fixture runtime, with no time limit, so what runs out runs out
 /// of steps, the same every run.
 fn runtime() -> ScriptRuntime {
-    ScriptRuntime::new(fixture(), ScriptSettings::untimed())
+    ScriptRuntime::new(Side::Server, fixture(), ScriptSettings::untimed())
 }
 
 const CALLER: Caller = Caller::Other(1);
@@ -244,7 +244,7 @@ fn catching_the_budgets_error_doesnt_escape_it() {
 
 #[test]
 fn long_library_calls_are_stopped_by_the_time_limit() {
-    let mut runtime = ScriptRuntime::new(fixture(), ScriptSettings::default());
+    let mut runtime = ScriptRuntime::new(Side::Server, fixture(), ScriptSettings::default());
     let started = Instant::now();
     let error = failure(runtime.call_with(CALLER, "scripted:runaway", "on_sort", ()));
     let took = started.elapsed();
@@ -261,7 +261,7 @@ fn long_library_calls_are_stopped_by_the_time_limit() {
 /// library calls at a few steps each.
 #[test]
 fn a_call_that_runs_out_counts_as_its_whole_budget() {
-    let mut runtime = ScriptRuntime::new(fixture(), ScriptSettings::default());
+    let mut runtime = ScriptRuntime::new(Side::Server, fixture(), ScriptSettings::default());
     let before = runtime.steps_spent();
     failure(runtime.call_with(CALLER, "scripted:runaway", "on_sort", ()));
     assert!(runtime.steps_used("scripted").unwrap() < 1_000);
@@ -274,6 +274,7 @@ fn a_call_that_runs_out_counts_as_its_whole_budget() {
 #[test]
 fn a_smaller_budget_stops_sooner() {
     let mut runtime = ScriptRuntime::new(
+        Side::Server,
         fixture(),
         ScriptSettings {
             step_budget: 1,
@@ -290,6 +291,7 @@ fn a_smaller_budget_stops_sooner() {
 #[test]
 fn a_mod_over_its_memory_cap_fails_alone() {
     let mut runtime = ScriptRuntime::new(
+        Side::Server,
         fixture(),
         ScriptSettings {
             step_budget: u64::MAX,
@@ -338,8 +340,8 @@ fn scripts_dont_see_each_others_globals() {
 
 #[test]
 fn scripts_from_the_same_mod_dont_share_globals_either() {
-    let sources = ScriptSources::from_mods(&defaria_core::content::load::order(
-        vec![defaria_core::content::load::ModFiles::new(
+    let sources = ScriptSources::from_mods(&crate::content::load::order(
+        vec![crate::content::load::ModFiles::new(
             "mods/m",
             "{ id: \"m\", name: \"M\" }",
             &[
@@ -349,7 +351,7 @@ fn scripts_from_the_same_mod_dont_share_globals_either() {
         )],
         &mut Vec::new(),
     ));
-    let mut runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let mut runtime = ScriptRuntime::new(Side::Server, sources, ScriptSettings::untimed());
     assert_eq!(
         runtime.call_with::<_, Option<i32>>(CALLER, "m:b", "on_read", ()),
         Ok(Some(None))

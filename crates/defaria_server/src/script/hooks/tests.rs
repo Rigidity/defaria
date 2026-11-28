@@ -9,15 +9,15 @@ use super::*;
 use crate::{
     block_entity::{BlockData, BlockEntities, BlockEntityPlugin},
     script::{
-        ScriptPlugin, ScriptSettings,
+        ScriptPlugin,
         random_tick::{RandomTicks, TickingChunks},
-        source::ScriptSources,
     },
 };
 use defaria_core::{
     block_entity::Value,
     content::load::{ModFiles, order},
     inventory::ItemStack,
+    script::{ScriptSettings, Side, source::ScriptSources},
     testing::{chunk_app, insert_chunk, test_mods},
     world::{Chunk, ChunkCoord, Voxels},
 };
@@ -238,7 +238,7 @@ fn content() -> &'static Content {
 fn runtime() -> ScriptRuntime {
     let sources = ScriptSources::from_mods(&order(mods(), &mut Vec::new()));
     assert!(sources.errors.is_empty(), "{:?}", sources.errors);
-    let runtime = ScriptRuntime::new(sources, ScriptSettings::untimed());
+    let runtime = ScriptRuntime::new(Side::Server, sources, ScriptSettings::untimed());
     assert!(
         runtime.load_errors().is_empty(),
         "{:?}",
@@ -298,6 +298,7 @@ fn data(app: &App, pos: IVec3) -> std::collections::BTreeMap<String, Value> {
 
 fn player() -> PlayerView {
     PlayerView {
+        id: None,
         pos: Vec3::new(0.5, 5.5, 0.5),
         look: Vec3::NEG_Z,
         mode: GameMode::Creative,
@@ -343,7 +344,7 @@ fn the_index_knows_each_blocks_hooks() {
     // looking for blocks that do.
     let none = ScriptIndex::new(
         content(),
-        &ScriptRuntime::new(ScriptSources::default(), default()),
+        &ScriptRuntime::new(Side::Server, ScriptSources::default(), default()),
     );
     assert!(!none.any_random_tick());
 }
@@ -876,6 +877,7 @@ fn the_base_games_scripts_load() {
     let content = defaria_core::content::base();
     let ids: Vec<String> = content.mods.iter().map(|m| m.id.clone()).collect();
     let runtime = ScriptRuntime::new(
+        Side::Server,
         ScriptSources::read(&defaria_core::content::mods_dir(), &ids),
         ScriptSettings::untimed(),
     );

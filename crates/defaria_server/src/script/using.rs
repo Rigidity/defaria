@@ -37,8 +37,14 @@ pub(super) fn plugin(app: &mut App) {
 }
 
 /// What a script sees of the player making `using`.
-fn view(using: Use, mode: Option<&GameMode>, walker: Option<&Player>) -> PlayerView {
+fn view(
+    player: Entity,
+    using: Use,
+    mode: Option<&GameMode>,
+    walker: Option<&Player>,
+) -> PlayerView {
     PlayerView {
+        id: Some(player.to_bits()),
         pos: using.eyes.translation,
         look: *using.eyes.forward(),
         mode: mode.copied().unwrap_or_default(),
@@ -54,6 +60,7 @@ fn view(using: Use, mode: Option<&GameMode>, walker: Option<&Player>) -> PlayerV
 /// place against it.
 pub fn use_scripted_block(
     mut players: Query<(
+        Entity,
         &mut UseAction,
         &Hotbar,
         &ActiveSlot,
@@ -68,7 +75,7 @@ pub fn use_scripted_block(
     let Some(scripts) = scripts else {
         return;
     };
-    for (mut action, hotbar, active, mode, walker) in &mut players {
+    for (entity, mut action, hotbar, active, mode, walker) in &mut players {
         let Some(using) = action.pending() else {
             continue;
         };
@@ -87,7 +94,7 @@ pub fn use_scripted_block(
         action.claim();
         uses.write(BlockUsed {
             pos: hit.block,
-            player: Some(view(using, mode, walker)),
+            player: Some(view(entity, using, mode, walker)),
         });
     }
 }
@@ -124,7 +131,7 @@ pub fn use_scripted_item(
         uses.write(ItemUsed {
             player: entity,
             item,
-            view: view(using, mode, walker),
+            view: view(entity, using, mode, walker),
         });
     }
 }

@@ -84,7 +84,15 @@ pub struct FromServer(pub ServerMessage);
 /// (a command, or joining), so a state crossing the client's change on
 /// its way doesn't undo it.
 #[derive(Resource, Debug, Default)]
-struct Joined(bool, Option<(Hotbar, ActiveSlot)>);
+pub struct Joined(bool, Option<(Hotbar, ActiveSlot)>);
+
+impl Joined {
+    /// Whether the player's first state has arrived from the server: the
+    /// client has joined the world.
+    pub fn has_joined(&self) -> bool {
+        self.0
+    }
+}
 
 /// Whether the server last said everything around the player is loaded
 /// and sent. The client's [`StreamingStatus`] starts from it each frame

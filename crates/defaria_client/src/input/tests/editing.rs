@@ -936,9 +936,11 @@ fn right_click_with_an_item_that_places_nothing_does_nothing() {
 fn scripted_app() -> (App, Entity, Entity) {
     let (mut app, left, right) = app();
     let ids: Vec<String> = base().mods.iter().map(|m| m.id.clone()).collect();
-    let runtime = defaria_server::script::ScriptRuntime::new(
-        defaria_server::script::ScriptSources::read(&defaria_core::content::mods_dir(), &ids),
-        defaria_server::script::ScriptSettings::untimed(),
+    use defaria_core::script::{ScriptRuntime, ScriptSettings, ScriptSources, Side};
+    let runtime = ScriptRuntime::new(
+        Side::Server,
+        ScriptSources::read(&defaria_core::content::mods_dir(), &ids),
+        ScriptSettings::untimed(),
     );
     app.insert_resource(ScriptIndex::new(base(), &runtime))
         .add_systems(

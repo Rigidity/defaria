@@ -16,14 +16,17 @@ use mlua::{
 };
 
 use super::{
-    block::{Located, add_block_fields, add_block_methods, face_named, handle_pos, position},
     item_table,
-    world::{Call, Op, check_writable, current_serial, world_op},
+    world::{Call, check_writable},
 };
 use crate::fluid_network::world::{pour, take};
 use defaria_core::{
     inventory::ItemStack,
     machine::{SlotGroup, Tank},
+    script::api::{
+        Located, Op, add_block_fields, add_block_methods, current_serial, face_named, handle_pos,
+        position, world_op,
+    },
 };
 
 /// A machine, as its own hooks see it: everything a [`BlockRef`] has, and
@@ -36,7 +39,7 @@ use defaria_core::{
 /// - `m.active`, `m:set_active(on)`: whether it's working, which puts it
 ///   in its `active_state`.
 ///
-/// [`BlockRef`]: super::BlockRef
+/// [`BlockRef`]: defaria_core::script::api::BlockRef
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MachineRef {
     pos: IVec3,

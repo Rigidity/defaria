@@ -120,20 +120,25 @@ mod tests {
     use bevy::time::TimeUpdateStrategy;
 
     use super::*;
-    use crate::script::{Caller, ScriptPlugin, ScriptSettings, tests::fixture};
+    use crate::script::{Caller, ScriptRuntimePlugin, ScriptSettings, Side, tests::fixture};
 
     /// Changing a watched script's text reloads the scripts: the new
     /// hook runs, and a caller an earlier error disabled works again.
     #[test]
     fn changing_a_script_reloads_it() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), ScriptPlugin))
-            // No time passes, so `FixedUpdate`, where the hooks run on a
-            // world this app doesn't have, never does, however long a
-            // frame takes.
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            ScriptRuntimePlugin { side: Side::Server },
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
         app.insert_resource(ScriptSettings::untimed())
-            .insert_resource(ScriptRuntime::new(fixture(), ScriptSettings::untimed()));
+            .insert_resource(ScriptRuntime::new(
+                Side::Server,
+                fixture(),
+                ScriptSettings::untimed(),
+            ));
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/script-mods/scripted/scripts/answer.luau");
         let original = std::fs::read_to_string(&file).unwrap();
