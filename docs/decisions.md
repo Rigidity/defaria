@@ -3182,3 +3182,39 @@ lighting uniform that wraps at a multiple of every animation's loop.
 
 **When to revisit.** If flowing water looks wrong in play, or meshing's
 wider neighbourhood shows up in remesh times.
+
+## Parts drawn by their neighbours cover no sides (2026-11-28)
+
+**Decision.** A part's `next` (`crates/defaria_core/src/content/next.rs`)
+makes it depend on the blocks around it, so a wire bends to meet a wire
+resting on another side. The neighbours are read where they're needed,
+not stored in the state: the bends would multiply the wire's states far
+past the 4096 a block may have. Meshing reads them for the faces
+(`Content::next_faces`), physics for the collision boxes
+(`Content::collision`, through `physics::WorldShapes`), and the
+crosshair, the wrench and the outline for the target boxes
+(`Content::target`, through `block_edit::target_at`), so a bend looks,
+collides and is aimed at as drawn. Such parts cover no sides: light and
+face culling see only the state.
+
+The wrench takes the side to work on from the part aimed at, not from
+the boxes' shapes: a part whose `when` needs exactly one connection side
+joined reaches that side (`bake::parts::reaches`).
+
+**What's wrong with it.** A part that ought to change what light passes
+or what hides a neighbour's faces can't use `next`. Each voxel with such
+parts checks their rules whenever it's meshed, bumped into or aimed at
+(a binary search per side named, and its boxes copied), which is cheap
+for a few dozen such parts, but grows with the parts a block has. The
+rules see only the six blocks touching the voxel, not diagonal ones, and
+match blocks by id and properties, not by what they are (solid, say).
+
+**What should replace it.** If a block needs neighbour-dependent light
+or culling, store what the neighbours decide in the voxel (a property
+the engine sets, as connections are) rather than reading them each
+time. If the rules get costly, bake each block's rules into one lookup
+by the neighbours' states.
+
+**When to revisit.** When a block needs a neighbour-dependent shape for
+light or culling, a rule needs more than the six blocks touching it, or
+meshing, physics or crosshair times show the rules.

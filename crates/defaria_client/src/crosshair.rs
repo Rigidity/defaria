@@ -1,5 +1,9 @@
 //! The crosshair in the middle of the screen (hidden while a screen is
-//! open), and an outline around the block it targets (see `block_edit`).
+//! open), and an outline around the block it targets (see `block_edit`):
+//! around its shape as one, even where it's made of several boxes (see
+//! `outline`).
+
+mod outline;
 
 use bevy::{
     prelude::*,
@@ -11,8 +15,8 @@ use crate::{
     ui::{UiScreen, playing},
 };
 use defaria_core::{
-    block_edit::{aims_at_fluid, crosshair_target, fluid_shape, fluid_target, target_shape},
-    content::{BlockState, Content},
+    block_edit::{aims_at_fluid, crosshair_target, fluid_shape, fluid_target, target_at},
+    content::{BlockState, Content, Direction},
     hotbar::{ActiveSlot, Hotbar},
     player::{Eyes, LocalPlayer},
     world::Voxels,
@@ -76,21 +80,26 @@ fn outline_target(
     let (state, partial) = voxels
         .get_with_fluid(hit.block)
         .unwrap_or((BlockState::AIR, None));
+    let pos = hit.block;
+    let next = |side: Direction| voxels.get(pos + side.normal()).unwrap_or(BlockState::AIR);
     let shape = if at_fluid {
-        fluid_shape(&content, state, partial)
-    } else if content.halves(state).is_some() {
-        // Just the half under the crosshair.
-        let boxes = target_shape(&content, state);
-        boxes.get(hit.shape_box).map_or(boxes, std::slice::from_ref)
+        fluid_shape(&content, state, partial, next)
     } else {
-        target_shape(&content, state)
+        let boxes = target_at(&content, &voxels, pos).boxes;
+        match content.halves(state) {
+            // Just the half under the crosshair.
+            Some(_) => boxes
+                .get(hit.shape_box)
+                .map_or(boxes.clone(), |b| vec![*b].into()),
+            None => boxes,
+        }
     };
-    for b in shape {
-        // A little bigger than the box, so it isn't hidden in its faces.
-        let center = hit.block.as_vec3() + (b.min + b.max) / 2.0;
-        let size = b.max - b.min + Vec3::splat(0.004);
-        gizmos.cube(
-            Transform::from_translation(center).with_scale(size),
+    for edge in outline::outline(&shape) {
+        // A little out from the shape, so it isn't hidden in its faces.
+        let out = edge.out * 0.002;
+        gizmos.line(
+            pos.as_vec3() + edge.from + out,
+            pos.as_vec3() + edge.to + out,
             Color::srgba(0.05, 0.05, 0.05, 0.8),
         );
     }

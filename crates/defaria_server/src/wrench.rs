@@ -6,6 +6,9 @@
 //! that arm reaches out to (so clicking the arm between two pipes parts
 //! them); on its core, or a conduit drawn as a whole block, the face
 //! clicked (so a side can be closed before anything is put next to it).
+//! Which side an arm reaches is its part's: the one connection its `when`
+//! needs joined ([`Target::reach`]), bends drawn by the neighbours
+//! included, so the wrench never guesses from the boxes' shapes.
 //! Aimed at another block's face (a machine's port) where a conduit next
 //! to it has its face blocked, it opens that face again, since the arm
 //! that was there to click is gone.
@@ -24,8 +27,8 @@ use crate::{
     connections::{Blocked, BlockedFaces},
 };
 use defaria_core::{
-    block_edit::{Hit, ray_box, target_shape},
-    content::{BlockBox, BlockState, Content, Direction, ItemAction},
+    block_edit::{Hit, ray_box, target_at},
+    content::{Content, Direction, ItemAction, Target},
     hotbar::{ActiveSlot, Hotbar},
     use_action::{UseAction, UseStep},
     world::Voxels,
@@ -48,40 +51,21 @@ fn is_wrench(content: &Content, hotbar: &Hotbar, active: ActiveSlot) -> bool {
         .is_some_and(|info| content.items[info.item].action == Some(ItemAction::Wrench))
 }
 
-/// The side of the block of `state` a wrench aimed along `ray` at `hit`
-/// works on: the side the box it hits first reaches (an arm), or, for a
-/// box that reaches no side or more than one (a core, a whole block), the
-/// face it went in through. `None` if the ray started inside the block.
-pub fn wrench_side(
-    content: &Content,
-    state: BlockState,
-    ray: Ray3d,
-    hit: Hit,
-) -> Option<Direction> {
+/// The side of a block with `target` (what the crosshair picks in it, see
+/// [`target_at`]) a wrench aimed along `ray` at `hit` works on: the side
+/// the part of the box it hits first reaches (an arm's), or, for a box
+/// whose part reaches none (a core, a whole block), the face it went in
+/// through. `None` if the ray started inside the block.
+pub fn wrench_side(target: &Target, ray: Ray3d, hit: Hit) -> Option<Direction> {
     let face = Direction::from_normal(hit.normal)?;
     let local = ray.origin - hit.block.as_vec3();
-    let first = target_shape(content, state)
+    let first = target
+        .boxes
         .iter()
-        .filter_map(|b| ray_box(local, *ray.direction, b).map(|(t, _)| (t, b)))
+        .enumerate()
+        .filter_map(|(i, b)| ray_box(local, *ray.direction, b).map(|(t, _)| (t, i)))
         .min_by(|a, b| a.0.total_cmp(&b.0));
-    Some(first.and_then(|(_, b)| arm_of(b)).unwrap_or(face))
-}
-
-/// The one side of its block that a box touches, if it touches exactly
-/// one: the way an arm reaches.
-fn arm_of(b: &BlockBox) -> Option<Direction> {
-    const EDGE: f32 = 1e-4;
-    let mut touching = Direction::ALL.into_iter().filter(|side| {
-        let n = side.normal().as_vec3();
-        let axis = n.abs().max_position();
-        if n[axis] > 0.0 {
-            b.max[axis] >= 1.0 - EDGE
-        } else {
-            b.min[axis] <= EDGE
-        }
-    });
-    let side = touching.next()?;
-    touching.next().is_none().then_some(side)
+    Some(first.and_then(|(_, i)| target.reach(i)).unwrap_or(face))
 }
 
 /// A conduit's blocked faces with `side` turned: blocked if it was open,
@@ -108,7 +92,7 @@ fn wrench_target(
 ) -> Option<(IVec3, Direction)> {
     let state = voxels.get(hit.block)?;
     if content.block_of(state).is_conduit() {
-        let side = wrench_side(content, state, ray, hit)?;
+        let side = wrench_side(&target_at(content, voxels, hit.block), ray, hit)?;
         let next = hit.block + side.normal();
         let across = voxels
             .get(next)

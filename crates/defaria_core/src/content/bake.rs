@@ -40,6 +40,7 @@ use super::{
     AIR, Block, Content, FULL_FLUID, ModInfo, State, combine,
     load::LoadedMod,
     machine::{check_machine_items, check_tank_fluids},
+    next,
     reaction::bake_reaction,
     recipe::bake_recipe,
     schema::*,
@@ -142,6 +143,7 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             block_entity: None,
             script: None,
             support: None,
+            next: Vec::new(),
         }],
         states: vec![State {
             name: "Air".into(),
@@ -243,6 +245,16 @@ pub fn bake(mods: Vec<LoadedMod>, errors: &mut Vec<String>) -> Content {
             report(
                 &def.file,
                 support::bake(index, rules, &def.namespace, &mut content),
+            );
+        }
+    }
+    for def in &defs.blocks {
+        if def.def.parts.iter().any(|part| !part.next.is_empty())
+            && let Some(&index) = content.block_index.get(&def.id)
+        {
+            report(
+                &def.file,
+                next::bake(index, &def.def, &def.namespace, &mut content),
             );
         }
     }

@@ -30,6 +30,7 @@ mod combine;
 mod connect;
 pub mod load;
 mod machine;
+mod next;
 pub mod palette;
 mod place;
 mod reaction;
@@ -54,6 +55,7 @@ pub use machine::{
     Emits, EnergySpec, FACING, ItemFilter, MAX_SLOTS, Machine, MachinePort, MachineRecipes,
     SlotGroupSpec, TankSpec, resolve_face,
 };
+pub use next::{NextPart, NextRule, Target};
 use palette::Palette;
 pub use place::Placement;
 pub use reaction::Reaction;
@@ -417,6 +419,9 @@ pub struct Block {
     /// The states it can stand on, sorted, if it needs support (see
     /// [`Content::supports`]).
     pub support: Option<Vec<BlockState>>,
+    /// The rules of its parts drawn by their neighbours (those with a
+    /// `next`), in part order (see [`NextPart::rule`]).
+    pub next: Vec<NextRule>,
 }
 
 impl Block {
@@ -456,17 +461,37 @@ pub struct State {
     pub name: String,
     /// Property name and value, in the block's property order.
     pub values: Vec<(String, String)>,
-    /// Every part's faces, in part order.
+    /// Every part's faces, in part order, but those of parts drawn by
+    /// their neighbours.
     pub faces: Vec<BakedFace>,
+    /// The faces of its parts drawn by their neighbours (those with a
+    /// `next`), in part order: see [`Content::next_faces`].
+    pub next_faces: Vec<BakedFace>,
+    /// Those parts, each with its faces in `next_faces` and its boxes in
+    /// `next_collision` and `next_target`.
+    pub next_parts: Vec<NextPart>,
+    /// The collision boxes of its parts drawn by their neighbours, in part
+    /// order: see [`Content::collision`].
+    pub next_collision: Vec<BlockBox>,
+    /// Their target boxes, in part order: see [`Content::target`].
+    pub next_target: Vec<BlockBox>,
+    /// The side each of `next_target` reaches, as `target_reaches`.
+    pub next_target_reaches: Vec<Option<Direction>>,
     /// The boxes things bump into and the crosshair picks, rotated with the
     /// model: every part's, in part order. Empty for air and anything you
     /// walk through.
     pub collision: Vec<BlockBox>,
     /// The boxes the crosshair picks, rotated with the model: every
     /// part's `target`, or its collision boxes if it gives none, or the
-    /// whole block if that leaves none. Empty for air and fluids, which
-    /// the crosshair passes through.
+    /// whole block if that leaves none (and no part drawn by its
+    /// neighbours has any). Empty for air and fluids, which the crosshair
+    /// passes through. See [`Content::target`] for those with the parts
+    /// drawn by the neighbours.
     pub target: Vec<BlockBox>,
+    /// For each of `target`, the side its part reaches out to, if it
+    /// reaches one (a conduit's arm): the side the wrench works on when
+    /// it's aimed at. See `bake::parts::reaches`.
+    pub target_reaches: Vec<Option<Direction>>,
     /// Bit per [`Direction`]: sides this state covers completely, which
     /// is the sides any of its parts covers.
     occludes: u8,

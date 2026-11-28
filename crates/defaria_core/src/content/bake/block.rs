@@ -101,6 +101,8 @@ pub(super) fn add_block(
                 model: fluid_box().clone(),
                 rotate: None,
                 textures: None,
+                next: None,
+                reaches: None,
             }]
         } else {
             parts(
@@ -193,10 +195,11 @@ pub(super) fn add_block(
         script,
         // Filled in once every block is in, as it names other blocks.
         support: None,
+        next: Vec::new(),
     });
     content.block_index.insert(def.id.clone(), index);
     for state in states.iter().filter(|s| s.render == Render::Cutout) {
-        for face in &state.faces {
+        for face in state.faces.iter().chain(&state.next_faces) {
             content.textures[face.layer as usize].cutout = true;
         }
     }

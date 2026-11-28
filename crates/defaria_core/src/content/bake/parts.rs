@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use super::{fill::fill, look::Look, when::When};
 use crate::content::{
-    Content, Model, qualify,
-    schema::{BlockDef, TextureRef},
+    Content, Direction, Model, qualify,
+    schema::{BlockDef, Condition, TextureRef},
 };
 
 /// One model of a block state: the state's own (from its look), or one of
@@ -16,6 +16,26 @@ pub(super) struct Part<'d> {
     /// The part's own textures, over the state's. `None` for the state's
     /// own model.
     pub(super) textures: Option<&'d BTreeMap<String, TextureRef>>,
+    /// For a part drawn by its neighbours (with a `next`), its rule's
+    /// number among the block's.
+    pub(super) next: Option<usize>,
+    /// The side the part reaches out to (see [`reaches`]), for the
+    /// wrench.
+    pub(super) reaches: Option<Direction>,
+}
+
+/// The side a part whose `when` is `when` reaches out to: the one side
+/// whose property (a connection's, named for its side) it needs to be
+/// `"true"`, if it names exactly one. A pipe's arm to the north is drawn
+/// `when: { north: "true" }`, and a wire's bend toward the east names
+/// `east` beside its other properties; a part naming none (a core) or
+/// several reaches none.
+pub(super) fn reaches(when: &BTreeMap<String, Condition>) -> Option<Direction> {
+    let mut sides = Direction::ALL.into_iter().filter(|side| {
+        matches!(when.get(side.name()), Some(Condition::Is(values)) if values.values() == ["true"])
+    });
+    let side = sides.next()?;
+    sides.next().is_none().then_some(side)
 }
 
 /// The model `id` names, with `{property}` filled in.
@@ -50,11 +70,18 @@ pub(super) fn parts<'d>(
             model: find_model(id, values, namespace, content)?.clone(),
             rotate: look.rotate,
             textures: None,
+            next: None,
+            reaches: None,
         }),
         None if block.parts.is_empty() => return Err("no `model`".into()),
         None => {}
     }
+    let mut rules = 0;
     for (i, (part, when)) in block.parts.iter().zip(whens).enumerate() {
+        let next = (!part.next.is_empty()).then(|| {
+            rules += 1;
+            rules - 1
+        });
         if !when.matches(index) {
             continue;
         }
@@ -75,6 +102,8 @@ pub(super) fn parts<'d>(
             model: model.clone(),
             rotate: part.rotate,
             textures: Some(&part.textures),
+            next,
+            reaches: reaches(&part.when),
         });
     }
     Ok(parts)
@@ -298,6 +327,28 @@ mod tests {
             );
             assert!(content.default_state("test:broken").is_none());
         }
+    }
+
+    /// A part reaches the one side its `when` needs joined: none for a
+    /// core, or one naming several, or a side only not joined.
+    #[test]
+    fn a_part_reaches_the_side_it_needs_joined() {
+        let when = |text: &str| -> BTreeMap<String, Condition> { json5::from_str(text).unwrap() };
+        assert_eq!(
+            reaches(&when(r#"{ north: "true" }"#)),
+            Some(Direction::North)
+        );
+        assert_eq!(
+            reaches(&when(r#"{ on: "down", east: "true" }"#)),
+            Some(Direction::East)
+        );
+        assert_eq!(reaches(&when(r#"{ on: "down" }"#)), None);
+        assert_eq!(reaches(&when(r#"{ north: "true", east: "true" }"#)), None);
+        assert_eq!(
+            reaches(&when(r#"{ north: "false", east: "true" }"#)),
+            Some(Direction::East)
+        );
+        assert_eq!(reaches(&when(r#"{ north: ["true", "false"] }"#)), None);
     }
 
     #[test]

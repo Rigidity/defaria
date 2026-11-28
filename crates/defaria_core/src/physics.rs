@@ -33,12 +33,12 @@
 //! `Time<Virtual>` caps how many after a long stall. Whatever draws a body
 //! between steps uses [`Body::interpolated`].
 
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use bevy::{ecs::system::SystemParam, math::DVec3, prelude::*};
 
 use crate::{
-    content::{BlockBox, Content},
+    content::{BlockBox, BlockState, Content},
     world::{Chunk, ChunkCoord, ChunkMap},
 };
 
@@ -226,7 +226,7 @@ impl Body {
 /// functions: a block's boxes in its own coordinates, or `None` where the
 /// world isn't loaded (which is solid).
 pub trait Shapes {
-    fn shape(&self, block: IVec3) -> Option<&[BlockBox]>;
+    fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>>;
 }
 
 /// [`Shapes`] read from the loaded chunks.
@@ -237,11 +237,24 @@ pub struct WorldShapes<'w, 's> {
     content: Res<'w, Content>,
 }
 
-impl Shapes for WorldShapes<'_, '_> {
-    fn shape(&self, block: IVec3) -> Option<&[BlockBox]> {
+impl WorldShapes<'_, '_> {
+    /// The block at `block`, or `None` where the world isn't loaded.
+    fn state(&self, block: IVec3) -> Option<BlockState> {
         let (coord, local) = ChunkCoord::split(block);
         let chunk = self.chunks.get(self.map.get(coord)?).ok()?;
-        Some(&self.content.state(chunk.at(local)).collision)
+        Some(chunk.at(local))
+    }
+}
+
+impl Shapes for WorldShapes<'_, '_> {
+    /// A block's collision boxes, with those of its parts drawn by the
+    /// blocks around it ([`Content::collision`]; unloaded ones count as
+    /// air).
+    fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>> {
+        let state = self.state(block)?;
+        Some(self.content.collision(state, |side| {
+            self.state(block + side.normal()).unwrap_or(BlockState::AIR)
+        }))
     }
 }
 
@@ -257,7 +270,7 @@ fn any_box_in(region: Aabb, shapes: &impl Shapes, mut f: impl FnMut(Aabb) -> boo
         for y in min.y..=max.y {
             for z in min.z..=max.z {
                 let block = IVec3::new(x, y, z);
-                for b in shapes.shape(block).unwrap_or(FULL) {
+                for b in shapes.shape(block).as_deref().unwrap_or(FULL) {
                     if f(Aabb::of_block(block, b)) {
                         return true;
                     }
@@ -497,11 +510,11 @@ mod tests {
     struct TestShapes(HashMap<IVec3, Option<Vec<BlockBox>>>);
 
     impl Shapes for TestShapes {
-        fn shape(&self, block: IVec3) -> Option<&[BlockBox]> {
+        fn shape(&self, block: IVec3) -> Option<Cow<'_, [BlockBox]>> {
             match self.0.get(&block) {
-                Some(Some(boxes)) => Some(boxes),
+                Some(Some(boxes)) => Some(Cow::Borrowed(boxes)),
                 Some(None) => None,
-                None => Some(&[]),
+                None => Some(Cow::Borrowed(&[])),
             }
         }
     }

@@ -10,7 +10,7 @@ use crate::{
     testing::world_app,
 };
 use defaria_core::{
-    content::{base, block},
+    content::{BlockBox, BlockState, base, block},
     testing::temp_folder,
 };
 
@@ -31,20 +31,31 @@ fn ray(from: Vec3, to: Vec3) -> Ray3d {
     Ray3d::new(from, Dir3::new(to - from).unwrap())
 }
 
-/// The side a wrench aimed from `from` at `to` works on, in the pipe of
-/// `state` at the origin.
-fn side_of(state: BlockState, from: Vec3, to: Vec3) -> Option<Direction> {
+/// The side a wrench aimed from `from` at `to` works on, in the conduit
+/// of `state` at the origin, with `next` giving the blocks around it.
+fn side_beside(
+    state: BlockState,
+    next: impl Fn(Direction) -> BlockState,
+    from: Vec3,
+    to: Vec3,
+) -> Option<Direction> {
     let content = base();
     let ray = ray(from, to);
+    let target = content.target(state, &next);
     let hit = defaria_core::block_edit::raycast(ray, 8.0, |pos| {
         if pos == IVec3::ZERO {
-            target_shape(content, state)
+            target.boxes.clone()
         } else {
-            &[]
+            std::borrow::Cow::Borrowed(&[][..])
         }
     })?;
     assert_eq!(hit.block, IVec3::ZERO);
-    wrench_side(content, state, ray, hit)
+    wrench_side(&target, ray, hit)
+}
+
+/// [`side_beside`], with nothing around it.
+fn side_of(state: BlockState, from: Vec3, to: Vec3) -> Option<Direction> {
+    side_beside(state, |_| BlockState::AIR, from, to)
 }
 
 /// On an arm, the wrench works on the side the arm reaches, whichever of
@@ -66,20 +77,36 @@ fn the_side_is_the_arm_aimed_at_or_the_face() {
     assert_eq!(side_of(state, core - Vec3::Z, core), Some(Direction::North));
 }
 
-/// A whole block that's a conduit has no arms: the face clicked.
+/// A box whose part reaches no side (a whole block, a core) is worked on
+/// by the face clicked; one whose part reaches one, by that side, from
+/// any of its faces.
 #[test]
-fn a_box_that_reaches_every_side_is_no_arm() {
-    assert_eq!(arm_of(&BlockBox::FULL), None);
-    let core = BlockBox {
-        min: Vec3::splat(0.1875),
-        max: Vec3::splat(0.8125),
+fn a_box_works_on_the_side_its_part_reaches() {
+    use std::borrow::Cow;
+    let whole = Target {
+        boxes: Cow::Owned(vec![BlockBox::FULL]),
+        reaches: Cow::Owned(vec![None]),
     };
-    assert_eq!(arm_of(&core), None);
-    let up = BlockBox {
-        min: Vec3::new(0.25, 0.8125, 0.25),
-        max: Vec3::new(0.75, 1.0, 0.75),
+    let from_above = ray(Vec3::new(0.5, 2.0, 0.5), Vec3::new(0.5, 0.5, 0.5));
+    let hit = |target: &Target| {
+        defaria_core::block_edit::raycast(from_above, 8.0, |pos| {
+            if pos == IVec3::ZERO {
+                target.boxes.clone()
+            } else {
+                Cow::Borrowed(&[][..])
+            }
+        })
+        .unwrap()
     };
-    assert_eq!(arm_of(&up), Some(Direction::Up));
+    assert_eq!(
+        wrench_side(&whole, from_above, hit(&whole)),
+        Some(Direction::Up)
+    );
+    let arm = Target {
+        boxes: Cow::Owned(vec![BlockBox::FULL]),
+        reaches: Cow::Owned(vec![Some(E)]),
+    };
+    assert_eq!(wrench_side(&arm, from_above, hit(&arm)), Some(E));
 }
 
 /// The blocked faces round trip through their saved form, and a mask
@@ -237,7 +264,7 @@ fn target_of(app: &mut App, ray: Ray3d) -> Option<(IVec3, Direction)> {
         .run_system_once(
             move |content: Res<Content>, voxels: Voxels, blocked: Blocked| {
                 let hit = defaria_core::block_edit::raycast(ray, 8.0, |pos| {
-                    target_shape(&content, voxels.get(pos).unwrap_or(BlockState::AIR))
+                    target_at(&content, &voxels, pos).boxes
                 })?;
                 wrench_target(&content, &voxels, |pos| blocked.at(pos), ray, hit)
             },

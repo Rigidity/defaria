@@ -85,8 +85,8 @@ pub struct FaceIndex {
 }
 
 impl FaceIndex {
-    /// The entry of face `face` (by its index in the state's faces) of
-    /// state `state`.
+    /// The entry of face `face` of state `state`: by its index in the
+    /// state's faces, or past them, in its `next_faces`.
     pub fn id(&self, state: BlockState, face: usize) -> Option<u16> {
         let start = *self.starts.get(state.0 as usize)? as usize;
         self.ids.get(start + face).copied().flatten()
@@ -139,7 +139,8 @@ impl ModelFaces {
         let mut left_out = 0;
         for state in &content.states {
             index.starts.push(index.ids.len() as u32);
-            for face in &state.faces {
+            // Its parts drawn by their neighbours after its own faces.
+            for face in state.faces.iter().chain(&state.next_faces) {
                 let entry = ModelFace::of(face);
                 let entry_words = entry.words();
                 let key = (entry_words, entry.triangle);
